@@ -239,6 +239,12 @@ func (a Address) RoutePath() string {
 // An app-level Domain wins outright and puts the app at the root of its own
 // host: the point of the override is to escape the deployment's convention, so
 // carrying the convention's path along with it would defeat it.
+//
+// This is the only way an app's address is derived. There is deliberately no
+// hostname-only helper: with a path prefix the host is half an address, and a
+// helper that returned it alone would be a trap — correct in the common
+// configuration and quietly wrong in the other one, at every call site that
+// reached for it.
 func (a App) Address(baseDomain, pathPrefix string) Address {
 	if d := strings.TrimSpace(a.Domain); d != "" {
 		return Address{Host: d}
@@ -251,13 +257,6 @@ func (a App) Address(baseDomain, pathPrefix string) Address {
 		return Address{Host: baseDomain, Path: pathPrefix + "/" + a.ID}
 	}
 	return Address{Host: a.ID + "." + baseDomain}
-}
-
-// Hostname returns the hostname an app is served at, given the deployment's
-// base domain. An app-level Domain wins, which is what lets one app take a
-// memorable name without changing the domain every other app sits under.
-func (a App) Hostname(baseDomain string) string {
-	return a.Address(baseDomain, "").Host
 }
 
 // NewID returns a random identifier for a record that has no natural key, such

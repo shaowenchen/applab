@@ -37,10 +37,15 @@ type appResponse struct {
 	Dockerfile string `json:"dockerfile"`
 	Domain     string `json:"domain"`
 
-	// Hostname and URL are derived, and reported so a caller does not have to
-	// reconstruct the deployment's domain convention to know where its app is.
-	// URL is empty until something has been deployed.
+	// Hostname and Path are the two halves of where an app is served, and URL is
+	// them joined with a scheme. All three are derived, and reported so a caller
+	// does not have to reconstruct the deployment's addressing convention.
+	//
+	// Hostname alone is the whole address only when no path prefix is
+	// configured — with one, every app shares that host and the path is what
+	// says which is meant. URL is empty until the app has been deployed.
 	Hostname string `json:"hostname,omitempty"`
+	Path     string `json:"path,omitempty"`
 	URL      string `json:"url,omitempty"`
 
 	CommitSHA string `json:"commit_sha,omitempty"`
@@ -79,6 +84,7 @@ func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string) appRespo
 	addr := a.Address(baseDomain, pathPrefix)
 	if !addr.Empty() {
 		resp.Hostname = addr.Host
+		resp.Path = addr.Path
 		// Only advertised once the app has actually been deployed: a URL that
 		// 404s reads as "deployed but broken" when the truth is "not deployed
 		// yet".

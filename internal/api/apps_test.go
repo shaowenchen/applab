@@ -2,12 +2,18 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
+	"github.com/shaowenchen/applab/internal/api"
+	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/store"
 )
 
 // doRequest issues a request through the real handler with a valid key, and
@@ -388,4 +394,75 @@ func TestUnknownRouteIsJSON(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Errorf("404 body is not JSON: %v (%s)", err, rec.Body.String())
 	}
+}
+
+// TestAppResponseReportsBothHalvesOfAPathPrefixAddress asserts the API reports
+// the path alongside the host.
+//
+// With a shared path prefix the host is the deployment's rather than the app's:
+// every app reports the same one, and the path is what says which app is meant.
+// A client shown only the host would label every app identically, which is
+// exactly what the console did until this field existed.
+func TestAppResponseReportsBothHalvesOfAPathPrefixAddress(t *testing.T) {
+	srv := newTestServerWithPrefix(t, "/apps")
+	h := srv.Handler()
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got status %d, want %d (body: %s)", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var app map[string]any
+	decodeData(t, rec, &app)
+
+	if app["hostname"] != "apps.example.com" {
+		t.Errorf("hostname = %v, want the shared host", app["hostname"])
+	}
+	if app["path"] != "/apps/shop" {
+		t.Errorf("path = %v, want /apps/shop; without it the host names the deployment, not the app", app["path"])
+	}
+
+	// And the two together are what a client shows, so they have to be the
+	// address the app is actually routed on.
+	if got := app["hostname"].(string) + app["path"].(string); got != "apps.example.com/apps/shop" {
+		t.Errorf("host+path = %q, want apps.example.com/apps/shop", got)
+	}
+}
+
+// TestAppResponseHasNoPathWithoutAPrefix asserts the field is absent rather than
+// empty when there is no prefix, so a client can tell "at this host's root" from
+// "the server forgot to say where".
+func TestAppResponseHasNoPathWithoutAPrefix(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got status %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var app map[string]any
+	decodeData(t, rec, &app)
+	if v, present := app["path"]; present {
+		t.Errorf("path = %v; with no prefix configured the app is at the host's root and the field should be absent", v)
+	}
+}
+
+// newTestServerWithPrefix builds a Server that serves every app from one host
+// under a shared path prefix.
+func newTestServerWithPrefix(t *testing.T, prefix string) *api.Server {
+	t.Helper()
+
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	cfg := config.Default()
+	cfg.Keys = []string{"test-key"}
+	cfg.BaseDomain = "apps.example.com"
+	cfg.PathPrefix = prefix
+
+	return api.New(cfg, st, auth.New(cfg.Keys))
 }

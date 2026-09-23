@@ -221,7 +221,11 @@ type App struct {
 	Dockerfile string `json:"dockerfile"`
 	Domain     string `json:"domain"`
 
+	// Hostname is the host an app answers on and Path where under it. With a
+	// shared path prefix the host is the deployment's rather than the app's, so
+	// neither field alone is the address; URL is the whole thing.
 	Hostname string `json:"hostname"`
+	Path     string `json:"path"`
 	URL      string `json:"url"`
 
 	CommitSHA string `json:"commit_sha"`

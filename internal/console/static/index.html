@@ -422,16 +422,20 @@ async function loadApps() {
     tr.appendChild(commit);
 
     const where = document.createElement("td");
+    // hostname and path are the two halves of an app's address, and with a
+    // shared path prefix the host alone is the deployment's, not the app's —
+    // showing it by itself would label every app with the same string.
+    const address = (app.hostname || "") + (app.path || "");
     if (app.url) {
       const link = document.createElement("a");
       link.href = app.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      link.textContent = app.hostname;
+      link.textContent = address;
       where.appendChild(link);
-    } else if (app.hostname) {
+    } else if (address) {
       where.className = "muted";
-      where.textContent = app.hostname + " (not deployed)";
+      where.textContent = address + " (not deployed)";
     } else {
       where.className = "muted";
       where.textContent = "—";
@@ -501,7 +505,7 @@ async function loadAppState() {
     }
   }
   if (status.url) add("url", status.url);
-  else if (status.host) add("host", status.host + " (not deployed)");
+  else if (status.host) add("host", status.host + (status.path || "") + " (not deployed)");
 
   // A rollout that cannot progress carries the reason, which is the most useful
   // single thing to surface when an app will not come up.
