@@ -26,7 +26,20 @@ Whether the apps have hostnames depends on apps.baseDomain, not on whether
 applab itself has an Ingress: the two are separate settings, and an install can
 serve the console plainly while still giving apps hostnames, or the reverse.
 */}}
-{{ if not .Values.apps.baseDomain -}}
+{{ if .Values.apps.baseDomain -}}
+Apps are published through the Istio gateway {{ .Values.deploy.gateway }}. That
+gateway has to exist and have a listener for {{ .Values.apps.baseDomain }}; a
+missing one shows up as an app that deploys and reports healthy but cannot be
+reached from outside the cluster.
+
+{{ if .Values.apps.pathPrefix -}}
+Apps share one host and are told apart by path: an app with id "shop" is served
+at {{ .Values.apps.baseDomain }}{{ .Values.apps.pathPrefix }}/shop.
+{{ else -}}
+Each app takes its own subdomain: an app with id "shop" is served at
+shop.{{ .Values.apps.baseDomain }}.
+{{ end -}}
+{{ else -}}
 Note: apps.baseDomain is empty, so the apps you deploy are reachable only inside
 the cluster. Set apps.baseDomain to give them hostnames.
 
