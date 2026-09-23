@@ -117,6 +117,10 @@ func run() error {
 		slog.Warn("running without cluster access: builds and deploys are unavailable", "error", err)
 	} else {
 		srv.WithNamespace(client.EnsureNamespace, client.DeleteNamespace)
+		srv.WithAppSecrets(
+			[]string{cfg.Build.PushSecret, cfg.Deploy.ImagePullSecret},
+			client.CopySecret,
+		)
 		srv.WithClusterStatus(client.Ready)
 
 		if cfg.Build.Enabled() {
@@ -135,6 +139,7 @@ func run() error {
 				BuildMemoryLimit:   cfg.Build.MemoryLimit,
 				WorkspaceSizeLimit: cfg.Build.WorkspaceSizeLimit,
 				ActiveDeadline:     cfg.Build.Timeout,
+				TTLAfterFinished:   cfg.Build.TTLAfterFinished,
 			})
 			srv.WithBuild(engine)
 			slog.Info("build pipeline enabled",
@@ -151,12 +156,16 @@ func run() error {
 		// cluster is reachable — an app can be deployed from an image that was
 		// built elsewhere, so deploying does not depend on the build half.
 		srv.WithDeployer(deploy.New(client.Clientset(), deploy.Config{
-			IngressClass:    cfg.Deploy.IngressClass,
-			BaseDomain:      cfg.BaseDomain,
-			TLSSecret:       cfg.Deploy.TLSSecret,
-			ClusterIssuer:   cfg.Deploy.ClusterIssuer,
-			ImagePullSecret: cfg.Deploy.ImagePullSecret,
-			Annotations:     cfg.Deploy.Annotations,
+			IngressClass:     cfg.Deploy.IngressClass,
+			BaseDomain:       cfg.BaseDomain,
+			TLSSecret:        cfg.Deploy.TLSSecret,
+			ClusterIssuer:    cfg.Deploy.ClusterIssuer,
+			ImagePullSecret:  cfg.Deploy.ImagePullSecret,
+			Annotations:      cfg.Deploy.Annotations,
+			AppCPURequest:    cfg.Deploy.AppCPURequest,
+			AppMemoryRequest: cfg.Deploy.AppMemoryRequest,
+			AppCPULimit:      cfg.Deploy.AppCPULimit,
+			AppMemoryLimit:   cfg.Deploy.AppMemoryLimit,
 		}))
 	}
 

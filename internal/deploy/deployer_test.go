@@ -416,6 +416,57 @@ func TestPodSecurityHardening(t *testing.T) {
 	}
 }
 
+// TestAppResourcesReachTheDeployment asserts the configured per-app resource
+// bounds are the ones applied.
+//
+// This is the setting most likely to be configured and then quietly ignored: it
+// is passed through a config field, an environment variable and a render step
+// before it has any effect, and a break anywhere along that chain leaves a
+// plausible-looking default in place rather than failing.
+func TestAppResourcesReachTheDeployment(t *testing.T) {
+	d, _ := newTestDeployer(t, Config{
+		BaseDomain:       "apps.example.com",
+		AppCPURequest:    "250m",
+		AppMemoryRequest: "256Mi",
+		AppCPULimit:      "3",
+		AppMemoryLimit:   "3Gi",
+	})
+
+	container := buildDeploymentForTest(t, d, testApp()).Spec.Template.Spec.Containers[0]
+	res := container.Resources
+
+	for _, tc := range []struct {
+		what string
+		got  string
+		want string
+	}{
+		{"cpu request", res.Requests.Cpu().String(), "250m"},
+		{"memory request", res.Requests.Memory().String(), "256Mi"},
+		{"cpu limit", res.Limits.Cpu().String(), "3"},
+		{"memory limit", res.Limits.Memory().String(), "3Gi"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %s, want %s", tc.what, tc.got, tc.want)
+		}
+	}
+}
+
+// An unset value has to fall back to a sane bound rather than to nothing: an
+// app with no limits can take its node down with it.
+func TestEmptyAppResourcesFallBackToDefaults(t *testing.T) {
+	d, _ := newTestDeployer(t, testConfig())
+
+	container := buildDeploymentForTest(t, d, testApp()).Spec.Template.Spec.Containers[0]
+	res := container.Resources
+
+	if res.Limits.Cpu().IsZero() || res.Limits.Memory().IsZero() {
+		t.Errorf("empty configuration produced no limits: %v", res.Limits)
+	}
+	if res.Requests.Cpu().IsZero() || res.Requests.Memory().IsZero() {
+		t.Errorf("empty configuration produced no requests: %v", res.Requests)
+	}
+}
+
 // TestRollingUpdateKeepsAvailability asserts a deploy does not take the app down.
 func TestRollingUpdateKeepsAvailability(t *testing.T) {
 	d, _ := newTestDeployer(t, testConfig())

@@ -100,15 +100,25 @@ docker-build:
 docker-push:
 	docker push $(IMAGE):$(TAG)
 
-# Render the chart locally. Needs helm, which is not required to build or test
-# the Go code — only to check the chart's templates.
+# Render the chart at the values an install would use. Needs helm, which is not
+# required to build or test the Go code — only to check the chart's templates.
 .PHONY: helm-template
 helm-template:
-	helm template applab charts/applab --namespace applab-system
+	helm template applab charts/applab --namespace applab-system \
+		--set "auth.keys[0]=$${APPLAB_KEY:-replace-me}" \
+		--set apps.baseDomain=$${BASE_DOMAIN:-apps.example.com} \
+		--set build.registry=$${REGISTRY:-registry.example.com/apps}
 
 .PHONY: helm-lint
 helm-lint:
 	helm lint charts/applab
+
+# Render the chart and assert what was wrong before. Skips if helm is absent.
+# Separate from `check` because helm is a chart-only dependency: requiring it to
+# run the Go tests would make the common case need an install it does not.
+.PHONY: helm-check
+helm-check:
+	./hack/helm-check.sh
 
 .PHONY: help
 help:

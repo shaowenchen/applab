@@ -123,11 +123,10 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, commitSHA strin
 		return nil, Errorf(http.StatusInternalServerError, "generate build id").Wrap(err)
 	}
 
-	// A build runs in the app's own namespace, which has to exist first.
-	if s.ensureNamespace != nil {
-		if err := s.ensureNamespace(ctx, app.ID); err != nil {
-			return nil, Errorf(http.StatusInternalServerError, "prepare the app's namespace").Wrap(err)
-		}
+	// A build runs in the app's own namespace, which has to exist first — along
+	// with the registry credentials its Job pushes with.
+	if err := s.ensureNamespaceFor(ctx, app.ID); err != nil {
+		return nil, Errorf(http.StatusInternalServerError, "prepare the app's namespace").Wrap(err)
 	}
 
 	build := &model.Build{

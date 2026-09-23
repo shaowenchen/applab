@@ -10,6 +10,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -51,6 +52,13 @@ type Config struct {
 	// Annotations are added to every Ingress, for ingress-controller specifics
 	// that vary by cluster (proxy body size, timeouts, SSL redirect).
 	Annotations map[string]string
+
+	// AppResources are applied to every app container. Empty values fall back to
+	// defaults, because an app with no limits can take its node down.
+	AppCPURequest    string
+	AppMemoryRequest string
+	AppCPULimit      string
+	AppMemoryLimit   string
 }
 
 // Deployer creates and updates an app's Kubernetes resources.
@@ -193,12 +201,12 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 						},
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resourceQty("100m"),
-								corev1.ResourceMemory: resourceQty("128Mi"),
+								corev1.ResourceCPU:    resourceQty(orDefault(d.cfg.AppCPURequest, "100m")),
+								corev1.ResourceMemory: resourceQty(orDefault(d.cfg.AppMemoryRequest, "128Mi")),
 							},
 							Limits: corev1.ResourceList{
-								corev1.ResourceCPU:    resourceQty("2"),
-								corev1.ResourceMemory: resourceQty("2Gi"),
+								corev1.ResourceCPU:    resourceQty(orDefault(d.cfg.AppCPULimit, "2")),
+								corev1.ResourceMemory: resourceQty(orDefault(d.cfg.AppMemoryLimit, "2Gi")),
 							},
 						},
 						SecurityContext: &corev1.SecurityContext{
@@ -582,6 +590,14 @@ func resourceQty(s string) resource.Quantity {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// orDefault returns v, or def when v is empty.
+func orDefault(v, def string) string {
+	if strings.TrimSpace(v) == "" {
+		return def
+	}
+	return v
+}
 
 func derefInt32(p *int32) int32 {
 	if p == nil {

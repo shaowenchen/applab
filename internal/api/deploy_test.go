@@ -19,6 +19,7 @@ import (
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/deploy"
+	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
@@ -414,6 +415,138 @@ func recordBuild(t *testing.T, st *store.Store, appID, commit, image string) {
 	}
 	if err := st.SetBuildStatus(ctx, id, model.BuildStatusSucceeded, ""); err != nil {
 		t.Fatalf("set build status: %v", err)
+	}
+}
+
+// TestDeployCopiesRegistrySecretIntoAppNamespace covers the whole chain a
+// registry credential travels: named in configuration, copied into the app's
+// namespace when that namespace is provisioned, and referenced by the
+// Deployment that needs to pull with it.
+//
+// Each step on its own is easy to get right and the seam between them is where
+// this broke: the Deployment referenced a Secret that nothing ever created, so
+// every app deployed against a private registry sat in ImagePullBackOff with
+// nothing in applab's own output to explain why.
+func TestDeployCopiesRegistrySecretIntoAppNamespace(t *testing.T) {
+	dataDir := t.TempDir()
+	st, err := store.Open(context.Background(), filepath.Join(dataDir, "t.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	src, err := source.New(source.Options{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("source.New: %v", err)
+	}
+
+	// The source of truth is a Secret in applab's own namespace, as the chart
+	// expects an operator to have created it.
+	const ownNamespace = "applab-system"
+	client := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "regcred", Namespace: ownNamespace},
+		Type:       corev1.SecretTypeDockerConfigJson,
+		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)},
+	})
+
+	namespaces := k8s.NewWithClientset(client, "applab-", ownNamespace)
+
+	cfg := config.Default()
+	cfg.Keys = []string{"test-key"}
+	cfg.BaseDomain = "apps.example.com"
+	cfg.DataDir = dataDir
+	// Set on the config, which is where both the deployer and the copy list
+	// read it from — the two have to agree or the Deployment references a
+	// Secret the server never copied.
+	cfg.Deploy.ImagePullSecret = "regcred"
+
+	deployer := deploy.New(client, deploy.Config{
+		BaseDomain:      "apps.example.com",
+		ImagePullSecret: cfg.Deploy.ImagePullSecret,
+	})
+
+	srv := api.New(cfg, st, auth.New(cfg.Keys)).
+		WithSource(src).
+		WithDeployer(deployer).
+		WithNamespace(namespaces.EnsureNamespace, namespaces.DeleteNamespace).
+		WithAppSecrets([]string{cfg.Build.PushSecret, cfg.Deploy.ImagePullSecret}, namespaces.CopySecret)
+
+	h := srv.Handler()
+	commit := setupAppWithCommit(t, srv, h, "shop")
+	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{}); rec.Code != http.StatusOK {
+		t.Fatalf("deploy: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// The credential has to be in the namespace the app runs in: a Secret
+	// cannot be referenced across a namespace boundary.
+	if _, err := client.CoreV1().Secrets("applab-shop").Get(context.Background(), "regcred", metav1.GetOptions{}); err != nil {
+		t.Fatalf("the registry Secret did not reach the app's namespace: %v", err)
+	}
+
+	// And the Deployment has to actually reference it, or copying it was
+	// pointless.
+	dep, err := client.AppsV1().Deployments("applab-shop").Get(context.Background(), "app-shop", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	refs := dep.Spec.Template.Spec.ImagePullSecrets
+	if len(refs) != 1 || refs[0].Name != "regcred" {
+		t.Errorf("the Deployment does not pull with the copied Secret: %v", refs)
+	}
+}
+
+// A Secret named in configuration but absent from applab's own namespace is an
+// operator's mistake, and it has to stop the deploy.
+//
+// The alternative is a Deployment whose pods never start, which looks like an
+// application problem and sends the reader looking in the wrong place.
+func TestDeployFailsWhenConfiguredSecretIsMissing(t *testing.T) {
+	dataDir := t.TempDir()
+	st, err := store.Open(context.Background(), filepath.Join(dataDir, "t.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	src, err := source.New(source.Options{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("source.New: %v", err)
+	}
+
+	// No Secret is created, but one is configured.
+	client := fake.NewSimpleClientset()
+	namespaces := k8s.NewWithClientset(client, "applab-", "applab-system")
+
+	cfg := config.Default()
+	cfg.Keys = []string{"test-key"}
+	cfg.BaseDomain = "apps.example.com"
+	cfg.DataDir = dataDir
+
+	srv := api.New(cfg, st, auth.New(cfg.Keys)).
+		WithSource(src).
+		WithDeployer(deploy.New(client, deploy.Config{BaseDomain: "apps.example.com"})).
+		WithNamespace(namespaces.EnsureNamespace, namespaces.DeleteNamespace).
+		WithAppSecrets([]string{"absent"}, namespaces.CopySecret)
+
+	h := srv.Handler()
+	commit := setupAppWithCommit(t, srv, h, "shop")
+	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+
+	// The caller is told which step failed without being told the cause, which
+	// would name a Secret in applab's own namespace.
+	var body struct {
+		Error string `json:"error"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if !strings.Contains(body.Error, "namespace") {
+		t.Errorf("the error does not say which step failed: %q", body.Error)
 	}
 }
 

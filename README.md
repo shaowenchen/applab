@@ -23,7 +23,12 @@ upload source ──▶ build image ──▶ deploy ──▶ https://<app>.<do
 | P3 | Deploy, namespaces, ingress | done |
 | P4 | Observability: pods, events, logs, metrics | done |
 | P5 | Console and CLI | done |
-| P6 | Helm chart | not started |
+| P6 | Helm chart | done — see [`charts/applab`](charts/applab) |
+
+The chart is verified by `make helm-check`, which renders it and asserts the
+things that were wrong: that every setting the server reads reaches it, that
+`build.enabled=false` actually disables the pipeline, and that a malformed
+configuration is refused at render time rather than deployed.
 
 ## Quick start
 
@@ -196,8 +201,10 @@ source layer is exercised with the real `git` binary over a real HTTP server —
 `internal/gitx` clones and pushes in its tests — and the API is driven through its
 own handler with `httptest`.
 
-`helm template` needs `helm`, which is not required to build or test the Go code,
-only to check the chart.
+`make helm-check` needs `helm`, which is not required to build or test the Go
+code, only to check the chart. It renders the chart and asserts what the
+rendering has to contain — a chart whose templates are wrong still renders, so
+"it rendered" is not evidence of anything.
 
 ## Configuration
 

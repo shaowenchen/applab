@@ -107,6 +107,18 @@ type Deploy struct {
 	// Annotations are added to every app Ingress, for ingress-controller
 	// specifics that vary by cluster.
 	Annotations map[string]string `yaml:"annotations"`
+
+	// AppResources are the requests and limits applied to every app applab
+	// deploys.
+	//
+	// They are the deployment's defaults rather than each app's own: an uploaded
+	// app cannot be trusted to declare sane limits for itself, and one with no
+	// limits at all can take its node down. An operator running applab for
+	// several teams sets these per installation.
+	AppCPURequest    string `yaml:"app_cpu_request"`
+	AppMemoryRequest string `yaml:"app_memory_request"`
+	AppCPULimit      string `yaml:"app_cpu_limit"`
+	AppMemoryLimit   string `yaml:"app_memory_limit"`
 }
 
 // Build configures how images are built and where they are pushed.
@@ -151,6 +163,12 @@ type Build struct {
 
 	// Timeout is how long a single build may run before it is killed.
 	Timeout time.Duration `yaml:"timeout"`
+
+	// TTLAfterFinished is how long a finished build's Job is kept, so its log
+	// can still be read. Zero would have the Job deleted the moment it ends,
+	// which makes every failure undiagnosable — so it is left to the engine's
+	// own default rather than being settable to nothing.
+	TTLAfterFinished time.Duration `yaml:"ttl_after_finished"`
 }
 
 // RootlessBuild reports whether builds should run unprivileged, defaulting to
@@ -187,6 +205,16 @@ func Default() Config {
 		ChunkSize:       8 << 20,
 		MaxChunkBytes:   32 << 20,
 
+		Deploy: Deploy{
+			// Bounded by default. An uploaded app with no limits can take its
+			// node down, and the requests are small enough that an app which
+			// needs more will be noticed rather than quietly starved.
+			AppCPURequest:    "100m",
+			AppMemoryRequest: "128Mi",
+			AppCPULimit:      "2",
+			AppMemoryLimit:   "2Gi",
+		},
+
 		Build: Build{
 			// Pinned rather than "latest": a moving tag would make a build's
 			// behaviour change without anything in applab changing, which is
@@ -204,6 +232,10 @@ func Default() Config {
 			WorkspaceSizeLimit: "10Gi",
 
 			Timeout: 30 * time.Minute,
+
+			// A day is long enough to investigate a failure and short enough
+			// that finished Jobs do not accumulate in the app's namespace.
+			TTLAfterFinished: 24 * time.Hour,
 		},
 	}
 }
@@ -264,11 +296,16 @@ func applyEnv(cfg *Config) {
 	setBool(&cfg.Build.InsecureRegistry, "APPLAB_BUILD_INSECURE_REGISTRY")
 	setBoolPtr(&cfg.Build.Rootless, "APPLAB_BUILD_ROOTLESS")
 	setDuration(&cfg.Build.Timeout, "APPLAB_BUILD_TIMEOUT")
+	setDuration(&cfg.Build.TTLAfterFinished, "APPLAB_BUILD_TTL_AFTER_FINISHED")
 
 	setString(&cfg.Deploy.IngressClass, "APPLAB_DEPLOY_INGRESS_CLASS")
 	setString(&cfg.Deploy.TLSSecret, "APPLAB_DEPLOY_TLS_SECRET")
 	setString(&cfg.Deploy.ClusterIssuer, "APPLAB_DEPLOY_CLUSTER_ISSUER")
 	setString(&cfg.Deploy.ImagePullSecret, "APPLAB_DEPLOY_IMAGE_PULL_SECRET")
+	setString(&cfg.Deploy.AppCPURequest, "APPLAB_DEPLOY_APP_CPU_REQUEST")
+	setString(&cfg.Deploy.AppMemoryRequest, "APPLAB_DEPLOY_APP_MEMORY_REQUEST")
+	setString(&cfg.Deploy.AppCPULimit, "APPLAB_DEPLOY_APP_CPU_LIMIT")
+	setString(&cfg.Deploy.AppMemoryLimit, "APPLAB_DEPLOY_APP_MEMORY_LIMIT")
 
 	// Singular APPLAB_KEY is accepted alongside the plural form: a deployment
 	// with one key (the common case) reads better as a single variable, and the

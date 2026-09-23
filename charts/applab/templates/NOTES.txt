@@ -1,0 +1,50 @@
+applab is installed in namespace {{ include "applab.namespace" . }}.
+
+{{ if .Values.ingress.enabled -}}
+Reach it at:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+
+{{ else -}}
+It has no Ingress. Forward a local port:
+
+    kubectl -n {{ include "applab.namespace" . }} port-forward svc/{{ include "applab.fullname" . }} 8080:{{ .Values.service.port }}
+
+{{ end -}}
+Set up the CLI:
+
+    export APPLAB_URL={{ if .Values.ingress.enabled }}https://{{ (index .Values.ingress.hosts 0).host }}{{ else }}http://localhost:8080{{ end }}
+    export APPLAB_KEY=<a key from the release's Secret>
+
+Then, from any project:
+
+    applab push myshop
+
+{{/*
+Whether the apps have hostnames depends on apps.baseDomain, not on whether
+applab itself has an Ingress: the two are separate settings, and an install can
+serve the console plainly while still giving apps hostnames, or the reverse.
+*/}}
+{{ if not .Values.apps.baseDomain -}}
+Note: apps.baseDomain is empty, so the apps you deploy are reachable only inside
+the cluster. Set apps.baseDomain to give them hostnames.
+
+{{ end -}}
+{{ if .Values.build.enabled -}}
+Builds run as Kubernetes Jobs with BuildKit rootless. That needs the cluster's
+nodes to permit unprivileged user namespaces; if builds fail immediately with a
+permissions error, see the chart README's prerequisites. `build.rootless=false`
+is the fallback, at the cost of running builds privileged.
+
+Images are pushed to: {{ .Values.build.registry }}
+
+{{ else -}}
+The build pipeline is disabled, so applab stores source and deploys, but cannot
+build an image from it. `applab push` will say so. To enable it, set
+build.enabled=true and build.registry.
+
+{{ end -}}
+Read the API contract:
+
+    curl -s {{ if .Values.ingress.enabled }}https://{{ (index .Values.ingress.hosts 0).host }}{{ else }}http://localhost:8080{{ end }}/llms.txt

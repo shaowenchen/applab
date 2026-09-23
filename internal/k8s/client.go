@@ -129,7 +129,17 @@ func (c *Client) NamespaceFor(appID string) string {
 // It is the check that keeps applab from touching anything it did not create,
 // and it is deliberately strict: a namespace name without the prefix is not
 // applab's, whatever it contains.
+//
+// An empty prefix is rejected explicitly rather than falling out of the prefix
+// test. Every string has the empty string as a prefix, so without this the
+// predicate would answer yes for every namespace in the cluster — turning the
+// check that exists to confine applab into one that grants it everything. New
+// refuses an empty prefix, but this is the function that actually decides, so
+// it does not delegate that guarantee to a caller.
 func (c *Client) OwnsNamespace(namespace string) bool {
+	if c.namespacePrefix == "" {
+		return false
+	}
 	return strings.HasPrefix(namespace, c.namespacePrefix) && len(namespace) > len(c.namespacePrefix)
 }
 
@@ -186,6 +196,80 @@ func (c *Client) NamespaceExists(ctx context.Context, appID string) (bool, error
 		return false, nil
 	}
 	return false, fmt.Errorf("get namespace %s: %w", c.NamespaceFor(appID), err)
+}
+
+// CopySecret copies a Secret from applab's own namespace into an app's
+// namespace, creating it or replacing the copy.
+//
+// A Secret can only be referenced from the namespace that holds it, so a
+// registry credential configured once for the installation has to be copied to
+// each app namespace for that app's build Job to push and its Deployment to
+// pull. This is the one place a credential crosses that boundary.
+//
+// The name is preserved because callers — and the chart's values — refer to the
+// Secret by the name it was configured under. An existing copy is updated
+// rather than left alone, so rotating the credential in applab's namespace and
+// reapplying reaches every app on its next deploy.
+//
+// The source must be in applab's own namespace. There is deliberately no
+// parameter for where it comes from: a caller that could name an arbitrary
+// source namespace could read any Secret the cluster will show it and write a
+// copy somewhere it controls.
+func (c *Client) CopySecret(ctx context.Context, appID, name string) error {
+	if name == "" {
+		return nil
+	}
+	if c.ownNamespace == "" {
+		return fmt.Errorf("copy secret %s: applab's own namespace is not configured", name)
+	}
+
+	namespace := c.NamespaceFor(appID)
+	if !c.OwnsNamespace(namespace) {
+		return fmt.Errorf("refusing to write secret %s into namespace %q: it does not carry this installation's prefix %q", name, namespace, c.namespacePrefix)
+	}
+
+	src, err := c.clientset.CoreV1().Secrets(c.ownNamespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("read secret %s/%s: %w", c.ownNamespace, name, err)
+	}
+
+	// Only the type and the data carry over. Metadata is per-object: a uid, a
+	// resourceVersion or an ownerReference copied from the original describes an
+	// object that does not exist here, and Kubernetes rejects the write.
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      src.Name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "applab",
+				"applab.io/app":                appID,
+			},
+		},
+		Type: src.Type,
+		Data: src.Data,
+	}
+
+	_, err = c.clientset.CoreV1().Secrets(namespace).Create(ctx, desired, metav1.CreateOptions{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create secret %s/%s: %w", namespace, name, err)
+	}
+
+	// Update in place, keeping the incumbent's resourceVersion: the API server
+	// treats a write without it as a conflict, which would make rotating a
+	// credential fail intermittently and look like a race.
+	existing, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("read existing secret %s/%s: %w", namespace, name, err)
+	}
+	existing.Data = src.Data
+	existing.Type = src.Type
+	if _, err := c.clientset.CoreV1().Secrets(namespace).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update secret %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // Ready reports whether the cluster is reachable.

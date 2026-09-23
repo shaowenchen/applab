@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "applab.fullname" . }}-config
+  namespace: {{ include "applab.namespace" . }}
+  labels:
+    {{- include "applab.labels" . | nindent 4 }}
+data:
+  # Everything here is configuration rather than credential; the keys are in the
+  # Secret beside it.
+  # Derived from the Service's target port rather than hardcoded, so a change to
+  # one cannot leave the other pointing at a port nothing listens on — a mistake
+  # whose only symptom is a Service with no endpoints.
+  APPLAB_LISTEN: {{ printf ":%v" .Values.service.targetPort | quote }}
+
+  APPLAB_NAMESPACE: {{ include "applab.namespace" . | quote }}
+  APPLAB_NAMESPACE_PREFIX: {{ .Values.apps.namespacePrefix | quote }}
+  APPLAB_BASE_DOMAIN: {{ .Values.apps.baseDomain | quote }}
+  APPLAB_BASE_URL: {{ include "applab.internalURL" . | quote }}
+
+  # Upload limits, so a client can size its parts instead of discovering them by
+  # being rejected.
+  #
+  # Rendered with `int64` rather than left to the YAML encoder: a large
+  # unquoted number would be emitted in scientific notation (8388608 becomes
+  # 8.388608e+06), which the server's integer parser rejects — leaving the
+  # defaults in place and the configured limit silently ignored.
+  APPLAB_MAX_SIMPLE_UPLOAD: {{ .Values.upload.maxSimpleUpload | int64 | quote }}
+  APPLAB_CHUNK_SIZE: {{ .Values.upload.chunkSize | int64 | quote }}
+  APPLAB_MAX_CHUNK_BYTES: {{ .Values.upload.maxChunkBytes | int64 | quote }}
+
+  # ---------------------------------------------------------------------------
+  # Build. The build-job settings are read by applab itself, which creates the
+  # Jobs — the Job pulls its own images, so they must be pullable from the node.
+  #
+  # With build.enabled false the three values that decide whether the pipeline
+  # is available at all are emptied, which is what the server reads as "cannot
+  # build". Blanking them rather than omitting them is deliberate: an omitted
+  # variable keeps its compiled-in default, so the pipeline would come up
+  # enabled pointing at the default builder image.
+  # ---------------------------------------------------------------------------
+  APPLAB_BUILD_REGISTRY: {{ if .Values.build.enabled }}{{ .Values.build.registry | quote }}{{ else }}""{{ end }}
+  APPLAB_BUILD_BUILDER_IMAGE: {{ if .Values.build.enabled }}{{ .Values.build.builderImage | quote }}{{ else }}""{{ end }}
+  APPLAB_BUILD_FETCHER_IMAGE: {{ if .Values.build.enabled }}{{ .Values.build.fetcherImage | quote }}{{ else }}""{{ end }}
+  APPLAB_BUILD_ROOTLESS: {{ .Values.build.rootless | quote }}
+  APPLAB_BUILD_INSECURE_REGISTRY: {{ .Values.build.insecureRegistry | quote }}
+  APPLAB_BUILD_CACHE_REPO_PREFIX: {{ .Values.build.cacheRepoPrefix | quote }}
+  APPLAB_BUILD_PUSH_SECRET: {{ .Values.build.pushSecret | quote }}
+  APPLAB_BUILD_CPU_REQUEST: {{ .Values.build.resources.requests.cpu | quote }}
+  APPLAB_BUILD_MEMORY_REQUEST: {{ .Values.build.resources.requests.memory | quote }}
+  APPLAB_BUILD_CPU_LIMIT: {{ .Values.build.resources.limits.cpu | quote }}
+  APPLAB_BUILD_MEMORY_LIMIT: {{ .Values.build.resources.limits.memory | quote }}
+  APPLAB_BUILD_WORKSPACE_SIZE_LIMIT: {{ .Values.build.workspaceSizeLimit | quote }}
+  APPLAB_BUILD_TIMEOUT: {{ .Values.build.timeout | quote }}
+  APPLAB_BUILD_TTL_AFTER_FINISHED: {{ .Values.build.ttlAfterFinished | quote }}
+
+  # ---------------------------------------------------------------------------
+  # Deploy
+  # ---------------------------------------------------------------------------
+  APPLAB_DEPLOY_INGRESS_CLASS: {{ .Values.ingress.className | quote }}
+  APPLAB_DEPLOY_TLS_SECRET: {{ .Values.deploy.tlsSecret | quote }}
+  APPLAB_DEPLOY_CLUSTER_ISSUER: {{ .Values.deploy.clusterIssuer | quote }}
+  APPLAB_DEPLOY_IMAGE_PULL_SECRET: {{ .Values.deploy.imagePullSecret | quote }}
+
+  # Applied to every app applab deploys. An uploaded app cannot be trusted to
+  # declare sane limits for itself, and one with none can take its node down.
+  APPLAB_DEPLOY_APP_CPU_REQUEST: {{ .Values.deploy.appResources.requests.cpu | quote }}
+  APPLAB_DEPLOY_APP_MEMORY_REQUEST: {{ .Values.deploy.appResources.requests.memory | quote }}
+  APPLAB_DEPLOY_APP_CPU_LIMIT: {{ .Values.deploy.appResources.limits.cpu | quote }}
+  APPLAB_DEPLOY_APP_MEMORY_LIMIT: {{ .Values.deploy.appResources.limits.memory | quote }}
+
+  APPLAB_LOG_LEVEL: {{ .Values.logLevel | default "info" | quote }}

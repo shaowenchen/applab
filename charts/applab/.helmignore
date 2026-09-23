@@ -1,0 +1,21 @@
+# Files that are part of developing the chart but not part of installing it.
+#
+# Keep this in step with reality: anything excluded here ships in every release
+# tarball to every user, and anything listed that does not exist is a lie about
+# the chart's contents.
+
+# Rendered output and local values, which are by definition per-install.
+templates/.rendered/
+*.rendered.yaml
+values.local.yaml
+*.local.yaml
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Nothing in a chart should be a build artifact, but a stray one is worse than
+# a rule that never matches.
+*.tgz

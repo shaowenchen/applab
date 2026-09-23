@@ -69,6 +69,14 @@ type Server struct {
 	// Job can be created.
 	ensureNamespace func(ctx context.Context, appID string) error
 
+	// appSecrets are Secrets copied from applab's own namespace into an app's
+	// namespace as part of provisioning it — registry credentials, which a
+	// Secret cannot be referenced across a namespace boundary without.
+	appSecrets []string
+
+	// copySecret copies one of those Secrets into an app's namespace.
+	copySecret func(ctx context.Context, appID, name string) error
+
 	// removeNamespace deletes an app's namespace.
 	removeNamespace func(ctx context.Context, appID string) error
 
@@ -192,6 +200,24 @@ func (s *Server) WithSourceTokens(issuer *sourcetoken.Issuer) *Server {
 func (s *Server) WithNamespace(ensure func(ctx context.Context, appID string) error, remove func(ctx context.Context, appID string) error) *Server {
 	s.ensureNamespace = ensure
 	s.removeNamespace = remove
+	return s
+}
+
+// WithAppSecrets attaches the Secrets that must exist in every app namespace,
+// and the copy operation that puts them there.
+//
+// Empty names are dropped rather than treated as an error, so an installation
+// with no registry credentials — the common case for a cluster-local registry —
+// configures nothing here and pays nothing for it.
+func (s *Server) WithAppSecrets(names []string, copy func(ctx context.Context, appID, name string) error) *Server {
+	kept := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.TrimSpace(name) != "" {
+			kept = append(kept, name)
+		}
+	}
+	s.appSecrets = kept
+	s.copySecret = copy
 	return s
 }
 
@@ -373,12 +399,34 @@ func (s *Server) listEvents(ctx context.Context, namespace string, limit int) ([
 	return s.observer.Events(ctx, namespace, limit)
 }
 
-// ensureNamespaceFor creates an app's namespace if needed.
+// ensureNamespaceFor creates an app's namespace if needed, then makes sure the
+// Secrets that namespace needs are present in it.
+//
+// Both halves happen together because both are preconditions of the same thing:
+// a namespace a build can run in. Creating it and leaving its registry
+// credentials behind would let the Job start, run, and fail at the push, which
+// is minutes later and reads as a build problem rather than a configuration one.
 func (s *Server) ensureNamespaceFor(ctx context.Context, appID string) error {
 	if s.ensureNamespace == nil {
 		return nil
 	}
-	return s.ensureNamespace(ctx, appID)
+	if err := s.ensureNamespace(ctx, appID); err != nil {
+		return err
+	}
+	return s.copyAppSecrets(ctx, appID)
+}
+
+// copyAppSecrets puts each configured Secret into an app's namespace.
+func (s *Server) copyAppSecrets(ctx context.Context, appID string) error {
+	if s.copySecret == nil {
+		return nil
+	}
+	for _, name := range s.appSecrets {
+		if err := s.copySecret(ctx, appID, name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // route is one endpoint: how it is matched, whether it is protected, and

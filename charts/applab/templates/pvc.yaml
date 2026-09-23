@@ -1,0 +1,31 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+{{/*
+The data directory: the SQLite database and every app's git repository. It is the
+only copy of the apps' source, so this is the volume to back up.
+
+ReadWriteOnce is deliberate rather than a limitation to work around. SQLite
+cannot be shared between processes over a network volume — two pods writing one
+file across a network filesystem corrupts it — so the deployment is
+single-replica by design and there is nothing a ReadWriteMany volume would buy.
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "applab.fullname" . }}
+  namespace: {{ include "applab.namespace" . }}
+  labels:
+    {{- include "applab.labels" . | nindent 4 }}
+  {{- with .Values.persistence.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass }}
+  {{- end }}
+{{- end }}

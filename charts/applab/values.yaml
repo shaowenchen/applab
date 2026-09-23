@@ -1,0 +1,351 @@
+# Default values for applab.
+#
+# applab deploys applications to Kubernetes. It is given a URL and a key, and it
+# stores source, builds images and runs the result. Read the notes on `build` and
+# `apps.baseDomain` before deploying: both have prerequisites that are easier to
+# satisfy before the first install than after.
+
+# Override the chart's name, and the release name it is combined with.
+nameOverride: ""
+fullnameOverride: ""
+
+# Namespace applab itself runs in. Defaults to the release namespace.
+namespaceOverride: ""
+
+image:
+  repository: docker.io/shaowenchen/applab
+  # Defaults to the chart's appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1
+
+# ---------------------------------------------------------------------------
+# Authentication
+#
+# There is no user store: an API key *is* the identity, and a key that
+# authenticates can do anything this installation can — including delete every
+# app it manages. Treat each key as a credential that can destroy data.
+#
+# Give each caller its own key so one can be revoked without disturbing the
+# others: removing it from the list and upgrading is the whole revocation.
+# ---------------------------------------------------------------------------
+auth:
+  # Generate with: openssl rand -hex 32
+  keys: []
+
+  # Use an existing Secret instead of the one this chart creates. It must carry
+  # an "APPLAB_KEYS" key whose value is the comma-separated list — the same key
+  # this chart writes — and it must live in the release namespace. Prefer this
+  # in a real deployment: it keeps keys out of the release's values, which are
+  # stored in plain text in the cluster and often in version control.
+  existingSecret: ""
+
+# ---------------------------------------------------------------------------
+# Apps
+# ---------------------------------------------------------------------------
+apps:
+  # The domain apps are exposed under, so an app with id "shop" is served at
+  # shop.<baseDomain>. Required when ingress.enabled is true.
+  #
+  # This is the domain the wildcard certificate or the cert-manager issuer must
+  # cover, so it has to be decided before the first deploy.
+  baseDomain: ""
+
+  # The scheme apps are served with, used to build the URLs applab hands back.
+  # Set to "https" when TLS terminates at the ingress.
+  scheme: "https"
+
+  # The public address of this applab installation, used by build jobs to fetch
+  # source and reported to clients as api_base_url.
+  #
+  # Leave empty to use the in-cluster Service, which is correct when builds run
+  # in the same cluster and the ingress is not reachable from inside it — the
+  # usual case. Set it when a build must reach applab through an external
+  # address.
+  baseURL: ""
+
+  # The prefix prepended to an app id to name that app's namespace. applab
+  # refuses to touch a namespace that does not carry it, which is what lets
+  # several installations share a cluster safely.
+  #
+  # Changing this does not move existing apps: their namespaces keep the old
+  # name and become invisible to applab.
+  namespacePrefix: "applab-"
+
+# ---------------------------------------------------------------------------
+# Build pipeline
+#
+# applab can run without this: source storage, the API and the console all work,
+# and apps can be deployed from images built elsewhere. With it, pushing source
+# builds an image in the cluster.
+#
+# Builds run as a Job per build, with BuildKit rootless over a fetched source
+# tree. Rootless needs the node to permit unprivileged user namespaces — see the
+# README's prerequisites. `privileged` is the escape hatch for a cluster that
+# does not, at the cost of running builds with full privileges.
+# ---------------------------------------------------------------------------
+build:
+  enabled: true
+
+  # Where built images are pushed. Required when enabled.
+  #
+  # The image is <registry>/<app>:<commit>, so each app needs its own repository
+  # under this prefix. A cluster-local registry (registry:2 in-cluster) works;
+  # a hosted one needs credentials, see pushSecret.
+  registry: ""
+
+  # Registry-side layer cache, under <prefix>/<app>:buildcache. A Job has no
+  # persistent disk, so without this every build starts from nothing.
+  #
+  # Costs one extra image per app in the registry, and repays it on the second
+  # build of anything with more than a trivial Dockerfile. Empty disables it.
+  cacheRepoPrefix: ""
+
+  # The image providing buildctl and buildkitd. Pinned rather than "latest": a
+  # moving tag would change a build's behaviour without applab changing.
+  builderImage: "moby/buildkit:v0.19.0"
+
+  # The init container's image. It needs a shell, curl and tar.
+  fetcherImage: "alpine:3.21"
+
+  # Run BuildKit as an unprivileged user. Recommended, and the default.
+  #
+  # Requires the node to allow unprivileged user namespaces and an unconfined
+  # seccomp profile — see the README. Set false only when the cluster cannot
+  # satisfy that; it makes every build a container breakout away from the node,
+  # and a build runs code from whoever pushed the source.
+  rootless: true
+
+  # Load the *pushed* image into the cluster's container runtime from the build
+  # job, when the cluster runs its own registry and the runtime cannot pull it.
+  #
+  # Only needed for a registry that is not resolvable or not trusted from the
+  # node. It requires mounting the runtime's socket into the build job, which
+  # grants that job control of the node's container runtime — so it is off by
+  # default and should stay off unless there is no alternative.
+  insecureRegistry: false
+
+  # A Secret holding registry credentials, copied into each app namespace so the
+  # build job can push. It must be a docker-registry Secret, and it must already
+  # exist in applab's own namespace — for example created from a docker login.
+  #
+  # If it is named here and missing, a build fails before its Job is created
+  # rather than starting and failing at the push minutes later.
+  pushSecret: ""
+
+  # Resource bounds for a build container and for the ephemeral volume the
+  # source and BuildKit's intermediate state share. Builds are bursty and
+  # unbounded by nature; without limits a runaway build can evict its neighbours.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+  workspaceSizeLimit: 10Gi
+
+  # How long a single build may run before it is killed. A Dockerfile that waits
+  # on something that never answers would otherwise occupy a slot forever.
+  timeout: 30m
+
+  # How long a finished build's Job is kept, so its log can still be read. Zero
+  # would delete it the moment it ends and make every failure undiagnosable, so
+  # it is validated as a positive duration.
+  ttlAfterFinished: 24h
+
+# ---------------------------------------------------------------------------
+# Deploy
+# ---------------------------------------------------------------------------
+deploy:
+  # An existing TLS Secret covering apps.baseDomain — in practice a wildcard.
+  # Every app references it, which is what a wildcard certificate is for.
+  tlsSecret: ""
+
+  # A cert-manager ClusterIssuer, used when no wildcard certificate exists. Each
+  # app then gets its own certificate in a Secret named per app.
+  #
+  # Setting both this and tlsSecret is not an error: the existing Secret wins,
+  # because a wildcard is one certificate to manage rather than one per app.
+  clusterIssuer: ""
+
+  # A docker-registry Secret, copied into each app namespace so the app's
+  # Deployment can pull its image. Empty means the registry needs no
+  # authentication to pull from, which is the case for a cluster-local one.
+  #
+  # This is separate from build.pushSecret on purpose: pushing and pulling can
+  # need different credentials, and a registry that is open to pull but not to
+  # push only needs the build one.
+  #
+  # The Secret must already exist in applab's own namespace — for example
+  # created from a docker login. If it is named here and missing, deploying an
+  # app fails rather than producing a Deployment whose pods sit in
+  # ImagePullBackOff with nothing to explain why.
+  imagePullSecret: ""
+
+  # Annotations added to every app's Ingress, for ingress-controller specifics
+  # that vary by cluster.
+  annotations: {}
+    # nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+
+  # per-app resource defaults, applied to every app applab deploys.
+  appResources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+# ---------------------------------------------------------------------------
+# Ingress for applab itself
+#
+# Separate from the Ingresses applab creates for apps: this is how a person
+# reaches the console and the API.
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt
+  hosts:
+    - host: applab.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: applab-tls
+    #   hosts:
+    #     - applab.example.com
+
+service:
+  type: ClusterIP
+  port: 80
+  # The port applab listens on. The chart sets APPLAB_LISTEN to this value, so
+  # the container port, the Service target and the Deployment's probes cannot
+  # drift apart — changing it here moves all of them together.
+  targetPort: 8080
+
+# ---------------------------------------------------------------------------
+# Storage
+#
+# Holds the SQLite database and every app's git repository — the only copy of
+# the apps' source, so it must be backed up.
+#
+# Note the replica count: SQLite cannot be shared between processes over a
+# network volume, so this is a single-replica deployment by design. Scaling out
+# means moving to a database built for it.
+# ---------------------------------------------------------------------------
+persistence:
+  enabled: true
+  # Defaults to the chart's storageClass when empty.
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 50Gi
+  # Use an existing claim instead of creating one.
+  existingClaim: ""
+  annotations: {}
+
+# One of debug, info, warn, error.
+logLevel: info
+
+# ---------------------------------------------------------------------------
+# Resources for applab itself
+# ---------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# Upload limits. maxSimpleUpload should stay at or below the body limit of
+# whatever proxy sits in front — a rejected body from an ingress arrives as HTML,
+# which is useless to a client parsing JSON.
+upload:
+  maxSimpleUpload: 8388608
+  chunkSize: 8388608
+  maxChunkBytes: 33554432
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# applab manages namespaces, Deployments, Services, Ingresses and Jobs in the
+# namespaces it creates, so it needs a ClusterRole. The rules below are exactly
+# what it uses; see clusterrole.yaml for why each is there.
+rbac:
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# The default is generous because the largest legitimate request is a source
+# archive. The readiness probe, not a timeout, is what decides liveness.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  failureThreshold: 30
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# ---------------------------------------------------------------------------
+# Metrics
+#
+# /metrics is unauthenticated by design — a scraper holds a credential awkwardly
+# and the numbers describe the platform rather than any app. In a cluster where
+# that matters, keep the Service internal and let Prometheus reach it in-cluster,
+# which is what the ServiceMonitor does.
+# ---------------------------------------------------------------------------
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}

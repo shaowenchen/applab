@@ -1,0 +1,117 @@
+{{- include "applab.validate" . -}}
+{{- if and .Values.build.enabled (not .Values.build.rootless) }}
+{{/*
+The privileged-build escape hatch is called out on purpose: it is a real
+weakening of the deployment's security posture, and an operator who turned it on
+months ago should not have to remember that.
+
+This is emitted as a YAML comment rather than as bare text. Bare text lands at
+the top of the document and becomes a field of the Deployment — the manifest
+still parses as YAML, so the mistake is invisible until the API server rejects
+it for an unknown field.
+*/}}
+# WARNING: build.rootless is false. Build containers run privileged, which means
+# a build — arbitrary code from whoever pushed the source — is a container
+# breakout away from the node. Set build.rootless=true unless the cluster cannot
+# run unprivileged user namespaces.
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "applab.fullname" . }}
+  namespace: {{ include "applab.namespace" . }}
+  labels:
+    {{- include "applab.labels" . | nindent 4 }}
+spec:
+  {{- if ne (int .Values.replicaCount) 1 }}
+  {{- fail "replicaCount must be 1: applab stores its state in SQLite on a ReadWriteOnce volume, and SQLite cannot be shared between processes over a network volume. Scaling out means moving to a database built for it." }}
+  {{- end }}
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "applab.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # A hash of the configuration, so a values change that only affects the
+        # environment rolls the pods. Without it a key rotation or a registry
+        # change would sit in the Secret while the running pods kept the old one.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "applab.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "applab.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: applab
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          envFrom:
+            # The keys live here rather than in the ConfigMap, which is readable
+            # by anyone with get on the namespace.
+            - secretRef:
+                name: {{ include "applab.secretName" . }}
+            - configMapRef:
+                name: {{ include "applab.fullname" . }}-config
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          # A generous startup budget: the first start migrates the database and
+          # reconciles builds interrupted by a previous process, and the
+          # readiness probe would otherwise restart the pod mid-migration.
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "applab.fullname" .) }}
+          {{- else }}
+          {{/*
+          Without persistence the source is lost when the pod restarts. That is
+          a legitimate way to try applab out, and never a way to run it: the data
+          directory is the only copy of every app's source.
+          */}}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
