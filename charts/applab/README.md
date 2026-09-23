@@ -9,7 +9,7 @@ with one command.
 ## Quick start
 
 ```bash
-helm repo add applab https://shaowenchen.github.io/applab
+helm repo add applab https://www.chenshaowen.com/applab
 helm repo update
 
 helm install applab applab/applab \
@@ -226,7 +226,7 @@ version>-dev`, replacing the previous one. Its `appVersion` is the commit it was
 built from, so a release that is installed is traceable back to its code.
 
 ```bash
-helm repo add applab https://shaowenchen.github.io/applab
+helm repo add applab https://www.chenshaowen.com/applab
 helm repo update
 
 helm upgrade --install applab applab/applab \

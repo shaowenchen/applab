@@ -207,6 +207,18 @@ func Default() Config {
 		MaxChunkBytes:   32 << 20,
 
 		Deploy: Deploy{
+			// The naming the official istio/gateway Helm chart produces: release
+			// "istio-ingress" in namespace "istio-ingress". A cluster installed
+			// with `istioctl install` names it istio-system/istio-ingressgateway
+			// and has to say so.
+			//
+			// Defaulted rather than required because the gateway is almost
+			// always one of those two, and a wrong-but-present default fails
+			// loudly at the first deploy whereas an empty one fails at startup
+			// with a message about a setting the operator did not know to look
+			// for.
+			Gateway: "istio-ingress/istio-ingress",
+
 			// Bounded by default. An uploaded app with no limits can take its
 			// node down, and the requests are small enough that an app which
 			// needs more will be noticed rather than quietly starved.

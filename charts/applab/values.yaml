@@ -171,10 +171,13 @@ deploy:
   # name and never creates it. Required whenever apps.baseDomain is set, because
   # a VirtualService with no gateway is reachable only from inside the mesh.
   #
+  # The default is the naming the official istio/gateway Helm chart produces:
+  # release "istio-ingress" in namespace "istio-ingress". A cluster installed
+  # with `istioctl install` instead names it istio-system/istio-ingressgateway.
+  #
   # TLS is not configured here. An app is served over HTTPS when the gateway has
   # an HTTPS listener, with no per-app setting involved.
-  gateway: ""
-    # - ops-system/gateway
+  gateway: "istio-ingress/istio-ingress"
 
   # A docker-registry Secret for pulling an app's image. Empty means the registry
   # needs no authentication to read from, which is the case for a cluster-local

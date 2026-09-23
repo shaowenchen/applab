@@ -107,7 +107,9 @@ must_fail() {
 must_fail "no API keys"       --set apps.baseDomain=a.example.com
 must_fail "no registry"       --set "auth.keys[0]=k" --set apps.baseDomain=a.example.com --set "deploy.gateway=$NS/gateway"
 must_fail "bad gateway"       --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway=nope"
-must_fail "no gateway"        --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com"
+# deploy.gateway now has a default, so "unset" no longer produces an empty one;
+# these two blank it explicitly to reach the guard.
+must_fail "blanked gateway"   --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway="
 must_fail "two replicas"      "${BASE[@]}" --set replicaCount=2
 
 # Every manifest's top-level keys have to be ones Kubernetes knows. Text emitted
@@ -171,6 +173,17 @@ fi
 grep -q 'APPLAB_DEPLOY_GATEWAY: "ops-system/gateway"' <<<"$out" \
   || fail "deploy.gateway does not reach the server; apps would have no route"
 
+# The default gateway has to reach the server too. A default that stops in
+# values.yaml and never renders is a deployment where every app is unreachable,
+# discovered from a browser rather than at install. Rendered without setting
+# deploy.gateway at all, which is the only way to observe the chart's default —
+# `--set deploy.gateway=` blanks it rather than restoring it.
+defaulted="$(helm template applab "$CHART" --namespace "$NS" \
+  --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
+  --set "apps.baseDomain=apps.example.com")"
+grep -q 'APPLAB_DEPLOY_GATEWAY: "istio-ingress/istio-ingress"' <<<"$defaulted" \
+  || fail "the default deploy.gateway does not reach the server"
+
 # The namespace defaults to ops-system, and the prefix model it replaced is gone.
 grep -q 'APPLAB_NAMESPACE: "ops-system"' <<<"$out" || fail "the namespace is not ops-system"
 if grep -q 'APPLAB_NAMESPACE_PREFIX' <<<"$out"; then
@@ -182,13 +195,11 @@ fi
 grep -q 'imagePullPolicy: Always' <<<"$out" || fail "applab's own image is not pulled always"
 
 # A base domain with no gateway is a deployment where every app is unreachable
-# from outside, so it has to be refused rather than rendered.
-if helm template applab "$CHART" --namespace "$NS" \
-  --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
-  --set "apps.baseDomain=apps.example.com" >/dev/null 2>&1; then
-  fail "a base domain without a gateway should be refused"
-fi
-# And a gateway that is not namespace/name would not resolve.
+# from outside, so it has to be refused rather than rendered. That case is
+# covered by `must_fail "blanked gateway"` above: deploy.gateway has a default
+# now, so leaving it unset is no longer the way to reach the guard.
+
+# A gateway that is not namespace/name would not resolve.
 if helm template applab "$CHART" --namespace "$NS" \
   --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
   --set "apps.baseDomain=apps.example.com" --set "deploy.gateway=just-a-name" >/dev/null 2>&1; then

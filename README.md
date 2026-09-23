@@ -167,9 +167,9 @@ Apps are published through an **Istio gateway** as `VirtualService` resources.
 
 The gateway is cluster infrastructure that already exists, holding the listeners
 and the certificate for the whole domain. applab attaches to it by name
-(`deploy.gateway`, e.g. `ops-system/gateway`) and never creates or modifies it.
-TLS is therefore not per-app configuration: an app is served over HTTPS when the
-gateway has an HTTPS listener.
+(`deploy.gateway`, default `istio-ingress/istio-ingress`) and never creates or
+modifies it. TLS is therefore not per-app configuration: an app is served over
+HTTPS when the gateway has an HTTPS listener.
 
 A base domain without a gateway is refused at startup and at render time, because
 it produces a `VirtualService` whose empty gateway list Istio reads as

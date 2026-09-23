@@ -120,7 +120,7 @@ helm-lint:
 chart-package: PAGES ?= ./pages
 chart-package:
 	@mkdir -p $(PAGES)
-	./hack/package-chart.sh $${VERSION:-0.1.0-dev} $${APP_VERSION:-$$(git rev-parse --short HEAD)} $(PAGES) $${REPO_URL:-https://shaowenchen.github.io/applab}
+	./hack/package-chart.sh $${VERSION:-0.1.0-dev} $${APP_VERSION:-$$(git rev-parse --short HEAD)} $(PAGES) $${REPO_URL:-https://www.chenshaowen.com/applab}
 
 # Render the chart and assert what was wrong before. Skips if helm is absent.
 # Separate from `check` because helm is a chart-only dependency: requiring it to
