@@ -1,0 +1,293 @@
+// Package config loads applab's runtime configuration.
+//
+// Precedence, lowest to highest: built-in defaults, an optional YAML file named
+// by APPLAB_CONFIG, then environment variables. Environment last is deliberate —
+// in Kubernetes the environment is what an operator sets per deployment, and it
+// should win over a file baked into the image.
+package config
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config is the whole of applab's runtime configuration.
+type Config struct {
+	// Listen is the address the HTTP server binds, e.g. ":8080".
+	Listen string `yaml:"listen"`
+
+	// BaseURL is the address callers reach this service at, used wherever a URL
+	// is handed back to a client (clone URLs, llms.txt links). Empty means
+	// derive it from the request's Host header, which is right on a cluster
+	// fronted by an ingress and wrong the moment a proxy rewrites Host — so
+	// setting it explicitly is the safer deployment.
+	BaseURL string `yaml:"base_url"`
+
+	// Keys are the API keys this deployment accepts. A key is the whole
+	// identity: there is no user store, so a key that authenticates may do
+	// anything. Empty is refused at boot rather than served as "open".
+	Keys []string `yaml:"keys"`
+
+	// DataDir holds everything this service persists: the SQLite database and
+	// one bare git repository per app. In Kubernetes this is a PersistentVolume.
+	DataDir string `yaml:"data_dir"`
+
+	// DBPath is the SQLite file. Empty means <DataDir>/applab.db.
+	DBPath string `yaml:"db_path"`
+
+	// LogLevel is one of debug, info, warn, error.
+	LogLevel string `yaml:"log_level"`
+
+	// Namespace is the namespace applab itself runs in.
+	Namespace string `yaml:"namespace"`
+
+	// NamespacePrefix is prepended to an app's id to name the namespace that
+	// app is deployed into, e.g. "applab-" → "applab-myapp".
+	NamespacePrefix string `yaml:"namespace_prefix"`
+
+	// Kubeconfig is an explicit kubeconfig path. Empty means use in-cluster
+	// config, falling back to the ambient kubeconfig (which is what makes
+	// `applab` runnable outside a cluster during development).
+	Kubeconfig string `yaml:"kubeconfig"`
+
+	// BaseDomain is the domain apps are exposed under, so an app with id "shop"
+	// is served at "shop.<BaseDomain>". Empty means apps get no hostname and
+	// are only reachable inside the cluster — a legitimate way to run applab
+	// while its ingress is being decided.
+	BaseDomain string `yaml:"base_domain"`
+
+	// MaxSimpleUpload is the largest source archive accepted in one request.
+	// Anything larger must use the chunked endpoints, which is why it is
+	// advertised: a client that discovers the limit by being rejected wastes a
+	// whole upload to learn something the server could have told it.
+	MaxSimpleUpload int64 `yaml:"max_simple_upload"`
+
+	// ChunkSize is the part size the chunked upload endpoints advertise.
+	ChunkSize int64 `yaml:"chunk_size"`
+
+	// MaxChunkBytes is the ceiling a single part may not exceed, regardless of
+	// what a client chose.
+	MaxChunkBytes int64 `yaml:"max_chunk_bytes"`
+}
+
+// Default returns the configuration used when nothing is set. It is a working
+// development configuration except for Keys, which is deliberately empty — see
+// Load.
+func Default() Config {
+	return Config{
+		Listen:          ":8080",
+		DataDir:         "./data",
+		LogLevel:        "info",
+		Namespace:       "applab-system",
+		NamespacePrefix: "applab-",
+
+		// 8 MiB matches the chunk size of the upload protocol this API borrows
+		// its shape from, and is small enough to sit well inside the default
+		// ingress body limit — a larger "simple" limit would mostly produce 413s
+		// from the proxy in front, which arrive as HTML and are useless to a
+		// client parsing JSON.
+		MaxSimpleUpload: 8 << 20,
+		ChunkSize:       8 << 20,
+		MaxChunkBytes:   32 << 20,
+	}
+}
+
+// Load builds the configuration from defaults, an optional YAML file and the
+// environment, then validates it.
+//
+// The YAML file is named by APPLAB_CONFIG and is optional; a path that was
+// given but cannot be read is an error rather than a silent fallback, because
+// a typo in a path should not quietly start a server with the wrong limits.
+func Load() (Config, error) {
+	cfg := Default()
+
+	if path := strings.TrimSpace(os.Getenv("APPLAB_CONFIG")); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("read config file %s: %w", path, err)
+		}
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			return cfg, fmt.Errorf("parse config file %s: %w", path, err)
+		}
+	}
+
+	applyEnv(&cfg)
+
+	if err := cfg.finalize(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// applyEnv overlays the environment onto cfg. Only variables that are set are
+// applied, so an env var left unset keeps whatever the file or defaults gave.
+func applyEnv(cfg *Config) {
+	setString(&cfg.Listen, "APPLAB_LISTEN")
+	setString(&cfg.BaseURL, "APPLAB_BASE_URL")
+	setString(&cfg.DataDir, "APPLAB_DATA_DIR")
+	setString(&cfg.DBPath, "APPLAB_DB_PATH")
+	setString(&cfg.LogLevel, "APPLAB_LOG_LEVEL")
+	setString(&cfg.Namespace, "APPLAB_NAMESPACE")
+	setString(&cfg.NamespacePrefix, "APPLAB_NAMESPACE_PREFIX")
+	setString(&cfg.Kubeconfig, "APPLAB_KUBECONFIG")
+	setString(&cfg.BaseDomain, "APPLAB_BASE_DOMAIN")
+	setInt64(&cfg.MaxSimpleUpload, "APPLAB_MAX_SIMPLE_UPLOAD")
+	setInt64(&cfg.ChunkSize, "APPLAB_CHUNK_SIZE")
+	setInt64(&cfg.MaxChunkBytes, "APPLAB_MAX_CHUNK_BYTES")
+
+	// Singular APPLAB_KEY is accepted alongside the plural form: a deployment
+	// with one key (the common case) reads better as a single variable, and the
+	// two are merged rather than one silently winning.
+	if v, ok := os.LookupEnv("APPLAB_KEY"); ok && strings.TrimSpace(v) != "" {
+		cfg.Keys = append(cfg.Keys, splitList(v)...)
+	}
+	if v, ok := os.LookupEnv("APPLAB_KEYS"); ok {
+		cfg.Keys = append(cfg.Keys, splitList(v)...)
+	}
+}
+
+// splitList parses a comma-separated list, dropping empty entries so a trailing
+// comma does not become an empty-string key.
+func splitList(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func setString(dst *string, env string) {
+	if v, ok := os.LookupEnv(env); ok && strings.TrimSpace(v) != "" {
+		*dst = strings.TrimSpace(v)
+	}
+}
+
+// setInt64 applies a numeric environment variable, rejecting a value that is not
+// a positive number rather than silently accepting it. A typo in a size limit
+// should be reported at boot, not discovered later as a mysterious 413.
+//
+// An unusable value is warned about and skipped, leaving the default in place.
+// That is recoverable — the deployment still starts with working limits — and a
+// warning in the log is where an operator will look after seeing odd behaviour.
+func setInt64(dst *int64, env string) {
+	v, ok := os.LookupEnv(env)
+	if !ok || strings.TrimSpace(v) == "" {
+		return
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || n <= 0 {
+		slog.Warn("ignoring invalid numeric environment variable; keeping the default",
+			"name", env, "value", v)
+		return
+	}
+	*dst = n
+}
+
+// finalize normalises and validates the configuration in place.
+func (c *Config) finalize() error {
+	c.Keys = dedupe(c.Keys)
+
+	// A deployment with no key has nothing to authenticate against. Serving the
+	// API openly in that case would be a far larger mistake than refusing to
+	// start, so it is a boot error rather than a warning.
+	if len(c.Keys) == 0 {
+		return fmt.Errorf("no API keys configured: set APPLAB_KEY or APPLAB_KEYS to a non-empty comma-separated list")
+	}
+
+	if c.NamespacePrefix == "" {
+		return fmt.Errorf("namespace_prefix must not be empty: applab would manage namespaces it does not own")
+	}
+	if c.Namespace == "" {
+		return fmt.Errorf("namespace must not be empty")
+	}
+	if c.DataDir == "" {
+		return fmt.Errorf("data_dir must not be empty")
+	}
+
+	// Resolve to absolute paths before anything else uses them: the directory is
+	// also the root the git handlers validate against, and a relative root would
+	// change meaning with the process's working directory.
+	abs, err := filepath.Abs(c.DataDir)
+	if err != nil {
+		return fmt.Errorf("resolve data_dir %s: %w", c.DataDir, err)
+	}
+	c.DataDir = abs
+
+	if c.DBPath == "" {
+		c.DBPath = filepath.Join(c.DataDir, "applab.db")
+	} else {
+		dbAbs, err := filepath.Abs(c.DBPath)
+		if err != nil {
+			return fmt.Errorf("resolve db_path %s: %w", c.DBPath, err)
+		}
+		c.DBPath = dbAbs
+	}
+
+	switch c.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("log_level %q is not one of debug, info, warn, error", c.LogLevel)
+	}
+
+	// A part larger than a simple upload makes the chunked path pointless: a
+	// client would be told to split its upload and then be allowed to send it
+	// whole anyway.
+	if c.ChunkSize > c.MaxSimpleUpload {
+		return fmt.Errorf("chunk_size (%d) must not exceed max_simple_upload (%d)", c.ChunkSize, c.MaxSimpleUpload)
+	}
+	if c.MaxChunkBytes < c.ChunkSize {
+		return fmt.Errorf("max_chunk_bytes (%d) must be at least chunk_size (%d)", c.MaxChunkBytes, c.ChunkSize)
+	}
+	if c.MaxSimpleUpload <= 0 || c.ChunkSize <= 0 || c.MaxChunkBytes <= 0 {
+		return fmt.Errorf("upload limits must be positive")
+	}
+
+	// A trailing dot or scheme in the base domain would produce hostnames that
+	// do not resolve, which is a confusing way to find out about a typo.
+	if d := strings.TrimSpace(c.BaseDomain); d != "" {
+		if strings.Contains(d, "/") || strings.Contains(d, ":") {
+			return fmt.Errorf("base_domain %q must be a bare domain, without a scheme, port or path", d)
+		}
+		c.BaseDomain = strings.Trim(d, ".")
+	}
+
+	return nil
+}
+
+// EnsureDataDir creates the data directory if it is missing. Kept out of Load
+// so that loading configuration has no side effects — a caller that only wants
+// to inspect the config should not create directories.
+func (c *Config) EnsureDataDir() error {
+	if err := os.MkdirAll(c.DataDir, 0o755); err != nil {
+		return fmt.Errorf("create data_dir %s: %w", c.DataDir, err)
+	}
+	// A directory holding every app's source is not something other users on the
+	// host have any business reading.
+	if err := os.Chmod(c.DataDir, 0o700); err != nil {
+		return fmt.Errorf("chmod data_dir %s: %w", c.DataDir, err)
+	}
+	return nil
+}
+
+// dedupe removes duplicate keys while keeping the first occurrence's position,
+// so the reported order matches what the operator wrote.
+func dedupe(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}

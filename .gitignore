@@ -1,0 +1,26 @@
+# Build output
+/bin/
+
+# Runtime state. The data directory holds the SQLite database and every app's
+# git repository — it is the one thing in this tree that must never be committed.
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Test and coverage artifacts
+coverage.out
+coverage.html
+
+# Local configuration. A config file may hold API keys, so the local one is
+# ignored while the example beside it is not.
+/applab.yaml
+/applab.local.yaml
+.env
+.env.local
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

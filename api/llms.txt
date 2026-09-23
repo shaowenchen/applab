@@ -1,0 +1,160 @@
+# AppLab
+
+> Deploy an application to Kubernetes by uploading its source. You get back a
+> URL. There is no Dockerfile you must write by hand, no CI to configure, no
+> registry to push to and no manifest to apply.
+
+AppLab owns the whole path from a local working directory to a running
+application: it stores your source in a git repository it hosts, builds an image
+from it in a build Job inside the cluster, deploys that image into a namespace
+of its own, and exposes it on a hostname. One HTTP call starts that path; one
+call streams the build log; one call tells you what is running.
+
+Two things are enough to use it: **the base URL** and **an API key**.
+
+## The shape of it
+
+    upload source ──▶ build image ──▶ deploy ──▶ https://<app>.<domain>
+
+Each step is idempotent and observable. You can upload again to redeploy, watch
+a build's log while it runs, and roll back to any earlier upload without
+rebuilding it.
+
+## Start here
+
+    curl -sS "$APPLAB_URL/api/v1/config"
+
+That needs no key, so it is the cheapest way to check the URL is right and to
+read back this deployment's limits and its default domain. Then create an app
+and push code to it — see the API reference at the end of this file.
+
+## What applab is not
+
+It is not a general-purpose Kubernetes client. It manages the resources of the
+apps you create through it and nothing else, and it will refuse to touch a
+namespace that does not carry its own prefix. Reaching for it to inspect or
+change unrelated workloads will not work.
+
+## Concepts
+
+### An app
+
+An app is the unit of everything: one source repository, one image, one
+Deployment, one hostname, one namespace. Its **id** is how you refer to it
+everywhere, and it is immutable — there is no rename, so nothing has to be
+rewritten when it changes.
+
+An id has to survive being a URL path segment, a git repository directory and a
+Kubernetes namespace, so it is constrained to what is valid as all three:
+lowercase letters, digits and dashes, starting with a letter or digit, at most
+40 characters. Some names are reserved because they would collide with this
+service's own routes.
+
+### Source is a git repository
+
+Every app's source lives in its own git repository, hosted here. Uploading a
+tarball of your working directory writes a commit to it — the tarball is how the
+bytes travel, the commit is what is recorded.
+
+That matters because it means the source is real: you can clone it, see its
+history, diff two uploads and roll back by deploying an earlier commit. If this
+service were lost, the repositories would still be readable with ordinary git
+tools.
+
+Uploading a tarball rather than pushing over git is deliberate: a plain HTTP
+upload works from anywhere, including from an agent or a container that has no
+git credential and no way to navigate an interactive auth prompt.
+
+### Commits are what you deploy
+
+A deploy names a commit. Rolling back means deploying an earlier one — and if
+that commit was built before, its image already exists and is reused rather than
+rebuilt, so a rollback is fast and cannot fail for a reason the original build
+did not.
+
+### One namespace per app
+
+Each app gets its own namespace, named with this deployment's prefix. Isolation
+is the point, and it makes deletion honest: removing an app removes its
+namespace, so nothing is left behind to find later.
+
+### applab's record versus the cluster
+
+Applab keeps a record of what it last did — which commit it deployed, whether
+the build succeeded — but **the cluster is the source of truth for what is
+running**. When the two disagree, believe the cluster. An app reporting
+"running" while its pods are crash-looping means the last thing applab recorded
+was a successful rollout and something has happened since; the pod and event
+endpoints are how you see that.
+
+## Authentication
+
+There is no user store. **An API key is the whole identity**: presenting a
+configured key means you may do anything this deployment can do.
+
+Send it on every request that needs one:
+
+    Authorization: Bearer <key>
+
+A bare key with no `Bearer ` prefix also works, for a caller pasting one in by
+hand. A key is **never** accepted as a query parameter or a form field — URLs are
+written to access logs, kept in shell history and sent in Referer headers, so a
+credential placed in one leaks by default.
+
+There is one tier. A key that authenticates can also delete, so treat it the way
+you would treat any credential that can destroy data.
+
+`GET /health`, `GET /api/v1/config` and `GET /llms.txt` need no key, because a
+liveness probe cannot hold one and a caller has to be able to find out what this
+service is before it can authenticate to it. Everything else does.
+
+## API reference
+
+Every route below is relative to this deployment's base URL, which
+`GET /api/v1/config` reports as `api_base_url`. _(`key` means the route
+requires `Authorization: Bearer <key>`; `no key` means it does not.)_
+
+- `GET /health` — Liveness. No key required — a Kubernetes probe cannot hold one. _(no key)_
+- `GET /api/v1/config` — This deployment's limits and capabilities. No key required, so it doubles as the cheapest reachability check. _(no key)_
+- `GET /api/v1/version` — Build version and commit. _(no key)_
+- `GET /llms.txt` — This document. _(no key)_
+- `GET /api/v1/apps` — List apps. `?include_deleted=true` also returns apps that were deleted but whose id is still reserved. _(key)_
+- `POST /api/v1/apps` — Create an app. Body: `{id, name?, port?, replicas?, dockerfile?, domain?}`. _(key)_
+- `GET /api/v1/apps/{app}` — One app. _(key)_
+- `PATCH /api/v1/apps/{app}` — Change an app's settings: `{name?, port?, replicas?, dockerfile?, domain?}`. Fields omitted are left alone. _(key)_
+- `DELETE /api/v1/apps/{app}` — Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository. _(key)_
+- `POST /api/v1/apps/{app}/source` — Upload source as a tar or tar.gz and commit it. This is the main way to push code. Send the archive as the raw request body (`--data-binary @-`), or as `multipart/form-data` with a `file` field. `?message=` sets the commit message; `?parent=<sha>` commits onto a chosen commit instead of the current tip. A single wrapping directory is stripped, so `tar czf - myproject` lands with its contents at the root. _(key)_
+- `GET /api/v1/apps/{app}/commits` — An app's commit history, newest first, with the current tip. `?limit=` (default 50). _(key)_
+- `GET /api/v1/apps/{app}/commits/{sha}` — One commit. `{sha}` may be an abbreviated id. _(key)_
+- `POST /api/v1/apps/{app}/source/uploads` — Begin a chunked upload for source too large for one request. Body: `{total, chunk_size, message?}`. Returns an `upload_id`. _(key)_
+- `PUT /api/v1/apps/{app}/source/uploads/{upload}/parts/{index}` — Send one part. Body is the raw bytes. `{index}` is 1-based. Parts may be sent in any order and retried. _(key)_
+- `POST /api/v1/apps/{app}/source/uploads/{upload}/complete` — Assemble every part and commit the result. Fails if any part is missing. _(key)_
+
+## Errors
+
+Every failure is JSON with a meaningful HTTP status, never a 200 carrying a
+failure:
+
+    { "error": "human readable reason", "retryable": false }
+
+**Branch on the HTTP status.** `retryable` is an additional signal for the cases
+where a status alone is ambiguous — 409 and 503 are each sometimes worth
+retrying and sometimes not, and guessing wrong means either giving up on a
+transient failure or hammering a permanent one.
+
+| Status | Meaning | What to do |
+|---|---|---|
+| 400 | The request is malformed | Fix the request; retrying will not help |
+| 401 | Missing or unrecognised key | Check the `Authorization` header |
+| 403 | Authenticated but not permitted | Nothing to retry |
+| 404 | No such app, build or commit | Check the id |
+| 409 | Conflicting state, or the resource already exists | Read the current state and decide |
+| 413 | Body too large | Use the chunked upload endpoints |
+| 500 | A bug in applab | Retry once, then report it |
+| 503 | This deployment is shedding load or cannot reach the cluster | Back off briefly and retry |
+
+A success is the payload under `data`:
+```
+    { "data": { ... } }
+```
+There is no `code` or `success` field to check — a 2xx means the call worked.
