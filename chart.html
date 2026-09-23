@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installing the applab chart</title>
+<meta name="description" content="Deploy an application to Kubernetes by uploading its source.">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6a6a6a;
+  --rule: #e3e3e3;
+  --accent: #0b6bcb;
+  --code-bg: #f5f5f5;
+  --sidebar-bg: #fafafa;
+  --measure: 46rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --fg: #e6e6e6;
+    --muted: #9a9a9a;
+    --rule: #2b2f36;
+    --accent: #6cb2ff;
+    --code-bg: #1c1f24;
+    --sidebar-bg: #17191d;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.layout { display: flex; align-items: flex-start; min-height: 100vh; }
+
+nav {
+  flex: 0 0 15rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 1.75rem 1.25rem;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--rule);
+}
+nav .brand { font-weight: 650; font-size: 1.05rem; letter-spacing: -0.01em; }
+nav .brand a { color: var(--fg); text-decoration: none; }
+nav ul { list-style: none; margin: 1.5rem 0 0; padding: 0; }
+nav li { margin: 0 0 0.15rem; }
+nav a {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  border-radius: 5px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+nav a:hover { color: var(--fg); background: var(--code-bg); }
+nav a[aria-current="page"] { color: var(--fg); background: var(--code-bg); font-weight: 600; }
+nav .repo { margin-top: 1.5rem; font-size: 0.85rem; }
+nav .repo a { padding: 0; }
+
+main { flex: 1 1 auto; min-width: 0; padding: 2.5rem 2.5rem 5rem; }
+article { max-width: var(--measure); }
+
+h1, h2, h3, h4 { line-height: 1.25; letter-spacing: -0.015em; }
+h1 { font-size: 1.9rem; margin: 0 0 1.25rem; }
+h2 { font-size: 1.35rem; margin: 2.5rem 0 0.9rem; padding-top: 0.75rem; border-top: 1px solid var(--rule); }
+h3 { font-size: 1.1rem; margin: 2rem 0 0.7rem; }
+h4 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+p, ul, ol { margin: 0 0 1.05rem; }
+li { margin: 0.25rem 0; }
+
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.875em;
+  background: var(--code-bg);
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+}
+pre code { background: none; padding: 0; font-size: 0.85em; }
+pre.contract { max-height: none; white-space: pre-wrap; word-break: break-word; }
+
+blockquote {
+  margin: 0 0 1.05rem;
+  padding: 0.1rem 0 0.1rem 1rem;
+  border-left: 3px solid var(--rule);
+  color: var(--muted);
+}
+
+table { border-collapse: collapse; width: 100%; margin: 0 0 1.25rem; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--rule); padding: 0.45rem 0.7rem; text-align: left; vertical-align: top; }
+th { background: var(--code-bg); font-weight: 600; }
+
+hr { border: none; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+img { max-width: 100%; height: auto; }
+
+.source {
+  margin-top: 3.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 46rem) {
+  .layout { flex-direction: column; }
+  nav { position: static; height: auto; width: 100%; flex: none; border-right: none; border-bottom: 1px solid var(--rule); }
+  nav ul { margin-top: 1rem; }
+  main { padding: 1.5rem 1.25rem 3.5rem; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav>
+    <div class="brand"><a href="index.html">applab</a></div>
+    <ul>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="chart.html" aria-current="page">Installing</a></li>
+      <li><a href="api.html">API reference</a></li>
+    </ul>
+    <div class="repo"><a href="https://github.com/shaowenchen/applab">Source on GitHub</a></div>
+  </nav>
+  <main>
+    <article>
+<h1>applab</h1>
+<p>Deploy an application to Kubernetes by uploading its source.</p>
+<p>This chart installs the control plane: it stores source in a git repository per
+app, builds images in the cluster, deploys them and exposes them on a hostname. Give someone its URL and an API key, and they can ship
+with one command.</p>
+<h2>Quick start</h2>
+<pre><code class="language-bash">helm repo add applab https://www.chenshaowen.com/applab
+helm repo update
+
+helm install applab applab/applab \
+  --namespace ops-system --create-namespace \
+  --set auth.keys[0]=&quot;$(openssl rand -hex 32)&quot; \
+  --set apps.baseDomain=apps.example.com \
+  --set ingress.hosts[0].host=applab.example.com \
+  --set build.registry=registry.example.com/apps
+</code></pre>
+<p>Then, from any project:</p>
+<pre><code class="language-bash">export APPLAB_URL=https://applab.example.com
+export APPLAB_KEY=&lt;the key from the release's Secret&gt;
+
+applab push myshop
+</code></pre>
+<h2>Before you install</h2>
+<p>Three decisions are much easier to make now than after, because each one changes
+what the cluster has to be able to do.</p>
+<h3>1. A registry the cluster can push to and pull from</h3>
+<p><code>build.registry</code> is where built images go. The image for an app is
+<code>&lt;registry&gt;/&lt;app&gt;:&lt;commit&gt;</code>, so applab needs to create a repository per app under
+that prefix.</p>
+<p>If the registry needs credentials, create a <code>docker-registry</code> Secret <strong>in the
+namespace applab runs in</strong> and name it:</p>
+<pre><code class="language-bash">kubectl -n ops-system create secret docker-registry regcred \
+  --docker-server=registry.example.com \
+  --docker-username=&lt;user&gt; \
+  --docker-password=&lt;password&gt;
+</code></pre>
+<pre><code class="language-bash">--set build.pushSecret=regcred --set deploy.imagePullSecret=regcred
+</code></pre>
+<p>Two settings rather than one because pushing and pulling can need different
+credentials, and a registry that is open to pull but not to push only needs the
+build one.</p>
+<p>Both names refer to a Secret in the release namespace. Apps run in that same
+namespace, so there is no boundary for the credential to cross and nothing is
+copied. A Secret named here and missing is discovered at the first build or
+deploy rather than at install.</p>
+<p>A registry that is only reachable over plain HTTP, or with a self-signed
+certificate, needs <code>build.insecureRegistry=true</code> — which is a deliberate weakening
+of the guarantee that the image that arrived is the image that was pushed, so it
+is off by default.</p>
+<h3>2. A domain, and a certificate for it</h3>
+<p><code>apps.baseDomain</code> is what apps are served under. Everything under it needs to
+resolve to the gateway.</p>
+<p>There are two ways to put an app on it:</p>
+<p><strong>A subdomain per app</strong> — the default. An app with id <code>shop</code> becomes
+<code>shop.apps.example.com</code>. The certificate has to cover every host under the
+domain, which in practice means a wildcard, and a wildcard DNS record to go with
+it.</p>
+<p><strong>One host, one path per app</strong> — set <code>apps.pathPrefix</code>. Every app then shares
+<code>apps.baseDomain</code> and the path says which is meant:</p>
+<pre><code class="language-bash">--set apps.baseDomain=apps.example.com --set apps.pathPrefix=/apps
+# shop is served at https://apps.example.com/apps/shop
+</code></pre>
+<p>The reason to want this is the certificate. One host needs one ordinary
+certificate, not a wildcard, and nothing has to be reissued as apps are added.
+applab strips the prefix before the request reaches the app, so an app sees the
+paths it would see at a root and needs no change to work under one; it also sets
+<code>X-Forwarded-Prefix</code> for an app that builds absolute links. The cost is a shared
+origin — browser connection limits and cookies are shared between apps, and two
+apps cannot both own <code>/</code>.</p>
+<p>TLS is configured on the <strong>gateway</strong>, not here. The gateway holds the listeners
+and the certificate for the whole domain, so an app is served over HTTPS when the
+gateway has an HTTPS listener, and there is no per-app certificate setting to get
+wrong.</p>
+<p>Set <code>deploy.gateway</code> to the gateway apps are published through, as
+<code>&lt;namespace&gt;/&lt;name&gt;</code>. It defaults to <code>istio-ingress/istio-ingress</code> — the naming
+the official <code>istio/gateway</code> chart produces. A cluster installed with
+<code>istioctl install</code> names it <code>istio-system/istio-ingressgateway</code> instead, and has
+to say so:</p>
+<pre><code class="language-bash">--set deploy.gateway=istio-system/istio-ingressgateway
+</code></pre>
+<p>applab attaches a <code>VirtualService</code> to that gateway and never creates or modifies
+it — the gateway is infrastructure you own.</p>
+<p>Setting <code>apps.baseDomain</code> without a gateway is refused at render time: it would
+produce a <code>VirtualService</code> whose empty gateway list Istio reads as mesh-internal
+only, so the app would deploy, report healthy and be unreachable from outside.
+So is setting <code>apps.pathPrefix</code> without a base domain, since the prefix is the
+only thing telling one app from another on that shared host.</p>
+<h3>3. Whether the cluster can build</h3>
+<p>This is the one to check before installing, because a build that cannot run fails
+in a way that looks like nothing is happening.</p>
+<p>Builds run as a Kubernetes Job per build, with <strong>BuildKit in rootless mode</strong>. That
+is the default because a build executes code from whoever pushed the source, and a
+privileged build container is a container breakout away from the node.</p>
+<p>Rootless BuildKit needs the nodes to permit <strong>unprivileged user namespaces</strong>. The
+requirements, from BuildKit's own documentation:</p>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user.max_user_namespaces</code> &gt; 0 on the node</td>
+<td>RootlessKit creates a user namespace; with this at 0 it cannot</td>
+</tr>
+<tr>
+<td>seccomp <strong>unconfined</strong> for the build container</td>
+<td>The default seccomp profile blocks the <code>unshare</code> and <code>mount</code> syscalls the namespace needs</td>
+</tr>
+<tr>
+<td>AppArmor <strong>unconfined</strong> for the build container</td>
+<td>AppArmor blocks the mounts RootlessKit performs</td>
+</tr>
+<tr>
+<td>Kernel ≥ 5.11, or <code>fuse-overlayfs</code> + <code>/dev/fuse</code></td>
+<td>Overlayfs in a user namespace needs a recent kernel; older ones fall back</td>
+</tr>
+<tr>
+<td>On Ubuntu 24.04+: <code>kernel.apparmor_restrict_unprivileged_userns=0</code></td>
+<td>Ubuntu restricts unprivileged user namespaces by default</td>
+</tr>
+</tbody>
+</table>
+<p>The chart sets the seccomp and AppArmor profiles already. The node-level settings
+are yours.</p>
+<p><strong>To check before installing</strong>, on any node:</p>
+<pre><code class="language-bash">sysctl user.max_user_namespaces
+# 0 means rootless builds cannot work on this node
+</code></pre>
+<p><strong>If the cluster cannot satisfy this</strong>, set <code>build.rootless=false</code>. Build
+containers then run privileged. It works everywhere, and it means a build — which
+is arbitrary code from whoever pushed the source — has the run of the node. Prefer
+fixing the node setting.</p>
+<p><strong>Or</strong> set <code>build.enabled=false</code> and run applab without the build pipeline. Source
+storage, the API and the console all still work, and you can deploy images built
+elsewhere. <code>applab push</code> will say clearly that this deployment cannot build.</p>
+<h2>What gets installed</h2>
+<table>
+<thead>
+<tr>
+<th>Resource</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Deployment, Service</td>
+<td>the control plane. <strong>One replica</strong>, see below</td>
+</tr>
+<tr>
+<td>PersistentVolumeClaim</td>
+<td>the database and every app's git repository</td>
+</tr>
+<tr>
+<td>Secret</td>
+<td>the API keys</td>
+</tr>
+<tr>
+<td>ConfigMap</td>
+<td>everything else</td>
+</tr>
+<tr>
+<td>Role, RoleBinding</td>
+<td>applab keeps everything in one namespace, and this is all it needs</td>
+</tr>
+<tr>
+<td>Ingress</td>
+<td>how a person reaches the console and the API</td>
+</tr>
+<tr>
+<td>ServiceMonitor</td>
+<td>optional, for <code>/metrics</code></td>
+</tr>
+</tbody>
+</table>
+<h3>One replica, deliberately</h3>
+<p><code>replicaCount</code> must be 1, and the chart refuses anything else.</p>
+<p>applab keeps its state in SQLite on a ReadWriteOnce volume. SQLite cannot be
+shared between processes over a network filesystem — two pods writing one file
+across it corrupts the file — so a second replica would not merely be wasteful,
+it would be unsafe. Scaling out means moving to a database built for it; until
+then, one replica is the honest answer rather than a limitation to work around.</p>
+<p>The volume is the only copy of every app's source. <strong>Back it up.</strong></p>
+<h3>The Role</h3>
+<p>applab runs in one namespace and deploys every app into it too, so a namespaced
+<code>Role</code> and <code>RoleBinding</code> are enough — one namespace, one binding, no cluster-wide
+grant.</p>
+<p>A platform like this is usually bound to a <code>ClusterRole</code>, or worse to
+<code>cluster-admin</code>, because it manages resources across namespaces. applab does not,
+so the reach of a bug in it is the apps it manages.</p>
+<p>The rules in <code>role.yaml</code> are exactly what applab uses, each with a comment saying
+why. Nothing is granted for future convenience. In particular there is no
+permission on <code>namespaces</code> at all, and none to write pods.</p>
+<p><strong>What this costs:</strong> apps are not isolated from one another by a namespace
+boundary. A resource-hungry app affects its neighbours, and an operator reading
+<code>kubectl get pods</code> sees every app at once. The CPU and memory limits on each app
+container are the only bound — which is why <code>deploy.appResources</code> exists.</p>
+<p>One thing the chart cannot do for you: <strong>an app's pods and a build's are given no
+Kubernetes API token</strong> (<code>automountServiceAccountToken: false</code>). A token reads
+every Secret in its namespace, so an app holding one could reach the API keys and
+the registry credentials. applab sets this itself, so there is nothing to
+configure — but an app deployed into this namespace by hand needs the same.</p>
+<h2>Values</h2>
+<p>See <a href="https://github.com/shaowenchen/applab/blob/master/charts/applab/values.yaml"><code>values.yaml</code></a> for every option, each with a note on what it
+does and why it defaults the way it does. The ones that matter most:</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Default</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auth.keys</code></td>
+<td><code>[]</code></td>
+<td><strong>Required.</strong> <code>openssl rand -hex 32</code>, one per caller</td>
+</tr>
+<tr>
+<td><code>auth.existingSecret</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Preferred over <code>auth.keys</code>: keeps keys out of the release</td>
+</tr>
+<tr>
+<td><code>apps.baseDomain</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Domain apps are served under</td>
+</tr>
+<tr>
+<td><code>apps.pathPrefix</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Serves every app under one path on that host; needs no wildcard certificate</td>
+</tr>
+<tr>
+<td><code>deploy.gateway</code></td>
+<td><code>istio-ingress/istio-ingress</code></td>
+<td><strong>Required with a base domain.</strong> <code>&lt;namespace&gt;/&lt;name&gt;</code></td>
+</tr>
+<tr>
+<td><code>build.enabled</code></td>
+<td><code>true</code></td>
+<td><code>false</code> runs applab without building</td>
+</tr>
+<tr>
+<td><code>build.registry</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Required when <code>build.enabled</code></td>
+</tr>
+<tr>
+<td><code>build.rootless</code></td>
+<td><code>true</code></td>
+<td>See the prerequisites above</td>
+</tr>
+<tr>
+<td><code>build.cacheRepoPrefix</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Registry-side layer cache; a Job has no persistent disk</td>
+</tr>
+<tr>
+<td><code>build.pushSecret</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Registry credentials for the build Job to push with</td>
+</tr>
+<tr>
+<td><code>deploy.imagePullSecret</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Registry credentials for the app to pull with</td>
+</tr>
+<tr>
+<td><code>deploy.appResources</code></td>
+<td>2 CPU / 2Gi</td>
+<td>Applied to every app applab deploys</td>
+</tr>
+<tr>
+<td><code>ingress.hosts</code></td>
+<td><code>applab.example.com</code></td>
+<td>Change this</td>
+</tr>
+<tr>
+<td><code>persistence.size</code></td>
+<td><code>50Gi</code></td>
+<td>Holds every app's source</td>
+</tr>
+</tbody>
+</table>
+<h3>Keys</h3>
+<p>An API key is the whole identity: there is no user store. <strong>A key that
+authenticates can also delete</strong> — every app this installation manages. Give each
+caller its own key so one can be revoked without disturbing the others; removing
+it from the list and upgrading is the whole revocation.</p>
+<p><code>auth.existingSecret</code> is worth using. Release values are stored in plain text in
+the cluster and are frequently committed.</p>
+<h2>After installing</h2>
+<pre><code class="language-bash"># The key the chart generated, if you used auth.keys
+kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
+
+# The API contract — what to read before calling anything
+curl -s https://applab.example.com/llms.txt
+
+# What the deployment can do
+applab config
+</code></pre>
+<h2>Installing a development build</h2>
+<p>Every push to the default branch publishes a chart versioned <code>&lt;Chart.yaml version&gt;-dev</code>, replacing the previous one. Its <code>appVersion</code> is the commit it was
+built from, so a release that is installed is traceable back to its code.</p>
+<pre><code class="language-bash">helm repo add applab https://www.chenshaowen.com/applab
+helm repo update
+
+helm upgrade --install applab applab/applab \
+  --namespace ops-system --set ... \
+  --version 0.1.0-dev
+</code></pre>
+<p>Pin <code>--version</code> when you want the dev build. Without it, <code>helm install</code> takes the
+highest version in the repository, which is whatever release was tagged last —
+dev builds sort <em>below</em> releases, deliberately, so an install that does not ask
+for one never gets one.</p>
+<p>Tagged releases (<code>v0.2.0</code> → chart <code>0.2.0</code>) are published alongside and never
+pruned. Only the <code>-dev</code> package is replaced, so a development build can never
+remove a release.</p>
+<h2>Upgrading</h2>
+<pre><code class="language-bash">helm upgrade applab applab/applab --namespace ops-system -f my-values.yaml
+</code></pre>
+<p>The database schema migrates on start. A newer applab refuses to run against an
+older one's schema rather than guessing, so roll the image back with the chart if
+an upgrade needs reverting.</p>
+<h2>Uninstalling</h2>
+<pre><code class="language-bash">helm uninstall applab --namespace ops-system
+</code></pre>
+<p><strong>The apps are not removed.</strong> They are Deployments, Services and
+VirtualServices in the release namespace, and the release does not own them —
+they carry <code>applab.io/app</code>, not helm's release labels. So an uninstall stops
+applab and leaves every app it deployed running, which is usually what you want
+and occasionally a surprise.</p>
+<p>The PersistentVolumeClaim is not removed either, and it holds the only copy of
+every app's source.</p>
+<p>To remove an installation completely:</p>
+<pre><code class="language-bash">kubectl -n ops-system get deployments,services -l applab.io/app   # what it deployed
+kubectl -n ops-system delete deployments,services,jobs,secrets -l applab.io/app
+kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/app
+kubectl -n ops-system delete pvc applab                           # and the source with it
+</code></pre>
+<p>The namespace itself is yours rather than applab's — it is where applab was
+installed, and it may hold other things. applab never deletes it.</p>
+
+      <p class="source">This page is rendered from <a href="https://github.com/shaowenchen/applab/blob/master/charts/applab/README.md"><code>charts/applab/README.md</code></a> in the repository.</p>
+    </article>
+  </main>
+</div>
+</body>
+</html>

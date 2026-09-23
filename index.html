@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>applab: deploy an application by uploading its source</title>
+<meta name="description" content="Deploy an application to Kubernetes by uploading its source.">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6a6a6a;
+  --rule: #e3e3e3;
+  --accent: #0b6bcb;
+  --code-bg: #f5f5f5;
+  --sidebar-bg: #fafafa;
+  --measure: 46rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --fg: #e6e6e6;
+    --muted: #9a9a9a;
+    --rule: #2b2f36;
+    --accent: #6cb2ff;
+    --code-bg: #1c1f24;
+    --sidebar-bg: #17191d;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.layout { display: flex; align-items: flex-start; min-height: 100vh; }
+
+nav {
+  flex: 0 0 15rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 1.75rem 1.25rem;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--rule);
+}
+nav .brand { font-weight: 650; font-size: 1.05rem; letter-spacing: -0.01em; }
+nav .brand a { color: var(--fg); text-decoration: none; }
+nav ul { list-style: none; margin: 1.5rem 0 0; padding: 0; }
+nav li { margin: 0 0 0.15rem; }
+nav a {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  border-radius: 5px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+nav a:hover { color: var(--fg); background: var(--code-bg); }
+nav a[aria-current="page"] { color: var(--fg); background: var(--code-bg); font-weight: 600; }
+nav .repo { margin-top: 1.5rem; font-size: 0.85rem; }
+nav .repo a { padding: 0; }
+
+main { flex: 1 1 auto; min-width: 0; padding: 2.5rem 2.5rem 5rem; }
+article { max-width: var(--measure); }
+
+h1, h2, h3, h4 { line-height: 1.25; letter-spacing: -0.015em; }
+h1 { font-size: 1.9rem; margin: 0 0 1.25rem; }
+h2 { font-size: 1.35rem; margin: 2.5rem 0 0.9rem; padding-top: 0.75rem; border-top: 1px solid var(--rule); }
+h3 { font-size: 1.1rem; margin: 2rem 0 0.7rem; }
+h4 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+p, ul, ol { margin: 0 0 1.05rem; }
+li { margin: 0.25rem 0; }
+
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.875em;
+  background: var(--code-bg);
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+}
+pre code { background: none; padding: 0; font-size: 0.85em; }
+pre.contract { max-height: none; white-space: pre-wrap; word-break: break-word; }
+
+blockquote {
+  margin: 0 0 1.05rem;
+  padding: 0.1rem 0 0.1rem 1rem;
+  border-left: 3px solid var(--rule);
+  color: var(--muted);
+}
+
+table { border-collapse: collapse; width: 100%; margin: 0 0 1.25rem; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--rule); padding: 0.45rem 0.7rem; text-align: left; vertical-align: top; }
+th { background: var(--code-bg); font-weight: 600; }
+
+hr { border: none; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+img { max-width: 100%; height: auto; }
+
+.source {
+  margin-top: 3.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 46rem) {
+  .layout { flex-direction: column; }
+  nav { position: static; height: auto; width: 100%; flex: none; border-right: none; border-bottom: 1px solid var(--rule); }
+  nav ul { margin-top: 1rem; }
+  main { padding: 1.5rem 1.25rem 3.5rem; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav>
+    <div class="brand"><a href="index.html">applab</a></div>
+    <ul>
+      <li><a href="index.html" aria-current="page">Overview</a></li>
+      <li><a href="chart.html">Installing</a></li>
+      <li><a href="api.html">API reference</a></li>
+    </ul>
+    <div class="repo"><a href="https://github.com/shaowenchen/applab">Source on GitHub</a></div>
+  </nav>
+  <main>
+    <article>
+<h1>applab</h1>
+<p>Deploy an application to Kubernetes by uploading its source. You get back a URL.</p>
+<p>There is no Dockerfile you must write by hand, no CI to configure, no registry to
+push to and no manifest to apply. One HTTP call starts the path from a local
+working directory to a running application; one call streams the build log; one
+call tells you what is running.</p>
+<p>Two things are enough to use it: <strong>the base URL</strong> and <strong>an API key</strong>.</p>
+<pre><code>upload source ──▶ build image ──▶ deploy ──▶ https://shop.apps.example.com
+                                             or .../apps/shop
+</code></pre>
+<h2>Status</h2>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Scope</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0</td>
+<td>Skeleton, auth, contract (<code>llms.txt</code>), app CRUD</td>
+<td>done</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>Source storage: git repositories, tarball ingest, chunked upload, git over HTTP</td>
+<td>done</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>BuildKit build pipeline</td>
+<td>done</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>Deploy, one namespace, Istio VirtualService</td>
+<td>done</td>
+</tr>
+<tr>
+<td>P4</td>
+<td>Observability: pods, events, logs, metrics</td>
+<td>done</td>
+</tr>
+<tr>
+<td>P5</td>
+<td>Console and CLI</td>
+<td>done</td>
+</tr>
+<tr>
+<td>P6</td>
+<td>Helm chart</td>
+<td>done — see <a href="chart.html"><code>charts/applab</code></a></td>
+</tr>
+</tbody>
+</table>
+<p>The chart is verified by <code>make helm-check</code>, which renders it and asserts the
+things that were wrong: that every setting the server reads reaches it, that
+<code>build.enabled=false</code> actually disables the pipeline, and that a malformed
+configuration is refused at render time rather than deployed.</p>
+<h2>Quick start</h2>
+<pre><code class="language-bash">make build          # builds bin/applab and bin/applab-cli
+
+export APPLAB_KEY=&quot;$(openssl rand -hex 32)&quot;
+export APPLAB_DATA_DIR=./data
+export APPLAB_BASE_DOMAIN=apps.example.com
+
+./bin/applab
+</code></pre>
+<p>Then, from the project you want to deploy:</p>
+<pre><code class="language-bash">export APPLAB_URL=http://localhost:8080
+export APPLAB_KEY=&lt;the key above&gt;
+
+applab push myshop        # uploads, builds and deploys this directory
+</code></pre>
+<p>That is the whole workflow. <code>push</code> creates the app if it is new, packages the
+directory, uploads it, follows the build and waits for the rollout, and prints the
+URL. Build output and version-control directories are left out automatically.</p>
+<p>Everything else answers a question:</p>
+<pre><code class="language-bash">applab list               # what exists
+applab status myshop      # what is running, and where
+applab logs myshop -f     # watch it
+applab diagnose myshop    # why it is not working
+applab rollback myshop    # go back to an earlier upload
+</code></pre>
+<h3>The console</h3>
+<p>The same deployment serves a web console at its root. It is a client of the same
+public API — every request it makes is one you could make with <code>curl</code> — so it has
+no privileged position and no separate backend. Sign in with the deployment's
+address and a key; both are kept in your browser.</p>
+<h2>Or by hand</h2>
+<p>If you would rather not install the CLI:</p>
+<pre><code class="language-bash"># Create the app (once).
+curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps&quot; \
+  -H &quot;Authorization: Bearer $APPLAB_KEY&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;id&quot;:&quot;shop&quot;,&quot;port&quot;:8080}'
+
+# Push the source.
+tar czf - . | curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps/shop/source?message=first&quot; \
+  -H &quot;Authorization: Bearer $APPLAB_KEY&quot; \
+  -H &quot;Content-Type: application/gzip&quot; \
+  --data-binary @-
+</code></pre>
+<p>Clone what you pushed:</p>
+<pre><code class="language-bash">git -c http.extraHeader=&quot;Authorization: Bearer $APPLAB_KEY&quot; \
+  clone &quot;$APPLAB_URL/git/shop.git&quot;
+</code></pre>
+<h2>How it works</h2>
+<h3>Source is a git repository</h3>
+<p>Every app's source lives in its own real git repository, hosted here. An upload
+arrives as a tarball — because a <code>curl</code> works from anywhere, including an agent
+or a container with no git credential — but what it leaves behind is a genuine
+commit. You can clone it, diff two uploads, browse the history, and check out any
+earlier revision with ordinary git tools.</p>
+<p>The tarball is how the bytes travel. The commit is what is recorded.</p>
+<h3>A build is a Job, not a daemon</h3>
+<p>Each build runs as a one-shot Kubernetes Job: applab operates no build service,
+and a build's resources are released the moment it ends. The Job has two
+containers — an init container that downloads one commit's source, and a builder
+that runs BuildKit rootless over it — and <strong>the builder never sees a credential</strong>.
+The fetch uses a single-use token scoped to one commit, because a build runs
+arbitrary code from the uploaded Dockerfile and must not hold anything worth
+stealing.</p>
+<p>Layers are cached in the registry (<code>&lt;cache-prefix&gt;/&lt;app&gt;:buildcache</code>). A Job has
+no persistent disk, so without a registry-side cache every rebuild would start
+from nothing.</p>
+<h3>Commits are what you deploy</h3>
+<p>A deploy names a commit. Rolling back means deploying an earlier one, and if that
+commit was built before, its image is reused rather than rebuilt — which is what
+makes a rollback fast and unable to fail for a reason the original build did not.</p>
+<p><code>POST /apps/{app}/deploy</code> deploys a commit; <code>POST /apps/{app}/rollback</code> returns to
+an earlier one. A deploy of a commit that has never been built is refused rather
+than quietly building, so a caller always knows which operation is running and a
+build failure is never reported as a deploy failure.</p>
+<h3>One namespace, for everything</h3>
+<p>Every app runs in the same namespace as applab itself (default <code>ops-system</code>).
+The trade is deliberate, and both halves of it matter.</p>
+<p><strong>What it buys:</strong> applab needs a namespaced <code>Role</code> and nothing else. It holds no
+permission anywhere else in the cluster, so the reach of a bug in it, or of a
+compromise, is the apps it manages rather than every workload you run. The chart
+renders a Role and a RoleBinding; there is no ClusterRole to audit.</p>
+<p><strong>What it costs:</strong> apps are not isolated from each other by a namespace boundary.
+One app taking a node's memory affects its neighbours, and <code>kubectl get pods</code>
+shows you everything at once. There is no per-app <code>ResourceQuota</code> — the CPU and
+memory limits on each app's container are the only bound, which is why
+<code>deploy.appResources</code> exists and why its limits are not generous.</p>
+<p>Objects are told apart by the <code>applab.io/app</code> label they carry. Deleting an app
+removes its objects and leaves everything else alone, including applab's own
+Deployment, which shares the namespace and carries no app label.</p>
+<p><strong>Neither an app's pods nor a build's are given a Kubernetes API token</strong>
+(<code>automountServiceAccountToken: false</code>). A token can read every Secret in its
+namespace, which here means the API keys and the registry credentials, and an
+app is arbitrary code from whoever pushed the source. Nothing applab runs needs
+to reach the API server: a build fetches its source over HTTP with a single-use
+token, and an app just serves traffic.</p>
+<h3>How apps are published</h3>
+<p>Apps are published through an <strong>Istio gateway</strong> as <code>VirtualService</code> resources.</p>
+<p>The gateway is cluster infrastructure that already exists, holding the listeners
+and the certificate for the whole domain. applab attaches to it by name
+(<code>deploy.gateway</code>, default <code>istio-ingress/istio-ingress</code>) and never creates or
+modifies it. TLS is therefore not per-app configuration: an app is served over
+HTTPS when the gateway has an HTTPS listener.</p>
+<p>An app is addressed one of two ways, and the deployment picks one:</p>
+<p><strong>A hostname per app</strong> — the default. <code>apps.baseDomain</code> is what apps are served
+under, so an app with id <code>shop</code> is at <code>shop.apps.example.com</code>. This needs a
+wildcard DNS record and a wildcard certificate.</p>
+<p><strong>One host, one path per app</strong> — set <code>apps.pathPrefix</code>. Every app then shares
+<code>apps.baseDomain</code> and the path says which is meant, so <code>shop</code> is at
+<code>apps.example.com/apps/shop</code>. One ordinary certificate covers any number of
+apps, and nothing has to be reissued as the deployment grows.</p>
+<p>applab strips the prefix before the request reaches the app, so an app sees the
+paths it would see at a root and needs no change to work under one; it also sets
+<code>X-Forwarded-Prefix</code>, which an app that honours it can use to build correct
+absolute links. The cost is a shared origin: browser connection limits and
+cookies are shared between apps, and two apps cannot both own <code>/</code>.</p>
+<p>Two failure modes are designed around rather than left to be discovered:</p>
+<ul>
+<li>A base domain without a gateway is refused at startup and at render time,
+because it produces a <code>VirtualService</code> whose empty gateway list Istio reads as
+mesh-internal only — an app that deploys, reports healthy, and is unreachable
+from outside.</li>
+<li>The path an app is routed on always ends in a slash. Istio's prefix match is a
+plain string prefix rather than a path-segment match, so a route on
+<code>/apps/shop</code> would also claim <code>/apps/shop-2/anything</code> — and since the order
+between two VirtualServices on one host is undefined, which app won would not
+even be consistent. <code>/apps/shop/</code> cannot match <code>/apps/shop-2/</code>.</li>
+</ul>
+<h3>applab's record versus the cluster</h3>
+<p>applab records what it last did. <strong>The cluster is the source of truth for what is
+running.</strong> When the two disagree, believe the cluster — <code>/apps/{app}/status</code>
+reports both side by side rather than picking one.</p>
+<h3>Finding out what went wrong</h3>
+<p><code>GET /apps/{app}/diagnose</code> answers &quot;why is my app down&quot; in one call: the pods and
+their per-container state, the Kubernetes events, and the log that explains it,
+ordered so the most likely cause comes first.</p>
+<p>Two details make it work in practice. A crash loop's reason is read from the
+<strong>previous</strong> container instance, because the current one is merely &quot;waiting&quot; and
+says nothing. And warnings are listed before routine notices — a namespace's
+events are mostly image pulls and scheduling notes, and burying the one that
+explains the failure among them is the difference between a useful answer and a
+list to dig through.</p>
+<p><code>/metrics</code> publishes the platform's own counters (requests, builds, deploys,
+auth refusals) so a scraper can watch applab itself. It needs no key — a scraper
+holds one awkwardly and these numbers describe the platform rather than any app —
+so restrict the path at the network edge where that matters.</p>
+<h2>The API</h2>
+<p><a href="api.html"><code>api/llms.txt</code></a> is the authoritative, endpoint-by-endpoint
+reference — query parameters, request bodies, response shapes and side effects.
+It is served at <code>/llms.txt</code>, generated from the route table in
+<code>internal/api/router.go</code> so the served API and the documented API cannot drift.</p>
+<p>Two standing rules for its content:</p>
+<ul>
+<li><strong>Describe capability, not destruction.</strong> It is read by agents that act on what
+they find, so it documents the functional endpoints in enough detail to call
+them correctly.</li>
+<li><strong>Keep it true.</strong> A new route, a changed parameter or a changed default is an
+<code>llms.txt</code> change in the same commit. Run <code>make llms</code> and commit the result;
+<code>make check</code> fails if you forget.</li>
+</ul>
+<h2>Development</h2>
+<pre><code class="language-bash">make build-server   # build the control plane
+make run            # run with a development key
+make check          # fmt, vet, llms.txt consistency, tests — the gate CI runs
+make test           # tests only
+make coverage       # coverage summary
+make llms           # regenerate api/llms.txt from the route table
+make docs           # render the documentation site into ./pages
+</code></pre>
+<p>Requires Go 1.24+ and <code>git</code> on <code>PATH</code>. Nothing else: the SQLite driver is pure Go,
+so <code>CGO_ENABLED=0</code> and the binary is static.</p>
+<h3>Verification without a cluster</h3>
+<p>Everything except the build and deploy halves runs and is tested locally. The
+source layer is exercised with the real <code>git</code> binary over a real HTTP server —
+<code>internal/gitx</code> clones and pushes in its tests — and the API is driven through its
+own handler with <code>httptest</code>.</p>
+<p><code>make helm-check</code> needs <code>helm</code>, which is not required to build or test the Go
+code, only to check the chart. It renders the chart and asserts what the
+rendering has to contain — a chart whose templates are wrong still renders, so
+&quot;it rendered&quot; is not evidence of anything.</p>
+<h3>The documentation site</h3>
+<p><code>https://www.chenshaowen.com/applab</code> is both the Helm repository and these
+documents. The site is generated from this repository's own markdown — this file,
+the chart's README, and <code>api/llms.txt</code> — by <code>cmd/gendocs</code>, so the pages cannot
+drift from the documents people actually edit.</p>
+<p>A link in the markdown names a repository file, which is not where anything lives
+on the site, so links are rewritten to a resolved target: another page, or GitHub
+for a file like the license. A link that resolves to neither <strong>fails the build</strong>,
+because a dead end in a document someone is reading is the markdown author's to
+fix, not the reader's to discover.</p>
+<p>The destination is shared with the chart repository, so the build removes exactly
+what the previous one wrote, recorded in a manifest, rather than clearing the
+directory. <code>make docs</code> renders it into a directory of your own.</p>
+<h2>Configuration</h2>
+<p>See <a href="https://github.com/shaowenchen/applab/blob/master/.env.example"><code>.env.example</code></a> for every variable. Precedence, lowest to
+highest: built-in defaults, an optional YAML file named by <code>APPLAB_CONFIG</code>, then
+the environment.</p>
+<p>A deployment with no key configured refuses to start rather than serving the API
+openly.</p>
+<h2>Security notes</h2>
+<ul>
+<li><strong>A key is the whole identity, and there is one tier.</strong> A key that
+authenticates can also delete. Treat it as a credential that can destroy data.</li>
+<li><strong>Keys are read only from the <code>Authorization</code> header</strong> — never a query
+parameter or a form field, both of which are logged and leaked by default.</li>
+<li><strong>Uploaded archives are untrusted input.</strong> Extraction refuses absolute paths and
+<code>..</code> components, and writes through an <code>os.Root</code> so a symlink cannot be used to
+escape the destination even though the path string looks clean.</li>
+<li><strong>Repositories are never public.</strong> Every git request carries a key, like every
+other request.</li>
+</ul>
+<h2>License</h2>
+<p>See <a href="https://github.com/shaowenchen/applab/blob/master/LICENSE">LICENSE</a>.</p>
+
+      <p class="source">This page is rendered from <a href="https://github.com/shaowenchen/applab/blob/master/README.md"><code>README.md</code></a> in the repository.</p>
+    </article>
+  </main>
+</div>
+</body>
+</html>
