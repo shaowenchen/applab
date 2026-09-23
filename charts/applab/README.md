@@ -156,10 +156,9 @@ applab runs in one namespace and deploys every app into it too, so a namespaced
 `Role` and `RoleBinding` are enough — one namespace, one binding, no cluster-wide
 grant.
 
-That is the point of the single-namespace model. A platform like this is usually
-bound to a `ClusterRole` (or worse, `cluster-admin`) because it manages resources
-across namespaces; applab does not, so the worst a bug in it can do is what it
-would have done anyway.
+A platform like this is usually bound to a `ClusterRole`, or worse to
+`cluster-admin`, because it manages resources across namespaces. applab does not,
+so the reach of a bug in it is the apps it manages.
 
 The rules in `role.yaml` are exactly what applab uses, each with a comment saying
 why. Nothing is granted for future convenience. In particular there is no
@@ -171,11 +170,10 @@ boundary. A resource-hungry app affects its neighbours, and an operator reading
 container are the only bound — which is why `deploy.appResources` exists.
 
 One thing the chart cannot do for you: **an app's pods and a build's are given no
-Kubernetes API token** (`automountServiceAccountToken: false`), because the
-namespace no longer separates them from applab's own Secrets. Without that, any
-app could read the API keys and the registry credentials out of the namespace it
-runs in. It is set by applab, so there is nothing to configure — but if you
-deploy an app by hand into this namespace, turn it off there too.
+Kubernetes API token** (`automountServiceAccountToken: false`). A token reads
+every Secret in its namespace, so an app holding one could reach the API keys and
+the registry credentials. applab sets this itself, so there is nothing to
+configure — but an app deployed into this namespace by hand needs the same.
 
 ## Values
 
@@ -254,24 +252,6 @@ helm upgrade applab applab/applab --namespace ops-system -f my-values.yaml
 The database schema migrates on start. A newer applab refuses to run against an
 older one's schema rather than guessing, so roll the image back with the chart if
 an upgrade needs reverting.
-
-### Migrating from a per-app-namespace install
-
-An earlier version gave each app its own namespace (`applab-<app>`). Since every
-app now lives in the release namespace, objects left in those old namespaces are
-**not** adopted: the applab record still names the app, but the Deployment the old
-version created keeps running where it is, invisible to the new one.
-
-Deploying an app recreates it in the release namespace, so the old copy has to be
-removed by hand or you will have two of everything:
-
-```bash
-kubectl get namespaces -l applab.io/app            # what the old version created
-kubectl -n applab-<app> delete deployment,service,ingress --all
-kubectl delete namespace -l applab.io/app          # if nothing else lives there
-```
-
-Source repositories are unaffected: they live on the volume, not in a namespace.
 
 ## Uninstalling
 

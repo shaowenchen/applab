@@ -10,7 +10,7 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 
-icon: https://www.chenshaowen.com/applab/logo.png
+icon: https://www.chenshaowen.com/logo.png
 
 sources:
   - https://github.com/shaowenchen/applab

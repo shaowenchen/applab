@@ -136,47 +136,45 @@ build failure is never reported as a deploy failure.
 
 ### One namespace, for everything
 
-Every app is deployed into the same namespace applab itself runs in (default
-`ops-system`). That is a deliberate trade, and it is worth being clear about both
-halves.
+Every app runs in the same namespace as applab itself (default `ops-system`).
+The trade is deliberate, and both halves of it matter.
 
 **What it buys:** applab needs a namespaced `Role` and nothing else. It holds no
-permission anywhere else in the cluster, so a bug here — or a compromise — reaches
-the apps it manages rather than every workload you run. The chart renders a Role
-and a RoleBinding, and there is no ClusterRole to audit.
+permission anywhere else in the cluster, so the reach of a bug in it, or of a
+compromise, is the apps it manages rather than every workload you run. The chart
+renders a Role and a RoleBinding; there is no ClusterRole to audit.
 
 **What it costs:** apps are not isolated from each other by a namespace boundary.
 One app taking a node's memory affects its neighbours, and `kubectl get pods`
-shows you everything at once. There is no per-app `ResourceQuota`; the CPU and
+shows you everything at once. There is no per-app `ResourceQuota` — the CPU and
 memory limits on each app's container are the only bound, which is why
 `deploy.appResources` exists and why its limits are not generous.
 
-Objects are told apart by their `applab.io/app` label rather than by where they
-live. Deleting an app removes its objects and leaves the rest alone — including
-applab's own Deployment, which sits in the same namespace with no app label.
+Objects are told apart by the `applab.io/app` label they carry. Deleting an app
+removes its objects and leaves everything else alone, including applab's own
+Deployment, which shares the namespace and carries no app label.
 
-Because the namespace no longer separates an app from applab's own credentials,
-**neither an app's pods nor a build's are given a Kubernetes API token**
-(`automountServiceAccountToken: false`). Every pod gets one by default, and in
-this namespace that token can read every Secret — the API keys, the registry
-credentials. An app is arbitrary code from whoever pushed the source, so it has
-no business holding a credential that reaches applab itself.
+**Neither an app's pods nor a build's are given a Kubernetes API token**
+(`automountServiceAccountToken: false`). A token can read every Secret in its
+namespace, which here means the API keys and the registry credentials, and an
+app is arbitrary code from whoever pushed the source. Nothing applab runs needs
+to reach the API server: a build fetches its source over HTTP with a single-use
+token, and an app just serves traffic.
 
 ### How apps are published
 
-Through an **Istio gateway**, not an Ingress: the routing in front of these apps
-is Istio, and an Ingress applab created would be ignored by it — the app would
-deploy, report healthy, and be unreachable.
+Apps are published through an **Istio gateway** as `VirtualService` resources.
 
-The gateway is cluster infrastructure that already exists. It holds the listeners
-and the certificate for the whole domain, and applab attaches a `VirtualService`
-to it by name (`deploy.gateway`, e.g. `ops-system/gateway`) without ever creating
-or modifying it. TLS is therefore not applab's business and has no per-app
-setting: an app is served over HTTPS when the gateway has an HTTPS listener.
+The gateway is cluster infrastructure that already exists, holding the listeners
+and the certificate for the whole domain. applab attaches to it by name
+(`deploy.gateway`, e.g. `ops-system/gateway`) and never creates or modifies it.
+TLS is therefore not per-app configuration: an app is served over HTTPS when the
+gateway has an HTTPS listener.
 
-Setting a base domain without a gateway is refused at render time, because the
-result would be a `VirtualService` whose empty gateway list Istio reads as
-mesh-internal only.
+A base domain without a gateway is refused at startup and at render time, because
+it produces a `VirtualService` whose empty gateway list Istio reads as
+mesh-internal only — an app that deploys, reports healthy, and is unreachable
+from outside.
 
 ### applab's record versus the cluster
 
