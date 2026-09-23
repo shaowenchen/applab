@@ -38,7 +38,60 @@ func main() {
 	}
 }
 
+// handleFlags deals with the arguments the server accepts and reports whether
+// it has finished.
+//
+// The server is configured entirely by environment, so the only useful argument
+// is one asking about the binary itself. Everything else is rejected rather
+// than ignored: this runs in a container where a mistyped argument is invisible,
+// and silently starting the server makes it look like the argument worked.
+func handleFlags(args []string) (done bool, err error) {
+	for _, arg := range args {
+		switch arg {
+		case "-h", "--help":
+			fmt.Fprint(os.Stdout, usage)
+			return true, nil
+		case "--version", "-v":
+			fmt.Fprintf(os.Stdout, "applab %s (%s, built %s)\n",
+				buildinfo.Version, buildinfo.Commit, buildinfo.BuildTime)
+			return true, nil
+		default:
+			return true, fmt.Errorf("unknown argument %q\n\n%s", arg, usage)
+		}
+	}
+	return false, nil
+}
+
+const usage = `Run the applab control plane.
+
+Configuration comes from the environment, not from arguments. The ones that
+matter most:
+
+  APPLAB_KEY              An API key. Required; without one applab refuses to
+                          start rather than serving the API openly.
+  APPLAB_DATA_DIR         Where the database and the apps' source live.
+                          Default ./data.
+  APPLAB_BASE_DOMAIN      Domain apps are exposed under, so an app with id
+                          "shop" is served at shop.<domain>.
+  APPLAB_BUILD_REGISTRY   Where built images are pushed. Setting this, with the
+                          builder and fetcher images, enables the build
+                          pipeline; without it applab stores source and deploys
+                          but cannot build.
+  APPLAB_DEPLOY_TLS_SECRET
+                          A wildcard certificate covering the base domain.
+
+The full list, with the reasoning behind each default, is in .env.example and
+in the Helm chart's values.yaml.
+
+  --help, -h     Show this.
+  --version, -v  Show the build version.
+`
+
 func run() error {
+	if done, err := handleFlags(os.Args[1:]); done {
+		return err
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
