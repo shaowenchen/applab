@@ -21,7 +21,7 @@ upload source ──▶ build image ──▶ deploy ──▶ https://<app>.<do
 | P1 | Source storage: git repositories, tarball ingest, chunked upload, git over HTTP | done |
 | P2 | BuildKit build pipeline | done |
 | P3 | Deploy, namespaces, ingress | done |
-| P4 | Observability: pods, events, logs | not started |
+| P4 | Observability: pods, events, logs, metrics | done |
 | P5 | Console and CLI | not started |
 | P6 | Helm chart | not started |
 
@@ -106,7 +106,26 @@ nothing is left behind.
 ### applab's record versus the cluster
 
 applab records what it last did. **The cluster is the source of truth for what is
-running.** When the two disagree, believe the cluster.
+running.** When the two disagree, believe the cluster — `/apps/{app}/status`
+reports both side by side rather than picking one.
+
+### Finding out what went wrong
+
+`GET /apps/{app}/diagnose` answers "why is my app down" in one call: the pods and
+their per-container state, the Kubernetes events, and the log that explains it,
+ordered so the most likely cause comes first.
+
+Two details make it work in practice. A crash loop's reason is read from the
+**previous** container instance, because the current one is merely "waiting" and
+says nothing. And warnings are listed before routine notices — a namespace's
+events are mostly image pulls and scheduling notes, and burying the one that
+explains the failure among them is the difference between a useful answer and a
+list to dig through.
+
+`/metrics` publishes the platform's own counters (requests, builds, deploys,
+auth refusals) so a scraper can watch applab itself. It needs no key — a scraper
+holds one awkwardly and these numbers describe the platform rather than any app —
+so restrict the path at the network edge where that matters.
 
 ## The API
 

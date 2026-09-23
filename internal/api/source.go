@@ -71,6 +71,9 @@ func (s *Server) handleUploadSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordCommit(r, app, result)
+	if s.metrics != nil {
+		s.metrics.ObserveUpload(result.Bytes)
+	}
 	respond(w, http.StatusOK, uploadResponse{
 		CommitSHA:    result.SHA,
 		Message:      result.Subject,

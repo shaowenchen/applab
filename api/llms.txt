@@ -115,6 +115,7 @@ Every route below is relative to this deployment's base URL, which
 requires `Authorization: Bearer <key>`; `no key` means it does not.)_
 
 - `GET /health` — Liveness. No key required — a Kubernetes probe cannot hold one. _(no key)_
+- `GET /metrics` — Prometheus metrics for this deployment, as text. No key required — a scraper holds one awkwardly and these numbers describe the platform rather than any app. Restrict this path at the network edge where that matters. _(no key)_
 - `GET /api/v1/config` — This deployment's limits and capabilities. No key required, so it doubles as the cheapest reachability check. _(no key)_
 - `GET /api/v1/version` — Build version and commit. _(no key)_
 - `GET /llms.txt` — This document. _(no key)_
@@ -138,6 +139,10 @@ requires `Authorization: Bearer <key>`; `no key` means it does not.)_
 - `GET /api/v1/apps/{app}/status` — An app's live state in the cluster alongside what applab recorded. The two are reported separately and deliberately not reconciled: when they disagree, the cluster is right. _(key)_
 - `POST /api/v1/apps/{app}/restart` — Roll the running pods, keeping the same image. For picking up a changed ConfigMap or recovering pods that are wedged. _(key)_
 - `POST /api/v1/apps/{app}/stop` — Stop the app by removing its Deployment, Service and Ingress. The source and history are kept, so starting again is a deploy rather than a re-upload. _(key)_
+- `GET /api/v1/apps/{app}/pods` — The app's pods, newest first, with per-container state. A pod that is not Running carries the reason — `CrashLoopBackOff`, `ImagePullBackOff` — and a crash loop's cause is reported from the *previous* container, since the current one is only restarting. `?limit=` (default 100, max 1000). _(key)_
+- `GET /api/v1/apps/{app}/logs` — A pod's log as `text/plain`. Follows the pod by default; `?follow=false` returns what exists and closes. `?pod=` and `?container=` narrow it (default: the newest pod and the app container). `?previous=true` reads the previous container instance — where a crash loop's reason is written. `?tail=` (default 500, max 10000), `?since=` a duration such as `5m`. _(key)_
+- `GET /api/v1/apps/{app}/events` — Recent Kubernetes events for the app, warnings first, with a `warnings` count. This is what explains a pod that never started: a failed scheduling, an image pull that was refused, a probe that killed the container. `?limit=` (default 50). _(key)_
+- `GET /api/v1/apps/{app}/diagnose` — Why the app is not working, in one call: pods, events and the relevant log, ordered so the most likely cause comes first. Use this before reading the other four endpoints. _(key)_
 - `GET /api/v1/apps/{app}/source/archive/{sha}` — Internal. Download a commit's source as a tar.gz. Authenticated with a single-use source token (issued when a build starts) rather than the API key, so a build job holds no credential that reaches beyond its own commit. _(no key)_
 
 ## Errors

@@ -14,6 +14,7 @@ import (
 	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/llms"
 	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/sourcetoken"
 	"github.com/shaowenchen/applab/internal/store"
@@ -77,6 +78,13 @@ type Server struct {
 	// sourceTokens mints the single-use credentials a build Job fetches its
 	// source with.
 	sourceTokens *sourcetoken.Issuer
+
+	// observer reads an app's runtime state. Nil means this deployment cannot
+	// observe.
+	observer Observer
+
+	// metrics is the platform's own instrumentation.
+	metrics *Metrics
 
 	// clusterReady reports whether the cluster is reachable.
 	clusterReady func(ctx context.Context) bool
@@ -274,6 +282,87 @@ func (s *Server) restartDeployment(ctx context.Context, app *model.App) error {
 // WithDeployer attaches the deploy half of the pipeline.
 func (s *Server) WithDeployer(d Deployer) *Server { s.deployer = d; return s }
 
+// Observer reads an app's runtime state.
+type Observer interface {
+	// Ready reports whether the observer can reach the cluster.
+	Ready() bool
+
+	// Pods lists an app's pods, newest first.
+	Pods(ctx context.Context, namespace, appID string, limit int) ([]observe.Pod, error)
+
+	// Logs returns a container's log.
+	Logs(ctx context.Context, namespace, appID string, opts observe.LogOptions) (string, error)
+
+	// StreamLogs follows a container's log, writing as lines arrive.
+	StreamLogs(ctx context.Context, namespace, appID string, opts observe.LogOptions, w io.Writer, flush func()) error
+
+	// Events returns recent Kubernetes events for a namespace.
+	Events(ctx context.Context, namespace string, limit int) ([]observe.Event, error)
+}
+
+// WithObserver attaches the observability half.
+func (s *Server) WithObserver(o Observer) *Server { s.observer = o; return s }
+
+// WithMetrics attaches instrumentation.
+//
+// Registering the derived gauges here rather than in main keeps them next to the
+// storage they read, so a counter cannot be added without its gauge being
+// considered.
+func (s *Server) WithMetrics(m *Metrics) *Server {
+	s.metrics = m
+
+	// These are sampled at scrape time: they are whatever is in the database,
+	// which changes without applab doing anything in particular.
+	m.RegisterGauge("applab_apps", "Apps known to this installation.", func() float64 {
+		apps, err := s.store.ListApps(context.Background())
+		if err != nil {
+			// A failed read reports zero rather than the last known value: a
+			// stale number that looks live is worse than an obvious zero.
+			return 0
+		}
+		n := 0
+		for _, a := range apps {
+			if a.Status != model.AppStatusDeleted {
+				n++
+			}
+		}
+		return float64(n)
+	})
+	return s
+}
+
+// listPods reads an app's pods.
+func (s *Server) listPods(ctx context.Context, namespace, appID string, limit int) ([]observe.Pod, error) {
+	if s.observer == nil {
+		return nil, fmt.Errorf("this deployment cannot observe")
+	}
+	return s.observer.Pods(ctx, namespace, appID, limit)
+}
+
+// podLogs reads a container's log.
+func (s *Server) podLogs(ctx context.Context, namespace, appID string, opts observe.LogOptions) (string, error) {
+	if s.observer == nil {
+		return "", fmt.Errorf("this deployment cannot observe")
+	}
+	return s.observer.Logs(ctx, namespace, appID, opts)
+}
+
+// streamPodLogs follows a container's log.
+func (s *Server) streamPodLogs(ctx context.Context, namespace, appID string, opts observe.LogOptions, w io.Writer, flush func()) error {
+	if s.observer == nil {
+		return fmt.Errorf("this deployment cannot observe")
+	}
+	return s.observer.StreamLogs(ctx, namespace, appID, opts, w, flush)
+}
+
+// listEvents reads recent events for a namespace.
+func (s *Server) listEvents(ctx context.Context, namespace string, limit int) ([]observe.Event, error) {
+	if s.observer == nil {
+		return nil, fmt.Errorf("this deployment cannot observe")
+	}
+	return s.observer.Events(ctx, namespace, limit)
+}
+
 // ensureNamespaceFor creates an app's namespace if needed.
 func (s *Server) ensureNamespaceFor(ctx context.Context, appID string) error {
 	if s.ensureNamespace == nil {
@@ -332,6 +421,15 @@ func (s *Server) routes() []route {
 			Pattern: "GET /health",
 			Doc:     "Liveness. No key required — a Kubernetes probe cannot hold one.",
 			Handler: s.handleHealth,
+		},
+		{
+			// Open by design: a Prometheus scraper holds a credential awkwardly,
+			// and these numbers describe the platform rather than any app. The
+			// deployment is expected to restrict the path at the network edge,
+			// which the chart does. Documented as open so the trade is visible.
+			Pattern: "GET /metrics",
+			Doc:     "Prometheus metrics for this deployment, as text. No key required — a scraper holds one awkwardly and these numbers describe the platform rather than any app. Restrict this path at the network edge where that matters.",
+			Handler: s.metricsHandler,
 		},
 		{
 			Pattern: "GET /api/v1/config",
@@ -481,6 +579,32 @@ func (s *Server) routes() []route {
 			Handler: s.handleStop,
 		},
 
+		// -- Observability ------------------------------------------------
+		{
+			Pattern: "GET /api/v1/apps/{app}/pods",
+			Auth:    true,
+			Doc:     "The app's pods, newest first, with per-container state. A pod that is not Running carries the reason — `CrashLoopBackOff`, `ImagePullBackOff` — and a crash loop's cause is reported from the *previous* container, since the current one is only restarting. `?limit=` (default 100, max 1000).",
+			Handler: s.handleListPods,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/logs",
+			Auth:    true,
+			Doc:     "A pod's log as `text/plain`. Follows the pod by default; `?follow=false` returns what exists and closes. `?pod=` and `?container=` narrow it (default: the newest pod and the app container). `?previous=true` reads the previous container instance — where a crash loop's reason is written. `?tail=` (default 500, max 10000), `?since=` a duration such as `5m`.",
+			Handler: s.handlePodLogs,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/events",
+			Auth:    true,
+			Doc:     "Recent Kubernetes events for the app, warnings first, with a `warnings` count. This is what explains a pod that never started: a failed scheduling, an image pull that was refused, a probe that killed the container. `?limit=` (default 50).",
+			Handler: s.handleListEvents,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/diagnose",
+			Auth:    true,
+			Doc:     "Why the app is not working, in one call: pods, events and the relevant log, ordered so the most likely cause comes first. Use this before reading the other four endpoints.",
+			Handler: s.handleDiagnose,
+		},
+
 		// -- Source archive (for build jobs) ------------------------------
 		{
 			// Documented as an internal endpoint: a build Job's init container
@@ -545,6 +669,39 @@ func (s *Server) PatternRequiresAuth(pattern string) bool {
 	return true
 }
 
+// countAuthRejections records a 401 as an auth rejection.
+func (s *Server) countAuthRejections(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		if rec.status == http.StatusUnauthorized && s.metrics != nil {
+			s.metrics.ObserveAuthRejection()
+		}
+	})
+}
+
+// metricsHandler serves the instrumentation, or a clear 501 when none is
+// attached.
+func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.metrics == nil {
+		fail(w, r, Errorf(http.StatusNotImplemented, "metrics are not enabled on this deployment"))
+		return
+	}
+	s.metrics.ServeHTTP(w, r)
+}
+
+// MarkDeployedForTest records a deployment on an app, for tests that need an app
+// past the "nothing deployed yet" state. It is not part of the API surface.
+func (s *Server) MarkDeployedForTest(appID, commitSHA, image string) {
+	app, err := s.loadAppByID(context.Background(), appID)
+	if err != nil {
+		return
+	}
+	_ = s.store.SetAppDeployed(context.Background(), appID, commitSHA, image)
+	app.CommitSHA = commitSHA
+	app.Image = image
+}
+
 // RenderLlmsTxt produces the exact document the llms.txt endpoint serves.
 //
 // It exists so the consistency test and the generator command compare against
@@ -567,7 +724,9 @@ func (s *Server) Handler() http.Handler {
 		var h http.Handler = r.Handler
 		switch {
 		case r.Auth:
-			h = s.auth.Middleware(h)
+			// Wrapped so a refusal is counted: a steady rate of rejections is the
+			// one signal that distinguishes probing from a misconfigured client.
+			h = s.countAuthRejections(s.auth.Middleware(h))
 		case r.TokenAuth:
 			h = s.tokenAuthMiddleware(h)
 		}
@@ -595,7 +754,7 @@ func (s *Server) Handler() http.Handler {
 		fail(w, r, NotFound("no route matching %s %s", r.Method, r.URL.Path))
 	}))
 
-	return recoverPanic(logRequests(mux))
+	return s.metricsMiddleware(recoverPanic(logRequests(mux)))
 }
 
 // statusRecorder captures the status code so the log line can report it.

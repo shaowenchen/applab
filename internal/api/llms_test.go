@@ -109,6 +109,9 @@ func TestEveryDataRouteRequiresAuth(t *testing.T) {
 		"GET /api/v1/config":  true,
 		"GET /llms.txt":       true,
 		"GET /api/v1/version": true,
+		// Open so a Prometheus scraper can reach it; the deployment restricts it
+		// at the network edge instead. See the route's own comment.
+		"GET /metrics": true,
 	}
 
 	for _, pattern := range srv.SortedPatterns() {
@@ -132,7 +135,7 @@ func TestOpenRoutesAreOnlyTheExpectedOnes(t *testing.T) {
 			continue
 		}
 		switch pattern {
-		case "GET /health", "GET /api/v1/config", "GET /llms.txt", "GET /api/v1/version":
+		case "GET /health", "GET /api/v1/config", "GET /llms.txt", "GET /api/v1/version", "GET /metrics":
 		default:
 			t.Errorf("route %q is open but is not on the list of routes expected to be open", pattern)
 		}

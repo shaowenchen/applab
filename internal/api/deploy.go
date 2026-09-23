@@ -114,8 +114,14 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 	host, apiErr := s.deployCommit(r.Context(), app, resolved, image)
 	if apiErr != nil {
+		if s.metrics != nil {
+			s.metrics.ObserveDeploy(true)
+		}
 		fail(w, r, apiErr)
 		return
+	}
+	if s.metrics != nil {
+		s.metrics.ObserveDeploy(false)
 	}
 
 	slog.InfoContext(r.Context(), "deployed",
@@ -219,8 +225,14 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 
 	host, apiErr := s.deployCommit(r.Context(), app, resolved, build.Image)
 	if apiErr != nil {
+		if s.metrics != nil {
+			s.metrics.ObserveDeploy(true)
+		}
 		fail(w, r, apiErr)
 		return
+	}
+	if s.metrics != nil {
+		s.metrics.ObserveDeploy(false)
 	}
 
 	slog.InfoContext(r.Context(), "rolled back",

@@ -21,6 +21,7 @@ import (
 	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/gitx"
 	"github.com/shaowenchen/applab/internal/k8s"
+	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/sourcetoken"
 	"github.com/shaowenchen/applab/internal/store"
@@ -96,6 +97,7 @@ func run() error {
 	// since the source half is independently useful.
 	sourceTokens := sourcetoken.NewIssuer(sourcetoken.DefaultTTL)
 	srv.WithSourceTokens(sourceTokens)
+	srv.WithMetrics(api.NewMetrics())
 
 	if client, err := k8s.New(k8s.Options{
 		Kubeconfig:      cfg.Kubeconfig,
@@ -131,6 +133,9 @@ func run() error {
 		} else {
 			slog.Info("build pipeline disabled: no registry, builder image or fetcher image configured")
 		}
+
+		// The observability half reads the same cluster, so it comes with it.
+		srv.WithObserver(observe.New(client.Clientset()))
 
 		// The deploy half shares the cluster client. It is attached whenever the
 		// cluster is reachable — an app can be deployed from an image that was

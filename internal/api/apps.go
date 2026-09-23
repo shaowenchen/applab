@@ -155,6 +155,9 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if s.metrics != nil {
+		s.metrics.ObserveAppCreated()
+	}
 	slog.InfoContext(r.Context(), "app created", "app", app.ID)
 	respond(w, http.StatusCreated, toAppResponse(app, s.cfg.BaseDomain, s.scheme(r)))
 }

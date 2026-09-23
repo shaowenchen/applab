@@ -150,6 +150,9 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, commitSHA strin
 	}
 
 	jobName, err := s.startBuildJob(ctx, app, buildID, commitSHA, token)
+	if s.metrics != nil {
+		s.metrics.ObserveBuild(err != nil)
+	}
 	if err != nil {
 		// The record is kept and marked failed, rather than deleted: the caller
 		// asked for a build and needs to be able to see that it did not start and
