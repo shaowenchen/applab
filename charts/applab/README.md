@@ -16,7 +16,6 @@ helm install applab applab/applab \
   --namespace ops-system --create-namespace \
   --set auth.keys[0]="$(openssl rand -hex 32)" \
   --set apps.baseDomain=apps.example.com \
-  --set deploy.gateway=ops-system/gateway \
   --set ingress.hosts[0].host=applab.example.com \
   --set build.registry=registry.example.com/apps
 ```
@@ -71,8 +70,31 @@ is off by default.
 
 ### 2. A domain, and a certificate for it
 
-`apps.baseDomain` is what apps are served under: an app with id `shop` becomes
-`shop.apps.example.com`. Everything under it needs to resolve to the gateway.
+`apps.baseDomain` is what apps are served under. Everything under it needs to
+resolve to the gateway.
+
+There are two ways to put an app on it:
+
+**A subdomain per app** — the default. An app with id `shop` becomes
+`shop.apps.example.com`. The certificate has to cover every host under the
+domain, which in practice means a wildcard, and a wildcard DNS record to go with
+it.
+
+**One host, one path per app** — set `apps.pathPrefix`. Every app then shares
+`apps.baseDomain` and the path says which is meant:
+
+```bash
+--set apps.baseDomain=apps.example.com --set apps.pathPrefix=/apps
+# shop is served at https://apps.example.com/apps/shop
+```
+
+The reason to want this is the certificate. One host needs one ordinary
+certificate, not a wildcard, and nothing has to be reissued as apps are added.
+applab strips the prefix before the request reaches the app, so an app sees the
+paths it would see at a root and needs no change to work under one; it also sets
+`X-Forwarded-Prefix` for an app that builds absolute links. The cost is a shared
+origin — browser connection limits and cookies are shared between apps, and two
+apps cannot both own `/`.
 
 TLS is configured on the **gateway**, not here. The gateway holds the listeners
 and the certificate for the whole domain, so an app is served over HTTPS when the
@@ -80,12 +102,23 @@ gateway has an HTTPS listener, and there is no per-app certificate setting to ge
 wrong.
 
 Set `deploy.gateway` to the gateway apps are published through, as
-`<namespace>/<name>`. applab attaches a `VirtualService` to it and never creates
-or modifies it — the gateway is infrastructure you own.
+`<namespace>/<name>`. It defaults to `istio-ingress/istio-ingress` — the naming
+the official `istio/gateway` chart produces. A cluster installed with
+`istioctl install` names it `istio-system/istio-ingressgateway` instead, and has
+to say so:
+
+```bash
+--set deploy.gateway=istio-system/istio-ingressgateway
+```
+
+applab attaches a `VirtualService` to that gateway and never creates or modifies
+it — the gateway is infrastructure you own.
 
 Setting `apps.baseDomain` without a gateway is refused at render time: it would
 produce a `VirtualService` whose empty gateway list Istio reads as mesh-internal
 only, so the app would deploy, report healthy and be unreachable from outside.
+So is setting `apps.pathPrefix` without a base domain, since the prefix is the
+only thing telling one app from another on that shared host.
 
 ### 3. Whether the cluster can build
 
@@ -185,7 +218,8 @@ does and why it defaults the way it does. The ones that matter most:
 | `auth.keys` | `[]` | **Required.** `openssl rand -hex 32`, one per caller |
 | `auth.existingSecret` | `""` | Preferred over `auth.keys`: keeps keys out of the release |
 | `apps.baseDomain` | `""` | Domain apps are served under |
-| `deploy.gateway` | `""` | **Required with a base domain.** `<namespace>/<name>` |
+| `apps.pathPrefix` | `""` | Serves every app under one path on that host; needs no wildcard certificate |
+| `deploy.gateway` | `istio-ingress/istio-ingress` | **Required with a base domain.** `<namespace>/<name>` |
 | `build.enabled` | `true` | `false` runs applab without building |
 | `build.registry` | `""` | Required when `build.enabled` |
 | `build.rootless` | `true` | See the prerequisites above |

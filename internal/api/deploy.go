@@ -109,7 +109,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host, apiErr := s.deployCommit(r.Context(), app, resolved, image)
+	addr, apiErr := s.deployCommit(r.Context(), app, resolved, image)
 	if apiErr != nil {
 		if s.metrics != nil {
 			s.metrics.ObserveDeploy(true)
@@ -122,14 +122,15 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.InfoContext(r.Context(), "deployed",
-		"app", app.ID, "commit", resolved, "image", image, "host", host)
+		"app", app.ID, "commit", resolved, "image", image, "address", addr.String())
 
 	respond(w, http.StatusOK, map[string]any{
-		"app":      toAppResponse(app, s.cfg.BaseDomain, s.scheme(r)),
+		"app":      toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)),
 		"commit":   resolved,
 		"image":    image,
-		"host":     host,
-		"url":      urlFor(host, s.scheme(r)),
+		"host":     addr.Host,
+		"path":     addr.Path,
+		"url":      addr.URL(s.scheme(r)),
 		"deployed": true,
 	})
 }
@@ -139,16 +140,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 // The app record is updated only after the resources are applied. Writing the
 // record first would make applab claim a deploy that failed, and the record is
 // what a caller reads to decide whether anything happened.
-func (s *Server) deployCommit(ctx context.Context, app *model.App, commitSHA, image string) (string, *apiError) {
+func (s *Server) deployCommit(ctx context.Context, app *model.App, commitSHA, image string) (model.Address, *apiError) {
 	// The image and commit go into the object the deployer builds, so a rollout
 	// carries the revision it came from.
 	deployApp := *app
 	deployApp.CommitSHA = commitSHA
 
-	host, err := s.applyDeployment(ctx, &deployApp, image)
+	addr, err := s.applyDeployment(ctx, &deployApp, image)
 	if err != nil {
 		s.setAppStatus(ctx, app.ID, model.AppStatusFailed, err.Error())
-		return "", Errorf(http.StatusInternalServerError, "deploy app %q", app.ID).Wrap(err)
+		return model.Address{}, Errorf(http.StatusInternalServerError, "deploy app %q", app.ID).Wrap(err)
 	}
 
 	if err := s.store.SetAppDeployed(ctx, app.ID, commitSHA, image); err != nil {
@@ -159,7 +160,7 @@ func (s *Server) deployCommit(ctx context.Context, app *model.App, commitSHA, im
 	app.CommitSHA = commitSHA
 	app.Image = image
 
-	return host, nil
+	return addr, nil
 }
 
 // handleRollback deploys an earlier commit.
@@ -220,7 +221,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host, apiErr := s.deployCommit(r.Context(), app, resolved, build.Image)
+	addr, apiErr := s.deployCommit(r.Context(), app, resolved, build.Image)
 	if apiErr != nil {
 		if s.metrics != nil {
 			s.metrics.ObserveDeploy(true)
@@ -236,11 +237,12 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		"app", app.ID, "commit", resolved, "image", build.Image)
 
 	respond(w, http.StatusOK, map[string]any{
-		"app":              toAppResponse(app, s.cfg.BaseDomain, s.scheme(r)),
+		"app":              toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)),
 		"commit":           resolved,
 		"image":            build.Image,
-		"host":             host,
-		"url":              urlFor(host, s.scheme(r)),
+		"host":             addr.Host,
+		"path":             addr.Path,
+		"url":              addr.URL(s.scheme(r)),
 		"rolled_back_from": app.CommitSHA,
 	})
 }
@@ -269,7 +271,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	slog.InfoContext(r.Context(), "app stopped", "app", app.ID)
 
 	respond(w, http.StatusOK, map[string]any{
-		"app":     toAppResponse(app, s.cfg.BaseDomain, s.scheme(r)),
+		"app":     toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)),
 		"stopped": true,
 	})
 }
@@ -312,6 +314,11 @@ type appStatusResponse struct {
 	Live     *liveState        `json:"live,omitempty"`
 
 	Host string `json:"host,omitempty"`
+
+	// Path is the app's path under the host, set only when the deployment uses
+	// a shared path prefix. A caller that has Host but no Path has an app at
+	// that host's root.
+	Path string `json:"path,omitempty"`
 	URL  string `json:"url,omitempty"`
 }
 
@@ -350,10 +357,12 @@ func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	if host := app.Hostname(s.cfg.BaseDomain); host != "" {
-		resp.Host = host
+	addr := s.addressFor(app)
+	if !addr.Empty() {
+		resp.Host = addr.Host
+		resp.Path = addr.Path
 		if app.Status == model.AppStatusRunning || app.Status == model.AppStatusDeploying {
-			resp.URL = urlFor(host, s.scheme(r))
+			resp.URL = addr.URL(s.scheme(r))
 		}
 	}
 
@@ -393,12 +402,4 @@ func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond(w, http.StatusOK, resp)
-}
-
-// urlFor builds the URL an app is reachable at, or "" with no host.
-func urlFor(host, scheme string) string {
-	if host == "" {
-		return ""
-	}
-	return scheme + "://" + host
 }

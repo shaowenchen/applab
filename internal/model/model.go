@@ -187,17 +187,77 @@ func Namespace(namespace, appID string) string {
 	return namespace
 }
 
+// Address is where an app answers: a host, and a path under it.
+//
+// Two deployments are possible. With no path prefix every app takes a host of
+// its own — "shop.example.com" — and Path is empty. With one, every app shares
+// the same host and the path is what says which app is meant, so the host is
+// only half of the address and neither field alone identifies an app.
+//
+// It is a pair rather than a string because the two are used separately: the
+// hostnames go in a VirtualService's hosts, the path in its match and its
+// rewrite, and joining them early would only mean splitting them again.
+type Address struct {
+	Host string
+	Path string
+}
+
+// Empty reports whether this address names nothing, which is a deployment with
+// no base domain: apps are then reachable inside the cluster only.
+func (a Address) Empty() bool { return a.Host == "" }
+
+// String is the address as a caller would type it, without a scheme.
+func (a Address) String() string { return a.Host + a.Path }
+
+// URL is the address with a scheme in front. Empty when there is no address,
+// which is what keeps a caller from being handed "http://".
+func (a Address) URL(scheme string) string {
+	if a.Empty() {
+		return ""
+	}
+	return scheme + "://" + a.Host + a.Path
+}
+
+// RoutePath is the path an app is routed on, always ending in a slash so that
+// it can be matched as a prefix without also matching a neighbour.
+//
+// The trailing slash is load-bearing. Istio's prefix match is a plain string
+// prefix, not a path-segment match, so a route on "/apps/shop" would also claim
+// "/apps/shop-2/anything" — and with cross-VirtualService order undefined, the
+// app that won would be whichever istiod happened to apply first. "/apps/shop/"
+// cannot match "/apps/shop-2/".
+func (a Address) RoutePath() string {
+	if a.Path == "" {
+		return "/"
+	}
+	return a.Path + "/"
+}
+
+// Address returns where an app is served, given the deployment's base domain
+// and its optional shared path prefix.
+//
+// An app-level Domain wins outright and puts the app at the root of its own
+// host: the point of the override is to escape the deployment's convention, so
+// carrying the convention's path along with it would defeat it.
+func (a App) Address(baseDomain, pathPrefix string) Address {
+	if d := strings.TrimSpace(a.Domain); d != "" {
+		return Address{Host: d}
+	}
+	if baseDomain == "" {
+		return Address{}
+	}
+	if pathPrefix != "" {
+		// Every app on one host, told apart by path.
+		return Address{Host: baseDomain, Path: pathPrefix + "/" + a.ID}
+	}
+	return Address{Host: a.ID + "." + baseDomain}
+}
+
 // Hostname returns the hostname an app is served at, given the deployment's
 // base domain. An app-level Domain wins, which is what lets one app take a
 // memorable name without changing the domain every other app sits under.
 func (a App) Hostname(baseDomain string) string {
-	if d := strings.TrimSpace(a.Domain); d != "" {
-		return d
-	}
-	if baseDomain == "" {
-		return ""
-	}
-	return a.ID + "." + baseDomain
+	return a.Address(baseDomain, "").Host
 }
 
 // NewID returns a random identifier for a record that has no natural key, such

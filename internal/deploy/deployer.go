@@ -33,6 +33,11 @@ type Config struct {
 	// VirtualService is created and an app is reachable only inside the cluster.
 	BaseDomain string
 
+	// PathPrefix, when set, puts every app under one path on one shared host
+	// instead of giving each its own subdomain. It is what makes a single
+	// wildcard-free certificate enough for any number of apps.
+	PathPrefix string
+
 	// Gateway is the Istio gateway apps are published through, as
 	// "<namespace>/<name>". The gateway is cluster infrastructure that already
 	// exists — applab attaches to it rather than creating it — so this has to
@@ -103,29 +108,31 @@ func NewWithDynamic(client kubernetes.Interface, dyn dynamic.Interface, cfg Conf
 func (d *Deployer) Ready() bool { return d.client != nil }
 
 // Apply creates or updates every resource an app needs, and returns the
-// hostname it is exposed at (empty when no Ingress was created).
+// address it is exposed at — empty when the deployment has no base domain, in
+// which case no VirtualService was created and the app is reachable only from
+// inside the cluster.
 //
 // The three objects are applied in dependency order and each is
 // create-or-update: an app is redeployed whenever anything about it changes, and
 // the operation has to be safe to repeat. A failure part-way leaves earlier
 // objects in place, which is the correct outcome — they are consistent with each
 // other, and the next attempt continues from there.
-func (d *Deployer) Apply(ctx context.Context, app *model.App, image string) (string, error) {
+func (d *Deployer) Apply(ctx context.Context, app *model.App, image string) (model.Address, error) {
 	if err := d.applyDeployment(ctx, app, image); err != nil {
-		return "", err
+		return model.Address{}, err
 	}
 	if err := d.applyService(ctx, app); err != nil {
-		return "", err
+		return model.Address{}, err
 	}
 
-	host := app.Hostname(d.cfg.BaseDomain)
-	if host == "" {
-		return "", nil
+	addr := app.Address(d.cfg.BaseDomain, d.cfg.PathPrefix)
+	if addr.Empty() {
+		return model.Address{}, nil
 	}
-	if err := d.expose(ctx, app, host); err != nil {
-		return "", err
+	if err := d.expose(ctx, app, addr); err != nil {
+		return model.Address{}, err
 	}
-	return host, nil
+	return addr, nil
 }
 
 // appLabels are the labels every object of an app carries.
@@ -396,7 +403,7 @@ func (d *Deployer) applyService(ctx context.Context, app *model.App) error {
 // TLS is not applab's business: the certificate is on the gateway, and pointing
 // a VirtualService at an HTTPS listener is all that is needed to be served over
 // it.
-func (d *Deployer) expose(ctx context.Context, app *model.App, host string) error {
+func (d *Deployer) expose(ctx context.Context, app *model.App, addr model.Address) error {
 	namespace := app.Namespace
 	name := ObjectName(app.ID)
 
@@ -410,20 +417,80 @@ func (d *Deployer) expose(ctx context.Context, app *model.App, host string) erro
 			"annotations": toStringMap(d.cfg.Annotations),
 		},
 		"spec": map[string]any{
-			"hosts":    []any{host},
+			"hosts":    []any{addr.Host},
 			"gateways": []any{d.cfg.Gateway},
-			"http": []any{map[string]any{
-				"route": []any{map[string]any{
-					"destination": map[string]any{
-						"host": name,
-						"port": map[string]any{"number": int64(80)},
-					},
-				}},
-			}},
+			"http":     d.httpRoutes(app, addr),
 		},
 	}}
 
 	return d.upsertVirtualService(ctx, namespace, name, vs)
+}
+
+// httpRoutes builds the HTTP routes for an app: one route, unless a shared path
+// prefix makes the app a sub-path of a host it does not own.
+//
+// Order matters here — routes within one VirtualService are evaluated in
+// sequence — but the two below cannot overlap, so neither can shadow the other.
+func (d *Deployer) httpRoutes(app *model.App, addr model.Address) []any {
+	route := map[string]any{
+		"destination": map[string]any{
+			"host": ObjectName(app.ID),
+			"port": map[string]any{"number": int64(80)},
+		},
+	}
+
+	// No prefix: the app has its own host and answers at its root, which is
+	// every path. A route with no match matches everything.
+	if addr.Path == "" {
+		return []any{map[string]any{"route": []any{route}}}
+	}
+
+	prefix := addr.RoutePath()
+
+	// The app's own path, reached through the shared host.
+	//
+	// The rewrite strips the prefix, so the app sees the paths it would see if
+	// it were mounted at the root — which is what lets an unmodified app be
+	// served under a prefix at all. Istio replaces the matched prefix with the
+	// rewrite value, so "/apps/shop/cart" arrives as "/cart".
+	serve := map[string]any{
+		"match": []any{map[string]any{"uri": map[string]any{"prefix": prefix}}},
+		"rewrite": map[string]any{
+			// "/" rather than "" because the rewritten path has to remain an
+			// absolute path; an empty uri is not a valid rewrite.
+			"uri": "/",
+		},
+		"headers": map[string]any{
+			"request": map[string]any{
+				// The convention for telling a sub-path-mounted app where it is
+				// mounted. An app that honours it can build correct absolute
+				// links and redirects; one that ignores it still works, which is
+				// why this is a header rather than a requirement.
+				"set": map[string]any{"X-Forwarded-Prefix": addr.Path},
+			},
+		},
+		"route": []any{route},
+	}
+
+	// Redirect the path without its trailing slash to the one with it, rather
+	// than serving it directly.
+	//
+	// Serving it directly would be the friendly choice and the wrong one: an
+	// app's relative links resolve against the request path, so at
+	// "/apps/shop" a link to "cart" would resolve to "/apps/cart" — the
+	// neighbouring app — while at "/apps/shop/" it resolves correctly. One
+	// redirect on the bare path removes a whole class of cross-app confusion
+	// that would otherwise surface as an app mysteriously showing someone
+	// else's page.
+	redirect := map[string]any{
+		"match": []any{map[string]any{"uri": map[string]any{"exact": addr.Path}}},
+		"redirect": map[string]any{
+			"uri":          prefix,
+			"redirectCode": int64(301),
+		},
+	}
+
+	return []any{redirect, serve}
 }
 
 func (d *Deployer) upsertVirtualService(ctx context.Context, namespace, name string, desired *unstructured.Unstructured) error {

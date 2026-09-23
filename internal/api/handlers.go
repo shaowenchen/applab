@@ -39,8 +39,11 @@ type configResponse struct {
 	APIBaseURL string `json:"api_base_url"`
 
 	// BaseDomain is the domain apps are exposed under, and DomainTemplate shows
-	// how an app id becomes a hostname.
+	// how an app id becomes an address. PathPrefix is set when every app shares
+	// one host instead of taking a subdomain, in which case DomainTemplate is
+	// not the whole story and a client needs both.
 	BaseDomain     string `json:"base_domain"`
+	PathPrefix     string `json:"path_prefix,omitempty"`
 	DomainTemplate string `json:"domain_template"`
 
 	// Namespace is the one namespace this deployment uses — for itself and for
@@ -66,7 +69,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Version:         buildinfo.Version,
 		APIBaseURL:      s.baseURL(r),
 		BaseDomain:      s.cfg.BaseDomain,
-		DomainTemplate:  "*." + orPlaceholder(s.cfg.BaseDomain),
+		PathPrefix:      s.cfg.PathPrefix,
+		DomainTemplate:  s.domainTemplate(),
 		Namespace:       s.cfg.Namespace,
 		MaxSimpleUpload: s.cfg.MaxSimpleUpload,
 		ChunkSize:       s.cfg.ChunkSize,
@@ -84,13 +88,22 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// orPlaceholder gives a value something honest to show when it is unset, rather
-// than an empty string that reads like a bug.
-func orPlaceholder(v string) string {
-	if v == "" {
+// domainTemplate shows how an app id becomes an address, so a client does not
+// have to know the deployment's convention to guess a URL.
+//
+// It is the *host* template, and with a path prefix that is only half the
+// address: every app then shares one host and the path says which is meant. The
+// two forms are different enough that reporting the wrong one would be worse
+// than reporting none, so the prefix changes it rather than being folded into
+// it.
+func (s *Server) domainTemplate() string {
+	if s.cfg.BaseDomain == "" {
 		return "<base domain not configured>"
 	}
-	return v
+	if s.cfg.PathPrefix != "" {
+		return s.cfg.BaseDomain + s.cfg.PathPrefix + "/<app>"
+	}
+	return "*." + s.cfg.BaseDomain
 }
 
 // baseURL returns the address callers should use for this deployment.

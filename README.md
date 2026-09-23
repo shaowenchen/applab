@@ -10,7 +10,8 @@ call tells you what is running.
 Two things are enough to use it: **the base URL** and **an API key**.
 
 ```
-upload source ──▶ build image ──▶ deploy ──▶ https://<app>.<domain>
+upload source ──▶ build image ──▶ deploy ──▶ https://shop.apps.example.com
+                                             or .../apps/shop
 ```
 
 ## Status
@@ -171,10 +172,34 @@ and the certificate for the whole domain. applab attaches to it by name
 modifies it. TLS is therefore not per-app configuration: an app is served over
 HTTPS when the gateway has an HTTPS listener.
 
-A base domain without a gateway is refused at startup and at render time, because
-it produces a `VirtualService` whose empty gateway list Istio reads as
-mesh-internal only — an app that deploys, reports healthy, and is unreachable
-from outside.
+An app is addressed one of two ways, and the deployment picks one:
+
+**A hostname per app** — the default. `apps.baseDomain` is what apps are served
+under, so an app with id `shop` is at `shop.apps.example.com`. This needs a
+wildcard DNS record and a wildcard certificate.
+
+**One host, one path per app** — set `apps.pathPrefix`. Every app then shares
+`apps.baseDomain` and the path says which is meant, so `shop` is at
+`apps.example.com/apps/shop`. One ordinary certificate covers any number of
+apps, and nothing has to be reissued as the deployment grows.
+
+applab strips the prefix before the request reaches the app, so an app sees the
+paths it would see at a root and needs no change to work under one; it also sets
+`X-Forwarded-Prefix`, which an app that honours it can use to build correct
+absolute links. The cost is a shared origin: browser connection limits and
+cookies are shared between apps, and two apps cannot both own `/`.
+
+Two failure modes are designed around rather than left to be discovered:
+
+- A base domain without a gateway is refused at startup and at render time,
+  because it produces a `VirtualService` whose empty gateway list Istio reads as
+  mesh-internal only — an app that deploys, reports healthy, and is unreachable
+  from outside.
+- The path an app is routed on always ends in a slash. Istio's prefix match is a
+  plain string prefix rather than a path-segment match, so a route on
+  `/apps/shop` would also claim `/apps/shop-2/anything` — and since the order
+  between two VirtualServices on one host is undefined, which app won would not
+  even be consistent. `/apps/shop/` cannot match `/apps/shop-2/`.
 
 ### applab's record versus the cluster
 

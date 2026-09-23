@@ -59,9 +59,25 @@ apps:
   # reachable only inside the cluster.
   baseDomain: ""
 
-  # The scheme apps are served with, used to build the URLs applab hands back.
-  # Set to "https" when TLS terminates at the gateway.
-  scheme: "https"
+  # Serves every app from one host under one path, instead of giving each app
+  # its own subdomain: with pathPrefix "/apps", an app with id "shop" is served
+  # at <baseDomain>/apps/shop.
+  #
+  # The reason to want this is the certificate. A subdomain per app needs a
+  # wildcard DNS record and a wildcard certificate, and both have to be reissued
+  # as the deployment grows. One host and one path prefix needs neither, so a
+  # single ordinary certificate covers any number of apps.
+  #
+  # What it costs: every app now shares an origin. A browser's per-origin limits
+  # and its cookies are shared between apps, and two apps cannot both own "/".
+  # This is the right trade when the alternative is a wildcard certificate and
+  # the wrong one when the apps are meant to be genuinely separate sites.
+  #
+  # applab strips the prefix before the request reaches the app, so an app sees
+  # the paths it would see at a root and needs no change to work here. It also
+  # sets X-Forwarded-Prefix, which an app that honours it can use to build
+  # correct absolute links.
+  pathPrefix: ""
 
   # The public address of this applab installation, used by build jobs to fetch
   # source and reported to clients as api_base_url.

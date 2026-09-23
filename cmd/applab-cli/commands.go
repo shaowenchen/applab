@@ -34,11 +34,10 @@ func configCommand(urlFlag, keyFlag *string) *cobra.Command {
 			fmt.Printf("url            %s\n", c.BaseURL())
 			fmt.Printf("api version    %s\n", cfg.APIVersion)
 			fmt.Printf("version        %s\n", cfg.Version)
-			if cfg.BaseDomain != "" {
-				fmt.Printf("apps served at <app>.%s\n", cfg.BaseDomain)
-			} else {
-				fmt.Printf("apps served at (no base domain configured; apps are cluster-internal)\n")
-			}
+			// Reported from the server's own domain template rather than
+			// reassembled here, so a client cannot describe the deployment's
+			// addressing differently from how it routes.
+			fmt.Printf("apps served at %s\n", cfg.DomainTemplate)
 
 			fmt.Printf("capabilities  ")
 			for _, name := range []string{"source", "git", "build", "deploy"} {
@@ -208,7 +207,7 @@ func statusCommand(urlFlag, keyFlag *string) *cobra.Command {
 			if status.URL != "" {
 				fmt.Printf("url      %s\n", status.URL)
 			} else if status.Host != "" {
-				fmt.Printf("host     %s (not reachable yet)\n", status.Host)
+				fmt.Printf("host     %s (not reachable yet)\n", status.Host+status.Path)
 			}
 
 			return nil
@@ -299,7 +298,7 @@ func printDeployed(result *client.DeployResult) {
 		return
 	}
 	if result.Host != "" {
-		fmt.Printf("deployed to %s (not reachable yet)\n", result.Host)
+		fmt.Printf("deployed to %s (not reachable yet)\n", result.Host+result.Path)
 		return
 	}
 	fmt.Println("deployed")

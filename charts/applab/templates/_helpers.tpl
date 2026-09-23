@@ -120,4 +120,12 @@ unreachable from outside. Refused here rather than discovered from a browser.
 {{- if and (not (empty .Values.deploy.gateway)) (not (contains "/" .Values.deploy.gateway)) }}
 {{- fail (printf "deploy.gateway %q must be \"<namespace>/<name>\", the form Istio resolves a gateway by" .Values.deploy.gateway) }}
 {{- end }}
+{{/*
+A path prefix with no domain is a deployment where every app is unreachable and
+no URL can be reported: the prefix is the only thing telling one app from
+another, so there has to be a host for them to share.
+*/}}
+{{- if and (not (empty .Values.apps.pathPrefix)) (empty .Values.apps.baseDomain) }}
+{{- fail "apps.pathPrefix is set but apps.baseDomain is empty: the prefix distinguishes apps on a shared host, so there has to be a host. Set apps.baseDomain, or leave apps.pathPrefix empty to give each app its own subdomain" }}
+{{- end }}
 {{- end }}

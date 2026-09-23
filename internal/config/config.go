@@ -60,11 +60,25 @@ type Config struct {
 	// `applab` runnable outside a cluster during development).
 	Kubeconfig string `yaml:"kubeconfig"`
 
-	// BaseDomain is the domain apps are exposed under, so an app with id "shop"
-	// is served at "shop.<BaseDomain>". Empty means apps get no hostname and
-	// are only reachable inside the cluster — a legitimate way to run applab
-	// while its ingress is being decided.
+	// BaseDomain is the domain apps are exposed under. With no PathPrefix an
+	// app with id "shop" is served at "shop.<BaseDomain>"; with one, every app
+	// shares this host and is told apart by path instead. Empty means apps get
+	// no hostname and are only reachable inside the cluster — a legitimate way
+	// to run applab while its ingress is being decided.
 	BaseDomain string `yaml:"base_domain"`
+
+	// PathPrefix puts every app under one path on one host, so an app with id
+	// "shop" is served at "<BaseDomain>/<PathPrefix>/shop". It is a prefix, not
+	// a domain: it changes the route, and the host is shared by every app.
+	//
+	// This is the alternative to a wildcard DNS entry and a wildcard
+	// certificate. Serve one host and one certificate, and let the path say
+	// which app is meant. applab strips the prefix before the request reaches
+	// the app, so an app sees the paths it would see if it were at the root.
+	//
+	// Must begin with "/" and must not end with one; empty means per-app
+	// hostnames, the original behaviour.
+	PathPrefix string `yaml:"path_prefix"`
 
 	// MaxSimpleUpload is the largest source archive accepted in one request.
 	// Anything larger must use the chunked endpoints, which is why it is
@@ -291,6 +305,7 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.Namespace, "APPLAB_NAMESPACE")
 	setString(&cfg.Kubeconfig, "APPLAB_KUBECONFIG")
 	setString(&cfg.BaseDomain, "APPLAB_BASE_DOMAIN")
+	setString(&cfg.PathPrefix, "APPLAB_PATH_PREFIX")
 	setInt64(&cfg.MaxSimpleUpload, "APPLAB_MAX_SIMPLE_UPLOAD")
 	setInt64(&cfg.ChunkSize, "APPLAB_CHUNK_SIZE")
 	setInt64(&cfg.MaxChunkBytes, "APPLAB_MAX_CHUNK_BYTES")
@@ -485,6 +500,28 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("base_domain %q must be a bare domain, without a scheme, port or path", d)
 		}
 		c.BaseDomain = strings.Trim(d, ".")
+	}
+
+	// The path prefix is normalized rather than rejected for a stray slash:
+	// "/apps/" and "apps" are both what someone would plausibly write meaning
+	// the same thing, and refusing them teaches nothing. What is refused is a
+	// value that cannot be a path at all.
+	if p := strings.TrimSpace(c.PathPrefix); p != "" {
+		if strings.ContainsAny(p, "?#") {
+			return fmt.Errorf("path_prefix %q must be a path, without a query or fragment", p)
+		}
+		p = "/" + strings.Trim(p, "/")
+		if strings.Contains(p, "//") {
+			return fmt.Errorf("path_prefix %q has an empty segment", c.PathPrefix)
+		}
+		// Without a host there is nothing to hang the path on: the prefix is
+		// the *only* thing distinguishing one app from another, so a deployment
+		// with a prefix and no domain would have every app unreachable and no
+		// hostname to report.
+		if c.BaseDomain == "" {
+			return fmt.Errorf("path_prefix is %q but base_domain is empty: the prefix distinguishes apps on a shared host, so there has to be a host. Set base_domain, or leave path_prefix empty", c.PathPrefix)
+		}
+		c.PathPrefix = p
 	}
 
 	// A base domain with no gateway produces a VirtualService with an empty

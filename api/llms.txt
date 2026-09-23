@@ -40,7 +40,7 @@ not work.
 ### An app
 
 An app is the unit of everything: one source repository, one image, one
-Deployment, one hostname. Its **id** is how you refer to it everywhere, and it is
+Deployment, one address. Its **id** is how you refer to it everywhere, and it is
 immutable — there is no rename, so nothing has to be rewritten when it changes.
 
 An id has to survive being a URL path segment, a git repository directory and a
@@ -70,6 +70,32 @@ A deploy names a commit. Rolling back means deploying an earlier one — and if
 that commit was built before, its image already exists and is reused rather than
 rebuilt, so a rollback is fast and cannot fail for a reason the original build
 did not.
+
+### How an app is addressed
+
+A deployment publishes apps one of two ways, and GET /api/v1/config reports which
+via "base_domain", "path_prefix" and "domain_template". Read it rather than
+assuming, because the answer changes what a URL looks like.
+
+- **A hostname per app** (path_prefix empty): an app with id "shop" is served at
+  shop.<base_domain>. Its "hostname" is "shop.<base_domain>" and its "url" adds a
+  scheme.
+- **One host, one path per app** (path_prefix set): every app shares
+  <base_domain> and the path says which is meant, so "shop" is served at
+  <base_domain><path_prefix>/shop.
+
+Either way, an app can override its own hostname by setting "domain" when it is
+created or updated, in which case it is served at that host's root.
+
+The prefix is stripped before a request reaches the app, so an app served under a
+prefix sees the same paths it would see if it were at the root. A
+"X-Forwarded-Prefix" header tells it where it is mounted, which is what it needs
+to build correct absolute links.
+
+In the API, an app's "hostname" is the host and "path" the path under it — so
+with a path prefix, the two together are the address and neither alone is. The
+"url" field is the whole thing, scheme included, and is empty until the app has
+been deployed.
 
 ### One namespace for everything
 

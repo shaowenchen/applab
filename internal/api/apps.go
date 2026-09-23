@@ -53,7 +53,15 @@ type appResponse struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-func toAppResponse(a *model.App, baseDomain, scheme string) appResponse {
+// addressFor resolves where an app is served under this deployment's
+// conventions. It is the one place the base domain and the path prefix are
+// combined, so a response cannot report one convention while the route uses
+// another.
+func (s *Server) addressFor(a *model.App) model.Address {
+	return a.Address(s.cfg.BaseDomain, s.cfg.PathPrefix)
+}
+
+func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string) appResponse {
 	resp := appResponse{
 		ID:           a.ID,
 		Name:         a.Name,
@@ -68,13 +76,14 @@ func toAppResponse(a *model.App, baseDomain, scheme string) appResponse {
 		CreatedAt:    a.CreatedAt,
 		UpdatedAt:    a.UpdatedAt,
 	}
-	if host := a.Hostname(baseDomain); host != "" {
-		resp.Hostname = host
+	addr := a.Address(baseDomain, pathPrefix)
+	if !addr.Empty() {
+		resp.Hostname = addr.Host
 		// Only advertised once the app has actually been deployed: a URL that
-		// 404s at the ingress reads as "deployed but broken" when the truth is
-		// "not deployed yet".
+		// 404s reads as "deployed but broken" when the truth is "not deployed
+		// yet".
 		if a.Status == model.AppStatusRunning || a.Status == model.AppStatusDeploying {
-			resp.URL = scheme + "://" + host
+			resp.URL = addr.URL(scheme)
 		}
 	}
 	return resp
@@ -159,7 +168,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.metrics.ObserveAppCreated()
 	}
 	slog.InfoContext(r.Context(), "app created", "app", app.ID)
-	respond(w, http.StatusCreated, toAppResponse(app, s.cfg.BaseDomain, s.scheme(r)))
+	respond(w, http.StatusCreated, toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
 }
 
 // createRepository delegates to the source store. It is separated so that the
@@ -188,7 +197,7 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		if a.Status == model.AppStatusDeleted && !includeDeleted {
 			continue
 		}
-		out = append(out, toAppResponse(a, s.cfg.BaseDomain, s.scheme(r)))
+		out = append(out, toAppResponse(a, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
 	}
 	respond(w, http.StatusOK, out)
 }
@@ -199,7 +208,7 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	respond(w, http.StatusOK, toAppResponse(app, s.cfg.BaseDomain, s.scheme(r)))
+	respond(w, http.StatusOK, toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
 }
 
 // updateAppRequest is the body of PATCH /api/v1/apps/{app}.
@@ -255,7 +264,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, fromStoreError(err, fmt.Sprintf("app %q", app.ID)))
 		return
 	}
-	respond(w, http.StatusOK, toAppResponse(app, s.cfg.BaseDomain, s.scheme(r)))
+	respond(w, http.StatusOK, toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
 }
 
 func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {

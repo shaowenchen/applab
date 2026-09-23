@@ -179,10 +179,17 @@ func decodeError(resp *http.Response) error {
 
 // Config is the deployment's self-description.
 type Config struct {
-	APIVersion      string          `json:"api_version"`
-	Version         string          `json:"version"`
-	APIBaseURL      string          `json:"api_base_url"`
-	BaseDomain      string          `json:"base_domain"`
+	APIVersion string `json:"api_version"`
+	Version    string `json:"version"`
+	APIBaseURL string `json:"api_base_url"`
+
+	// BaseDomain is the host apps are served under, and DomainTemplate how an
+	// app id becomes an address — "*.<domain>" with a subdomain per app, or
+	// "<domain><prefix>/<app>" when PathPrefix puts them all on one host.
+	BaseDomain     string `json:"base_domain"`
+	PathPrefix     string `json:"path_prefix"`
+	DomainTemplate string `json:"domain_template"`
+
 	Namespace       string          `json:"namespace"`
 	MaxSimpleUpload int64           `json:"max_simple_upload"`
 	ChunkSize       int64           `json:"chunk_size"`
@@ -551,8 +558,13 @@ type DeployResult struct {
 	App    App    `json:"app"`
 	Commit string `json:"commit"`
 	Image  string `json:"image"`
-	Host   string `json:"host"`
-	URL    string `json:"url"`
+
+	// Host is where the app answers and Path where under it, so a caller can
+	// see the two parts. URL is them joined with a scheme, which is what most
+	// callers want.
+	Host string `json:"host"`
+	Path string `json:"path"`
+	URL  string `json:"url"`
 
 	// Build is set instead of the fields above when the deploy started a build,
 	// which happens only when the caller asked for one.
@@ -619,6 +631,7 @@ type Status struct {
 	} `json:"live"`
 
 	Host string `json:"host"`
+	Path string `json:"path"`
 	URL  string `json:"url"`
 }
 

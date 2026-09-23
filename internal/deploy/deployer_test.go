@@ -119,12 +119,12 @@ func TestApplyCreatesEverything(t *testing.T) {
 	app := testApp()
 	image := "registry.example.com/apps/shop:abc123def456"
 
-	host, err := d.Apply(ctx, app, image)
+	addr, err := d.Apply(ctx, app, image)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if host != "shop.apps.example.com" {
-		t.Errorf("host = %q, want shop.apps.example.com", host)
+	if addr.String() != "shop.apps.example.com" {
+		t.Errorf("address = %q, want shop.apps.example.com", addr.String())
 	}
 
 	deployment, err := client.AppsV1().Deployments(app.Namespace).Get(ctx, ObjectName(app.ID), metav1.GetOptions{})
@@ -141,8 +141,8 @@ func TestApplyCreatesEverything(t *testing.T) {
 
 	vs := virtualService(t, d, app.ID)
 	hosts, _, _ := unstructured.NestedStringSlice(vs.Object, "spec", "hosts")
-	if len(hosts) != 1 || hosts[0] != host {
-		t.Errorf("virtualservice hosts = %v, want [%s]", hosts, host)
+	if len(hosts) != 1 || hosts[0] != addr.Host {
+		t.Errorf("virtualservice hosts = %v, want [%s]", hosts, addr.Host)
 	}
 
 	gateways, _, _ := unstructured.NestedStringSlice(vs.Object, "spec", "gateways")
@@ -303,12 +303,12 @@ func TestNoVirtualServiceWithoutDomain(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	host, err := d.Apply(ctx, app, "image:tag")
+	addr, err := d.Apply(ctx, app, "image:tag")
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if host != "" {
-		t.Errorf("host = %q, want empty with no base domain", host)
+	if !addr.Empty() {
+		t.Errorf("address = %q, want empty with no base domain", addr.String())
 	}
 
 	list, err := d.dynamic.Resource(virtualServiceGVR).Namespace("ops-system").List(ctx, metav1.ListOptions{})
@@ -328,12 +328,15 @@ func TestAppDomainOverride(t *testing.T) {
 	app := testApp()
 	app.Domain = "shop.acme.com"
 
-	host, err := d.Apply(ctx, app, "image:tag")
+	addr, err := d.Apply(ctx, app, "image:tag")
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if host != "shop.acme.com" {
-		t.Errorf("host = %q, want the app's own domain", host)
+	if addr.Host != "shop.acme.com" {
+		t.Errorf("host = %q, want the app's own domain", addr.Host)
+	}
+	if addr.Path != "" {
+		t.Errorf("path = %q; an app-level domain puts the app at that host's root", addr.Path)
 	}
 
 	hosts, _, _ := unstructured.NestedStringSlice(virtualService(t, d, app.ID).Object, "spec", "hosts")
@@ -759,5 +762,204 @@ func deploymentWithStatus(replicas, ready int32, conditionType appsv1.Deployment
 				Reason: reason,
 			}},
 		},
+	}
+}
+
+// pathPrefixConfig is a deployment that serves every app from one host.
+func pathPrefixConfig() Config {
+	return Config{
+		BaseDomain: "www.example.com",
+		PathPrefix: "/apps",
+		Gateway:    "ops-system/gateway",
+	}
+}
+
+// httpEntries returns a VirtualService's http routes, in order.
+func httpEntries(t *testing.T, vs *unstructured.Unstructured) []map[string]any {
+	t.Helper()
+
+	http, found, err := unstructured.NestedSlice(vs.Object, "spec", "http")
+	if err != nil || !found {
+		t.Fatalf("the virtualservice has no http routes (err=%v, found=%v)", err, found)
+	}
+	out := make([]map[string]any, 0, len(http))
+	for _, raw := range http {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("an http entry is %T, not a map", raw)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// matchPrefix returns the uri prefix an http entry matches on.
+func matchPrefix(t *testing.T, entry map[string]any) string {
+	t.Helper()
+
+	matches, ok := entry["match"].([]any)
+	if !ok || len(matches) == 0 {
+		t.Fatalf("http entry has no match: %v", entry)
+	}
+	m, ok := matches[0].(map[string]any)
+	if !ok {
+		t.Fatalf("match is %T, not a map", matches[0])
+	}
+	uri, ok := m["uri"].(map[string]any)
+	if !ok {
+		t.Fatalf("match has no uri: %v", m)
+	}
+	s, _ := uri["prefix"].(string)
+	return s
+}
+
+// TestPathPrefixRoutesByPath asserts a shared path prefix puts every app on one
+// host and tells them apart by path, stripping the prefix on the way through.
+func TestPathPrefixRoutesByPath(t *testing.T) {
+	d, _ := newTestDeployer(t, pathPrefixConfig())
+	ctx := context.Background()
+	app := testApp()
+
+	addr, err := d.Apply(ctx, app, "image:tag")
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if addr.Host != "www.example.com" {
+		t.Errorf("host = %q, want the shared host", addr.Host)
+	}
+	if addr.Path != "/apps/shop" {
+		t.Errorf("path = %q, want /apps/shop", addr.Path)
+	}
+	if got := addr.URL("https"); got != "https://www.example.com/apps/shop" {
+		t.Errorf("url = %q", got)
+	}
+
+	vs := virtualService(t, d, app.ID)
+	hosts, _, _ := unstructured.NestedStringSlice(vs.Object, "spec", "hosts")
+	if len(hosts) != 1 || hosts[0] != "www.example.com" {
+		t.Errorf("hosts = %v, want the one shared host", hosts)
+	}
+
+	entries := httpEntries(t, vs)
+	if len(entries) != 2 {
+		t.Fatalf("got %d http entries, want a redirect and a route", len(entries))
+	}
+
+	// The serving route matches a prefix that ends in a slash and rewrites the
+	// prefix away, so the app sees the paths it would see at a root.
+	serve := entries[1]
+	if got := matchPrefix(t, serve); got != "/apps/shop/" {
+		t.Errorf("serving prefix = %q, want /apps/shop/", got)
+	}
+	rewrite, ok := serve["rewrite"].(map[string]any)
+	if !ok {
+		t.Fatalf("the serving route has no rewrite: %v", serve)
+	}
+	if rewrite["uri"] != "/" {
+		t.Errorf("rewrite uri = %v, want /", rewrite["uri"])
+	}
+
+	// The app is told where it is mounted, which is how a sub-path-hosted app
+	// builds correct absolute links.
+	headers, _ := serve["headers"].(map[string]any)
+	request, _ := headers["request"].(map[string]any)
+	set, _ := request["set"].(map[string]any)
+	if set["X-Forwarded-Prefix"] != "/apps/shop" {
+		t.Errorf("X-Forwarded-Prefix = %v, want /apps/shop", set["X-Forwarded-Prefix"])
+	}
+}
+
+// TestPathPrefixDoesNotMatchANeighbouringApp is the reason the serving prefix
+// ends in a slash.
+//
+// Istio's prefix match is a plain string prefix, not a path-segment match, so
+// "/apps/shop" also matches "/apps/shop-2/cart" — and the request would then be
+// rewritten to "/-2/cart" and served by whichever app won, which with
+// cross-VirtualService ordering undefined is not even deterministic.
+func TestPathPrefixDoesNotMatchANeighbouringApp(t *testing.T) {
+	for _, neighbour := range []string{
+		"/apps/shop-2/cart", // a longer id sharing the prefix
+		"/apps/shopfront",   // an id that merely starts with it
+	} {
+		if strings.HasPrefix(neighbour, "/apps/shop/") {
+			t.Errorf("%q would be claimed by shop, but that is a different app", neighbour)
+		}
+	}
+
+	// And the prefix applab actually builds is the one that survives that.
+	addr := model.Address{Host: "www.example.com", Path: "/apps/shop"}
+	if got := addr.RoutePath(); got != "/apps/shop/" {
+		t.Errorf("RoutePath = %q, want a trailing slash", got)
+	}
+	if strings.HasPrefix("/apps/shop-2/cart", addr.RoutePath()) {
+		t.Error("the route prefix still claims a neighbouring app's path")
+	}
+}
+
+// TestPathPrefixRedirectsTheBarePath asserts "/apps/shop" without its trailing
+// slash is redirected rather than served.
+//
+// Relative links resolve against the request path, so serving the bare path
+// would make a link to "cart" resolve to "/apps/cart" — the neighbouring app.
+func TestPathPrefixRedirectsTheBarePath(t *testing.T) {
+	d, _ := newTestDeployer(t, pathPrefixConfig())
+	ctx := context.Background()
+	app := testApp()
+
+	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	entries := httpEntries(t, virtualService(t, d, app.ID))
+	first := entries[0]
+
+	matches, _ := first["match"].([]any)
+	m, _ := matches[0].(map[string]any)
+	uri, _ := m["uri"].(map[string]any)
+	if uri["exact"] != "/apps/shop" {
+		t.Errorf("the first route matches uri %v, want an exact match on /apps/shop", uri)
+	}
+
+	redirect, ok := first["redirect"].(map[string]any)
+	if !ok {
+		t.Fatalf("the first route is not a redirect: %v", first)
+	}
+	if redirect["uri"] != "/apps/shop/" {
+		t.Errorf("redirects to %v, want /apps/shop/", redirect["uri"])
+	}
+	// A permanent redirect: the correct URL for an app never changes, so a
+	// cached 301 costs nothing and saves a round trip on every later request.
+	if code := redirect["redirectCode"]; code != int64(301) {
+		t.Errorf("redirectCode = %v, want 301", code)
+	}
+}
+
+// TestNoPathPrefixKeepsPerAppHosts asserts the original behaviour is unchanged
+// when no prefix is configured: one host per app, no path, no rewrite.
+func TestNoPathPrefixKeepsPerAppHosts(t *testing.T) {
+	d, _ := newTestDeployer(t, testConfig())
+	ctx := context.Background()
+	app := testApp()
+
+	addr, err := d.Apply(ctx, app, "image:tag")
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if addr.Host != "shop.apps.example.com" {
+		t.Errorf("host = %q", addr.Host)
+	}
+	if addr.Path != "" {
+		t.Errorf("path = %q, want empty with no prefix configured", addr.Path)
+	}
+
+	entries := httpEntries(t, virtualService(t, d, app.ID))
+	if len(entries) != 1 {
+		t.Fatalf("got %d http entries, want one catch-all route", len(entries))
+	}
+	if _, hasMatch := entries[0]["match"]; hasMatch {
+		t.Error("the route has a match; an app with its own host answers every path")
+	}
+	if _, hasRewrite := entries[0]["rewrite"]; hasRewrite {
+		t.Error("the route rewrites the path; there is no prefix to strip")
 	}
 }

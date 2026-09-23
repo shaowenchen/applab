@@ -206,6 +206,19 @@ if helm template applab "$CHART" --namespace "$NS" \
   fail "a gateway without a namespace should be refused"
 fi
 
+# apps.pathPrefix has to reach the server, or every app would be given a host of
+# its own while the gateway served them under a path.
+prefixed="$(render --set "apps.pathPrefix=/apps")"
+grep -q 'APPLAB_PATH_PREFIX: "/apps"' <<<"$prefixed" \
+  || fail "apps.pathPrefix does not reach the server; apps would be routed by subdomain"
+# A prefix with no domain cannot route: the prefix is the only thing telling one
+# app from another on a shared host, so every app would be unreachable.
+if helm template applab "$CHART" --namespace "$NS" \
+  --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
+  --set "apps.pathPrefix=/apps" >/dev/null 2>&1; then
+  fail "a path prefix without a base domain should be refused"
+fi
+
 helm lint "$CHART" "${BASE[@]}" >/dev/null || fail "helm lint reported a problem"
 
 # NOT NOTES.txt: `helm template` does not render it, and `helm install --dry-run`

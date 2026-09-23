@@ -295,3 +295,91 @@ func clearEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestPathPrefixNormalization asserts the plausible spellings of a prefix are
+// accepted and mean the same thing, since "/apps/", "apps" and "/apps" are all
+// what someone would reasonably write.
+func TestPathPrefixNormalization(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "/apps", want: "/apps"},
+		{in: "apps", want: "/apps"},
+		{in: "/apps/", want: "/apps"},
+		{in: "//apps//", want: "/apps"},
+		{in: "/a/b", want: "/a/b"},
+		{in: "", want: ""},
+		// A prefix with no host has nothing to hang on: the prefix is the only
+		// thing telling one app from another, so every app would be unreachable.
+		{in: "/apps?x=1", wantErr: true},
+		{in: "/apps#frag", wantErr: true},
+		{in: "/apps//shop", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("APPLAB_KEY", "k")
+			t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+			t.Setenv("APPLAB_BASE_DOMAIN", "www.example.com")
+			t.Setenv("APPLAB_DEPLOY_GATEWAY", "istio-ingress/istio-ingress")
+			t.Setenv("APPLAB_PATH_PREFIX", tc.in)
+
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected %q to be rejected", tc.in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.PathPrefix != tc.want {
+				t.Errorf("PathPrefix = %q, want %q", cfg.PathPrefix, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathPrefixNeedsABaseDomain asserts a prefix with no domain is refused
+// rather than silently producing a deployment where nothing is reachable.
+func TestPathPrefixNeedsABaseDomain(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("APPLAB_KEY", "k")
+	t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+	t.Setenv("APPLAB_PATH_PREFIX", "/apps")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("a path prefix with no base domain should be refused")
+	}
+}
+
+// TestGatewayHasADefault asserts the gateway is usable without being set, and
+// that an operator who names one still gets theirs.
+func TestGatewayHasADefault(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("APPLAB_KEY", "k")
+	t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+	t.Setenv("APPLAB_BASE_DOMAIN", "apps.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Deploy.Gateway != "istio-ingress/istio-ingress" {
+		t.Errorf("Gateway = %q, want the default", cfg.Deploy.Gateway)
+	}
+
+	// An explicit gateway still wins over the default.
+	t.Setenv("APPLAB_DEPLOY_GATEWAY", "istio-system/istio-ingressgateway")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Deploy.Gateway != "istio-system/istio-ingressgateway" {
+		t.Errorf("Gateway = %q, want the configured one", cfg.Deploy.Gateway)
+	}
+}

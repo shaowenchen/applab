@@ -15,6 +15,7 @@ data:
 
   APPLAB_NAMESPACE: {{ include "applab.namespace" . | quote }}
   APPLAB_BASE_DOMAIN: {{ .Values.apps.baseDomain | quote }}
+  APPLAB_PATH_PREFIX: {{ .Values.apps.pathPrefix | quote }}
   APPLAB_BASE_URL: {{ include "applab.internalURL" . | quote }}
 
   # Upload limits, so a client can size its parts instead of discovering them by

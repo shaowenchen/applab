@@ -128,8 +128,8 @@ type Deployer interface {
 	// Ready reports whether the deployer can reach the cluster.
 	Ready() bool
 
-	// Apply creates or updates an app's resources and returns its hostname.
-	Apply(ctx context.Context, app *model.App, image string) (string, error)
+	// Apply creates or updates an app's resources and returns its address.
+	Apply(ctx context.Context, app *model.App, image string) (model.Address, error)
 
 	// Status reads an app's live state.
 	Status(ctx context.Context, app *model.App) (deploy.Status, error)
@@ -249,9 +249,9 @@ func (s *Server) imageFor(appID, commitSHA string) string {
 }
 
 // applyDeployment applies an app's resources through the deployer.
-func (s *Server) applyDeployment(ctx context.Context, app *model.App, image string) (string, error) {
+func (s *Server) applyDeployment(ctx context.Context, app *model.App, image string) (model.Address, error) {
 	if s.deployer == nil {
-		return "", fmt.Errorf("this deployment cannot deploy")
+		return model.Address{}, fmt.Errorf("this deployment cannot deploy")
 	}
 	return s.deployer.Apply(ctx, app, image)
 }
