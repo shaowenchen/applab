@@ -129,6 +129,11 @@ requires `Authorization: Bearer <key>`; `no key` means it does not.)_
 - `POST /api/v1/apps/{app}/source/uploads` — Begin a chunked upload for source too large for one request. Body: `{total, chunk_size, message?}`. Returns an `upload_id`. _(key)_
 - `PUT /api/v1/apps/{app}/source/uploads/{upload}/parts/{index}` — Send one part. Body is the raw bytes. `{index}` is 1-based. Parts may be sent in any order and retried. _(key)_
 - `POST /api/v1/apps/{app}/source/uploads/{upload}/complete` — Assemble every part and commit the result. Fails if any part is missing. _(key)_
+- `POST /api/v1/apps/{app}/builds` — Build an image from a commit. Body `{commit_sha?}` — omit it to build the current tip. Returns immediately; the build runs as a Job in the cluster. Returns 501 if this deployment cannot build. _(key)_
+- `GET /api/v1/apps/{app}/builds` — An app's builds, newest first. `?limit=` (default 20). _(key)_
+- `GET /api/v1/apps/{app}/builds/{build}` — One build. Its status is read from the cluster, so it reflects the Job rather than what applab last recorded. _(key)_
+- `GET /api/v1/apps/{app}/builds/{build}/logs` — The build's log, as `text/plain`. Follows the build while it runs and ends when it finishes; works unchanged for a build that has already finished. `?follow=false` returns what exists so far and stops. _(key)_
+- `GET /api/v1/apps/{app}/source/archive/{sha}` — Internal. Download a commit's source as a tar.gz. Authenticated with a single-use source token (issued when a build starts) rather than the API key, so a build job holds no credential that reaches beyond its own commit. _(no key)_
 
 ## Errors
 

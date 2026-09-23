@@ -15,10 +15,13 @@ import (
 
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/buildinfo"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/gitx"
+	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/source"
+	"github.com/shaowenchen/applab/internal/sourcetoken"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
@@ -84,6 +87,58 @@ func run() error {
 		return err
 	}
 	srv.WithGit(gitTransport)
+
+	// The cluster half is optional. A deployment with no cluster is a legitimate
+	// way to run applab — the API and the source half still work — and it is how
+	// this binary is developed. Configuration problems are reported and the
+	// deployment continues without the capability rather than refusing to start,
+	// since the source half is independently useful.
+	sourceTokens := sourcetoken.NewIssuer(sourcetoken.DefaultTTL)
+	srv.WithSourceTokens(sourceTokens)
+
+	if client, err := k8s.New(k8s.Options{
+		Kubeconfig:      cfg.Kubeconfig,
+		NamespacePrefix: cfg.NamespacePrefix,
+		OwnNamespace:    cfg.Namespace,
+	}); err != nil {
+		slog.Warn("running without cluster access: builds and deploys are unavailable", "error", err)
+	} else {
+		srv.WithNamespace(client.EnsureNamespace, client.DeleteNamespace)
+		srv.WithClusterStatus(client.Ready)
+
+		if cfg.Build.Enabled() {
+			engine := build.New(client.Clientset(), build.Config{
+				BuilderImage:       cfg.Build.BuilderImage,
+				FetcherImage:       cfg.Build.FetcherImage,
+				Registry:           cfg.Build.Registry,
+				PushSecret:         cfg.Build.PushSecret,
+				InsecureRegistry:   cfg.Build.InsecureRegistry,
+				Rootless:           cfg.Build.RootlessBuild(),
+				AppLabURL:          cfg.BaseURL,
+				CacheRepoPrefix:    cfg.Build.CacheRepoPrefix,
+				BuildCPURequest:    cfg.Build.CPURequest,
+				BuildMemoryRequest: cfg.Build.MemoryRequest,
+				BuildCPULimit:      cfg.Build.CPULimit,
+				BuildMemoryLimit:   cfg.Build.MemoryLimit,
+				WorkspaceSizeLimit: cfg.Build.WorkspaceSizeLimit,
+				ActiveDeadline:     cfg.Build.Timeout,
+			})
+			srv.WithBuild(engine)
+			slog.Info("build pipeline enabled",
+				"registry", cfg.Build.Registry,
+				"rootless", cfg.Build.RootlessBuild())
+		} else {
+			slog.Info("build pipeline disabled: no registry, builder image or fetcher image configured")
+		}
+	}
+
+	// Bring any build left in flight by a previous process up to date with the
+	// cluster. Without this a build interrupted by a restart would read as
+	// "running" forever, and a caller polling it would wait for a Job that
+	// finished minutes ago.
+	reconcileCtx, cancelReconcile := context.WithTimeout(ctx, 60*time.Second)
+	srv.ReconcileBuilds(reconcileCtx)
+	cancelReconcile()
 
 	httpServer := &http.Server{
 		Addr:    cfg.Listen,

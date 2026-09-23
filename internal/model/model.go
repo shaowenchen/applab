@@ -85,6 +85,12 @@ type App struct {
 	CommitSHA string
 	Image     string
 
+	// Namespace is where this app's resources live. It is derived from the
+	// deployment's prefix and the app id, and carried on the app so that every
+	// object applab creates for it is named consistently without each call site
+	// recomputing — and possibly recomputing differently.
+	Namespace string
+
 	// Status and StatusReason describe the most recent attempt.
 	Status       AppStatus
 	StatusReason string

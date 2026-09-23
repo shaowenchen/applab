@@ -12,7 +12,9 @@ import (
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/llms"
+	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/source"
+	"github.com/shaowenchen/applab/internal/sourcetoken"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
@@ -52,12 +54,33 @@ type Server struct {
 	// resolveCommit expands a possibly-abbreviated commit revision.
 	resolveCommit func(ctx context.Context, appID, revision string) (string, error)
 
+	// sourceArchive writes a commit's source tree as a tar.gz.
+	sourceArchive func(ctx context.Context, appID, sha string, w io.Writer) error
+
+	// sourceArchiveSize reports the archive's byte length.
+	sourceArchiveSize func(ctx context.Context, appID, sha string) (int64, error)
+
 	// namespaceDeleter tears down an app's namespace and everything in it.
 	namespaceDeleter func(ctx context.Context, appID string) error
 
-	// build and deploy report whether those halves are wired up, for
-	// /api/v1/config to advertise.
-	build  BuildEngine
+	// ensureNamespace creates an app's namespace, which a build needs before its
+	// Job can be created.
+	ensureNamespace func(ctx context.Context, appID string) error
+
+	// removeNamespace deletes an app's namespace.
+	removeNamespace func(ctx context.Context, appID string) error
+
+	// build implements the build half. Nil means this deployment cannot build.
+	build BuildEngine
+
+	// sourceTokens mints the single-use credentials a build Job fetches its
+	// source with.
+	sourceTokens *sourcetoken.Issuer
+
+	// clusterReady reports whether the cluster is reachable.
+	clusterReady func(ctx context.Context) bool
+
+	// deploy reports whether the deploy half is wired up.
 	deploy Deployer
 
 	// git is the handler serving repositories over the git smart HTTP protocol.
@@ -66,9 +89,26 @@ type Server struct {
 }
 
 // BuildEngine is the build half of the pipeline.
+//
+// It is an interface rather than a function set because a build is several
+// related operations sharing configuration, and because a deployment without a
+// cluster leaves it nil — in which case the build routes report "not
+// implemented" rather than failing obscurely.
 type BuildEngine interface {
 	// Ready reports whether the engine can start builds right now.
 	Ready() bool
+
+	// Start creates the build Job for a commit and returns its name.
+	Start(ctx context.Context, app *model.App, buildID, commitSHA, sourceToken string) (string, error)
+
+	// Status reads a Job's state. An empty status means the Job is gone.
+	Status(ctx context.Context, namespace, jobName string) (model.BuildStatus, string, error)
+
+	// Logs returns a build's output.
+	Logs(ctx context.Context, namespace, jobName string, tailLines int64) (string, error)
+
+	// ImageFor returns the image a build of a commit pushes to.
+	ImageFor(appID, commitSHA string) string
 }
 
 // Deployer is the deploy half of the pipeline.
@@ -94,6 +134,8 @@ func (s *Server) WithSource(store *source.Store) *Server {
 	s.headCommit = store.HeadCommit
 	s.resolveCommit = store.ResolveCommit
 	s.sourceLog = store.Log
+	s.sourceArchive = store.Archive
+	s.sourceArchiveSize = store.ArchiveSize
 	s.sourceIngest = func(ctx context.Context, appID string, archive io.Reader, message, parent string) (*source.IngestResult, error) {
 		return store.Ingest(ctx, appID, archive, message, parent, source.DefaultIngestLimits)
 	}
@@ -105,15 +147,90 @@ func (s *Server) WithSource(store *source.Store) *Server {
 func (s *Server) WithGit(h http.Handler) *Server { s.git = h; return s }
 
 // WithBuild attaches a build engine.
-func (s *Server) WithBuild(b BuildEngine) *Server { s.build = b; return s }
+func (s *Server) WithBuild(engine BuildEngine) *Server { s.build = engine; return s }
 
-// WithDeploy attaches a deployer.
-func (s *Server) WithDeploy(d Deployer) *Server { s.deploy = d; return s }
+// WithSourceTokens attaches the issuer that mints single-use source tokens for
+// build Jobs.
+func (s *Server) WithSourceTokens(issuer *sourcetoken.Issuer) *Server {
+	s.sourceTokens = issuer
+	return s
+}
+
+// WithNamespace attaches the namespace operations a build and a deploy need.
+func (s *Server) WithNamespace(ensure func(ctx context.Context, appID string) error, remove func(ctx context.Context, appID string) error) *Server {
+	s.ensureNamespace = ensure
+	s.removeNamespace = remove
+	return s
+}
+
+// WithClusterStatus attaches a probe reporting whether the cluster is reachable,
+// used to answer whether the deploy half is usable.
+func (s *Server) WithClusterStatus(ready func(ctx context.Context) bool) *Server {
+	s.clusterReady = ready
+	return s
+}
 
 // WithNamespaceDeleter attaches namespace teardown, used when deleting an app.
 func (s *Server) WithNamespaceDeleter(fn func(ctx context.Context, appID string) error) *Server {
 	s.namespaceDeleter = fn
+	s.removeNamespace = fn
 	return s
+}
+
+// issueSourceToken mints a single-use token granting access to one commit.
+//
+// It is a method on Server so the build handlers do not each have to know
+// whether an issuer is configured, and so the failure mode — no issuer — is one
+// clear error where it happens.
+func (s *Server) issueSourceToken(appID, commitSHA string) (string, error) {
+	if s.sourceTokens == nil {
+		return "", fmt.Errorf("no source token issuer is configured; a build job cannot fetch its source")
+	}
+	token, err := s.sourceTokens.Issue(appID, commitSHA)
+	if err != nil {
+		return "", err
+	}
+	return token.Value, nil
+}
+
+// startBuildJob creates the build Job.
+func (s *Server) startBuildJob(ctx context.Context, app *model.App, buildID, commitSHA, token string) (string, error) {
+	if s.build == nil {
+		return "", fmt.Errorf("this deployment cannot build")
+	}
+	return s.build.Start(ctx, app, buildID, commitSHA, token)
+}
+
+// buildStatus reads a build Job's state from the cluster.
+func (s *Server) buildStatus(ctx context.Context, namespace, jobName string) (model.BuildStatus, string, error) {
+	if s.build == nil {
+		return "", "", fmt.Errorf("this deployment cannot build")
+	}
+	return s.build.Status(ctx, namespace, jobName)
+}
+
+// buildLogs reads a build Job's log.
+func (s *Server) buildLogs(ctx context.Context, namespace, jobName string, tailLines int64) (string, error) {
+	if s.build == nil {
+		return "", fmt.Errorf("this deployment cannot build")
+	}
+	return s.build.Logs(ctx, namespace, jobName, tailLines)
+}
+
+// imageFor returns the image a commit's build pushes to.
+func (s *Server) imageFor(appID, commitSHA string) string {
+	if s.build == nil {
+		return ""
+	}
+	return s.build.ImageFor(appID, commitSHA)
+}
+
+// ensureNamespaceFor creates an app's namespace if needed.
+func (s *Server) ensureNamespaceFor(ctx context.Context, appID string) error {
+	if s.ensureNamespace == nil {
+		return nil
+	}
+	return s.ensureNamespace(ctx, appID)
 }
 
 // route is one endpoint: how it is matched, whether it is protected, and
@@ -133,6 +250,18 @@ type route struct {
 	// because a probe cannot hold a credential and a caller has to be able to
 	// discover what this service is before it can authenticate to it.
 	Auth bool
+
+	// TokenAuth requires a single-use source token instead of an API key.
+	//
+	// It exists for the one route a build Job calls. A build runs in the app's
+	// own namespace and executes code from whoever pushed the source, so giving
+	// it an API key — which can delete every app this installation manages —
+	// would make every build a route to total control. A source token reaches
+	// exactly one commit of one app.
+	//
+	// A route sets exactly one of Auth and TokenAuth; a test enforces that no
+	// route sets neither.
+	TokenAuth bool
 
 	// Doc describes the route in one line for llms.txt. Empty means the route
 	// is deliberately undocumented — reserved for destructive maintenance
@@ -244,6 +373,45 @@ func (s *Server) routes() []route {
 			Doc:     "Assemble every part and commit the result. Fails if any part is missing.",
 			Handler: s.handleChunkedUploadComplete,
 		},
+
+		// -- Builds -------------------------------------------------------
+		{
+			Pattern: "POST /api/v1/apps/{app}/builds",
+			Auth:    true,
+			Doc:     "Build an image from a commit. Body `{commit_sha?}` — omit it to build the current tip. Returns immediately; the build runs as a Job in the cluster. Returns 501 if this deployment cannot build.",
+			Handler: s.handleStartBuild,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/builds",
+			Auth:    true,
+			Doc:     "An app's builds, newest first. `?limit=` (default 20).",
+			Handler: s.handleListBuilds,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/builds/{build}",
+			Auth:    true,
+			Doc:     "One build. Its status is read from the cluster, so it reflects the Job rather than what applab last recorded.",
+			Handler: s.handleGetBuild,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/builds/{build}/logs",
+			Auth:    true,
+			Doc:     "The build's log, as `text/plain`. Follows the build while it runs and ends when it finishes; works unchanged for a build that has already finished. `?follow=false` returns what exists so far and stops.",
+			Handler: s.handleBuildLogs,
+		},
+
+		// -- Source archive (for build jobs) ------------------------------
+		{
+			// Documented as an internal endpoint: a build Job's init container
+			// calls it with a single-use token, not with the API key, so it is
+			// authenticated differently from everything else here. A caller with
+			// the API key never needs it — the git endpoint is the way to read a
+			// repository.
+			Pattern:   "GET /api/v1/apps/{app}/source/archive/{sha}",
+			TokenAuth: true,
+			Doc:       "Internal. Download a commit's source as a tar.gz. Authenticated with a single-use source token (issued when a build starts) rather than the API key, so a build job holds no credential that reaches beyond its own commit.",
+			Handler:   s.handleSourceArchive,
+		},
 	}
 }
 
@@ -290,7 +458,7 @@ func (s *Server) DocumentedRouteCount() int {
 func (s *Server) PatternRequiresAuth(pattern string) bool {
 	for _, r := range s.routes() {
 		if r.Pattern == pattern {
-			return r.Auth
+			return r.Auth || r.TokenAuth
 		}
 	}
 	return true
@@ -316,8 +484,11 @@ func (s *Server) Handler() http.Handler {
 
 	for _, r := range s.routes() {
 		var h http.Handler = r.Handler
-		if r.Auth {
+		switch {
+		case r.Auth:
 			h = s.auth.Middleware(h)
+		case r.TokenAuth:
+			h = s.tokenAuthMiddleware(h)
 		}
 		mux.Handle(r.Pattern, h)
 	}

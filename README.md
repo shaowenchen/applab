@@ -19,7 +19,7 @@ upload source ──▶ build image ──▶ deploy ──▶ https://<app>.<do
 |---|---|---|
 | P0 | Skeleton, auth, contract (`llms.txt`), app CRUD | done |
 | P1 | Source storage: git repositories, tarball ingest, chunked upload, git over HTTP | done |
-| P2 | BuildKit build pipeline | not started |
+| P2 | BuildKit build pipeline | done |
 | P3 | Deploy, namespaces, ingress | not started |
 | P4 | Observability: pods, events, logs | not started |
 | P5 | Console and CLI | not started |
@@ -71,6 +71,20 @@ commit. You can clone it, diff two uploads, browse the history, and check out an
 earlier revision with ordinary git tools.
 
 The tarball is how the bytes travel. The commit is what is recorded.
+
+### A build is a Job, not a daemon
+
+Each build runs as a one-shot Kubernetes Job: applab operates no build service,
+and a build's resources are released the moment it ends. The Job has two
+containers — an init container that downloads one commit's source, and a builder
+that runs BuildKit rootless over it — and **the builder never sees a credential**.
+The fetch uses a single-use token scoped to one commit, because a build runs
+arbitrary code from the uploaded Dockerfile and must not hold anything worth
+stealing.
+
+Layers are cached in the registry (`<cache-prefix>/<app>:buildcache`). A Job has
+no persistent disk, so without a registry-side cache every rebuild would start
+from nothing.
 
 ### Commits are what you deploy
 

@@ -70,9 +70,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		ChunkSize:       s.cfg.ChunkSize,
 		MaxChunkBytes:   s.cfg.MaxChunkBytes,
 		Capabilities: map[string]bool{
+			// Reported so a client can tell before it tries. A deployment with
+			// no registry or no cluster is a legitimate way to run applab — the
+			// API and the source half still work — and a caller that assumed
+			// otherwise would get a confusing 500 instead of a clear 501.
 			"build":  s.build != nil && s.build.Ready(),
 			"deploy": s.deploy != nil && s.deploy.Ready(),
 			"source": s.initSource != nil,
+			"git":    s.git != nil,
 		},
 	})
 }

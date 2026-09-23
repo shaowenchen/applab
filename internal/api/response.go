@@ -129,9 +129,18 @@ func respond(w http.ResponseWriter, status int, data any) {
 
 // fail sends an error envelope, logging the underlying cause.
 //
-// Everything unexpected becomes a generic 500 whose detail goes to the log
-// rather than the response: an internal failure's message routinely names
-// database tables, file paths or another caller's data.
+// The invariant that makes this safe: Message is always text a handler wrote
+// deliberately, and it is the only thing sent to the caller. The underlying
+// cause — which routinely names database tables, file paths or another caller's
+// data — lives in cause, reaches the log through Error(), and is never encoded
+// into a response.
+//
+// So a 5xx message is shown rather than replaced. Blanket-hiding it looked
+// safer but was a bug: 501 and 503 carry deliberate messages the caller needs
+// ("this deployment cannot build", "retrying could help"), and replacing them
+// with "internal error" turns an actionable answer into a useless one. An
+// unexpected failure is already reported as "internal error" by the fallback
+// below, which is where that wording belongs.
 func fail(w http.ResponseWriter, r *http.Request, err error) {
 	var apiErr *apiError
 	if !errors.As(err, &apiErr) {
@@ -152,12 +161,10 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 			"error", apiErr.Error())
 	}
 
-	body := errorBody{Error: apiErr.Message, Retryable: apiErr.CanRetry}
-	if apiErr.Status >= 500 {
-		// A 5xx message is ours, not the caller's, so it is safe to replace.
-		body.Error = "internal error"
-	}
-	writeJSON(w, apiErr.Status, body)
+	writeJSON(w, apiErr.Status, errorBody{
+		Error:     apiErr.Message,
+		Retryable: apiErr.CanRetry,
+	})
 }
 
 // writeText sends a plain-text body, used for llms.txt.

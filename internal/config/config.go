@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -74,6 +75,70 @@ type Config struct {
 	// MaxChunkBytes is the ceiling a single part may not exceed, regardless of
 	// what a client chose.
 	MaxChunkBytes int64 `yaml:"max_chunk_bytes"`
+
+	// Build configures the image build pipeline. It is a struct rather than
+	// loose fields because the whole group is either configured or absent:
+	// applab runs without any of it (the API and source halves still work) and
+	// reports the build capability as unavailable.
+	Build Build `yaml:"build"`
+}
+
+// Build configures how images are built and where they are pushed.
+type Build struct {
+	// Registry is the prefix an app's image is pushed under, e.g.
+	// "registry.example.com/apps". Empty disables building.
+	Registry string `yaml:"registry"`
+
+	// BuilderImage provides buildctl and buildkitd. Empty disables building.
+	BuilderImage string `yaml:"builder_image"`
+
+	// FetcherImage runs the init container that downloads the source. It needs a
+	// shell, curl and tar.
+	FetcherImage string `yaml:"fetcher_image"`
+
+	// PushSecret names a Secret holding registry credentials, copied into each
+	// app namespace. Empty means the registry needs none.
+	PushSecret string `yaml:"push_secret"`
+
+	// Rootless runs BuildKit unprivileged. Defaults to true; see the chart
+	// README for the kernel prerequisites a cluster must meet.
+	Rootless *bool `yaml:"rootless"`
+
+	// InsecureRegistry allows pushing over plain HTTP without TLS verification.
+	// Off by default because it removes the guarantee that the image that
+	// arrived is the image that was pushed.
+	InsecureRegistry bool `yaml:"insecure_registry"`
+
+	// CacheRepoPrefix enables registry-side layer caching under
+	// "<prefix>/<app>:buildcache". Empty disables caching.
+	CacheRepoPrefix string `yaml:"cache_repo_prefix"`
+
+	// Resource requests and limits for the build container.
+	CPURequest    string `yaml:"cpu_request"`
+	MemoryRequest string `yaml:"memory_request"`
+	CPULimit      string `yaml:"cpu_limit"`
+	MemoryLimit   string `yaml:"memory_limit"`
+
+	// WorkspaceSizeLimit bounds the ephemeral volume the source and BuildKit's
+	// intermediate state share.
+	WorkspaceSizeLimit string `yaml:"workspace_size_limit"`
+
+	// Timeout is how long a single build may run before it is killed.
+	Timeout time.Duration `yaml:"timeout"`
+}
+
+// RootlessBuild reports whether builds should run unprivileged, defaulting to
+// yes.
+func (b Build) RootlessBuild() bool {
+	if b.Rootless == nil {
+		return true
+	}
+	return *b.Rootless
+}
+
+// Enabled reports whether the build pipeline is configured.
+func (b Build) Enabled() bool {
+	return b.Registry != "" && b.BuilderImage != "" && b.FetcherImage != ""
 }
 
 // Default returns the configuration used when nothing is set. It is a working
@@ -95,6 +160,25 @@ func Default() Config {
 		MaxSimpleUpload: 8 << 20,
 		ChunkSize:       8 << 20,
 		MaxChunkBytes:   32 << 20,
+
+		Build: Build{
+			// Pinned rather than "latest": a moving tag would make a build's
+			// behaviour change without anything in applab changing, which is
+			// exactly the kind of surprise a build system must not have.
+			BuilderImage:  "moby/buildkit:v0.19.0",
+			FetcherImage:  "alpine:3.21",
+			CPURequest:    "500m",
+			MemoryRequest: "1Gi",
+			CPULimit:      "4",
+			MemoryLimit:   "8Gi",
+
+			// A source tree plus BuildKit's intermediate state. Generous, but
+			// bounded: an unbounded build can fill the node's disk and take
+			// other workloads down with it.
+			WorkspaceSizeLimit: "10Gi",
+
+			Timeout: 30 * time.Minute,
+		},
 	}
 }
 
@@ -141,6 +225,20 @@ func applyEnv(cfg *Config) {
 	setInt64(&cfg.ChunkSize, "APPLAB_CHUNK_SIZE")
 	setInt64(&cfg.MaxChunkBytes, "APPLAB_MAX_CHUNK_BYTES")
 
+	setString(&cfg.Build.Registry, "APPLAB_BUILD_REGISTRY")
+	setString(&cfg.Build.BuilderImage, "APPLAB_BUILD_BUILDER_IMAGE")
+	setString(&cfg.Build.FetcherImage, "APPLAB_BUILD_FETCHER_IMAGE")
+	setString(&cfg.Build.PushSecret, "APPLAB_BUILD_PUSH_SECRET")
+	setString(&cfg.Build.CacheRepoPrefix, "APPLAB_BUILD_CACHE_REPO_PREFIX")
+	setString(&cfg.Build.CPURequest, "APPLAB_BUILD_CPU_REQUEST")
+	setString(&cfg.Build.MemoryRequest, "APPLAB_BUILD_MEMORY_REQUEST")
+	setString(&cfg.Build.CPULimit, "APPLAB_BUILD_CPU_LIMIT")
+	setString(&cfg.Build.MemoryLimit, "APPLAB_BUILD_MEMORY_LIMIT")
+	setString(&cfg.Build.WorkspaceSizeLimit, "APPLAB_BUILD_WORKSPACE_SIZE_LIMIT")
+	setBool(&cfg.Build.InsecureRegistry, "APPLAB_BUILD_INSECURE_REGISTRY")
+	setBoolPtr(&cfg.Build.Rootless, "APPLAB_BUILD_ROOTLESS")
+	setDuration(&cfg.Build.Timeout, "APPLAB_BUILD_TIMEOUT")
+
 	// Singular APPLAB_KEY is accepted alongside the plural form: a deployment
 	// with one key (the common case) reads better as a single variable, and the
 	// two are merged rather than one silently winning.
@@ -168,6 +266,61 @@ func setString(dst *string, env string) {
 	if v, ok := os.LookupEnv(env); ok && strings.TrimSpace(v) != "" {
 		*dst = strings.TrimSpace(v)
 	}
+}
+
+// setBool applies a boolean environment variable, accepting the forms an
+// operator would reasonably write.
+func setBool(dst *bool, env string) {
+	v, ok := os.LookupEnv(env)
+	if !ok || strings.TrimSpace(v) == "" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		*dst = true
+	case "0", "false", "no", "off":
+		*dst = false
+	default:
+		slog.Warn("ignoring invalid boolean environment variable; keeping the default",
+			"name", env, "value", v)
+	}
+}
+
+// setBoolPtr applies a boolean to a pointer field, so an unset variable leaves
+// the field nil and a default applies downstream. That distinction matters for
+// rootless builds: nil means "use the default", not "false".
+func setBoolPtr(dst **bool, env string) {
+	v, ok := os.LookupEnv(env)
+	if !ok || strings.TrimSpace(v) == "" {
+		return
+	}
+	var b bool
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		b = true
+	case "0", "false", "no", "off":
+		b = false
+	default:
+		slog.Warn("ignoring invalid boolean environment variable; keeping the default",
+			"name", env, "value", v)
+		return
+	}
+	*dst = &b
+}
+
+// setDuration applies a Go duration string such as "30m" or "90s".
+func setDuration(dst *time.Duration, env string) {
+	v, ok := os.LookupEnv(env)
+	if !ok || strings.TrimSpace(v) == "" {
+		return
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d <= 0 {
+		slog.Warn("ignoring invalid duration environment variable; keeping the default",
+			"name", env, "value", v)
+		return
+	}
+	*dst = d
 }
 
 // setInt64 applies a numeric environment variable, rejecting a value that is not
