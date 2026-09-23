@@ -18,6 +18,7 @@ import (
 	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/buildinfo"
 	"github.com/shaowenchen/applab/internal/config"
+	"github.com/shaowenchen/applab/internal/console"
 	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/gitx"
 	"github.com/shaowenchen/applab/internal/k8s"
@@ -89,6 +90,15 @@ func run() error {
 		return err
 	}
 	srv.WithGit(gitTransport)
+
+	// The console is a client of the same public API, so it holds no privileges
+	// and adds no endpoints — it is a page, and everything it does is a call a
+	// person could make with curl.
+	if consoleHandler, err := console.New(); err != nil {
+		slog.Warn("console is unavailable", "error", err)
+	} else {
+		srv.WithConsole(consoleHandler)
+	}
 
 	// The cluster half is optional. A deployment with no cluster is a legitimate
 	// way to run applab — the API and the source half still work — and it is how

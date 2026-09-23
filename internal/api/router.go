@@ -96,6 +96,10 @@ type Server struct {
 	// git is the handler serving repositories over the git smart HTTP protocol.
 	// Nil means this deployment does not serve git.
 	git http.Handler
+
+	// console serves the web console. Nil means this deployment does not serve
+	// one.
+	console http.Handler
 }
 
 // BuildEngine is the build half of the pipeline.
@@ -167,6 +171,12 @@ func (s *Server) WithSource(store *source.Store) *Server {
 // WithGit attaches the handler that serves repositories over git's smart HTTP
 // protocol, mounted at the path the clone URLs promise.
 func (s *Server) WithGit(h http.Handler) *Server { s.git = h; return s }
+
+// WithConsole attaches the web console.
+//
+// The console is a client of the same public API, so it adds no privileges — it
+// is mounted at the root and everything under /api and /git takes precedence.
+func (s *Server) WithConsole(h http.Handler) *Server { s.console = h; return s }
 
 // WithBuild attaches a build engine.
 func (s *Server) WithBuild(engine BuildEngine) *Server { s.build = engine; return s }
@@ -733,6 +743,12 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle(r.Pattern, h)
 	}
 
+	// The console is mounted at the root, after every API route: a request that
+	// names a route reaches that route, and anything else is the console's.
+	if s.console != nil {
+		mux.Handle("/", s.console)
+	}
+
 	// The git endpoints carry binary pack data, not JSON, so they are mounted
 	// ahead of the fallback below — and behind the same key check as everything
 	// else, since a repository is not public.
@@ -750,9 +766,34 @@ func (s *Server) Handler() http.Handler {
 	// falling through to a default page. ServeMux's own 404 is plain text; this
 	// keeps every response from the API in the same JSON shape as the rest, so a
 	// client parses one error format and not two.
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fail(w, r, NotFound("no route matching %s %s", r.Method, r.URL.Path))
-	}))
+	//
+	// With a console mounted, the root is taken: the console serves its page for
+	// an unknown path, because a browser deep link like /apps/shop has to reach
+	// the single-page app rather than a 404. An unknown /api path still gets the
+	// JSON error, since the API patterns are more specific and win.
+	if s.console == nil {
+		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fail(w, r, NotFound("no route matching %s %s", r.Method, r.URL.Path))
+		}))
+	} else {
+		// With a console at the root, an unknown API path still has to answer in
+		// JSON rather than serving the page — a client that mistyped an endpoint
+		// should not have to parse HTML to find out.
+		//
+		// Each prefix is registered only when nothing else already claimed it.
+		// Registering "/git/" unconditionally would collide with the git mount
+		// above and panic at startup, which is a failure that only appears with
+		// git actually enabled — a path a unit test without a transport would
+		// never take.
+		notFound := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fail(w, r, NotFound("no route matching %s %s", r.Method, r.URL.Path))
+		})
+
+		mux.Handle("/api/", notFound)
+		if s.git == nil {
+			mux.Handle("/git/", notFound)
+		}
+	}
 
 	return s.metricsMiddleware(recoverPanic(logRequests(mux)))
 }

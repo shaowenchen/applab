@@ -22,13 +22,13 @@ upload source ──▶ build image ──▶ deploy ──▶ https://<app>.<do
 | P2 | BuildKit build pipeline | done |
 | P3 | Deploy, namespaces, ingress | done |
 | P4 | Observability: pods, events, logs, metrics | done |
-| P5 | Console and CLI | not started |
+| P5 | Console and CLI | done |
 | P6 | Helm chart | not started |
 
 ## Quick start
 
 ```bash
-make build-server
+make build          # builds bin/applab and bin/applab-cli
 
 export APPLAB_KEY="$(openssl rand -hex 32)"
 export APPLAB_DATA_DIR=./data
@@ -38,6 +38,38 @@ export APPLAB_BASE_DOMAIN=apps.example.com
 ```
 
 Then, from the project you want to deploy:
+
+```bash
+export APPLAB_URL=http://localhost:8080
+export APPLAB_KEY=<the key above>
+
+applab push myshop        # uploads, builds and deploys this directory
+```
+
+That is the whole workflow. `push` creates the app if it is new, packages the
+directory, uploads it, follows the build and waits for the rollout, and prints the
+URL. Build output and version-control directories are left out automatically.
+
+Everything else answers a question:
+
+```bash
+applab list               # what exists
+applab status myshop      # what is running, and where
+applab logs myshop -f     # watch it
+applab diagnose myshop    # why it is not working
+applab rollback myshop    # go back to an earlier upload
+```
+
+### The console
+
+The same deployment serves a web console at its root. It is a client of the same
+public API — every request it makes is one you could make with `curl` — so it has
+no privileged position and no separate backend. Sign in with the deployment's
+address and a key; both are kept in your browser.
+
+## Or by hand
+
+If you would rather not install the CLI:
 
 ```bash
 # Create the app (once).

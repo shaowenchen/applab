@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>applab</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+<style>
+  :root {
+    color-scheme: light dark;
+
+    --bg: #ffffff;
+    --bg-sunken: #f6f7f9;
+    --bg-raised: #ffffff;
+    --border: #e3e6ea;
+    --text: #1a1d21;
+    --text-muted: #6b7280;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+
+    --ok: #15803d;
+    --ok-bg: #dcfce7;
+    --warn: #a16207;
+    --warn-bg: #fef9c3;
+    --bad: #b91c1c;
+    --bad-bg: #fee2e2;
+    --busy: #1d4ed8;
+    --busy-bg: #dbeafe;
+
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --bg-sunken: #161a20;
+      --bg-raised: #1b2029;
+      --border: #2a313c;
+      --text: #e6e9ee;
+      --text-muted: #9aa4b2;
+      --accent: #4f83f1;
+      --accent-text: #0b0e12;
+
+      --ok: #6ee7a0;
+      --ok-bg: #14331f;
+      --warn: #fcd34d;
+      --warn-bg: #332b0d;
+      --bad: #fca5a5;
+      --bad-bg: #3b1616;
+      --busy: #93b4f8;
+      --busy-bg: #16233f;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-raised);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  header .spacer { flex: 1; }
+  header .endpoint { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+
+  button {
+    font: inherit;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-raised);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+  input {
+    font: inherit;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    min-width: 0;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  .card {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+  .card p { margin: 0 0 12px; color: var(--text-muted); font-size: 14px; }
+
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--bg-sunken); }
+  td.app-id { font-weight: 600; cursor: pointer; }
+  td.app-id:hover { color: var(--accent); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.busy { background: var(--busy-bg); color: var(--busy); }
+  .pill.neutral { background: var(--bg-sunken); color: var(--text-muted); }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    overflow: auto;
+    max-height: 480px;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .muted { color: var(--text-muted); }
+  .error {
+    background: var(--bad-bg);
+    color: var(--bad);
+    border: 1px solid var(--bad);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    font-size: 14px;
+  }
+  .empty { color: var(--text-muted); padding: 24px; text-align: center; }
+  .hidden { display: none !important; }
+  a { color: var(--accent); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
+  dt { color: var(--text-muted); }
+  dd { margin: 0; font-family: var(--mono); font-size: 13px; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>applab</h1>
+  <span class="endpoint" id="endpoint"></span>
+  <span class="spacer"></span>
+  <button id="signout" class="hidden">Sign out</button>
+</header>
+
+<main>
+  <div id="error" class="error hidden"></div>
+
+  <!-- Sign-in. The key is the whole identity on the server, so this is not a
+       login form in the usual sense: it stores the key in this browser and sends
+       it to the API from then on. It is never sent to the console itself, which
+       is static and has nothing to authenticate against. -->
+  <section id="signin" class="card hidden">
+    <h2>Connect</h2>
+    <p>Enter the address of your applab deployment and an API key. Both are stored only in this browser.</p>
+    <div class="row">
+      <input id="signin-url" type="url" placeholder="https://applab.example.com" style="flex:2" autocomplete="off">
+      <input id="signin-key" type="password" placeholder="API key" style="flex:2" autocomplete="off">
+      <button id="signin-go" class="primary">Connect</button>
+    </div>
+  </section>
+
+  <section id="apps-view" class="hidden">
+    <div class="card">
+      <div class="row">
+        <h2 style="flex:1;margin:0">Apps</h2>
+        <button id="refresh">Refresh</button>
+      </div>
+    </div>
+    <div class="card" style="padding:0">
+      <table>
+        <thead>
+          <tr><th>App</th><th>Status</th><th>Commit</th><th>Where</th></tr>
+        </thead>
+        <tbody id="apps"></tbody>
+      </table>
+      <div id="apps-empty" class="empty hidden">No apps yet. Push one with <span class="mono">applab push &lt;app&gt;</span>.</div>
+    </div>
+  </section>
+
+  <section id="app-view" class="hidden">
+    <div class="card">
+      <div class="row">
+        <button id="back">← Apps</button>
+        <h2 style="flex:1;margin:0" id="app-title"></h2>
+        <button id="app-restart">Restart</button>
+        <button id="app-stop">Stop</button>
+        <button id="app-delete" class="danger">Delete</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>State</h2>
+      <dl id="app-state"></dl>
+      <div id="app-problem" class="error hidden" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h2 style="flex:1;margin:0">Pods</h2>
+        <button id="pods-refresh">Refresh</button>
+      </div>
+      <table>
+        <thead><tr><th>Pod</th><th>Ready</th><th>Restarts</th><th>Reason</th></tr></thead>
+        <tbody id="pods"></tbody>
+      </table>
+      <div id="pods-empty" class="empty hidden">Nothing is running.</div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h2 style="flex:1;margin:0">Log</h2>
+        <label class="muted" style="font-size:13px">
+          <input type="checkbox" id="logs-previous"> previous instance
+        </label>
+        <button id="logs-toggle">Follow</button>
+      </div>
+      <pre id="logs" style="margin-top:12px">(not started)</pre>
+    </div>
+
+    <div class="card">
+      <h2>History</h2>
+      <table>
+        <thead><tr><th>Commit</th><th>When</th><th>Rollback</th><th>Message</th></tr></thead>
+        <tbody id="commits"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// State
+//
+// Everything lives in localStorage rather than a cookie: the console is a static
+// file with no server-side session, so there is nothing for a cookie to be set
+// by, and the key is sent to the API as a header on requests the page makes
+// itself.
+// ---------------------------------------------------------------------------
+const STORE_URL = "applab.url";
+const STORE_KEY = "applab.key";
+
+const state = {
+  url: "",
+  key: "",
+  app: "",
+  logAbort: null,
+  logFollowing: false,
+};
+
+const $ = (id) => document.getElementById(id);
+
+function show(el, visible) {
+  el.classList.toggle("hidden", !visible);
+}
+
+function setError(message) {
+  const el = $("error");
+  if (!message) { show(el, false); return; }
+  el.textContent = message;
+  show(el, true);
+}
+
+// ---------------------------------------------------------------------------
+// API
+//
+// The same envelope the CLI reads: data under "data", failures under "error"
+// with a retryable flag. There is no separate console API.
+// ---------------------------------------------------------------------------
+async function api(path, options = {}) {
+  const response = await fetch(state.url + path, {
+    ...options,
+    headers: {
+      "Authorization": "Bearer " + state.key,
+      "Accept": "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
+
+  // A failure that is not JSON means something in front of applab answered —
+  // an ingress body limit, or a proxy with no route. Reported as text, because
+  // "unexpected token < in JSON" would hide the actual cause.
+  const text = await response.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(response.status + " " + response.statusText + ": " + text.slice(0, 200));
+  }
+
+  if (!response.ok) {
+    throw new Error(body.error || (response.status + " " + response.statusText));
+  }
+  return body.data;
+}
+
+// ---------------------------------------------------------------------------
+// Presentation
+// ---------------------------------------------------------------------------
+
+// statusClass maps an app's status onto a colour. The statuses are applab's own
+// summary; "running" means the last rollout completed, not that the app is
+// healthy now — which is what the live state below it is for.
+function statusClass(status) {
+  switch (status) {
+    case "running": return "ok";
+    case "failed":
+    case "build-failed": return "bad";
+    case "building":
+    case "deploying": return "busy";
+    case "created": return "neutral";
+    default: return "neutral";
+  }
+}
+
+function pill(status) {
+  const el = document.createElement("span");
+  el.className = "pill " + statusClass(status);
+  el.textContent = status || "unknown";
+  return el;
+}
+
+function shortSHA(sha) {
+  return sha ? sha.slice(0, 10) : "—";
+}
+
+function ago(iso) {
+  if (!iso) return "—";
+  const then = new Date(iso);
+  if (isNaN(then)) return "—";
+  const seconds = (Date.now() - then.getTime()) / 1000;
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
+  return Math.floor(seconds / 86400) + "d ago";
+}
+
+// ---------------------------------------------------------------------------
+// Views
+// ---------------------------------------------------------------------------
+
+async function loadApps() {
+  setError("");
+  let apps;
+  try {
+    apps = await api("/api/v1/apps");
+  } catch (err) {
+    setError("Could not list apps: " + err.message);
+    return;
+  }
+
+  const body = $("apps");
+  body.replaceChildren();
+
+  show($("apps-empty"), apps.length === 0);
+
+  for (const app of apps) {
+    const tr = document.createElement("tr");
+
+    const id = document.createElement("td");
+    id.className = "app-id";
+    id.textContent = app.id;
+    id.onclick = () => openApp(app.id);
+    tr.appendChild(id);
+
+    const status = document.createElement("td");
+    status.appendChild(pill(app.status));
+    tr.appendChild(status);
+
+    const commit = document.createElement("td");
+    commit.className = "mono";
+    commit.textContent = shortSHA(app.commit_sha);
+    tr.appendChild(commit);
+
+    const where = document.createElement("td");
+    if (app.url) {
+      const link = document.createElement("a");
+      link.href = app.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = app.hostname;
+      where.appendChild(link);
+    } else if (app.hostname) {
+      where.className = "muted";
+      where.textContent = app.hostname + " (not deployed)";
+    } else {
+      where.className = "muted";
+      where.textContent = "—";
+    }
+    tr.appendChild(where);
+
+    body.appendChild(tr);
+  }
+}
+
+async function openApp(id) {
+  state.app = id;
+  show($("apps-view"), false);
+  show($("app-view"), true);
+  $("app-title").textContent = id;
+  stopLogs();
+
+  await Promise.all([loadAppState(), loadPods(), loadCommits()]);
+  startLogs();
+}
+
+function closeApp() {
+  stopLogs();
+  state.app = "";
+  show($("app-view"), false);
+  show($("apps-view"), true);
+  loadApps();
+}
+
+async function loadAppState() {
+  setError("");
+
+  let status;
+  try {
+    status = await api("/api/v1/apps/" + state.app + "/status");
+  } catch (err) {
+    setError("Could not read status: " + err.message);
+    return;
+  }
+
+  const list = $("app-state");
+  list.replaceChildren();
+
+  const add = (term, value) => {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    list.append(dt, dd);
+  };
+
+  add("recorded", status.status);
+  if (status.deployed && status.deployed.commit_sha) add("commit", status.deployed.commit_sha);
+  if (status.deployed && status.deployed.image) add("image", status.deployed.image);
+  if (status.deployed && status.deployed.status_reason) add("reason", status.deployed.status_reason);
+
+  // The live state is shown separately from the record, because the difference
+  // between them is the useful information: applab can believe a rollout
+  // succeeded while the pods have since stopped.
+  if (status.live) {
+    if (!status.live.deployed) {
+      add("cluster", "nothing deployed");
+    } else {
+      add("cluster", status.live.ready_replicas + "/" + status.live.desired_replicas + " ready"
+        + (status.live.available ? " (available)" : ""));
+      if (status.live.current_image) add("running image", status.live.current_image);
+    }
+  }
+  if (status.url) add("url", status.url);
+  else if (status.host) add("host", status.host + " (not deployed)");
+
+  // A rollout that cannot progress carries the reason, which is the most useful
+  // single thing to surface when an app will not come up.
+  const problem = $("app-problem");
+  if (status.live && status.live.message) {
+    problem.textContent = status.live.message;
+    show(problem, true);
+  } else {
+    show(problem, false);
+  }
+}
+
+async function loadPods() {
+  let result;
+  try {
+    result = await api("/api/v1/apps/" + state.app + "/pods");
+  } catch (err) {
+    // Observability is an optional capability; a deployment without a cluster
+    // reports 501 here, which is not a failure of the console.
+    show($("pods-empty"), true);
+    $("pods-empty").textContent = "Pods are not available: " + err.message;
+    return;
+  }
+
+  const body = $("pods");
+  body.replaceChildren();
+  show($("pods-empty"), result.pods.length === 0);
+  if (result.pods.length === 0) {
+    $("pods-empty").textContent = "Nothing is running.";
+    return;
+  }
+
+  for (const pod of result.pods) {
+    const tr = document.createElement("tr");
+
+    const name = document.createElement("td");
+    name.className = "mono";
+    name.textContent = pod.name;
+    tr.appendChild(name);
+
+    const ready = document.createElement("td");
+    ready.appendChild(pill(pod.ready ? "ready" : "not ready").cloneNode(true));
+    ready.firstChild.className = "pill " + (pod.ready ? "ok" : "bad");
+    tr.appendChild(ready);
+
+    const restarts = document.createElement("td");
+    restarts.textContent = pod.restarts;
+    tr.appendChild(restarts);
+
+    // A crash loop's reason is on the previous container instance, so the
+    // server promotes it here — this is the column that explains a failure.
+    const reason = document.createElement("td");
+    reason.className = "muted";
+    reason.textContent = pod.reason || pod.message || "—";
+    tr.appendChild(reason);
+
+    body.appendChild(tr);
+  }
+}
+
+async function loadCommits() {
+  let history;
+  try {
+    history = await api("/api/v1/apps/" + state.app + "/commits");
+  } catch (err) {
+    setError("Could not read history: " + err.message);
+    return;
+  }
+
+  // Which commits can be rolled back to is what makes this list actionable: a
+  // commit with no image cannot be deployed, and finding that out from a failed
+  // rollback is worse than seeing it here.
+  let builds = [];
+  try {
+    builds = await api("/api/v1/apps/" + state.app + "/builds");
+  } catch { /* the history is still useful without it */ }
+
+  const buildable = new Set();
+  for (const build of builds) {
+    if (build.status === "succeeded" && build.image) buildable.add(build.commit_sha);
+  }
+
+  let app = null;
+  try { app = await api("/api/v1/apps/" + state.app); } catch { /* optional */ }
+  const deployed = app ? app.commit_sha : "";
+
+  const body = $("commits");
+  body.replaceChildren();
+
+  for (const commit of history.commits) {
+    const tr = document.createElement("tr");
+
+    const sha = document.createElement("td");
+    sha.className = "mono";
+    sha.textContent = shortSHA(commit.sha);
+    tr.appendChild(sha);
+
+    const when = document.createElement("td");
+    when.className = "muted";
+    when.textContent = ago(commit.created_at);
+    tr.appendChild(when);
+
+    const action = document.createElement("td");
+    if (commit.sha === deployed) {
+      action.appendChild(pill("deployed"));
+      action.firstChild.className = "pill ok";
+    } else if (buildable.has(commit.sha)) {
+      const button = document.createElement("button");
+      button.textContent = "Roll back";
+      button.onclick = () => rollback(commit.sha);
+      action.appendChild(button);
+    } else {
+      action.appendChild(pill("no image"));
+      action.firstChild.className = "pill neutral";
+    }
+    tr.appendChild(action);
+
+    const message = document.createElement("td");
+    message.textContent = (commit.message || "").split("\n")[0] || "—";
+    tr.appendChild(message);
+
+    body.appendChild(tr);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+
+async function rollback(sha) {
+  if (!confirm("Deploy commit " + shortSHA(sha) + "?")) return;
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app + "/rollback", {
+      method: "POST",
+      body: JSON.stringify({ commit_sha: sha }),
+    });
+  } catch (err) {
+    setError("Rollback failed: " + err.message);
+    return;
+  }
+  await Promise.all([loadAppState(), loadPods(), loadCommits()]);
+}
+
+async function restart() {
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app + "/restart", { method: "POST" });
+  } catch (err) {
+    setError("Restart failed: " + err.message);
+    return;
+  }
+  await Promise.all([loadAppState(), loadPods()]);
+}
+
+async function stop() {
+  if (!confirm("Stop " + state.app + "?\n\nIts source and history are kept, so it can be deployed again.")) return;
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app + "/stop", { method: "POST" });
+  } catch (err) {
+    setError("Stop failed: " + err.message);
+    return;
+  }
+  await Promise.all([loadAppState(), loadPods()]);
+}
+
+async function remove() {
+  // Deleting destroys the source as well as the running app, and there is no
+  // undo — so the app id has to be typed rather than a button clicked.
+  const typed = prompt("This deletes " + state.app + " and its source, and cannot be undone.\n\nType the app id to confirm:");
+  if (typed !== state.app) return;
+
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app, { method: "DELETE" });
+  } catch (err) {
+    setError("Delete failed: " + err.message);
+    return;
+  }
+  closeApp();
+}
+
+// ---------------------------------------------------------------------------
+// Logs
+//
+// Streamed with fetch rather than EventSource, because EventSource cannot send
+// an Authorization header — and the key must never go in a URL, where it would
+// end up in access logs and history.
+// ---------------------------------------------------------------------------
+
+function stopLogs() {
+  if (state.logAbort) {
+    state.logAbort.abort();
+    state.logAbort = null;
+  }
+  state.logFollowing = false;
+  const toggle = $("logs-toggle");
+  if (toggle) toggle.textContent = "Follow";
+}
+
+async function startLogs() {
+  stopLogs();
+
+  const el = $("logs");
+  el.textContent = "";
+
+  const controller = new AbortController();
+  state.logAbort = controller;
+  state.logFollowing = true;
+  $("logs-toggle").textContent = "Stop";
+
+  const params = new URLSearchParams({ follow: "false", tail: "500" });
+  if ($("logs-previous").checked) params.set("previous", "true");
+
+  try {
+    const response = await fetch(
+      state.url + "/api/v1/apps/" + state.app + "/logs?" + params.toString(),
+      { headers: { "Authorization": "Bearer " + state.key }, signal: controller.signal }
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      let message = response.status + " " + response.statusText;
+      try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
+      el.textContent = "Could not read the log: " + message;
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      el.textContent += decoder.decode(value, { stream: true });
+      el.scrollTop = el.scrollHeight;
+    }
+    if (el.textContent === "") el.textContent = "(no output)";
+  } catch (err) {
+    if (err.name !== "AbortError") el.textContent = "Log stream ended: " + err.message;
+  } finally {
+    if (state.logAbort === controller) {
+      state.logAbort = null;
+      state.logFollowing = false;
+      $("logs-toggle").textContent = "Follow";
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sign in
+// ---------------------------------------------------------------------------
+
+function saveCredentials(url, key) {
+  state.url = url.replace(/\/+$/, "");
+  state.key = key;
+  try {
+    localStorage.setItem(STORE_URL, state.url);
+    localStorage.setItem(STORE_KEY, state.key);
+  } catch { /* storage can be unavailable; the session still works in memory */ }
+}
+
+function loadCredentials() {
+  try {
+    return {
+      url: localStorage.getItem(STORE_URL) || "",
+      key: localStorage.getItem(STORE_KEY) || "",
+    };
+  } catch {
+    // A browser with site data blocked throws rather than returning null; the
+    // console has to work anyway, just without remembering anything.
+    return { url: "", key: "" };
+  }
+}
+
+function clearCredentials() {
+  try {
+    localStorage.removeItem(STORE_URL);
+    localStorage.removeItem(STORE_KEY);
+  } catch { /* nothing to do */ }
+  state.url = "";
+  state.key = "";
+}
+
+async function connect(url, key) {
+  setError("");
+  saveCredentials(url, key);
+
+  try {
+    await api("/api/v1/config");
+  } catch (err) {
+    setError("Could not connect: " + err.message);
+    return false;
+  }
+
+  $("endpoint").textContent = state.url;
+  show($("signin"), false);
+  show($("signout"), true);
+  show($("apps-view"), true);
+  await loadApps();
+  return true;
+}
+
+function signOut() {
+  stopLogs();
+  clearCredentials();
+  $("endpoint").textContent = "";
+  show($("signout"), false);
+  show($("apps-view"), false);
+  show($("app-view"), false);
+  show($("signin"), true);
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+
+$("signin-go").onclick = () => {
+  const url = $("signin-url").value.trim();
+  const key = $("signin-key").value.trim();
+  if (!url || !key) { setError("Both the URL and a key are required."); return; }
+  connect(url, key);
+};
+$("signin-key").onkeydown = (e) => { if (e.key === "Enter") $("signin-go").click(); };
+$("signin-url").onkeydown = (e) => { if (e.key === "Enter") $("signin-key").focus(); };
+
+$("signout").onclick = signOut;
+$("refresh").onclick = () => { loadApps(); };
+$("back").onclick = closeApp;
+$("app-restart").onclick = restart;
+$("app-stop").onclick = stop;
+$("app-delete").onclick = remove;
+$("pods-refresh").onclick = loadPods;
+
+$("logs-toggle").onclick = () => {
+  if (state.logFollowing) stopLogs();
+  else startLogs();
+};
+$("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
+
+// On boot: use saved credentials if there are any, and default the URL to the
+// origin this page was served from — which is the deployment itself.
+(async function boot() {
+  const saved = loadCredentials();
+  $("signin-url").value = saved.url || window.location.origin;
+
+  if (saved.url && saved.key) {
+    await connect(saved.url, saved.key);
+    return;
+  }
+
+  // No saved credentials: show the form, but pre-fill and try the origin, since
+  // a console served by the deployment is usually talking to that deployment.
+  show($("signin"), true);
+  $("signin-key").focus();
+})();
+</script>
+</body>
+</html>
