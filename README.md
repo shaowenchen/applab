@@ -155,6 +155,13 @@ Objects are told apart by their `applab.io/app` label rather than by where they
 live. Deleting an app removes its objects and leaves the rest alone — including
 applab's own Deployment, which sits in the same namespace with no app label.
 
+Because the namespace no longer separates an app from applab's own credentials,
+**neither an app's pods nor a build's are given a Kubernetes API token**
+(`automountServiceAccountToken: false`). Every pod gets one by default, and in
+this namespace that token can read every Secret — the API keys, the registry
+credentials. An app is arbitrary code from whoever pushed the source, so it has
+no business holding a credential that reaches applab itself.
+
 ### How apps are published
 
 Through an **Istio gateway**, not an Ingress: the routing in front of these apps

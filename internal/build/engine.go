@@ -261,7 +261,17 @@ func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image stri
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					// No API token. A build runs arbitrary code from the uploaded
+					// Dockerfile, and Kubernetes mounts a service account token
+					// into every pod by default — which in this namespace grants
+					// read access to every Secret, including the registry
+					// credentials beside it. Nothing in this Job needs to talk to
+					// the API server: the init container fetches its source over
+					// HTTP with a single-use token, and the builder only pushes to
+					// a registry. Turning it off is what makes "the builder never
+					// sees a credential" true rather than aspirational.
+					AutomountServiceAccountToken: ptr(false),
+					RestartPolicy:                corev1.RestartPolicyNever,
 					SecurityContext: &corev1.PodSecurityContext{
 						// BuildKit's rootless mode needs a user namespace with a
 						// subuid range. fsGroup makes the shared workspace writable

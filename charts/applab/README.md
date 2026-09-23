@@ -170,6 +170,13 @@ boundary. A resource-hungry app affects its neighbours, and an operator reading
 `kubectl get pods` sees every app at once. The CPU and memory limits on each app
 container are the only bound — which is why `deploy.appResources` exists.
 
+One thing the chart cannot do for you: **an app's pods and a build's are given no
+Kubernetes API token** (`automountServiceAccountToken: false`), because the
+namespace no longer separates them from applab's own Secrets. Without that, any
+app could read the API keys and the registry credentials out of the namespace it
+runs in. It is set by applab, so there is nothing to configure — but if you
+deploy an app by hand into this namespace, turn it off there too.
+
 ## Values
 
 See [`values.yaml`](values.yaml) for every option, each with a note on what it

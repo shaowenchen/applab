@@ -108,6 +108,35 @@ func TestStartCreatesJobAndSecret(t *testing.T) {
 // TestJobSecurityContext asserts the security posture, which is the part of a
 // generated manifest that is easiest to get wrong and hardest to notice.
 func TestJobSecurityContext(t *testing.T) {
+	t.Run("the build pod is given no API token", func(t *testing.T) {
+		// Kubernetes mounts a service account token into every pod by default,
+		// and in applab's namespace that token can read every Secret — including
+		// the API keys and the registry credentials sitting beside it. A build
+		// runs arbitrary code from the uploaded Dockerfile, so the default is
+		// exactly the wrong answer here.
+		engine, client := newTestEngine(t)
+		ctx := context.Background()
+		app := testApp()
+		createNamespace(t, client, app.Namespace)
+
+		jobName, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		job, err := client.BatchV1().Jobs(app.Namespace).Get(ctx, jobName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("get job: %v", err)
+		}
+
+		mount := job.Spec.Template.Spec.AutomountServiceAccountToken
+		if mount == nil {
+			t.Fatal("AutomountServiceAccountToken is unset, so the build pod gets a token by default")
+		}
+		if *mount {
+			t.Error("the build pod is given a Kubernetes API token; a build could read applab's own Secrets")
+		}
+	})
+
 	t.Run("rootless is unprivileged", func(t *testing.T) {
 		engine, client := newTestEngine(t)
 		ctx := context.Background()

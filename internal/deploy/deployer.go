@@ -212,6 +212,19 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 					Annotations: annotations,
 				},
 				Spec: corev1.PodSpec{
+					// No API token. An app is arbitrary code from whoever pushed
+					// the source, and it runs in the same namespace as applab
+					// itself. Kubernetes mounts a service account token into every
+					// pod by default, and that token can read every Secret in the
+					// namespace — including the API keys that authenticate every
+					// other app, and the registry credentials. An app has no
+					// legitimate use for the Kubernetes API, so it does not get one.
+					//
+					// This is the app-side half of the single-namespace trade: the
+					// namespace boundary that used to sit between an app and
+					// applab's own credentials is gone, so the token has to go with
+					// it.
+					AutomountServiceAccountToken: ptr(false),
 					Containers: []corev1.Container{{
 						Name:  "app",
 						Image: image,

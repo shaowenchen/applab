@@ -439,6 +439,25 @@ func TestVirtualServiceAnnotationsCanBeRemoved(t *testing.T) {
 	}
 }
 
+// TestAppPodsGetNoAPIToken asserts an app cannot reach the Kubernetes API.
+//
+// Every pod gets a service account token mounted by default, and in this
+// namespace that token can read every Secret — including the API keys that
+// authenticate every other app and the registry credentials. An app is arbitrary
+// code from whoever pushed the source, and since apps share a namespace with
+// applab there is no longer a boundary doing this job.
+func TestAppPodsGetNoAPIToken(t *testing.T) {
+	d, _ := newTestDeployer(t, testConfig())
+
+	podSpec := buildDeploymentForTest(t, d, testApp()).Spec.Template.Spec
+	if podSpec.AutomountServiceAccountToken == nil {
+		t.Fatal("AutomountServiceAccountToken is unset, so the app gets a token by default")
+	}
+	if *podSpec.AutomountServiceAccountToken {
+		t.Error("the app's pods are given a Kubernetes API token; they can read applab's own Secrets")
+	}
+}
+
 // TestPodSecurityHardening asserts an uploaded app cannot escalate privilege.
 // An app's code comes from whoever pushed the source, so it is untrusted by
 // construction.
