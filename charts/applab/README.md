@@ -221,6 +221,30 @@ curl -s https://applab.example.com/llms.txt
 applab config
 ```
 
+## Installing a development build
+
+Every push to the default branch publishes a chart versioned `<Chart.yaml
+version>-dev`, replacing the previous one. Its `appVersion` is the commit it was
+built from, so a release that is installed is traceable back to its code.
+
+```bash
+helm repo add applab https://shaowenchen.github.io/applab
+helm repo update
+
+helm upgrade --install applab applab/applab \
+  --namespace ops-system --set ... \
+  --version 0.1.0-dev
+```
+
+Pin `--version` when you want the dev build. Without it, `helm install` takes the
+highest version in the repository, which is whatever release was tagged last —
+dev builds sort *below* releases, deliberately, so an install that does not ask
+for one never gets one.
+
+Tagged releases (`v0.2.0` → chart `0.2.0`) are published alongside and never
+pruned. Only the `-dev` package is replaced, so a development build can never
+remove a release.
+
 ## Upgrading
 
 ```bash

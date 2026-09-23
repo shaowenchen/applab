@@ -113,6 +113,15 @@ helm-template:
 helm-lint:
 	helm lint charts/applab
 
+# Package the chart into a Helm repository directory. Needs helm; the same
+# script CI runs, so a local publish and a published one cannot diverge.
+#   make chart-package VERSION=0.1.0-dev PAGES=./pages
+.PHONY: chart-package
+chart-package: PAGES ?= ./pages
+chart-package:
+	@mkdir -p $(PAGES)
+	./hack/package-chart.sh $${VERSION:-0.1.0-dev} $${APP_VERSION:-$$(git rev-parse --short HEAD)} $(PAGES) $${REPO_URL:-https://shaowenchen.github.io/applab}
+
 # Render the chart and assert what was wrong before. Skips if helm is absent.
 # Separate from `check` because helm is a chart-only dependency: requiring it to
 # run the Go tests would make the common case need an install it does not.
