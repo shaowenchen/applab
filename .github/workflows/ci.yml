@@ -152,23 +152,28 @@ jobs:
           echo "app_version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       # A working copy of gh-pages, so the packages already published are here
-      # and the regenerated index covers them too. A fresh repository rather
-      # than a worktree of this one: gh-pages shares no history with the code,
-      # and a worktree of an orphan branch is fiddly to get right.
+      # and the regenerated index covers them too.
+      #
+      # A worktree of this clone rather than a fresh repository. actions/checkout
+      # stores the credential it authenticates with in this clone's git config,
+      # and a separate `git init` inherits none of it — so its push fails with
+      # exit code 128 and a message about authentication that points at
+      # everything except the actual cause.
       - name: Prepare the chart repository
         run: |
-          mkdir pages
-          git -C pages init -q -b gh-pages
-          git -C pages remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch origin gh-pages --depth=1 || true
 
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            git -C pages fetch --depth=1 origin gh-pages
-            git -C pages reset --hard FETCH_HEAD
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git worktree add pages --track -b gh-pages origin/gh-pages
             echo "continuing from the published chart repository"
           else
-            # First publish. An empty branch is the correct starting point: the
-            # index is generated from what is here, so starting from the code
-            # tree would index the source as a chart repository.
+            # Nothing published yet. An orphan branch is the right starting
+            # point: gh-pages shares no history with the code, and the index is
+            # generated from what the directory contains, so starting from the
+            # source tree would index the source as a chart repository.
+            git worktree add --detach pages
+            git -C pages checkout --orphan gh-pages
+            git -C pages rm -rf . >/dev/null 2>&1 || true
             echo "gh-pages does not exist yet; starting an empty one"
           fi
 
