@@ -2,10 +2,10 @@ apiVersion: v1
 entries:
   applab:
   - apiVersion: v2
-    appVersion: af5ce99
-    created: "2026-09-23T09:43:55.285822247Z"
+    appVersion: c20b1c7
+    created: "2026-09-23T10:12:26.730793401Z"
     description: Deploy an application to Kubernetes by uploading its source
-    digest: 3e13dbc080769fead6e93d19e4a082dee9d6555b4b4ffb7baa84cc605af323e6
+    digest: d1397791b3fe87e342fe9b45770da0fa70409f4acb9809b2bb4a66fa0bf18658
     icon: https://www.chenshaowen.com/logo.png
     keywords:
     - paas
@@ -23,4 +23,4 @@ entries:
     urls:
     - https://shaowenchen.github.io/applab/applab-0.1.0-dev.tgz
     version: 0.1.0-dev
-generated: "2026-09-23T09:43:55.28469815Z"
+generated: "2026-09-23T10:12:26.729772129Z"
