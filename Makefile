@@ -129,6 +129,18 @@ chart-package:
 helm-check:
 	./hack/helm-check.sh
 
+# Render this repository's documentation into the static site published
+# alongside the chart. Needs no helm and no cluster: it reads the markdown and
+# writes HTML, and fails on a link that would be dead on the site.
+#   make docs PAGES=./pages
+.PHONY: docs
+docs: PAGES ?= ./pages
+docs:
+	@mkdir -p $(PAGES)
+	go run ./cmd/gendocs -dest $(PAGES) \
+		-repo $${REPO_URL:-https://github.com/shaowenchen/applab} \
+		-branch $${REPO_BRANCH:-master}
+
 .PHONY: help
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

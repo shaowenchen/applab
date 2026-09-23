@@ -188,7 +188,22 @@ jobs:
             "${{ steps.version.outputs.version }}" \
             "${{ steps.version.outputs.app_version }}" \
             pages \
-            "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+            "https://www.chenshaowen.com/applab"
+
+      # The published root would otherwise be a bare listing of index.yaml and a
+      # .tgz, which is a poor landing place for someone who has just run
+      # `helm repo add`. The pages are generated from this repository's own
+      # markdown, so they cannot drift from the README.
+      #
+      # It runs before the commit rather than in its own job because both write
+      # to gh-pages, and one writer is the whole reason the index is rebuilt from
+      # the directory's contents instead of merged.
+      - name: Render the documentation
+        run: |
+          go run ./cmd/gendocs \
+            -dest pages \
+            -repo "https://github.com/${{ github.repository }}" \
+            -branch "${{ github.event.repository.default_branch }}"
 
       - name: Publish
         run: |

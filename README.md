@@ -250,6 +250,7 @@ make check          # fmt, vet, llms.txt consistency, tests — the gate CI runs
 make test           # tests only
 make coverage       # coverage summary
 make llms           # regenerate api/llms.txt from the route table
+make docs           # render the documentation site into ./pages
 ```
 
 Requires Go 1.24+ and `git` on `PATH`. Nothing else: the SQLite driver is pure Go,
@@ -266,6 +267,23 @@ own handler with `httptest`.
 code, only to check the chart. It renders the chart and asserts what the
 rendering has to contain — a chart whose templates are wrong still renders, so
 "it rendered" is not evidence of anything.
+
+### The documentation site
+
+`https://www.chenshaowen.com/applab` is both the Helm repository and these
+documents. The site is generated from this repository's own markdown — this file,
+the chart's README, and `api/llms.txt` — by `cmd/gendocs`, so the pages cannot
+drift from the documents people actually edit.
+
+A link in the markdown names a repository file, which is not where anything lives
+on the site, so links are rewritten to a resolved target: another page, or GitHub
+for a file like the license. A link that resolves to neither **fails the build**,
+because a dead end in a document someone is reading is the markdown author's to
+fix, not the reader's to discover.
+
+The destination is shared with the chart repository, so the build removes exactly
+what the previous one wrote, recorded in a manifest, rather than clearing the
+directory. `make docs` renders it into a directory of your own.
 
 ## Configuration
 
