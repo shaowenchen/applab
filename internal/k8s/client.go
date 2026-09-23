@@ -1,10 +1,15 @@
 // Package k8s builds the Kubernetes clients applab uses and owns the naming
 // rules for the objects it creates.
 //
-// One rule governs everything here: applab only ever touches namespaces carrying
-// its configured prefix. That is what lets several applab installations share a
-// cluster without one deleting the other's applications, and it is enforced at
-// the point a namespace name is computed rather than trusted at each call site.
+// One rule governs everything here: applab only ever touches its own namespace.
+// Every app it deploys lives there too, rather than in a namespace of its own,
+// which is what lets applab hold a namespaced Role instead of a ClusterRole — it
+// has no permission anywhere else in the cluster.
+//
+// The consequence is that a namespace no longer separates one app's objects from
+// another's. The `applab.io/app` label does, so anything that lists or deletes
+// objects must filter by it, and nothing here may assume a namespace contains
+// only the app it was asked about.
 package k8s
 
 import (
@@ -14,23 +19,35 @@ import (
 	"path/filepath"
 	"strings"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// LabelApp identifies the app an object belongs to.
+//
+// It is the only thing distinguishing one app's objects from another's in the
+// shared namespace, so every object applab creates carries it and every query
+// that could return another app's object filters by it.
+const LabelApp = "applab.io/app"
+
 // Client wraps the Kubernetes clientset with the few conveniences applab needs.
 type Client struct {
 	clientset kubernetes.Interface
 
-	// namespacePrefix is prepended to an app id to name that app's namespace.
-	namespacePrefix string
+	// dynamic reads and writes resources that are not in client-go, which is
+	// how Istio's VirtualService is handled without depending on istio.io/api.
+	dynamic dynamic.Interface
 
-	// ownNamespace is where applab itself runs.
-	ownNamespace string
+	// namespace is the one namespace applab uses for everything.
+	namespace string
 }
 
 // Options configure the client.
@@ -39,8 +56,8 @@ type Options struct {
 	// first, falling back to the ambient kubeconfig.
 	Kubeconfig string
 
-	NamespacePrefix string
-	OwnNamespace    string
+	// Namespace is where applab runs and where it deploys every app.
+	Namespace string
 }
 
 // New builds a client.
@@ -50,6 +67,13 @@ type Options struct {
 // fallbacks exist so it can be developed and tested outside a cluster, which is
 // where most of its behaviour is checked.
 func New(opts Options) (*Client, error) {
+	if strings.TrimSpace(opts.Namespace) == "" {
+		// Not merely a convenience check: Kubernetes reads "" as the default
+		// namespace, so an unset value would quietly deploy every app into
+		// `default` instead of failing.
+		return nil, fmt.Errorf("namespace must not be empty: an empty namespace is read as \"default\" by the API server, so objects would be created somewhere other than intended")
+	}
+
 	cfg, err := restConfig(opts.Kubeconfig)
 	if err != nil {
 		return nil, err
@@ -60,14 +84,15 @@ func New(opts Options) (*Client, error) {
 		return nil, fmt.Errorf("build kubernetes client: %w", err)
 	}
 
-	if opts.NamespacePrefix == "" {
-		return nil, fmt.Errorf("namespace prefix must not be empty: applab would enumerate every namespace in the cluster")
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build dynamic client: %w", err)
 	}
 
 	return &Client{
-		clientset:       clientset,
-		namespacePrefix: opts.NamespacePrefix,
-		ownNamespace:    opts.OwnNamespace,
+		clientset: clientset,
+		dynamic:   dyn,
+		namespace: opts.Namespace,
 	}, nil
 }
 
@@ -76,12 +101,15 @@ func New(opts Options) (*Client, error) {
 // It exists so the handlers can be exercised against a fake clientset with no
 // cluster and no kubeconfig, which is what makes most of this package's
 // behaviour testable on a laptop.
-func NewWithClientset(clientset kubernetes.Interface, namespacePrefix, ownNamespace string) *Client {
-	return &Client{
-		clientset:       clientset,
-		namespacePrefix: namespacePrefix,
-		ownNamespace:    ownNamespace,
-	}
+func NewWithClientset(clientset kubernetes.Interface, namespace string) *Client {
+	return &Client{clientset: clientset, namespace: namespace}
+}
+
+// NewWithDynamic attaches a dynamic client, for tests that exercise the Istio
+// resources as well as the built-in ones.
+func (c *Client) NewWithDynamic(dyn dynamic.Interface) *Client {
+	c.dynamic = dyn
+	return c
 }
 
 // restConfig resolves a Kubernetes REST config.
@@ -116,168 +144,202 @@ func restConfig(kubeconfig string) (*rest.Config, error) {
 // Clientset exposes the underlying clientset.
 func (c *Client) Clientset() kubernetes.Interface { return c.clientset }
 
-// NamespaceFor returns the namespace an app is deployed into.
+// Dynamic exposes the client for resources outside client-go, such as Istio's.
+func (c *Client) Dynamic() dynamic.Interface { return c.dynamic }
+
+// Namespace returns the namespace an app's resources live in — the one applab
+// itself runs in, since every app shares it.
 //
-// Every object applab creates is named through this, so the prefix rule holds
-// everywhere by construction.
-func (c *Client) NamespaceFor(appID string) string {
-	return c.namespacePrefix + appID
+// The app id does not affect the result. It is a parameter because the callers
+// that have an app at hand read better for passing it, and because the app is
+// what all of them are actually talking about.
+func (c *Client) Namespace(appID string) string {
+	return c.namespace
 }
 
-// OwnsNamespace reports whether a namespace belongs to this installation.
+// OwnsNamespace reports whether a namespace is the one applab uses.
 //
 // It is the check that keeps applab from touching anything it did not create,
-// and it is deliberately strict: a namespace name without the prefix is not
-// applab's, whatever it contains.
+// and it is deliberately strict: any other namespace is not applab's, whatever
+// it contains.
 //
-// An empty prefix is rejected explicitly rather than falling out of the prefix
-// test. Every string has the empty string as a prefix, so without this the
-// predicate would answer yes for every namespace in the cluster — turning the
-// check that exists to confine applab into one that grants it everything. New
-// refuses an empty prefix, but this is the function that actually decides, so
-// it does not delegate that guarantee to a caller.
+// An empty namespace is rejected explicitly. Kubernetes reads "" as the default
+// namespace, so treating it as a match would point every operation at
+// `default` — the opposite of confining applab to its own space.
 func (c *Client) OwnsNamespace(namespace string) bool {
-	if c.namespacePrefix == "" {
-		return false
-	}
-	return strings.HasPrefix(namespace, c.namespacePrefix) && len(namespace) > len(c.namespacePrefix)
+	return namespace != "" && namespace == c.namespace
 }
 
-// EnsureNamespace creates an app's namespace if it is missing.
+// DeleteAppObjects removes everything applab created for one app.
 //
-// Labels record which app and which installation it belongs to, so an operator
-// looking at a namespace in the cluster can tell where it came from without
-// consulting applab.
-func (c *Client) EnsureNamespace(ctx context.Context, appID string) error {
-	namespace := c.NamespaceFor(appID)
-
-	_, err := c.clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "applab",
-				"applab.io/app":                appID,
-			},
-		},
-	}, metav1.CreateOptions{})
-
-	if err == nil || apierrors.IsAlreadyExists(err) {
-		return nil
-	}
-	return fmt.Errorf("create namespace %s: %w", namespace, err)
-}
-
-// DeleteNamespace removes an app's namespace and everything in it.
+// This is what deleting an app means now that apps share a namespace: there is
+// no namespace to drop, so the objects are found by label and removed
+// individually.
 //
-// It refuses a namespace this installation does not own, so a caller that got an
-// app id wrong cannot delete someone else's workloads. That refusal is the whole
-// reason this method exists rather than callers deleting namespaces directly.
-func (c *Client) DeleteNamespace(ctx context.Context, appID string) error {
-	namespace := c.NamespaceFor(appID)
-
+// Every list is checked before anything is deleted. Deletion is irreversible and
+// the selector is the only thing standing between one app's objects and
+// another's — or between an app's objects and applab's own Deployment, which
+// carries no app label but does live in this namespace. A mislabeled or
+// over-broad selector deletes things nobody asked to delete, and a second read
+// is a cheap price for noticing that first.
+func (c *Client) DeleteAppObjects(ctx context.Context, appID string) error {
+	namespace := c.Namespace(appID)
 	if !c.OwnsNamespace(namespace) {
-		return fmt.Errorf("refusing to delete namespace %q: it does not carry this installation's prefix %q", namespace, c.namespacePrefix)
+		return fmt.Errorf("refusing to delete app %q's objects in namespace %q: it is not this installation's namespace %q",
+			appID, namespace, c.namespace)
 	}
 
-	err := c.clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
-	if err == nil || apierrors.IsNotFound(err) {
-		return nil
+	selector := LabelApp + "=" + appID
+
+	// Everything the app owns is labeled, so a single selector identifies all of
+	// it. Listed per kind rather than deleted blind so the assertion below can
+	// see what it is about to remove.
+	deployments, err := c.clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return fmt.Errorf("list deployments for app %s: %w", appID, err)
 	}
-	return fmt.Errorf("delete namespace %s: %w", namespace, err)
+	services, err := c.clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return fmt.Errorf("list services for app %s: %w", appID, err)
+	}
+	ingresses, err := c.clientset.NetworkingV1().Ingresses(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return fmt.Errorf("list ingresses for app %s: %w", appID, err)
+	}
+	jobs, err := c.clientset.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return fmt.Errorf("list jobs for app %s: %w", appID, err)
+	}
+	secrets, err := c.clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return fmt.Errorf("list secrets for app %s: %w", appID, err)
+	}
+
+	// The label selector is the safety property, so it is verified rather than
+	// assumed: a client that ignored the selector, or an object labeled by
+	// something else, would otherwise be deleted without a word.
+	for _, group := range []struct {
+		kind    string
+		objects []metav1.Object
+	}{
+		{"deployment", deploymentObjects(deployments.Items)},
+		{"service", serviceObjects(services.Items)},
+		{"ingress", ingressObjects(ingresses.Items)},
+		{"job", jobObjects(jobs.Items)},
+		{"secret", secretObjects(secrets.Items)},
+	} {
+		if err := checkAppLabels(group.kind, appID, namespace, group.objects); err != nil {
+			return err
+		}
+	}
+
+	foreground := metav1.DeletePropagationForeground
+
+	// Jobs first, so their pods stop before the app's Deployment is torn down
+	// and a build cannot be left running against a namespace entry that no
+	// longer describes it.
+	for i := range jobs.Items {
+		name := jobs.Items[i].Name
+		if err := c.clientset.BatchV1().Jobs(namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &foreground}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete job %s for app %s: %w", name, appID, err)
+		}
+	}
+	for i := range deployments.Items {
+		name := deployments.Items[i].Name
+		if err := c.clientset.AppsV1().Deployments(namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &foreground}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete deployment %s for app %s: %w", name, appID, err)
+		}
+	}
+	for i := range services.Items {
+		name := services.Items[i].Name
+		if err := c.clientset.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete service %s for app %s: %w", name, appID, err)
+		}
+	}
+	for i := range ingresses.Items {
+		name := ingresses.Items[i].Name
+		if err := c.clientset.NetworkingV1().Ingresses(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete ingress %s for app %s: %w", name, appID, err)
+		}
+	}
+	// Secrets last. A build token secret is mounted by a Job, so removing it
+	// before the Job is gone would leave a pod referencing a secret that no
+	// longer exists.
+	for i := range secrets.Items {
+		name := secrets.Items[i].Name
+		if err := c.clientset.CoreV1().Secrets(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete secret %s for app %s: %w", name, appID, err)
+		}
+	}
+
+	return nil
 }
 
-// NamespaceExists reports whether an app's namespace is present.
-func (c *Client) NamespaceExists(ctx context.Context, appID string) (bool, error) {
-	_, err := c.clientset.CoreV1().Namespaces().Get(ctx, c.NamespaceFor(appID), metav1.GetOptions{})
-	if err == nil {
-		return true, nil
-	}
-	if apierrors.IsNotFound(err) {
-		return false, nil
-	}
-	return false, fmt.Errorf("get namespace %s: %w", c.NamespaceFor(appID), err)
+// Ready reports whether the cluster is reachable and this namespace is usable.
+//
+// It reads a namespaced resource rather than asking for the version, so it
+// exercises the same authorization path applab's real operations use. A
+// permission problem — a Role missing a rule, a namespace that does not exist —
+// surfaces here rather than at the first deploy.
+func (c *Client) Ready(ctx context.Context) bool {
+	_, err := c.clientset.AppsV1().Deployments(c.namespace).List(ctx, metav1.ListOptions{Limit: 1})
+	return err == nil
 }
 
-// CopySecret copies a Secret from applab's own namespace into an app's
-// namespace, creating it or replacing the copy.
+// checkAppLabels refuses if any object does not carry appID's label.
 //
-// A Secret can only be referenced from the namespace that holds it, so a
-// registry credential configured once for the installation has to be copied to
-// each app namespace for that app's build Job to push and its Deployment to
-// pull. This is the one place a credential crosses that boundary.
-//
-// The name is preserved because callers — and the chart's values — refer to the
-// Secret by the name it was configured under. An existing copy is updated
-// rather than left alone, so rotating the credential in applab's namespace and
-// reapplying reaches every app on its next deploy.
-//
-// The source must be in applab's own namespace. There is deliberately no
-// parameter for where it comes from: a caller that could name an arbitrary
-// source namespace could read any Secret the cluster will show it and write a
-// copy somewhere it controls.
-func (c *Client) CopySecret(ctx context.Context, appID, name string) error {
-	if name == "" {
-		return nil
-	}
-	if c.ownNamespace == "" {
-		return fmt.Errorf("copy secret %s: applab's own namespace is not configured", name)
-	}
-
-	namespace := c.NamespaceFor(appID)
-	if !c.OwnsNamespace(namespace) {
-		return fmt.Errorf("refusing to write secret %s into namespace %q: it does not carry this installation's prefix %q", name, namespace, c.namespacePrefix)
-	}
-
-	src, err := c.clientset.CoreV1().Secrets(c.ownNamespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("read secret %s/%s: %w", c.ownNamespace, name, err)
-	}
-
-	// Only the type and the data carry over. Metadata is per-object: a uid, a
-	// resourceVersion or an ownerReference copied from the original describes an
-	// object that does not exist here, and Kubernetes rejects the write.
-	desired := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      src.Name,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "applab",
-				"applab.io/app":                appID,
-			},
-		},
-		Type: src.Type,
-		Data: src.Data,
-	}
-
-	_, err = c.clientset.CoreV1().Secrets(namespace).Create(ctx, desired, metav1.CreateOptions{})
-	if err == nil {
-		return nil
-	}
-	if !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create secret %s/%s: %w", namespace, name, err)
-	}
-
-	// Update in place, keeping the incumbent's resourceVersion: the API server
-	// treats a write without it as a conflict, which would make rotating a
-	// credential fail intermittently and look like a race.
-	existing, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("read existing secret %s/%s: %w", namespace, name, err)
-	}
-	existing.Data = src.Data
-	existing.Type = src.Type
-	if _, err := c.clientset.CoreV1().Secrets(namespace).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update secret %s/%s: %w", namespace, name, err)
+// It takes the objects the API server returned for the app's selector, so it
+// should never fire. It exists because the alternative to finding out here is
+// finding out from a deleted object that belonged to someone else.
+func checkAppLabels(kind, appID, namespace string, objects []metav1.Object) error {
+	for _, obj := range objects {
+		if got := obj.GetLabels()[LabelApp]; got != appID {
+			return fmt.Errorf("refusing to delete app %q: %s %s in namespace %s carries label %s=%q, which belongs to another app",
+				appID, kind, obj.GetName(), namespace, LabelApp, got)
+		}
 	}
 	return nil
 }
 
-// Ready reports whether the cluster is reachable.
-//
-// A lightweight read rather than a version call wherever possible: it exercises
-// the same authorization path applab's real operations use, so a permission
-// problem surfaces here rather than at the first deploy.
-func (c *Client) Ready(ctx context.Context) bool {
-	_, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{Limit: 1})
-	return err == nil
+// The list types produced by a typed client do not satisfy a common interface,
+// so each is widened to metav1.Object here rather than at the call site.
+
+func deploymentObjects(items []appsv1.Deployment) []metav1.Object {
+	out := make([]metav1.Object, 0, len(items))
+	for i := range items {
+		out = append(out, &items[i])
+	}
+	return out
+}
+
+func serviceObjects(items []corev1.Service) []metav1.Object {
+	out := make([]metav1.Object, 0, len(items))
+	for i := range items {
+		out = append(out, &items[i])
+	}
+	return out
+}
+
+func ingressObjects(items []networkingv1.Ingress) []metav1.Object {
+	out := make([]metav1.Object, 0, len(items))
+	for i := range items {
+		out = append(out, &items[i])
+	}
+	return out
+}
+
+func jobObjects(items []batchv1.Job) []metav1.Object {
+	out := make([]metav1.Object, 0, len(items))
+	for i := range items {
+		out = append(out, &items[i])
+	}
+	return out
+}
+
+func secretObjects(items []corev1.Secret) []metav1.Object {
+	out := make([]metav1.Object, 0, len(items))
+	for i := range items {
+		out = append(out, &items[i])
+	}
+	return out
 }

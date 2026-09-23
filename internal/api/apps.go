@@ -267,21 +267,25 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	keepSource := r.URL.Query().Get("keep_source") == "true"
 
-	// The namespace goes first. If it cannot be removed, the app row is left
-	// alone so the failure is retryable — deleting the record first would
-	// orphan the namespace with nothing left that knows about it.
-	if s.namespaceDeleter != nil {
-		if err := s.namespaceDeleter(r.Context(), app.ID); err != nil {
-			fail(w, r, Errorf(http.StatusInternalServerError, "delete namespace for app %q", app.ID).Wrap(err))
+	// The cluster objects go first. If they cannot be removed, the app row is
+	// left alone so the failure is retryable — deleting the record first would
+	// orphan objects with nothing left that knows about them.
+	//
+	// This used to delete the app's namespace. It removes the app's own objects
+	// now, because every app shares one namespace: a namespace delete here would
+	// take applab itself and every other app with it.
+	if s.appObjectsDeleter != nil {
+		if err := s.appObjectsDeleter(r.Context(), app.ID); err != nil {
+			fail(w, r, Errorf(http.StatusInternalServerError, "delete the cluster objects for app %q", app.ID).Wrap(err))
 			return
 		}
 	}
 
 	if !keepSource && s.sourceRemover != nil {
 		if err := s.sourceRemover(r.Context(), app.ID); err != nil {
-			// The namespace is already gone, so the app is not running. Failing
-			// here would leave a record of an app that no longer exists; the
-			// removal is logged and the record is deleted anyway.
+			// The cluster objects are already gone, so the app is not running.
+			// Failing here would leave a record of an app that no longer exists;
+			// the removal is logged and the record is deleted anyway.
 			slog.ErrorContext(r.Context(), "failed to remove source repository; deleting app record anyway",
 				"app", app.ID, "error", err)
 		}
@@ -336,8 +340,12 @@ func (s *Server) loadAppByID(ctx context.Context, id string) (*model.App, error)
 }
 
 // namespaceFor returns the namespace an app's resources live in.
+//
+// Every app shares applab's own namespace, which is what lets applab hold a
+// namespaced Role rather than a ClusterRole. Objects are told apart by their
+// applab.io/app label, not by a namespace boundary.
 func (s *Server) namespaceFor(appID string) string {
-	return model.Namespace(s.cfg.NamespacePrefix, appID)
+	return model.Namespace(s.cfg.Namespace, appID)
 }
 
 // validateAppSettings checks the invariants a deploy depends on.

@@ -43,8 +43,10 @@ type configResponse struct {
 	BaseDomain     string `json:"base_domain"`
 	DomainTemplate string `json:"domain_template"`
 
-	// NamespacePrefix is prepended to an app id to name that app's namespace.
-	NamespacePrefix string `json:"namespace_prefix"`
+	// Namespace is the one namespace this deployment uses — for itself and for
+	// every app it deploys. Reported so a client can say where an app's objects
+	// live, and because it is no longer derivable from the app id.
+	Namespace string `json:"namespace"`
 
 	// Upload limits, so a client can size its chunks instead of discovering the
 	// limit by being rejected.
@@ -65,7 +67,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		APIBaseURL:      s.baseURL(r),
 		BaseDomain:      s.cfg.BaseDomain,
 		DomainTemplate:  "*." + orPlaceholder(s.cfg.BaseDomain),
-		NamespacePrefix: s.cfg.NamespacePrefix,
+		Namespace:       s.cfg.Namespace,
 		MaxSimpleUpload: s.cfg.MaxSimpleUpload,
 		ChunkSize:       s.cfg.ChunkSize,
 		MaxChunkBytes:   s.cfg.MaxChunkBytes,

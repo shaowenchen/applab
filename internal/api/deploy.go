@@ -63,13 +63,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Deploying means the cluster needs the namespace, the image needs a build,
-	// and the resources need creating — in that order.
-	if err := s.ensureNamespaceFor(r.Context(), app.ID); err != nil {
-		fail(w, r, Errorf(http.StatusInternalServerError, "prepare the app's namespace").Wrap(err))
-		return
-	}
-
+	// Deploying means the image needs a build and the resources need creating,
+	// in that order. The namespace is not among them: every app shares applab's
+	// own, which exists by definition.
+	//
 	// A successful build of this commit, if one exists, supplies the image.
 	image := ""
 	if existing, err := s.store.FindSucceededBuild(r.Context(), app.ID, resolved); err == nil {

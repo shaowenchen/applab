@@ -108,9 +108,16 @@ than letting it fail at runtime where the cause is much harder to see.
 {{- fail "build.enabled is true but build.registry is empty: builds need a registry to push to. Set build.registry, or set build.enabled=false to run applab without the build pipeline" }}
 {{- end }}
 {{- end }}
-{{- if and .Values.ingress.enabled (empty .Values.apps.baseDomain) }}
-{{- fail "ingress.enabled is true but apps.baseDomain is empty: apps need a domain to be served under. Set apps.baseDomain, or set ingress.enabled=false" }}
+{{/*
+A base domain with no gateway would give every app a hostname that nothing
+serves: applab would write a VirtualService whose empty gateway list Istio reads
+as mesh-internal only, so the app would deploy, report healthy, and be
+unreachable from outside. Refused here rather than discovered from a browser.
+*/}}
+{{- if and (not (empty .Values.apps.baseDomain)) (empty .Values.deploy.gateway) }}
+{{- fail "apps.baseDomain is set but deploy.gateway is empty: apps would be given hostnames with no gateway to serve them, so they would be unreachable from outside the cluster. Set deploy.gateway to \"<namespace>/<name>\", or leave apps.baseDomain empty to serve apps inside the cluster only" }}
 {{- end }}
-{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (empty .Values.persistence.storageClass) (not (hasKey .Values.persistence "storageClass")) }}
+{{- if and (not (empty .Values.deploy.gateway)) (not (contains "/" .Values.deploy.gateway)) }}
+{{- fail (printf "deploy.gateway %q must be \"<namespace>/<name>\", the form Istio resolves a gateway by" .Values.deploy.gateway) }}
 {{- end }}
 {{- end }}

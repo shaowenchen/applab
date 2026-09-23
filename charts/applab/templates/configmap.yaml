@@ -14,7 +14,6 @@ data:
   APPLAB_LISTEN: {{ printf ":%v" .Values.service.targetPort | quote }}
 
   APPLAB_NAMESPACE: {{ include "applab.namespace" . | quote }}
-  APPLAB_NAMESPACE_PREFIX: {{ .Values.apps.namespacePrefix | quote }}
   APPLAB_BASE_DOMAIN: {{ .Values.apps.baseDomain | quote }}
   APPLAB_BASE_URL: {{ include "applab.internalURL" . | quote }}
 
@@ -57,9 +56,7 @@ data:
   # ---------------------------------------------------------------------------
   # Deploy
   # ---------------------------------------------------------------------------
-  APPLAB_DEPLOY_INGRESS_CLASS: {{ .Values.ingress.className | quote }}
-  APPLAB_DEPLOY_TLS_SECRET: {{ .Values.deploy.tlsSecret | quote }}
-  APPLAB_DEPLOY_CLUSTER_ISSUER: {{ .Values.deploy.clusterIssuer | quote }}
+  APPLAB_DEPLOY_GATEWAY: {{ .Values.deploy.gateway | quote }}
   APPLAB_DEPLOY_IMAGE_PULL_SECRET: {{ .Values.deploy.imagePullSecret | quote }}
 
   # Applied to every app applab deploys. An uploaded app cannot be trusted to

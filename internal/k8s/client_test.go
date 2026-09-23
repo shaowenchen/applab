@@ -5,168 +5,85 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
-const (
-	testPrefix = "applab-"
-	testOwnNS  = "applab-system"
-)
+const testNS = "ops-system"
 
-func registrySecret(name, ns, value string) *corev1.Secret {
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-		Type:       corev1.SecretTypeDockerConfigJson,
-		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(value)},
+func testClient(t *testing.T, objs ...interface{}) (*Client, *fake.Clientset) {
+	t.Helper()
+	client := fake.NewSimpleClientset()
+	for _, obj := range objs {
+		switch o := obj.(type) {
+		case *appsv1.Deployment:
+			if _, err := client.AppsV1().Deployments(o.Namespace).Create(context.Background(), o, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed deployment: %v", err)
+			}
+		case *corev1.Service:
+			if _, err := client.CoreV1().Services(o.Namespace).Create(context.Background(), o, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed service: %v", err)
+			}
+		case *networkingv1.Ingress:
+			if _, err := client.NetworkingV1().Ingresses(o.Namespace).Create(context.Background(), o, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed ingress: %v", err)
+			}
+		case *batchv1.Job:
+			if _, err := client.BatchV1().Jobs(o.Namespace).Create(context.Background(), o, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed job: %v", err)
+			}
+		case *corev1.Secret:
+			if _, err := client.CoreV1().Secrets(o.Namespace).Create(context.Background(), o, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed secret: %v", err)
+			}
+		default:
+			t.Fatalf("unhandled seed type %T", obj)
+		}
+	}
+	return NewWithClientset(client, testNS), client
+}
+
+func appLabelsFor(appID string) map[string]string {
+	return map[string]string{"applab.io/app": appID, "app.kubernetes.io/managed-by": "applab"}
+}
+
+func deploymentFor(appID, ns, name string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: appLabelsFor(appID)},
 	}
 }
 
-// The point of CopySecret: a Secret cannot be referenced from another
-// namespace, so a registry credential has to be copied into the app's.
-func TestCopySecretReachesAppNamespace(t *testing.T) {
-	src := registrySecret("regcred", testOwnNS, `{"auths":{}}`)
-	client := fake.NewSimpleClientset(
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testOwnNS}},
-		src,
-	)
-	c := NewWithClientset(client, testPrefix, testOwnNS)
+// The namespace is the one applab runs in, whatever app is named. This is what
+// replaced "one namespace per app".
+func TestNamespaceIgnoresTheAppID(t *testing.T) {
+	c, _ := testClient(t)
 
-	if err := c.CopySecret(context.Background(), "shop", "regcred"); err != nil {
-		t.Fatalf("CopySecret: %v", err)
-	}
-
-	got, err := client.CoreV1().Secrets("applab-shop").Get(context.Background(), "regcred", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("the copy should exist in the app namespace: %v", err)
-	}
-	if got.Type != corev1.SecretTypeDockerConfigJson {
-		t.Errorf("type = %q, want %q", got.Type, corev1.SecretTypeDockerConfigJson)
-	}
-	if string(got.Data[corev1.DockerConfigJsonKey]) != `{"auths":{}}` {
-		t.Errorf("data did not carry over: %q", got.Data)
-	}
-	if got.Labels["applab.io/app"] != "shop" {
-		t.Errorf("the copy should record which app it belongs to, got labels %v", got.Labels)
-	}
-}
-
-// A rotated credential has to reach apps that already have the old copy,
-// otherwise rotating it appears to work and changes nothing.
-func TestCopySecretUpdatesExistingCopy(t *testing.T) {
-	client := fake.NewSimpleClientset(
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testOwnNS}},
-		registrySecret("regcred", testOwnNS, "new-value"),
-		registrySecret("regcred", "applab-shop", "stale-value"),
-	)
-	c := NewWithClientset(client, testPrefix, testOwnNS)
-
-	if err := c.CopySecret(context.Background(), "shop", "regcred"); err != nil {
-		t.Fatalf("CopySecret: %v", err)
-	}
-
-	got, err := client.CoreV1().Secrets("applab-shop").Get(context.Background(), "regcred", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if string(got.Data[corev1.DockerConfigJsonKey]) != "new-value" {
-		t.Errorf("the stale copy was not replaced: got %q", got.Data[corev1.DockerConfigJsonKey])
-	}
-}
-
-// Metadata belongs to the object, not to the credential. Copying a uid or a
-// resourceVersion from the original would describe an object that does not
-// exist in the target namespace, and the API server rejects the write.
-func TestCopySecretDoesNotCopySourceMetadata(t *testing.T) {
-	src := registrySecret("regcred", testOwnNS, "v")
-	src.UID = "11111111-2222-3333-4444-555555555555"
-	src.ResourceVersion = "4321"
-	src.OwnerReferences = []metav1.OwnerReference{{Kind: "Deployment", Name: "someone-else", APIVersion: "apps/v1"}}
-
-	client := fake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testOwnNS}}, src)
-	c := NewWithClientset(client, testPrefix, testOwnNS)
-
-	if err := c.CopySecret(context.Background(), "shop", "regcred"); err != nil {
-		t.Fatalf("CopySecret: %v", err)
-	}
-
-	got, err := client.CoreV1().Secrets("applab-shop").Get(context.Background(), "regcred", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.UID == src.UID {
-		t.Error("the copy inherited the source's uid")
-	}
-	if len(got.OwnerReferences) != 0 {
-		t.Errorf("the copy inherited owner references pointing at objects in another namespace: %v", got.OwnerReferences)
-	}
-}
-
-// An empty name means "this installation has no such credential", which is the
-// normal case for a cluster-local registry. It must be a no-op, not a lookup of
-// a Secret named "".
-func TestCopySecretEmptyNameIsNoOp(t *testing.T) {
-	client := fake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testOwnNS}})
-	c := NewWithClientset(client, testPrefix, testOwnNS)
-
-	if err := c.CopySecret(context.Background(), "shop", ""); err != nil {
-		t.Fatalf("CopySecret with an empty name should do nothing, got %v", err)
-	}
-
-	list, err := client.CoreV1().Secrets("applab-shop").List(context.Background(), metav1.ListOptions{})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(list.Items) != 0 {
-		t.Errorf("an empty name created %d secrets", len(list.Items))
-	}
-}
-
-// The prefix rule is what keeps one applab installation out of another's
-// namespaces, and it has to hold for secrets as much as for anything else.
-//
-// With a non-empty prefix the guard cannot fire — NamespaceFor always produces
-// a name carrying it — so the reachable case is the empty one, where the
-// namespace would be the bare app id.
-func TestCopySecretRefusesNamespaceOutsidePrefix(t *testing.T) {
-	client := fake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testOwnNS}})
-	c := NewWithClientset(client, testPrefix, testOwnNS)
-	c.namespacePrefix = ""
-
-	err := c.CopySecret(context.Background(), "kube-system", "regcred")
-	if err == nil {
-		t.Fatal("expected a refusal, got none")
-	}
-	if !strings.Contains(err.Error(), "prefix") {
-		t.Errorf("the refusal should name the prefix rule, got: %v", err)
-	}
-}
-
-// The prefix test alone is not enough: every string has the empty string as a
-// prefix, so an empty prefix would make applab own the whole cluster.
-func TestOwnsNamespaceRejectsEmptyPrefix(t *testing.T) {
-	c := NewWithClientset(fake.NewSimpleClientset(), "", testOwnNS)
-
-	for _, ns := range []string{"default", "kube-system", "applab-shop", ""} {
-		if c.OwnsNamespace(ns) {
-			t.Errorf("OwnsNamespace(%q) = true with an empty prefix, which claims the whole cluster", ns)
+	for _, appID := range []string{"shop", "blog", ""} {
+		if got := c.Namespace(appID); got != testNS {
+			t.Errorf("Namespace(%q) = %q, want %q", appID, got, testNS)
 		}
 	}
 }
 
-func TestOwnsNamespaceAcceptsOnlyThePrefix(t *testing.T) {
-	c := NewWithClientset(fake.NewSimpleClientset(), testPrefix, testOwnNS)
+func TestOwnsNamespaceAcceptsOnlyItsOwn(t *testing.T) {
+	c, _ := testClient(t)
 
 	for _, tc := range []struct {
 		namespace string
 		want      bool
 	}{
-		{"applab-shop", true},
-		{"applab-", false},     // the prefix alone names no app
-		{"applab", false},      // the prefix without its separator
-		{"default", false},     // someone else's
-		{"my-applab-x", false}, // the prefix must be at the front
+		{testNS, true},
+		{"", false}, // Kubernetes reads "" as the default namespace
+		{"default", false},
+		{"kube-system", false},
+		{"applab-shop", false}, // the model this replaced
+		{"ops-system-2", false},
 	} {
 		if got := c.OwnsNamespace(tc.namespace); got != tc.want {
 			t.Errorf("OwnsNamespace(%q) = %v, want %v", tc.namespace, got, tc.want)
@@ -174,17 +91,172 @@ func TestOwnsNamespaceAcceptsOnlyThePrefix(t *testing.T) {
 	}
 }
 
-// A named Secret that does not exist is a configuration error the operator has
-// to fix, so it must surface rather than being swallowed.
-func TestCopySecretMissingSourceIsAnError(t *testing.T) {
-	client := fake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testOwnNS}})
-	c := NewWithClientset(client, testPrefix, testOwnNS)
+// A client with no namespace owns nothing. Every string comparison against ""
+// is false, so this falls out of the equality — but it is the failure that would
+// point every operation at the default namespace, so it is asserted.
+func TestOwnsNamespaceWithNoNamespaceConfigured(t *testing.T) {
+	c := NewWithClientset(fake.NewSimpleClientset(), "")
 
-	err := c.CopySecret(context.Background(), "shop", "absent")
-	if err == nil {
-		t.Fatal("expected an error for a missing source Secret")
-	}
-	if !strings.Contains(err.Error(), "absent") {
-		t.Errorf("the error should name the Secret, got: %v", err)
+	for _, ns := range []string{"", "default", "ops-system", "kube-system"} {
+		if c.OwnsNamespace(ns) {
+			t.Errorf("OwnsNamespace(%q) = true with no namespace configured", ns)
+		}
 	}
 }
+
+// The most important test here: deleting an app must remove that app's objects
+// and nothing else. Every app shares one namespace, so the label is the only
+// thing separating them — and applab's own Deployment sits in the same namespace
+// with no app label at all.
+func TestDeleteAppObjectsRemovesOnlyThatApp(t *testing.T) {
+	ctx := context.Background()
+
+	_, client := testClient(t,
+		// The app being deleted.
+		deploymentFor("shop", testNS, "app-shop"),
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app-shop", Namespace: testNS, Labels: appLabelsFor("shop")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "applab-build-shop-1-token", Namespace: testNS, Labels: appLabelsFor("shop")}},
+		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "applab-build-shop-1", Namespace: testNS, Labels: appLabelsFor("shop")}},
+
+		// Another app, in the same namespace.
+		deploymentFor("blog", testNS, "app-blog"),
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app-blog", Namespace: testNS, Labels: appLabelsFor("blog")}},
+
+		// applab itself: same namespace, no app label.
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "applab", Namespace: testNS}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "applab", Namespace: testNS}},
+	)
+
+	c := NewWithClientset(client, testNS)
+	if err := c.DeleteAppObjects(ctx, "shop"); err != nil {
+		t.Fatalf("DeleteAppObjects: %v", err)
+	}
+
+	// The app's own objects are gone.
+	if _, err := client.AppsV1().Deployments(testNS).Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+		t.Error("the app's Deployment survived")
+	}
+	if _, err := client.CoreV1().Services(testNS).Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+		t.Error("the app's Service survived")
+	}
+	if _, err := client.BatchV1().Jobs(testNS).Get(ctx, "applab-build-shop-1", metav1.GetOptions{}); err == nil {
+		t.Error("the app's build Job survived")
+	}
+	if _, err := client.CoreV1().Secrets(testNS).Get(ctx, "applab-build-shop-1-token", metav1.GetOptions{}); err == nil {
+		t.Error("the app's build token Secret survived")
+	}
+
+	// And nothing else was touched.
+	if _, err := client.AppsV1().Deployments(testNS).Get(ctx, "app-blog", metav1.GetOptions{}); err != nil {
+		t.Errorf("another app's Deployment was deleted: %v", err)
+	}
+	if _, err := client.CoreV1().Services(testNS).Get(ctx, "app-blog", metav1.GetOptions{}); err != nil {
+		t.Errorf("another app's Service was deleted: %v", err)
+	}
+	if _, err := client.AppsV1().Deployments(testNS).Get(ctx, "applab", metav1.GetOptions{}); err != nil {
+		t.Errorf("applab's own Deployment was deleted: %v", err)
+	}
+	if _, err := client.CoreV1().Services(testNS).Get(ctx, "applab", metav1.GetOptions{}); err != nil {
+		t.Errorf("applab's own Service was deleted: %v", err)
+	}
+}
+
+// An app id that shares a prefix with another app's must not take it down. This
+// is the mistake a name-based selector would make and a label-based one does
+// not: deleting "shop" must not touch "shop-2".
+func TestDeleteAppObjectsIsNotFooledByASharedPrefix(t *testing.T) {
+	ctx := context.Background()
+
+	_, client := testClient(t,
+		deploymentFor("shop", testNS, "app-shop"),
+		deploymentFor("shop-2", testNS, "app-shop-2"),
+	)
+
+	c := NewWithClientset(client, testNS)
+	if err := c.DeleteAppObjects(ctx, "shop"); err != nil {
+		t.Fatalf("DeleteAppObjects: %v", err)
+	}
+
+	if _, err := client.AppsV1().Deployments(testNS).Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+		t.Error("the app's Deployment survived")
+	}
+	if _, err := client.AppsV1().Deployments(testNS).Get(ctx, "app-shop-2", metav1.GetOptions{}); err != nil {
+		t.Errorf("deleting \"shop\" deleted \"shop-2\", which shares its prefix: %v", err)
+	}
+}
+
+// The label check is the last thing standing between a selector bug and deleted
+// data, so it is exercised directly. A client that returned objects it was not
+// asked for — a broken selector, a mislabeled object — must be refused rather
+// than obeyed.
+func TestCheckAppLabelsRefusesAnotherAppsObject(t *testing.T) {
+	err := checkAppLabels("deployment", "shop", testNS, []metav1.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "app-shop", Labels: appLabelsFor("shop")}},
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "app-blog", Labels: appLabelsFor("blog")}},
+	})
+	if err == nil {
+		t.Fatal("expected a refusal when an object belongs to another app")
+	}
+	if !strings.Contains(err.Error(), "app-blog") {
+		t.Errorf("the refusal should name the object it refused, got: %v", err)
+	}
+}
+
+func TestCheckAppLabelsAcceptsMatchingObjects(t *testing.T) {
+	err := checkAppLabels("deployment", "shop", testNS, []metav1.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "app-shop", Labels: appLabelsFor("shop")}},
+	})
+	if err != nil {
+		t.Errorf("objects labeled for the app should be accepted, got: %v", err)
+	}
+}
+
+// Deleting an app is not an escape hatch for reaching another namespace.
+func TestDeleteAppObjectsRefusesAForeignNamespace(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	c := NewWithClientset(client, "ops-system")
+	// A client that would compute another namespace, as the old per-app model
+	// did, must not be able to use this to delete there.
+	c.namespace = ""
+
+	err := c.DeleteAppObjects(context.Background(), "kube-system")
+	if err == nil {
+		t.Fatal("expected a refusal for a namespace this installation does not own")
+	}
+	if !strings.Contains(err.Error(), "not this installation's namespace") {
+		t.Errorf("the refusal should say why, got: %v", err)
+	}
+}
+
+// An app with nothing deployed is deleted cleanly rather than failing on the
+// absence of objects that were never created.
+func TestDeleteAppObjectsWithNothingDeployed(t *testing.T) {
+	_, client := testClient(t)
+	c := NewWithClientset(client, testNS)
+
+	if err := c.DeleteAppObjects(context.Background(), "never-deployed"); err != nil {
+		t.Errorf("deleting an app with no objects should succeed, got: %v", err)
+	}
+}
+
+// Ready reads a namespaced resource, so a Role missing a rule — or a namespace
+// that does not exist — shows up here rather than at the first deploy.
+func TestReadyWithAnUnreachableCluster(t *testing.T) {
+	// A clientset whose reactors all fail, standing in for an unreachable API
+	// server or a Role that grants nothing.
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("*", "*", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errForbidden
+	})
+
+	c := NewWithClientset(client, testNS)
+	if c.Ready(context.Background()) {
+		t.Error("Ready reported true for a cluster it cannot read")
+	}
+}
+
+var errForbidden = &forbiddenError{}
+
+type forbiddenError struct{}
+
+func (e *forbiddenError) Error() string { return "forbidden" }

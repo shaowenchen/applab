@@ -6,9 +6,9 @@
 
 AppLab owns the whole path from a local working directory to a running
 application: it stores your source in a git repository it hosts, builds an image
-from it in a build Job inside the cluster, deploys that image into a namespace
-of its own, and exposes it on a hostname. One HTTP call starts that path; one
-call streams the build log; one call tells you what is running.
+from it in a build Job inside the cluster, deploys that image, and exposes it on
+a hostname. One HTTP call starts that path; one call streams the build log; one
+call tells you what is running.
 
 Two things are enough to use it: **the base URL** and **an API key**.
 
@@ -31,21 +31,20 @@ and push code to it — see the API reference at the end of this file.
 ## What applab is not
 
 It is not a general-purpose Kubernetes client. It manages the resources of the
-apps you create through it and nothing else, and it will refuse to touch a
-namespace that does not carry its own prefix. Reaching for it to inspect or
-change unrelated workloads will not work.
+apps you create through it and nothing else, and it confines itself to the one
+namespace it runs in. Reaching for it to inspect or change anything else will
+not work.
 
 ## Concepts
 
 ### An app
 
 An app is the unit of everything: one source repository, one image, one
-Deployment, one hostname, one namespace. Its **id** is how you refer to it
-everywhere, and it is immutable — there is no rename, so nothing has to be
-rewritten when it changes.
+Deployment, one hostname. Its **id** is how you refer to it everywhere, and it is
+immutable — there is no rename, so nothing has to be rewritten when it changes.
 
 An id has to survive being a URL path segment, a git repository directory and a
-Kubernetes namespace, so it is constrained to what is valid as all three:
+Kubernetes object name, so it is constrained to what is valid as all three:
 lowercase letters, digits and dashes, starting with a letter or digit, at most
 40 characters. Some names are reserved because they would collide with this
 service's own routes.
@@ -72,11 +71,20 @@ that commit was built before, its image already exists and is reused rather than
 rebuilt, so a rollback is fast and cannot fail for a reason the original build
 did not.
 
-### One namespace per app
+### One namespace for everything
 
-Each app gets its own namespace, named with this deployment's prefix. Isolation
-is the point, and it makes deletion honest: removing an app removes its
-namespace, so nothing is left behind to find later.
+Every app is deployed into the same namespace the service itself runs in. That is
+what lets it hold a namespaced Role rather than a ClusterRole — it has no
+permission anywhere else in the cluster, so the blast radius of a bug here is the
+apps it manages rather than every workload you run.
+
+The trade is that a namespace no longer separates one app from another. Its
+objects are told apart by an applab.io/app label, which every object it creates
+carries and every query filters by. Deleting an app removes its objects and
+leaves the rest alone; the pods and events endpoints report one app's workload,
+not the namespace's.
+
+GET /api/v1/config reports which namespace this is, as "namespace".
 
 ### applab's record versus the cluster
 

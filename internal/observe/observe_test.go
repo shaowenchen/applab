@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -28,7 +29,7 @@ func appPod(name string, phase corev1.PodPhase, ready bool, containers ...corev1
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
-			Namespace:         "applab-shop",
+			Namespace:         "ops-system",
 			Labels:            map[string]string{"applab.io/app": "shop"},
 			CreationTimestamp: metav1.Now(),
 		},
@@ -60,7 +61,7 @@ func TestPodsReportsStateAndReason(t *testing.T) {
 
 	o, _ := newTestObserver(t, pod)
 
-	pods, err := o.Pods(context.Background(), "applab-shop", "shop", 10)
+	pods, err := o.Pods(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
 		t.Fatalf("Pods: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestCrashLoopReasonComesFromThePreviousContainer(t *testing.T) {
 
 	o, _ := newTestObserver(t, pod)
 
-	pods, err := o.Pods(context.Background(), "applab-shop", "shop", 10)
+	pods, err := o.Pods(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
 		t.Fatalf("Pods: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestPodLevelReasonIsReported(t *testing.T) {
 
 	o, _ := newTestObserver(t, pod)
 
-	pods, err := o.Pods(context.Background(), "applab-shop", "shop", 10)
+	pods, err := o.Pods(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
 		t.Fatalf("Pods: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestPodsAreScopedToTheApp(t *testing.T) {
 
 	o, _ := newTestObserver(t, shopPod, other)
 
-	pods, err := o.Pods(context.Background(), "applab-shop", "shop", 10)
+	pods, err := o.Pods(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
 		t.Fatalf("Pods: %v", err)
 	}
@@ -187,7 +188,7 @@ func TestPodsNewestFirst(t *testing.T) {
 	// Listed in the opposite order from the answer, so a missing sort is caught.
 	o, _ := newTestObserver(t, old, fresh)
 
-	pods, err := o.Pods(context.Background(), "applab-shop", "shop", 10)
+	pods, err := o.Pods(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
 		t.Fatalf("Pods: %v", err)
 	}
@@ -196,31 +197,47 @@ func TestPodsNewestFirst(t *testing.T) {
 	}
 }
 
+// Events are attributed by object name, so each one needs a real object to
+// belong to. This builds the pod the events below are about.
+func eventPod(name, appID string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         "ops-system",
+			Labels:            map[string]string{"applab.io/app": appID},
+			CreationTimestamp: metav1.Now(),
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+}
+
 // TestEventsWarningsFirst asserts an operator scanning the list sees problems
 // before routine notices.
 func TestEventsWarningsFirst(t *testing.T) {
 	killed := &corev1.Event{
-		ObjectMeta:     metav1.ObjectMeta{Name: "e1", Namespace: "applab-shop", CreationTimestamp: metav1.Now()},
+		ObjectMeta:     metav1.ObjectMeta{Name: "e1", Namespace: "ops-system", CreationTimestamp: metav1.Now()},
 		Type:           corev1.EventTypeWarning,
 		Reason:         "BackOff",
 		Message:        "Back-off restarting failed container",
 		Count:          12,
 		LastTimestamp:  metav1.Now(),
 		FirstTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
 	}
 	pulled := &corev1.Event{
-		ObjectMeta:     metav1.ObjectMeta{Name: "e2", Namespace: "applab-shop", CreationTimestamp: metav1.Now()},
+		ObjectMeta:     metav1.ObjectMeta{Name: "e2", Namespace: "ops-system", CreationTimestamp: metav1.Now()},
 		Type:           corev1.EventTypeNormal,
 		Reason:         "Pulled",
 		Message:        "Successfully pulled image",
 		Count:          1,
 		LastTimestamp:  metav1.Now(),
 		FirstTimestamp: metav1.Now(),
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
 	}
 
-	o, _ := newTestObserver(t, pulled, killed)
+	o, _ := newTestObserver(t, eventPod("app-shop-1", "shop"), pulled, killed)
 
-	events, err := o.Events(context.Background(), "applab-shop", 10)
+	events, err := o.Events(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
@@ -291,7 +308,7 @@ func TestLogsRefusesAPodOfAnotherApp(t *testing.T) {
 	buildPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "applab-build-shop-abc",
-			Namespace: "applab-shop",
+			Namespace: "ops-system",
 			Labels:    map[string]string{"applab.io/build": "abc"},
 		},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "build"}}},
@@ -299,7 +316,7 @@ func TestLogsRefusesAPodOfAnotherApp(t *testing.T) {
 
 	o, _ := newTestObserver(t, buildPod)
 
-	_, err := o.Logs(context.Background(), "applab-shop", "shop", LogOptions{Pod: "applab-build-shop-abc"})
+	_, err := o.Logs(context.Background(), "ops-system", "shop", LogOptions{Pod: "applab-build-shop-abc"})
 	if err == nil {
 		t.Fatal("a log request read a pod belonging to another app")
 	}
@@ -313,7 +330,7 @@ func TestLogsRefusesAPodOfAnotherApp(t *testing.T) {
 func TestLogsOnAnAppWithNoPodsIsClear(t *testing.T) {
 	o, _ := newTestObserver(t)
 
-	_, err := o.Logs(context.Background(), "applab-shop", "shop", LogOptions{})
+	_, err := o.Logs(context.Background(), "ops-system", "shop", LogOptions{})
 	if err == nil {
 		t.Fatal("reading logs for an app with no pods succeeded")
 	}
@@ -331,7 +348,7 @@ func TestResolvePodPicksTheNewest(t *testing.T) {
 
 	o, _ := newTestObserver(t, old, fresh)
 
-	name, container, err := o.resolvePod(context.Background(), "applab-shop", "shop", LogOptions{})
+	name, container, err := o.resolvePod(context.Background(), "ops-system", "shop", LogOptions{})
 	if err != nil {
 		t.Fatalf("resolvePod: %v", err)
 	}
@@ -385,7 +402,7 @@ func TestReady(t *testing.T) {
 // it concerns.
 func TestEventsCarryTheirObject(t *testing.T) {
 	event := &corev1.Event{
-		ObjectMeta: metav1.ObjectMeta{Name: "e1", Namespace: "applab-shop", CreationTimestamp: metav1.Now()},
+		ObjectMeta: metav1.ObjectMeta{Name: "e1", Namespace: "ops-system", CreationTimestamp: metav1.Now()},
 		Type:       corev1.EventTypeWarning,
 		Reason:     "Failed",
 		Message:    "Error: ImagePullBackOff",
@@ -396,9 +413,9 @@ func TestEventsCarryTheirObject(t *testing.T) {
 		LastTimestamp: metav1.Now(),
 	}
 
-	o, _ := newTestObserver(t, event)
+	o, _ := newTestObserver(t, eventPod("app-shop-1", "shop"), event)
 
-	events, err := o.Events(context.Background(), "applab-shop", 10)
+	events, err := o.Events(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
@@ -410,12 +427,116 @@ func TestEventsCarryTheirObject(t *testing.T) {
 	}
 }
 
+// TestEventsDoNotLeakBetweenApps is the reason Events takes an app id at all.
+//
+// Every app shares one namespace, so a naive implementation reports every event
+// in it. A caller asking why *their* app is unwell would be shown another app's
+// crash loop and go looking in the wrong place — worse than being told nothing.
+func TestEventsDoNotLeakBetweenApps(t *testing.T) {
+	shopsEvent := &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: "e-shop", Namespace: "ops-system", CreationTimestamp: metav1.Now()},
+		Type:           corev1.EventTypeWarning,
+		Reason:         "BackOff",
+		Message:        "shop is crash looping",
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
+		LastTimestamp:  metav1.Now(),
+	}
+	blogsEvent := &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: "e-blog", Namespace: "ops-system", CreationTimestamp: metav1.Now()},
+		Type:           corev1.EventTypeWarning,
+		Reason:         "FailedScheduling",
+		Message:        "blog has no nodes to run on",
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-blog-1"},
+		LastTimestamp:  metav1.Now(),
+	}
+
+	o, _ := newTestObserver(t,
+		eventPod("app-shop-1", "shop"),
+		eventPod("app-blog-1", "blog"),
+		shopsEvent, blogsEvent,
+	)
+
+	events, err := o.Events(context.Background(), "ops-system", "shop", 10)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events for shop, want 1 — another app's events leaked in", len(events))
+	}
+	if !strings.Contains(events[0].Message, "shop") {
+		t.Errorf("got %q, which is not shop's event", events[0].Message)
+	}
+}
+
+// TestEventsForASharedPrefixAreNotConfused covers the mistake a name-prefix
+// filter would make. "shop" and "shop-2" produce the prefixes app-shop- and
+// app-shop-2-, and one is a prefix of the other: attributing by prefix would
+// report shop-2's failures as shop's.
+func TestEventsForASharedPrefixAreNotConfused(t *testing.T) {
+	second := &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: "e2", Namespace: "ops-system", CreationTimestamp: metav1.Now()},
+		Type:           corev1.EventTypeWarning,
+		Reason:         "BackOff",
+		Message:        "shop-2 is crash looping",
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-2-abc"},
+		LastTimestamp:  metav1.Now(),
+	}
+
+	o, _ := newTestObserver(t,
+		eventPod("app-shop-1", "shop"),
+		eventPod("app-shop-2-abc", "shop-2"),
+		second,
+	)
+
+	events, err := o.Events(context.Background(), "ops-system", "shop", 10)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("got %d events for shop, want 0 — shop-2's event was attributed to shop", len(events))
+	}
+}
+
+// TestEventsIncludeDeploymentAndJobEvents asserts events about the objects
+// around a pod are not dropped. A failed scheduling is reported against the
+// ReplicaSet as often as against the pod, and a build failure against the Job.
+func TestEventsIncludeDeploymentAndJobEvents(t *testing.T) {
+	rollout := &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: "e-rollout", Namespace: "ops-system", CreationTimestamp: metav1.Now()},
+		Type:           corev1.EventTypeWarning,
+		Reason:         "FailedCreate",
+		Message:        "cannot create pods",
+		InvolvedObject: corev1.ObjectReference{Kind: "ReplicaSet", Name: "app-shop-5f8c"},
+		LastTimestamp:  metav1.Now(),
+	}
+
+	o, _ := newTestObserver(t,
+		eventPod("app-shop-1", "shop"),
+		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+			Name: "app-shop-5f8c", Namespace: "ops-system",
+			Labels: map[string]string{"applab.io/app": "shop"},
+		}},
+		rollout,
+	)
+
+	events, err := o.Events(context.Background(), "ops-system", "shop", 10)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want the ReplicaSet's event", len(events))
+	}
+	if events[0].Object != "ReplicaSet/app-shop-5f8c" {
+		t.Errorf("object = %q, want ReplicaSet/app-shop-5f8c", events[0].Object)
+	}
+}
+
 // TestEventsOfAnEmptyNamespaceIsNotAnError asserts an app with no events is a
 // normal state, not a failure.
 func TestEventsOfAnEmptyNamespaceIsNotAnError(t *testing.T) {
 	o, _ := newTestObserver(t)
 
-	events, err := o.Events(context.Background(), "applab-shop", 10)
+	events, err := o.Events(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
 		t.Fatalf("Events on an empty namespace: %v", err)
 	}
@@ -433,7 +554,7 @@ func TestPodsLimitIsApplied(t *testing.T) {
 
 	o, _ := newTestObserver(t, objects...)
 
-	pods, err := o.Pods(context.Background(), "applab-shop", "shop", 3)
+	pods, err := o.Pods(context.Background(), "ops-system", "shop", 3)
 	if err != nil {
 		t.Fatalf("Pods: %v", err)
 	}

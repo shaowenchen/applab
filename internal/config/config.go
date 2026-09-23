@@ -45,12 +45,15 @@ type Config struct {
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
 
-	// Namespace is the namespace applab itself runs in.
+	// Namespace is the namespace applab runs in, and the only one whose
+	// resources it creates or touches. Every app is deployed into it too.
+	//
+	// One namespace rather than one per app is what lets applab hold a
+	// namespaced Role instead of a ClusterRole: it has no permission anywhere
+	// else in the cluster. The cost is that apps are not isolated from each
+	// other by a namespace boundary, so objects are told apart by their
+	// `applab.io/app` label instead.
 	Namespace string `yaml:"namespace"`
-
-	// NamespacePrefix is prepended to an app's id to name the namespace that
-	// app is deployed into, e.g. "applab-" → "applab-myapp".
-	NamespacePrefix string `yaml:"namespace_prefix"`
 
 	// Kubeconfig is an explicit kubeconfig path. Empty means use in-cluster
 	// config, falling back to the ambient kubeconfig (which is what makes
@@ -88,24 +91,23 @@ type Config struct {
 
 // Deploy configures how apps are exposed in the cluster.
 type Deploy struct {
-	// IngressClass is the IngressClass apps are served through. Empty means the
-	// cluster's default.
-	IngressClass string `yaml:"ingress_class"`
+	// Gateway is the Istio gateway apps are published through, as
+	// "<namespace>/<name>". applab attaches VirtualServices to it; it does not
+	// create it, because a gateway is shared cluster infrastructure with the
+	// listeners and the certificate for the whole domain already on it.
+	//
+	// TLS is configured on the gateway, not here. An app is served over HTTPS
+	// when the gateway has an HTTPS listener, without any per-app setting.
+	Gateway string `yaml:"gateway"`
 
-	// TLSSecret is an existing certificate Secret covering the base domain — in
-	// practice a wildcard. When set, every app references it.
-	TLSSecret string `yaml:"tls_secret"`
-
-	// ClusterIssuer names a cert-manager ClusterIssuer. Used when no wildcard
-	// certificate exists: each app gets its own certificate.
-	ClusterIssuer string `yaml:"cluster_issuer"`
-
-	// ImagePullSecret names a Secret copied into each app namespace for pulling
-	// the built image, when the registry needs credentials to read.
+	// ImagePullSecret names a Secret, in applab's own namespace, holding
+	// registry credentials for pulling the built image. It is referenced
+	// directly: apps run in the same namespace as applab, so there is no
+	// boundary for the credential to cross.
 	ImagePullSecret string `yaml:"image_pull_secret"`
 
-	// Annotations are added to every app Ingress, for ingress-controller
-	// specifics that vary by cluster.
+	// Annotations are added to every app VirtualService, for Istio specifics
+	// that vary by cluster.
 	Annotations map[string]string `yaml:"annotations"`
 
 	// AppResources are the requests and limits applied to every app applab
@@ -190,11 +192,10 @@ func (b Build) Enabled() bool {
 // Load.
 func Default() Config {
 	return Config{
-		Listen:          ":8080",
-		DataDir:         "./data",
-		LogLevel:        "info",
-		Namespace:       "applab-system",
-		NamespacePrefix: "applab-",
+		Listen:    ":8080",
+		DataDir:   "./data",
+		LogLevel:  "info",
+		Namespace: "ops-system",
 
 		// 8 MiB matches the chunk size of the upload protocol this API borrows
 		// its shape from, and is small enough to sit well inside the default
@@ -276,7 +277,6 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.DBPath, "APPLAB_DB_PATH")
 	setString(&cfg.LogLevel, "APPLAB_LOG_LEVEL")
 	setString(&cfg.Namespace, "APPLAB_NAMESPACE")
-	setString(&cfg.NamespacePrefix, "APPLAB_NAMESPACE_PREFIX")
 	setString(&cfg.Kubeconfig, "APPLAB_KUBECONFIG")
 	setString(&cfg.BaseDomain, "APPLAB_BASE_DOMAIN")
 	setInt64(&cfg.MaxSimpleUpload, "APPLAB_MAX_SIMPLE_UPLOAD")
@@ -298,9 +298,7 @@ func applyEnv(cfg *Config) {
 	setDuration(&cfg.Build.Timeout, "APPLAB_BUILD_TIMEOUT")
 	setDuration(&cfg.Build.TTLAfterFinished, "APPLAB_BUILD_TTL_AFTER_FINISHED")
 
-	setString(&cfg.Deploy.IngressClass, "APPLAB_DEPLOY_INGRESS_CLASS")
-	setString(&cfg.Deploy.TLSSecret, "APPLAB_DEPLOY_TLS_SECRET")
-	setString(&cfg.Deploy.ClusterIssuer, "APPLAB_DEPLOY_CLUSTER_ISSUER")
+	setString(&cfg.Deploy.Gateway, "APPLAB_DEPLOY_GATEWAY")
 	setString(&cfg.Deploy.ImagePullSecret, "APPLAB_DEPLOY_IMAGE_PULL_SECRET")
 	setString(&cfg.Deploy.AppCPURequest, "APPLAB_DEPLOY_APP_CPU_REQUEST")
 	setString(&cfg.Deploy.AppMemoryRequest, "APPLAB_DEPLOY_APP_MEMORY_REQUEST")
@@ -423,11 +421,8 @@ func (c *Config) finalize() error {
 		return fmt.Errorf("no API keys configured: set APPLAB_KEY or APPLAB_KEYS to a non-empty comma-separated list")
 	}
 
-	if c.NamespacePrefix == "" {
-		return fmt.Errorf("namespace_prefix must not be empty: applab would manage namespaces it does not own")
-	}
 	if c.Namespace == "" {
-		return fmt.Errorf("namespace must not be empty")
+		return fmt.Errorf("namespace must not be empty: applab would address the default namespace by accident, which the API server accepts silently")
 	}
 	if c.DataDir == "" {
 		return fmt.Errorf("data_dir must not be empty")
@@ -478,6 +473,18 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("base_domain %q must be a bare domain, without a scheme, port or path", d)
 		}
 		c.BaseDomain = strings.Trim(d, ".")
+	}
+
+	// A base domain with no gateway produces a VirtualService with an empty
+	// gateway list, which Istio reads as mesh-internal only: the app deploys,
+	// reports healthy, and is unreachable from outside the cluster. That is a
+	// confusing way to find out about a missing setting, so it is refused here.
+	if strings.TrimSpace(c.BaseDomain) != "" && strings.TrimSpace(c.Deploy.Gateway) == "" {
+		return fmt.Errorf("base_domain is %q but deploy.gateway is empty: apps would be given hostnames with no gateway to serve them, so they would be unreachable from outside the cluster. Set deploy.gateway to \"<namespace>/<name>\", or leave base_domain empty to serve apps inside the cluster only",
+			c.BaseDomain)
+	}
+	if g := strings.TrimSpace(c.Deploy.Gateway); g != "" && !strings.Contains(g, "/") {
+		return fmt.Errorf("deploy.gateway %q must be \"<namespace>/<name>\", the form Istio resolves a gateway by", g)
 	}
 
 	return nil

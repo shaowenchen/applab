@@ -62,23 +62,13 @@ type Server struct {
 	// sourceArchiveSize reports the archive's byte length.
 	sourceArchiveSize func(ctx context.Context, appID, sha string) (int64, error)
 
-	// namespaceDeleter tears down an app's namespace and everything in it.
-	namespaceDeleter func(ctx context.Context, appID string) error
-
-	// ensureNamespace creates an app's namespace, which a build needs before its
-	// Job can be created.
-	ensureNamespace func(ctx context.Context, appID string) error
-
-	// appSecrets are Secrets copied from applab's own namespace into an app's
-	// namespace as part of provisioning it — registry credentials, which a
-	// Secret cannot be referenced across a namespace boundary without.
-	appSecrets []string
-
-	// copySecret copies one of those Secrets into an app's namespace.
-	copySecret func(ctx context.Context, appID, name string) error
-
-	// removeNamespace deletes an app's namespace.
-	removeNamespace func(ctx context.Context, appID string) error
+	// appObjectsDeleter removes everything applab created for one app.
+	//
+	// Deleting an app used to mean deleting its namespace. Every app shares one
+	// namespace now, so its objects are found by label and removed instead —
+	// which makes this the operation that can most easily destroy something it
+	// was not asked to, and the reason it verifies what it is about to delete.
+	appObjectsDeleter func(ctx context.Context, appID string) error
 
 	// build implements the build half. Nil means this deployment cannot build.
 	build BuildEngine
@@ -196,28 +186,10 @@ func (s *Server) WithSourceTokens(issuer *sourcetoken.Issuer) *Server {
 	return s
 }
 
-// WithNamespace attaches the namespace operations a build and a deploy need.
-func (s *Server) WithNamespace(ensure func(ctx context.Context, appID string) error, remove func(ctx context.Context, appID string) error) *Server {
-	s.ensureNamespace = ensure
-	s.removeNamespace = remove
-	return s
-}
-
-// WithAppSecrets attaches the Secrets that must exist in every app namespace,
-// and the copy operation that puts them there.
-//
-// Empty names are dropped rather than treated as an error, so an installation
-// with no registry credentials — the common case for a cluster-local registry —
-// configures nothing here and pays nothing for it.
-func (s *Server) WithAppSecrets(names []string, copy func(ctx context.Context, appID, name string) error) *Server {
-	kept := make([]string, 0, len(names))
-	for _, name := range names {
-		if strings.TrimSpace(name) != "" {
-			kept = append(kept, name)
-		}
-	}
-	s.appSecrets = kept
-	s.copySecret = copy
+// WithAppObjectsDeleter attaches the teardown that removes everything applab
+// created for an app, used when deleting it.
+func (s *Server) WithAppObjectsDeleter(fn func(ctx context.Context, appID string) error) *Server {
+	s.appObjectsDeleter = fn
 	return s
 }
 
@@ -225,13 +197,6 @@ func (s *Server) WithAppSecrets(names []string, copy func(ctx context.Context, a
 // used to answer whether the deploy half is usable.
 func (s *Server) WithClusterStatus(ready func(ctx context.Context) bool) *Server {
 	s.clusterReady = ready
-	return s
-}
-
-// WithNamespaceDeleter attaches namespace teardown, used when deleting an app.
-func (s *Server) WithNamespaceDeleter(fn func(ctx context.Context, appID string) error) *Server {
-	s.namespaceDeleter = fn
-	s.removeNamespace = fn
 	return s
 }
 
@@ -332,8 +297,8 @@ type Observer interface {
 	// StreamLogs follows a container's log, writing as lines arrive.
 	StreamLogs(ctx context.Context, namespace, appID string, opts observe.LogOptions, w io.Writer, flush func()) error
 
-	// Events returns recent Kubernetes events for a namespace.
-	Events(ctx context.Context, namespace string, limit int) ([]observe.Event, error)
+	// Events returns recent Kubernetes events concerning one app.
+	Events(ctx context.Context, namespace, appID string, limit int) ([]observe.Event, error)
 }
 
 // WithObserver attaches the observability half.
@@ -391,42 +356,16 @@ func (s *Server) streamPodLogs(ctx context.Context, namespace, appID string, opt
 	return s.observer.StreamLogs(ctx, namespace, appID, opts, w, flush)
 }
 
-// listEvents reads recent events for a namespace.
-func (s *Server) listEvents(ctx context.Context, namespace string, limit int) ([]observe.Event, error) {
+// listEvents reads recent events concerning one app.
+//
+// The app is named as well as the namespace because every app shares a
+// namespace: without it this would report another app's failures, which is
+// worse than reporting nothing.
+func (s *Server) listEvents(ctx context.Context, namespace, appID string, limit int) ([]observe.Event, error) {
 	if s.observer == nil {
 		return nil, fmt.Errorf("this deployment cannot observe")
 	}
-	return s.observer.Events(ctx, namespace, limit)
-}
-
-// ensureNamespaceFor creates an app's namespace if needed, then makes sure the
-// Secrets that namespace needs are present in it.
-//
-// Both halves happen together because both are preconditions of the same thing:
-// a namespace a build can run in. Creating it and leaving its registry
-// credentials behind would let the Job start, run, and fail at the push, which
-// is minutes later and reads as a build problem rather than a configuration one.
-func (s *Server) ensureNamespaceFor(ctx context.Context, appID string) error {
-	if s.ensureNamespace == nil {
-		return nil
-	}
-	if err := s.ensureNamespace(ctx, appID); err != nil {
-		return err
-	}
-	return s.copyAppSecrets(ctx, appID)
-}
-
-// copyAppSecrets puts each configured Secret into an app's namespace.
-func (s *Server) copyAppSecrets(ctx context.Context, appID string) error {
-	if s.copySecret == nil {
-		return nil
-	}
-	for _, name := range s.appSecrets {
-		if err := s.copySecret(ctx, appID, name); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.observer.Events(ctx, namespace, appID, limit)
 }
 
 // route is one endpoint: how it is matched, whether it is protected, and

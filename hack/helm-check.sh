@@ -19,7 +19,7 @@ if ! command -v helm >/dev/null 2>&1; then
 fi
 
 CHART=charts/applab
-NS=applab-system
+NS=ops-system
 
 # A configuration that exercises every branch the guards protect, so the
 # defaults in values.yaml are not what is being checked.
@@ -27,6 +27,7 @@ BASE=(
   --namespace "$NS"
   --set "auth.keys[0]=test-key-do-not-use"
   --set "apps.baseDomain=apps.example.com"
+  --set "deploy.gateway=$NS/gateway"
   --set "build.registry=registry.example.com/apps"
   --set "build.pushSecret=regcred"
   --set "deploy.imagePullSecret=regpull"
@@ -104,8 +105,9 @@ must_fail() {
   fi
 }
 must_fail "no API keys"       --set apps.baseDomain=a.example.com
-must_fail "no registry"       --set "auth.keys[0]=k" --set apps.baseDomain=a.example.com
-must_fail "no base domain"    --set "auth.keys[0]=k" --set "build.registry=r.example.com/a"
+must_fail "no registry"       --set "auth.keys[0]=k" --set apps.baseDomain=a.example.com --set "deploy.gateway=$NS/gateway"
+must_fail "bad gateway"       --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway=nope"
+must_fail "no gateway"        --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com"
 must_fail "two replicas"      "${BASE[@]}" --set replicaCount=2
 
 # Every manifest's top-level keys have to be ones Kubernetes knows. Text emitted
@@ -150,6 +152,47 @@ grep -q 'WARNING: build.rootless is false' <<<"$warn" \
 # And it must not appear when the default is left alone.
 if render 2>/dev/null | grep -q 'WARNING: build.rootless is false'; then
   fail "the privileged-build warning appears with build.rootless=true"
+fi
+
+# RBAC is a Role, not a ClusterRole: applab keeps everything in one namespace,
+# so it has no business holding any permission outside it. A ClusterRole
+# reappearing here would silently undo the point of that.
+if grep -q 'kind: ClusterRole' <<<"$out"; then
+  fail "a ClusterRole is rendered; applab runs in one namespace and needs only a Role"
+fi
+grep -q 'kind: Role$' <<<"$out" || fail "no Role is rendered"
+grep -q 'kind: RoleBinding' <<<"$out" || fail "no RoleBinding is rendered"
+if grep -q 'resources: \["namespaces"\]' <<<"$out"; then
+  fail "the Role grants namespace permissions, which it does not need"
+fi
+
+# Publishing apps is Istio's job here: the cluster routes through a gateway, and
+# an Ingress applab created would be ignored by it.
+grep -q 'APPLAB_DEPLOY_GATEWAY: "ops-system/gateway"' <<<"$out" \
+  || fail "deploy.gateway does not reach the server; apps would have no route"
+
+# The namespace defaults to ops-system, and the prefix model it replaced is gone.
+grep -q 'APPLAB_NAMESPACE: "ops-system"' <<<"$out" || fail "the namespace is not ops-system"
+if grep -q 'APPLAB_NAMESPACE_PREFIX' <<<"$out"; then
+  fail "APPLAB_NAMESPACE_PREFIX is still set; the per-app namespace model is gone"
+fi
+
+# applab's own image is pulled always: a re-pushed tag must not be served from a
+# node's cache.
+grep -q 'imagePullPolicy: Always' <<<"$out" || fail "applab's own image is not pulled always"
+
+# A base domain with no gateway is a deployment where every app is unreachable
+# from outside, so it has to be refused rather than rendered.
+if helm template applab "$CHART" --namespace "$NS" \
+  --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
+  --set "apps.baseDomain=apps.example.com" >/dev/null 2>&1; then
+  fail "a base domain without a gateway should be refused"
+fi
+# And a gateway that is not namespace/name would not resolve.
+if helm template applab "$CHART" --namespace "$NS" \
+  --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
+  --set "apps.baseDomain=apps.example.com" --set "deploy.gateway=just-a-name" >/dev/null 2>&1; then
+  fail "a gateway without a namespace should be refused"
 fi
 
 helm lint "$CHART" "${BASE[@]}" >/dev/null || fail "helm lint reported a problem"

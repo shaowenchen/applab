@@ -211,14 +211,26 @@ type Event struct {
 	LastSeen  time.Time `json:"last_seen"`
 }
 
-// Events returns recent events for an app's namespace.
+// Events returns recent Kubernetes events concerning one app.
 //
 // Events are the answer to questions the pod list cannot answer — why a pod was
 // never scheduled, why an image pull failed, why a liveness probe killed a
 // container — and they are the first thing a Kubernetes operator reaches for. They
 // expire after about an hour, so a caller that wants history has to record them
 // itself; this reads what is there now.
-func (o *Observer) Events(ctx context.Context, namespace string, limit int) ([]Event, error) {
+//
+// Filtering is by exact object name rather than by name prefix, because every
+// app shares one namespace and a prefix is not enough to tell them apart: with
+// apps "shop" and "shop-2", the prefix "app-shop-" matches shop-2's pods too,
+// and this endpoint would report one app's failures under another's name. The
+// names are collected from the objects themselves, so each app's events are
+// matched to it by the label it carries rather than by a guess about its name.
+func (o *Observer) Events(ctx context.Context, namespace, appID string, limit int) ([]Event, error) {
+	names, err := o.appObjectNames(ctx, namespace, appID)
+	if err != nil {
+		return nil, err
+	}
+
 	events, err := o.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list events in %s: %w", namespace, err)
@@ -227,6 +239,13 @@ func (o *Observer) Events(ctx context.Context, namespace string, limit int) ([]E
 	out := make([]Event, 0, len(events.Items))
 	for i := range events.Items {
 		e := &events.Items[i]
+
+		// An event about something in this namespace that this app did not
+		// create — another app's pod, applab's own Deployment — is not this
+		// app's to report.
+		if _, mine := names[e.InvolvedObject.Name]; !mine {
+			continue
+		}
 
 		lastSeen := e.LastTimestamp.Time
 		if lastSeen.IsZero() {
@@ -275,6 +294,63 @@ func (o *Observer) Events(ctx context.Context, namespace string, limit int) ([]E
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// appObjectNames returns every object name in the namespace that carries the
+// app's label.
+//
+// It is how an event is attributed to an app. The alternative — matching the
+// event's object name against a prefix built from the app id — looks simpler and
+// is wrong: apps "shop" and "shop-2" share the prefix "app-shop-", so a prefix
+// match reports one app's pod failures under another app's name. Asking each
+// kind for its labeled objects costs a few list calls and cannot confuse two
+// apps.
+//
+// A kind that cannot be listed is skipped rather than failing the whole read:
+// the pod list is the part that matters, and a caller asking why an app is
+// unwell should still get the events that can be found.
+func (o *Observer) appObjectNames(ctx context.Context, namespace, appID string) (map[string]struct{}, error) {
+	selector := metav1.ListOptions{LabelSelector: "applab.io/app=" + appID}
+
+	names := map[string]struct{}{}
+
+	pods, err := o.client.CoreV1().Pods(namespace).List(ctx, selector)
+	if err != nil {
+		return nil, fmt.Errorf("list pods in %s: %w", namespace, err)
+	}
+	for i := range pods.Items {
+		names[pods.Items[i].Name] = struct{}{}
+	}
+
+	// A pod's owner is named here too because Kubernetes reports a failed
+	// scheduling against the ReplicaSet or the Job as often as against the pod.
+	if deployments, err := o.client.AppsV1().Deployments(namespace).List(ctx, selector); err == nil {
+		for i := range deployments.Items {
+			names[deployments.Items[i].Name] = struct{}{}
+		}
+	}
+	if replicaSets, err := o.client.AppsV1().ReplicaSets(namespace).List(ctx, selector); err == nil {
+		for i := range replicaSets.Items {
+			names[replicaSets.Items[i].Name] = struct{}{}
+		}
+	}
+	if services, err := o.client.CoreV1().Services(namespace).List(ctx, selector); err == nil {
+		for i := range services.Items {
+			names[services.Items[i].Name] = struct{}{}
+		}
+	}
+	if ingresses, err := o.client.NetworkingV1().Ingresses(namespace).List(ctx, selector); err == nil {
+		for i := range ingresses.Items {
+			names[ingresses.Items[i].Name] = struct{}{}
+		}
+	}
+	if jobs, err := o.client.BatchV1().Jobs(namespace).List(ctx, selector); err == nil {
+		for i := range jobs.Items {
+			names[jobs.Items[i].Name] = struct{}{}
+		}
+	}
+
+	return names, nil
 }
 
 // LogOptions selects a container and how much of its log to read.

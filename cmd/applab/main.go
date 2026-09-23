@@ -163,17 +163,15 @@ func run() error {
 	srv.WithMetrics(api.NewMetrics())
 
 	if client, err := k8s.New(k8s.Options{
-		Kubeconfig:      cfg.Kubeconfig,
-		NamespacePrefix: cfg.NamespacePrefix,
-		OwnNamespace:    cfg.Namespace,
+		Kubeconfig: cfg.Kubeconfig,
+		Namespace:  cfg.Namespace,
 	}); err != nil {
 		slog.Warn("running without cluster access: builds and deploys are unavailable", "error", err)
 	} else {
-		srv.WithNamespace(client.EnsureNamespace, client.DeleteNamespace)
-		srv.WithAppSecrets(
-			[]string{cfg.Build.PushSecret, cfg.Deploy.ImagePullSecret},
-			client.CopySecret,
-		)
+		// Namespace provisioning is gone with the per-app namespace. What
+		// remains is deletion, which finds an app's objects by label because
+		// there is no namespace to drop.
+		srv.WithAppObjectsDeleter(client.DeleteAppObjects)
 		srv.WithClusterStatus(client.Ready)
 
 		if cfg.Build.Enabled() {
@@ -208,11 +206,12 @@ func run() error {
 		// The deploy half shares the cluster client. It is attached whenever the
 		// cluster is reachable — an app can be deployed from an image that was
 		// built elsewhere, so deploying does not depend on the build half.
-		srv.WithDeployer(deploy.New(client.Clientset(), deploy.Config{
-			IngressClass:     cfg.Deploy.IngressClass,
+		//
+		// The dynamic client goes with it because publishing an app means writing
+		// an Istio VirtualService, which is not in client-go.
+		srv.WithDeployer(deploy.NewWithDynamic(client.Clientset(), client.Dynamic(), deploy.Config{
+			Gateway:          cfg.Deploy.Gateway,
 			BaseDomain:       cfg.BaseDomain,
-			TLSSecret:        cfg.Deploy.TLSSecret,
-			ClusterIssuer:    cfg.Deploy.ClusterIssuer,
 			ImagePullSecret:  cfg.Deploy.ImagePullSecret,
 			Annotations:      cfg.Deploy.Annotations,
 			AppCPURequest:    cfg.Deploy.AppCPURequest,

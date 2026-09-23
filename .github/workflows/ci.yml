@@ -1,0 +1,148 @@
+name: ci
+
+# Everything is gated on the same set of checks, and a tag additionally publishes
+# the image and the chart. One file rather than two so the Go and helm setup is
+# defined once: a release that ran a different test command from the one on a
+# pull request is a release nobody checked.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's answer irrelevant, so it
+# is cancelled rather than left to finish and report on code that has moved.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Read by the image job; kept here so the value is visible beside the steps
+  # that use it rather than buried in one of them.
+  IMAGE_NAME: applab
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # From go.mod rather than hardcoded: a toolchain mismatch between CI
+          # and the module is a failure that looks like a code problem.
+          go-version-file: go.mod
+          cache: true
+
+      # The release binary comes from the same script the developer runs, so
+      # there is one answer to "which helm is this checked with".
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # fmt-check, vet, llms-check and the test suite. llms-check is the one that
+      # matters most here: api/llms.txt is the contract clients are built from,
+      # and it is generated from the route table, so a route change that did not
+      # update it fails here instead of shipping a wrong contract.
+      - name: make check
+        run: make check
+
+      # Renders the chart and asserts what it has to contain. Skipped by the
+      # script itself if helm were missing, which is why helm is installed above.
+      - name: check the chart
+        run: ./hack/helm-check.sh
+
+  image:
+    name: image
+    runs-on: ubuntu-latest
+    needs: test
+    # Only a tag publishes. A branch push is a candidate, not a release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # The tag is derived from the git ref rather than taken on trust, and the
+      # version stamped into the binary is the same string a user sees on the
+      # image — so "which build is this" has one answer.
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ vars.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # arm64 as well as amd64: a Kubernetes cluster is rarely all one
+          # architecture, and an image that only runs on one is a puzzle for
+          # whoever lands on the other.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+          # Layer caching across runs. Without it every release rebuilds the Go
+          # module download and the whole binary from nothing.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  chart:
+    name: chart
+    runs-on: ubuntu-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      # chart-releaser pushes the packaged chart to a gh-pages branch, which is
+      # what makes `helm repo add applab https://<owner>.github.io/applab` work.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # chart-releaser needs the full history to work out what has already
+          # been released.
+          fetch-depth: 0
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # The chart version comes from Chart.yaml, not from the git tag. They are
+      # allowed to differ — a release can publish an image without republishing
+      # the chart — and chart-releaser keys off Chart.yaml, so a tag that does
+      # not bump it is a no-op rather than a broken release.
+      - name: Configure git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1.6.0
+        env:
+          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

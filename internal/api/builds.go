@@ -123,11 +123,9 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, commitSHA strin
 		return nil, Errorf(http.StatusInternalServerError, "generate build id").Wrap(err)
 	}
 
-	// A build runs in the app's own namespace, which has to exist first — along
-	// with the registry credentials its Job pushes with.
-	if err := s.ensureNamespaceFor(ctx, app.ID); err != nil {
-		return nil, Errorf(http.StatusInternalServerError, "prepare the app's namespace").Wrap(err)
-	}
+	// No provisioning step: the namespace already exists, because it is the one
+	// applab runs in, and the registry credentials a Job pushes with are already
+	// there for the same reason.
 
 	build := &model.Build{
 		ID:        buildID,

@@ -172,12 +172,19 @@ func ValidateAppID(id string) error {
 	return nil
 }
 
-// Namespace returns the namespace an app is deployed into.
+// Namespace returns the namespace an app's resources live in: the deployment's
+// own.
 //
-// The prefix is the deployment's, not the app's, so an operator can run several
-// applab installations in one cluster without their apps colliding.
-func Namespace(prefix, appID string) string {
-	return prefix + appID
+// Every app shares it, which is a deliberate trade. It gives applab a namespaced
+// Role instead of a ClusterRole — it holds no permission anywhere else in the
+// cluster — and it costs the isolation separate namespaces would provide. What
+// keeps one app's objects apart from another's is a label (`applab.io/app`),
+// not a namespace boundary, so anything that lists or deletes must filter by it.
+//
+// The app id is accepted for symmetry with the callers that have one to hand; it
+// does not affect the result.
+func Namespace(namespace, appID string) string {
+	return namespace
 }
 
 // Hostname returns the hostname an app is served at, given the deployment's

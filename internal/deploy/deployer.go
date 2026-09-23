@@ -15,42 +15,41 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/shaowenchen/applab/internal/model"
 )
 
-// Config describes one deployment's ingress environment.
+// Config describes one deployment's environment for publishing apps.
 type Config struct {
-	// IngressClass is the IngressClass apps are served through. Empty means the
-	// cluster's default.
-	IngressClass string
-
-	// BaseDomain is the domain apps are exposed under. Empty means no Ingress is
-	// created and an app is reachable only inside the cluster.
+	// BaseDomain is the domain apps are exposed under. Empty means no
+	// VirtualService is created and an app is reachable only inside the cluster.
 	BaseDomain string
 
-	// TLSSecret is a wildcard certificate Secret for the base domain. Empty
-	// means no TLS is configured, which is the honest default — a redirect to
-	// https with no certificate is worse than no TLS at all.
-	TLSSecret string
+	// Gateway is the Istio gateway apps are published through, as
+	// "<namespace>/<name>". The gateway is cluster infrastructure that already
+	// exists — applab attaches to it rather than creating it — so this has to
+	// name one that is really there.
+	//
+	// TLS is not configured here. The certificate belongs to the gateway, which
+	// has the listeners and the certificate for the whole domain; an app just
+	// has to be routed to.
+	Gateway string
 
-	// ClusterIssuer names a cert-manager ClusterIssuer. When set, an annotation
-	// asks cert-manager for a per-app certificate, which is the right choice
-	// when no wildcard certificate exists.
-	ClusterIssuer string
-
-	// ImagePullSecret names a Secret in each app namespace holding registry
-	// credentials for pulling the built image.
+	// ImagePullSecret names a Secret holding registry credentials for pulling
+	// the built image. It is in the same namespace as the Deployment, which is
+	// applab's own, so it is referenced directly rather than copied.
 	ImagePullSecret string
 
-	// Annotations are added to every Ingress, for ingress-controller specifics
-	// that vary by cluster (proxy body size, timeouts, SSL redirect).
+	// Annotations are added to every VirtualService, for Istio specifics that
+	// vary by cluster.
 	Annotations map[string]string
 
 	// AppResources are applied to every app container. Empty values fall back to
@@ -61,15 +60,43 @@ type Config struct {
 	AppMemoryLimit   string
 }
 
+// virtualServiceGVR addresses Istio's VirtualService for the dynamic client.
+//
+// Istio's types are not in client-go, and depending on istio.io/api to build one
+// struct would add a large module — and a version constraint against whatever
+// Istio the cluster runs — for a resource applab writes in a dozen lines. The
+// dynamic client needs only the group, version and kind.
+var virtualServiceGVR = schema.GroupVersionResource{
+	Group:    "networking.istio.io",
+	Version:  "v1",
+	Resource: "virtualservices",
+}
+
+const (
+	group   = "networking.istio.io"
+	version = "v1"
+	kind    = "VirtualService"
+)
+
 // Deployer creates and updates an app's Kubernetes resources.
 type Deployer struct {
-	client kubernetes.Interface
-	cfg    Config
+	client  kubernetes.Interface
+	dynamic dynamic.Interface
+	cfg     Config
 }
 
 // New creates a Deployer.
 func New(client kubernetes.Interface, cfg Config) *Deployer {
 	return &Deployer{client: client, cfg: cfg}
+}
+
+// NewWithDynamic creates a Deployer that can also write Istio resources.
+//
+// The dynamic client is passed separately because it is built from the same
+// REST config but is a different interface, and because a test that only
+// exercises the Deployment and Service should not have to construct one.
+func NewWithDynamic(client kubernetes.Interface, dyn dynamic.Interface, cfg Config) *Deployer {
+	return &Deployer{client: client, dynamic: dyn, cfg: cfg}
 }
 
 // Ready reports whether the deployer can work.
@@ -95,7 +122,7 @@ func (d *Deployer) Apply(ctx context.Context, app *model.App, image string) (str
 	if host == "" {
 		return "", nil
 	}
-	if err := d.applyIngress(ctx, app, host); err != nil {
+	if err := d.expose(ctx, app, host); err != nil {
 		return "", err
 	}
 	return host, nil
@@ -188,6 +215,15 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 					Containers: []corev1.Container{{
 						Name:  "app",
 						Image: image,
+						// Always, not IfNotPresent. An app's image is tagged by
+						// commit, so a rebuilt image of the same commit keeps the
+						// same tag — and with the default policy a node that
+						// already has that tag keeps serving the old layers. The
+						// deploy then reports success while the app runs the
+						// previous code, which is the hardest kind of failure to
+						// notice: there is no error, and the fix looks like it
+						// was applied.
+						ImagePullPolicy: corev1.PullAlways,
 						Ports: []corev1.ContainerPort{{
 							Name:          "http",
 							ContainerPort: app.Port,
@@ -334,112 +370,97 @@ func (d *Deployer) applyService(ctx context.Context, app *model.App) error {
 	return nil
 }
 
-func (d *Deployer) applyIngress(ctx context.Context, app *model.App, host string) error {
+// expose creates or updates the VirtualService that publishes an app through
+// the cluster's Istio gateway.
+//
+// A VirtualService rather than an Ingress because the routing in front of these
+// apps is an Istio gateway: an Ingress would be ignored by it, and the app would
+// be deployed, healthy, and unreachable.
+//
+// The gateway is not created here. It is a shared piece of cluster
+// infrastructure — one per cluster or per team, with the certificate and the
+// listeners configured on it — so applab attaches to it by name. That also means
+// TLS is not applab's business: the certificate is on the gateway, and pointing
+// a VirtualService at an HTTPS listener is all that is needed to be served over
+// it.
+func (d *Deployer) expose(ctx context.Context, app *model.App, host string) error {
 	namespace := app.Namespace
 	name := ObjectName(app.ID)
 
-	pathType := networkingv1.PathTypePrefix
-
-	annotations := map[string]string{}
-	for k, v := range d.cfg.Annotations {
-		annotations[k] = v
-	}
-	if d.cfg.ClusterIssuer != "" {
-		annotations["cert-manager.io/cluster-issuer"] = d.cfg.ClusterIssuer
-	}
-
-	ingress := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   namespace,
-			Labels:      appLabels(app),
-			Annotations: annotations,
+	vs := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": group + "/" + version,
+		"kind":       kind,
+		"metadata": map[string]any{
+			"name":        name,
+			"namespace":   namespace,
+			"labels":      toStringMap(appLabels(app)),
+			"annotations": toStringMap(d.cfg.Annotations),
 		},
-		Spec: networkingv1.IngressSpec{
-			Rules: []networkingv1.IngressRule{{
-				Host: host,
-				IngressRuleValue: networkingv1.IngressRuleValue{
-					HTTP: &networkingv1.HTTPIngressRuleValue{
-						Paths: []networkingv1.HTTPIngressPath{{
-							Path:     "/",
-							PathType: &pathType,
-							Backend: networkingv1.IngressBackend{
-								Service: &networkingv1.IngressServiceBackend{
-									Name: name,
-									Port: networkingv1.ServiceBackendPort{Number: 80},
-								},
-							},
-						}},
+		"spec": map[string]any{
+			"hosts":    []any{host},
+			"gateways": []any{d.cfg.Gateway},
+			"http": []any{map[string]any{
+				"route": []any{map[string]any{
+					"destination": map[string]any{
+						"host": name,
+						"port": map[string]any{"number": int64(80)},
 					},
-				},
+				}},
 			}},
 		},
-	}
+	}}
 
-	if d.cfg.IngressClass != "" {
-		ingress.Spec.IngressClassName = ptr(d.cfg.IngressClass)
-	}
-
-	// TLS only when there is something to serve it with. An Ingress with a
-	// tls block naming a Secret that does not exist makes the ingress controller
-	// serve its own self-signed certificate, which trains a user to click through
-	// a browser warning — worse than plain HTTP, which is at least honest.
-	if secretName := d.tlsSecretName(app); secretName != "" {
-		ingress.Spec.TLS = []networkingv1.IngressTLS{{
-			Hosts:      []string{host},
-			SecretName: secretName,
-		}}
-	}
-
-	return d.upsertIngress(ctx, namespace, name, ingress)
+	return d.upsertVirtualService(ctx, namespace, name, vs)
 }
 
-// tlsSecretName picks the Secret an app's certificate lives in, or "" for no TLS.
-//
-// Two arrangements are supported and the difference matters:
-//
-//   - A configured TLSSecret is a certificate that already exists and covers
-//     every app under the base domain — in practice a wildcard. Every app
-//     references the same Secret, because that is what a wildcard is for.
-//   - With no such Secret but a cert-manager ClusterIssuer configured, each app
-//     gets its own certificate, so the Secret is named per app. Using one shared
-//     name here would have every app overwrite the same Secret and cert-manager
-//     thrash, issuing a certificate for whichever host it saw last.
-func (d *Deployer) tlsSecretName(app *model.App) string {
-	if d.cfg.TLSSecret != "" {
-		return d.cfg.TLSSecret
-	}
-	if d.cfg.ClusterIssuer != "" {
-		return ObjectName(app.ID) + "-tls"
-	}
-	// No certificate and no issuer: plain HTTP, which is at least honest about
-	// what it is.
-	return ""
-}
-
-func (d *Deployer) upsertIngress(ctx context.Context, namespace, name string, desired *networkingv1.Ingress) error {
-	existing, err := d.client.NetworkingV1().Ingresses(namespace).Get(ctx, name, metav1.GetOptions{})
+func (d *Deployer) upsertVirtualService(ctx context.Context, namespace, name string, desired *unstructured.Unstructured) error {
+	existing, err := d.dynamic.Resource(virtualServiceGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		if _, err := d.client.NetworkingV1().Ingresses(namespace).Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("create ingress %s: %w", name, err)
+		if _, err := d.dynamic.Resource(virtualServiceGVR).Namespace(namespace).Create(ctx, desired, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("create virtualservice %s: %w", name, err)
 		}
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read ingress %s: %w", name, err)
+		return fmt.Errorf("read virtualservice %s: %w", name, err)
 	}
 
-	existing.Spec = desired.Spec
-	existing.Labels = merge(existing.Labels, desired.Labels)
-	// Annotations are replaced rather than merged: a removed annotation has to
-	// actually disappear, or a setting applab stopped applying would linger
-	// forever.
-	existing.Annotations = annotationsFor(desired)
+	// Only the fields applab owns are replaced, rather than the whole object.
+	// Istio's control plane writes status and defaults into the same resource, so
+	// a wholesale update would fight it.
+	existing.SetLabels(merge(existing.GetLabels(), desired.GetLabels()))
 
-	if _, err := d.client.NetworkingV1().Ingresses(namespace).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update ingress %s: %w", name, err)
+	// Annotations are replaced rather than merged, so one applab stopped setting
+	// actually disappears. The VirtualService is applab's own object — nothing
+	// else writes to it — so there is no one else's annotation to preserve.
+	existing.SetAnnotations(desired.GetAnnotations())
+
+	// The spec is owned entirely by applab, so it is replaced.
+	spec, found, err := unstructured.NestedMap(desired.Object, "spec")
+	if err != nil || !found {
+		return fmt.Errorf("virtualservice %s has no spec to apply", name)
+	}
+	if err := unstructured.SetNestedMap(existing.Object, spec, "spec"); err != nil {
+		return fmt.Errorf("set spec on virtualservice %s: %w", name, err)
+	}
+
+	if _, err := d.dynamic.Resource(virtualServiceGVR).Namespace(namespace).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update virtualservice %s: %w", name, err)
 	}
 	return nil
+}
+
+// toStringMap converts a labels map for use in an unstructured object.
+//
+// The dynamic client round-trips through JSON, so values have to be the shapes
+// encoding/json produces; map[string]string happens to work but makes the
+// intended object harder to read beside a spec that is all map[string]any.
+func toStringMap(in map[string]string) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // Status describes what the cluster currently shows for an app.
@@ -502,11 +523,10 @@ func (d *Deployer) Status(ctx context.Context, app *model.App) (Status, error) {
 	return status, nil
 }
 
-// Remove deletes an app's Deployment, Service and Ingress.
+// Remove deletes an app's Deployment, Service and VirtualService.
 //
-// It is used when an app is stopped without being deleted. Deleting the
-// namespace would be simpler, but it would also take the app's source and
-// history with it.
+// It is used when an app is stopped without being deleted: the source and its
+// history are kept, so starting again is a deploy rather than a re-upload.
 func (d *Deployer) Remove(ctx context.Context, app *model.App) error {
 	namespace := app.Namespace
 	name := ObjectName(app.ID)
@@ -518,9 +538,13 @@ func (d *Deployer) Remove(ctx context.Context, app *model.App) error {
 	if err := d.client.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete service for app %s: %w", app.ID, err)
 	}
-	if err := d.client.NetworkingV1().Ingresses(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		// A missing ingress is normal when the deployment has no base domain.
-		return fmt.Errorf("delete ingress for app %s: %w", app.ID, err)
+	// A missing VirtualService is normal when the deployment has no base domain,
+	// so a not-found is not a failure. A nil dynamic client means this Deployer
+	// was built without Istio support, in which case there is none to delete.
+	if d.dynamic != nil {
+		if err := d.dynamic.Resource(virtualServiceGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete virtualservice for app %s: %w", app.ID, err)
+		}
 	}
 	return nil
 }
@@ -554,14 +578,6 @@ func pullSecrets(name string) []corev1.LocalObjectReference {
 		return nil
 	}
 	return []corev1.LocalObjectReference{{Name: name}}
-}
-
-func annotationsFor(ingress *networkingv1.Ingress) map[string]string {
-	out := make(map[string]string, len(ingress.Annotations))
-	for k, v := range ingress.Annotations {
-		out[k] = v
-	}
-	return out
 }
 
 // merge overlays desired onto existing, leaving keys only existing has.

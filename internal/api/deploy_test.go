@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,8 +12,11 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamic "k8s.io/client-go/dynamic"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/shaowenchen/applab/internal/api"
@@ -51,36 +55,42 @@ func newDeployServerWithSource(t *testing.T) (*api.Server, *fake.Clientset, *sto
 	}
 
 	client := fake.NewSimpleClientset()
-	deployer := deploy.New(client, deploy.Config{BaseDomain: "apps.example.com"})
+	deployer := deploy.NewWithDynamic(client, fakeDynamic(t), deploy.Config{
+		BaseDomain: "apps.example.com",
+		Gateway:    "ops-system/gateway",
+	})
 
 	cfg := config.Default()
 	cfg.Keys = []string{"test-key"}
 	cfg.BaseDomain = "apps.example.com"
+	cfg.Namespace = "ops-system"
 	cfg.DataDir = dataDir
+
+	cluster := k8s.NewWithClientset(client, cfg.Namespace)
 
 	srv := api.New(cfg, st, auth.New(cfg.Keys)).
 		WithSource(src).
 		WithDeployer(deployer).
-		WithNamespace(
-			func(ctx context.Context, appID string) error {
-				// Idempotent, as the real k8s.Client.EnsureNamespace is: a
-				// namespace that already exists is not a failure, or a second
-				// deploy would break.
-				_, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-					ObjectMeta: metav1.ObjectMeta{Name: "applab-" + appID},
-				}, metav1.CreateOptions{})
-				if err != nil && !apierrors.IsAlreadyExists(err) {
-					return err
-				}
-				return nil
-			},
-			func(ctx context.Context, appID string) error {
-				return client.CoreV1().Namespaces().Delete(ctx, "applab-"+appID, metav1.DeleteOptions{})
-			},
-		)
+		WithAppObjectsDeleter(cluster.DeleteAppObjects)
 
-	// Give the app a namespace so the deployer's objects land somewhere.
 	return srv, client, st
+}
+
+// fakeDynamic returns a dynamic client over the resources applab publishes with,
+// so the deploy path can run without a cluster.
+//
+// The list kinds are given explicitly: the fake derives them from the kind by
+// pluralising, which turns "Gateway" into "gatewaies" and then does not match
+// the "gateways" a caller asks for.
+func fakeDynamic(t *testing.T) dynamic.Interface {
+	t.Helper()
+
+	gvr := schema.GroupVersionResource{Group: "networking.istio.io", Version: "v1", Resource: "virtualservices"}
+	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			gvr: "VirtualServiceList",
+			{Group: "networking.istio.io", Version: "v1", Resource: "gateways"}: "GatewayList",
+		})
 }
 
 // setupAppWithCommit creates an app and uploads a source commit, returning the
@@ -150,7 +160,7 @@ func TestDeployCreatesResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get app: %v", err)
 	}
-	app.Namespace = "applab-shop"
+	app.Namespace = "ops-system"
 
 	// Stand in for a completed build: a successful record carrying an image.
 	build, err := st.FindSucceededBuild(context.Background(), "shop", commit)
@@ -178,7 +188,7 @@ func TestDeployCreatesResources(t *testing.T) {
 	}
 
 	// The objects must exist in the app's namespace.
-	if _, err := client.AppsV1().Deployments("applab-shop").Get(context.Background(), "app-shop", metav1.GetOptions{}); err != nil {
+	if _, err := client.AppsV1().Deployments("ops-system").Get(context.Background(), "app-shop", metav1.GetOptions{}); err != nil {
 		t.Errorf("no deployment was created: %v", err)
 	}
 	// And applab's record must say what is deployed.
@@ -270,7 +280,7 @@ func TestStopRemovesResources(t *testing.T) {
 		t.Fatalf("stop: %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	if _, err := client.AppsV1().Deployments("applab-shop").Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
 		t.Error("the deployment still exists after stop")
 	}
 
@@ -418,91 +428,61 @@ func recordBuild(t *testing.T, st *store.Store, appID, commit, image string) {
 	}
 }
 
-// TestDeployCopiesRegistrySecretIntoAppNamespace covers the whole chain a
-// registry credential travels: named in configuration, copied into the app's
-// namespace when that namespace is provisioned, and referenced by the
-// Deployment that needs to pull with it.
+// TestDeletingAnAppRemovesItsClusterObjects covers what deleting an app means
+// now that every app shares one namespace: there is no namespace to drop, so the
+// server has to find the app's objects by label and remove them.
 //
-// Each step on its own is easy to get right and the seam between them is where
-// this broke: the Deployment referenced a Secret that nothing ever created, so
-// every app deployed against a private registry sat in ImagePullBackOff with
-// nothing in applab's own output to explain why.
-func TestDeployCopiesRegistrySecretIntoAppNamespace(t *testing.T) {
-	dataDir := t.TempDir()
-	st, err := store.Open(context.Background(), filepath.Join(dataDir, "t.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-
-	src, err := source.New(source.Options{DataDir: dataDir})
-	if err != nil {
-		t.Fatalf("source.New: %v", err)
-	}
-
-	// The source of truth is a Secret in applab's own namespace, as the chart
-	// expects an operator to have created it.
-	const ownNamespace = "applab-system"
-	client := fake.NewSimpleClientset(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "regcred", Namespace: ownNamespace},
-		Type:       corev1.SecretTypeDockerConfigJson,
-		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)},
-	})
-
-	namespaces := k8s.NewWithClientset(client, "applab-", ownNamespace)
-
-	cfg := config.Default()
-	cfg.Keys = []string{"test-key"}
-	cfg.BaseDomain = "apps.example.com"
-	cfg.DataDir = dataDir
-	// Set on the config, which is where both the deployer and the copy list
-	// read it from — the two have to agree or the Deployment references a
-	// Secret the server never copied.
-	cfg.Deploy.ImagePullSecret = "regcred"
-
-	deployer := deploy.New(client, deploy.Config{
-		BaseDomain:      "apps.example.com",
-		ImagePullSecret: cfg.Deploy.ImagePullSecret,
-	})
-
-	srv := api.New(cfg, st, auth.New(cfg.Keys)).
-		WithSource(src).
-		WithDeployer(deployer).
-		WithNamespace(namespaces.EnsureNamespace, namespaces.DeleteNamespace).
-		WithAppSecrets([]string{cfg.Build.PushSecret, cfg.Deploy.ImagePullSecret}, namespaces.CopySecret)
-
+// The other half of the assertion is the one that matters. applab's own
+// Deployment lives in the same namespace with no app label at all, so a delete
+// that is too broad takes the platform down with the app.
+func TestDeletingAnAppRemovesItsClusterObjects(t *testing.T) {
+	srv, client, st := newDeployServer(t)
 	h := srv.Handler()
+	ctx := context.Background()
+
 	commit := setupAppWithCommit(t, srv, h, "shop")
 	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
-
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{}); rec.Code != http.StatusOK {
 		t.Fatalf("deploy: %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	// The credential has to be in the namespace the app runs in: a Secret
-	// cannot be referenced across a namespace boundary.
-	if _, err := client.CoreV1().Secrets("applab-shop").Get(context.Background(), "regcred", metav1.GetOptions{}); err != nil {
-		t.Fatalf("the registry Secret did not reach the app's namespace: %v", err)
+	// A second app, deployed into the same namespace, plus applab itself.
+	otherCommit := setupAppWithCommit(t, srv, h, "blog")
+	recordBuild(t, st, "blog", otherCommit, "registry.example.com/apps/blog:"+otherCommit[:12])
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/blog/deploy", map[string]any{}); rec.Code != http.StatusOK {
+		t.Fatalf("deploy blog: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if _, err := client.AppsV1().Deployments("ops-system").Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "applab", Namespace: "ops-system"},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed applab's own deployment: %v", err)
 	}
 
-	// And the Deployment has to actually reference it, or copying it was
-	// pointless.
-	dep, err := client.AppsV1().Deployments("applab-shop").Get(context.Background(), "app-shop", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get deployment: %v", err)
+	if rec := doRequest(t, h, http.MethodDelete, "/api/v1/apps/shop", nil); rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d (%s)", rec.Code, rec.Body.String())
 	}
-	refs := dep.Spec.Template.Spec.ImagePullSecrets
-	if len(refs) != 1 || refs[0].Name != "regcred" {
-		t.Errorf("the Deployment does not pull with the copied Secret: %v", refs)
+
+	// The app's own objects are gone.
+	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+		t.Error("the app's Deployment survived the delete")
+	}
+	if _, err := client.CoreV1().Services("ops-system").Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+		t.Error("the app's Service survived the delete")
+	}
+
+	// Nothing else was touched.
+	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "app-blog", metav1.GetOptions{}); err != nil {
+		t.Errorf("deleting one app removed another app's Deployment: %v", err)
+	}
+	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "applab", metav1.GetOptions{}); err != nil {
+		t.Errorf("deleting an app removed applab's own Deployment: %v", err)
 	}
 }
 
-// A Secret named in configuration but absent from applab's own namespace is an
-// operator's mistake, and it has to stop the deploy.
-//
-// The alternative is a Deployment whose pods never start, which looks like an
-// application problem and sends the reader looking in the wrong place.
-func TestDeployFailsWhenConfiguredSecretIsMissing(t *testing.T) {
+// When the cluster objects cannot be removed, the app's record is kept so the
+// operation is retryable. Dropping the record first would leave running
+// workloads that nothing knows about any more.
+func TestDeleteKeepsTheRecordWhenClusterCleanupFails(t *testing.T) {
 	dataDir := t.TempDir()
 	st, err := store.Open(context.Background(), filepath.Join(dataDir, "t.db"))
 	if err != nil {
@@ -515,38 +495,30 @@ func TestDeployFailsWhenConfiguredSecretIsMissing(t *testing.T) {
 		t.Fatalf("source.New: %v", err)
 	}
 
-	// No Secret is created, but one is configured.
-	client := fake.NewSimpleClientset()
-	namespaces := k8s.NewWithClientset(client, "applab-", "applab-system")
-
 	cfg := config.Default()
 	cfg.Keys = []string{"test-key"}
-	cfg.BaseDomain = "apps.example.com"
+	cfg.Namespace = "ops-system"
 	cfg.DataDir = dataDir
 
 	srv := api.New(cfg, st, auth.New(cfg.Keys)).
 		WithSource(src).
-		WithDeployer(deploy.New(client, deploy.Config{BaseDomain: "apps.example.com"})).
-		WithNamespace(namespaces.EnsureNamespace, namespaces.DeleteNamespace).
-		WithAppSecrets([]string{"absent"}, namespaces.CopySecret)
+		WithAppObjectsDeleter(func(ctx context.Context, appID string) error {
+			return errors.New("the cluster is unreachable")
+		})
 
 	h := srv.Handler()
-	commit := setupAppWithCommit(t, srv, h, "shop")
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
+	}
 
-	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{})
+	rec := doRequest(t, h, http.MethodDelete, "/api/v1/apps/shop", nil)
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusInternalServerError, rec.Body.String())
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 
-	// The caller is told which step failed without being told the cause, which
-	// would name a Secret in applab's own namespace.
-	var body struct {
-		Error string `json:"error"`
-	}
-	json.Unmarshal(rec.Body.Bytes(), &body)
-	if !strings.Contains(body.Error, "namespace") {
-		t.Errorf("the error does not say which step failed: %q", body.Error)
+	// The record has to survive, or the retry has nothing to retry.
+	if _, err := st.GetApp(context.Background(), "shop"); err != nil {
+		t.Errorf("the app record was deleted despite the cleanup failing: %v", err)
 	}
 }
 
@@ -586,11 +558,11 @@ func TestDeploymentHasNoStaleObjectsAfterRedeploy(t *testing.T) {
 		}
 	}
 
-	deployments, _ := client.AppsV1().Deployments("applab-shop").List(ctx, metav1.ListOptions{})
+	deployments, _ := client.AppsV1().Deployments("ops-system").List(ctx, metav1.ListOptions{})
 	if len(deployments.Items) != 1 {
 		t.Errorf("%d deployments exist after repeated deploys, want 1", len(deployments.Items))
 	}
-	services, _ := client.CoreV1().Services("applab-shop").List(ctx, metav1.ListOptions{})
+	services, _ := client.CoreV1().Services("ops-system").List(ctx, metav1.ListOptions{})
 	if len(services.Items) != 1 {
 		t.Errorf("%d services exist after repeated deploys, want 1", len(services.Items))
 	}
@@ -611,7 +583,7 @@ func TestStatusReportsLiveClusterState(t *testing.T) {
 	}
 
 	// Make the cluster report the app as available.
-	deployment, err := client.AppsV1().Deployments("applab-shop").Get(ctx, "app-shop", metav1.GetOptions{})
+	deployment, err := client.AppsV1().Deployments("ops-system").Get(ctx, "app-shop", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
@@ -620,7 +592,7 @@ func TestStatusReportsLiveClusterState(t *testing.T) {
 		Type:   appsv1.DeploymentAvailable,
 		Status: corev1.ConditionTrue,
 	}}
-	if _, err := client.AppsV1().Deployments("applab-shop").Update(ctx, deployment, metav1.UpdateOptions{}); err != nil {
+	if _, err := client.AppsV1().Deployments("ops-system").Update(ctx, deployment, metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("update deployment status: %v", err)
 	}
 

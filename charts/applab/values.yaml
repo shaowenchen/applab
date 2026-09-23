@@ -16,7 +16,11 @@ image:
   repository: docker.io/shaowenchen/applab
   # Defaults to the chart's appVersion when empty.
   tag: ""
-  pullPolicy: IfNotPresent
+  # Always, deliberately. Nothing here is immutable: a tag can be re-pushed, and
+  # a node that already has that tag would keep running the old image. The
+  # pull is cheap and the alternative is a deploy that reports success while
+  # serving the previous build.
+  pullPolicy: Always
 
 imagePullSecrets: []
 
@@ -48,14 +52,15 @@ auth:
 # ---------------------------------------------------------------------------
 apps:
   # The domain apps are exposed under, so an app with id "shop" is served at
-  # shop.<baseDomain>. Required when ingress.enabled is true.
+  # shop.<baseDomain>.
   #
-  # This is the domain the wildcard certificate or the cert-manager issuer must
-  # cover, so it has to be decided before the first deploy.
+  # The certificate for this domain lives on the gateway, so it has to cover
+  # every host under here — in practice a wildcard. Leave this empty to keep apps
+  # reachable only inside the cluster.
   baseDomain: ""
 
   # The scheme apps are served with, used to build the URLs applab hands back.
-  # Set to "https" when TLS terminates at the ingress.
+  # Set to "https" when TLS terminates at the gateway.
   scheme: "https"
 
   # The public address of this applab installation, used by build jobs to fetch
@@ -66,14 +71,6 @@ apps:
   # usual case. Set it when a build must reach applab through an external
   # address.
   baseURL: ""
-
-  # The prefix prepended to an app id to name that app's namespace. applab
-  # refuses to touch a namespace that does not carry it, which is what lets
-  # several installations share a cluster safely.
-  #
-  # Changing this does not move existing apps: their namespaces keep the old
-  # name and become invisible to applab.
-  namespacePrefix: "applab-"
 
 # ---------------------------------------------------------------------------
 # Build pipeline
@@ -160,40 +157,44 @@ build:
 
 # ---------------------------------------------------------------------------
 # Deploy
+#
+# How apps are published. applab attaches a VirtualService to an Istio gateway
+# rather than creating an Ingress, because the routing in front of these apps is
+# an Istio gateway and an Ingress would be ignored by it — the app would deploy,
+# report healthy, and be unreachable.
 # ---------------------------------------------------------------------------
 deploy:
-  # An existing TLS Secret covering apps.baseDomain — in practice a wildcard.
-  # Every app references it, which is what a wildcard certificate is for.
-  tlsSecret: ""
-
-  # A cert-manager ClusterIssuer, used when no wildcard certificate exists. Each
-  # app then gets its own certificate in a Secret named per app.
+  # The Istio gateway apps are published through, as "<namespace>/<name>".
   #
-  # Setting both this and tlsSecret is not an error: the existing Secret wins,
-  # because a wildcard is one certificate to manage rather than one per app.
-  clusterIssuer: ""
+  # The gateway is cluster infrastructure that already exists: it holds the
+  # listeners and the certificate for the whole domain. applab attaches to it by
+  # name and never creates it. Required whenever apps.baseDomain is set, because
+  # a VirtualService with no gateway is reachable only from inside the mesh.
+  #
+  # TLS is not configured here. An app is served over HTTPS when the gateway has
+  # an HTTPS listener, with no per-app setting involved.
+  gateway: ""
+    # - ops-system/gateway
 
-  # A docker-registry Secret, copied into each app namespace so the app's
-  # Deployment can pull its image. Empty means the registry needs no
-  # authentication to pull from, which is the case for a cluster-local one.
+  # A docker-registry Secret for pulling an app's image. Empty means the registry
+  # needs no authentication to read from, which is the case for a cluster-local
+  # one.
   #
   # This is separate from build.pushSecret on purpose: pushing and pulling can
   # need different credentials, and a registry that is open to pull but not to
   # push only needs the build one.
   #
-  # The Secret must already exist in applab's own namespace — for example
-  # created from a docker login. If it is named here and missing, deploying an
-  # app fails rather than producing a Deployment whose pods sit in
-  # ImagePullBackOff with nothing to explain why.
+  # The Secret must already exist in applab's own namespace — for example created
+  # from a docker login. It is referenced directly rather than copied, because
+  # apps run in that same namespace.
   imagePullSecret: ""
 
-  # Annotations added to every app's Ingress, for ingress-controller specifics
-  # that vary by cluster.
+  # Annotations added to every app's VirtualService, for Istio specifics that
+  # vary by cluster.
   annotations: {}
-    # nginx.ingress.kubernetes.io/proxy-body-size: "0"
-    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # istio.io/foo: "bar"
 
-  # per-app resource defaults, applied to every app applab deploys.
+  # Per-app resource defaults, applied to every app applab deploys.
   appResources:
     requests:
       cpu: 100m
@@ -203,10 +204,12 @@ deploy:
       memory: 2Gi
 
 # ---------------------------------------------------------------------------
-# Ingress for applab itself
+# How a person reaches applab itself
 #
-# Separate from the Ingresses applab creates for apps: this is how a person
-# reaches the console and the API.
+# This is a standard Kubernetes Ingress for the console and the API — separate
+# from how apps are published, which goes through the Istio gateway above. If
+# your cluster has no ingress controller, set enabled to false and reach applab
+# by port-forward.
 # ---------------------------------------------------------------------------
 ingress:
   enabled: true
@@ -278,9 +281,10 @@ serviceAccount:
   annotations: {}
   name: ""
 
-# applab manages namespaces, Deployments, Services, Ingresses and Jobs in the
-# namespaces it creates, so it needs a ClusterRole. The rules below are exactly
-# what it uses; see clusterrole.yaml for why each is there.
+# applab manages Deployments, Services, VirtualServices and Jobs in the one
+# namespace it runs in, so a namespaced Role is enough — no ClusterRole, and no
+# permission anywhere else in the cluster. The rules are exactly what it uses;
+# see role.yaml for why each is there.
 rbac:
   create: true
 

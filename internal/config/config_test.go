@@ -164,6 +164,10 @@ func TestBaseDomainRejectsURLs(t *testing.T) {
 			t.Setenv("APPLAB_KEY", "k")
 			t.Setenv("APPLAB_DATA_DIR", t.TempDir())
 			t.Setenv("APPLAB_BASE_DOMAIN", tc.in)
+			// A base domain needs a gateway to serve it; without one the apps
+			// would get hostnames nothing answers on. Set one so these cases
+			// exercise the domain parsing rather than that rule.
+			t.Setenv("APPLAB_DEPLOY_GATEWAY", "ops-system/gateway")
 
 			cfg, err := Load()
 			if tc.wantErr {
@@ -191,6 +195,8 @@ func TestConfigFileIsLoaded(t *testing.T) {
 	content := `
 listen: ":9999"
 base_domain: "from-file.example.com"
+deploy:
+  gateway: "ops-system/from-file"
 keys:
   - file-key
 `

@@ -131,7 +131,7 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := s.listEvents(r.Context(), app.Namespace, limit)
+	events, err := s.listEvents(r.Context(), app.Namespace, app.ID, limit)
 	if err != nil {
 		fail(w, r, Errorf(http.StatusInternalServerError, "list events for app %q", app.ID).Wrap(err))
 		return
@@ -199,7 +199,7 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 	if len(pods) == 0 {
 		diagnosis["problem"] = "no pods are running for this app"
 		diagnosis["next"] = "check that the deploy succeeded, or restart the app"
-		diagnosis["events"] = s.eventsBestEffort(r, app.Namespace, 10)
+		diagnosis["events"] = s.eventsBestEffort(r, app.Namespace, app.ID, 10)
 		respond(w, http.StatusOK, diagnosis)
 		return
 	}
@@ -220,7 +220,7 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		diagnosis["problem"] = "some pods are not ready"
 		// The events explain *why* — an image pull failure, a failed scheduling,
 		// a probe killing the container — which the pod state alone cannot.
-		diagnosis["events"] = s.eventsBestEffort(r, app.Namespace, 20)
+		diagnosis["events"] = s.eventsBestEffort(r, app.Namespace, app.ID, 20)
 
 		// A crash loop's reason is in the previous container's log, so that is
 		// what gets attached rather than the current one's (which is usually
@@ -249,8 +249,8 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 // A diagnosis is still useful without them, and failing the whole call because
 // one supplementary read failed would make the endpoint less reliable than the
 // four calls it replaces.
-func (s *Server) eventsBestEffort(r *http.Request, namespace string, limit int) []observe.Event {
-	events, err := s.listEvents(r.Context(), namespace, limit)
+func (s *Server) eventsBestEffort(r *http.Request, namespace, appID string, limit int) []observe.Event {
+	events, err := s.listEvents(r.Context(), namespace, appID, limit)
 	if err != nil {
 		return nil
 	}

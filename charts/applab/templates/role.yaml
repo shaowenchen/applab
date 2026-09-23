@@ -1,32 +1,27 @@
 {{- if .Values.rbac.create }}
 {{/*
-applab creates a namespace per app and manages objects inside it, so a namespaced
-Role is not enough: the namespaces it manages do not exist at install time and
-are not the release namespace.
+applab runs in one namespace and keeps every app it deploys there too, so a
+namespaced Role is enough. That is the point of this file.
 
-Every rule below is used. The alternative — binding cluster-admin, which is what a
-platform like this is often given — would let a compromise in applab, or a bug in
-its namespace handling, reach workloads it has nothing to do with. The cost of
-scoping it properly is this list.
+The alternative — a ClusterRole, which is what a platform like this is usually
+given — would let a compromise in applab, or a bug in its handling of namespaces,
+reach every workload in the cluster. With a Role bound in one namespace, the
+worst it can do is what it would do anyway.
 
-It is a ClusterRole with a ClusterRoleBinding rather than a namespaced Role
-because the resources genuinely span namespaces. applab confines itself to
-namespaces carrying its configured prefix, which is enforced in code (see
-internal/k8s) — a ClusterRole cannot express "only namespaces named like this".
+Each rule below is used; nothing is granted for future convenience:
+  - Deployments, Services and VirtualServices are an app.
+  - Jobs are builds, and Secrets are those builds' single-use source tokens.
+  - Pods and pods/log are how a build's log and an app's log are read.
+  - Events are what explain a pod that never started.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: {{ include "applab.fullname" . }}
+  namespace: {{ include "applab.namespace" . }}
   labels:
     {{- include "applab.labels" . | nindent 4 }}
 rules:
-  # Namespaces: creating and deleting an app's namespace is how an app is
-  # provisioned and how deletion is made complete.
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["create", "get", "list", "watch", "delete"]
-
   # The app's workload and how it is reached.
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -36,16 +31,20 @@ rules:
     resources: ["services"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
 
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses"]
+  # Istio's VirtualService is how an app is published: the cluster routes through
+  # a gateway, and an Ingress would be ignored by it.
+  - apiGroups: ["networking.istio.io"]
+    resources: ["virtualservices"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
 
-  # One Job per build, plus the Secret carrying that build's single-use source
-  # token. The token is how a build authenticates without holding an API key.
+  # One Job per build.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "get", "list", "watch", "delete"]
 
+  # The Secret carrying a build's single-use source token, which is how a build
+  # authenticates without holding an API key. Deletion is included because
+  # deleting an app removes its build tokens with it.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "get", "list", "watch", "update", "delete"]
@@ -67,14 +66,15 @@ rules:
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: {{ include "applab.fullname" . }}
+  namespace: {{ include "applab.namespace" . }}
   labels:
     {{- include "applab.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: {{ include "applab.fullname" . }}
 subjects:
   - kind: ServiceAccount

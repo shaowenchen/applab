@@ -183,7 +183,7 @@ type Config struct {
 	Version         string          `json:"version"`
 	APIBaseURL      string          `json:"api_base_url"`
 	BaseDomain      string          `json:"base_domain"`
-	NamespacePrefix string          `json:"namespace_prefix"`
+	Namespace       string          `json:"namespace"`
 	MaxSimpleUpload int64           `json:"max_simple_upload"`
 	ChunkSize       int64           `json:"chunk_size"`
 	MaxChunkBytes   int64           `json:"max_chunk_bytes"`

@@ -3,8 +3,7 @@
 Deploy an application to Kubernetes by uploading its source.
 
 This chart installs the control plane: it stores source in a git repository per
-app, builds images in the cluster, deploys them into a namespace of their own and
-exposes them on a hostname. Give someone its URL and an API key, and they can ship
+app, builds images in the cluster, deploys them and exposes them on a hostname. Give someone its URL and an API key, and they can ship
 with one command.
 
 ## Quick start
@@ -14,9 +13,10 @@ helm repo add applab https://shaowenchen.github.io/applab
 helm repo update
 
 helm install applab applab/applab \
-  --namespace applab-system --create-namespace \
+  --namespace ops-system --create-namespace \
   --set auth.keys[0]="$(openssl rand -hex 32)" \
   --set apps.baseDomain=apps.example.com \
+  --set deploy.gateway=ops-system/gateway \
   --set ingress.hosts[0].host=applab.example.com \
   --set build.registry=registry.example.com/apps
 ```
@@ -45,7 +45,7 @@ If the registry needs credentials, create a `docker-registry` Secret **in the
 namespace applab runs in** and name it:
 
 ```bash
-kubectl -n applab-system create secret docker-registry regcred \
+kubectl -n ops-system create secret docker-registry regcred \
   --docker-server=registry.example.com \
   --docker-username=<user> \
   --docker-password=<password>
@@ -59,12 +59,10 @@ Two settings rather than one because pushing and pulling can need different
 credentials, and a registry that is open to pull but not to push only needs the
 build one.
 
-A Secret cannot be referenced across a namespace boundary, so applab copies it
-into each app's namespace when it provisions that app. That means the names above
-have to refer to a Secret in applab's own namespace — not in the app's, and not
-in the release's. If one is named and missing, deploying an app fails with a
-message naming the step, rather than producing a Deployment whose pods sit in
-`ImagePullBackOff` with nothing to explain why.
+Both names refer to a Secret in the release namespace. Apps run in that same
+namespace, so there is no boundary for the credential to cross and nothing is
+copied. A Secret named here and missing is discovered at the first build or
+deploy rather than at install.
 
 A registry that is only reachable over plain HTTP, or with a self-signed
 certificate, needs `build.insecureRegistry=true` — which is a deliberate weakening
@@ -74,17 +72,20 @@ is off by default.
 ### 2. A domain, and a certificate for it
 
 `apps.baseDomain` is what apps are served under: an app with id `shop` becomes
-`shop.apps.example.com`. Everything under it needs to resolve to your ingress.
+`shop.apps.example.com`. Everything under it needs to resolve to the gateway.
 
-For TLS, pick one:
+TLS is configured on the **gateway**, not here. The gateway holds the listeners
+and the certificate for the whole domain, so an app is served over HTTPS when the
+gateway has an HTTPS listener, and there is no per-app certificate setting to get
+wrong.
 
-- `deploy.tlsSecret` — an existing wildcard certificate covering the base domain.
-  One certificate for every app, which is what a wildcard is for.
-- `deploy.clusterIssuer` — a cert-manager `ClusterIssuer`. Each app gets its own
-  certificate.
+Set `deploy.gateway` to the gateway apps are published through, as
+`<namespace>/<name>`. applab attaches a `VirtualService` to it and never creates
+or modifies it — the gateway is infrastructure you own.
 
-With neither, apps are served over plain HTTP, which is at least honest about
-what it is.
+Setting `apps.baseDomain` without a gateway is refused at render time: it would
+produce a `VirtualService` whose empty gateway list Istio reads as mesh-internal
+only, so the app would deploy, report healthy and be unreachable from outside.
 
 ### 3. Whether the cluster can build
 
@@ -133,7 +134,7 @@ elsewhere. `applab push` will say clearly that this deployment cannot build.
 | PersistentVolumeClaim | the database and every app's git repository |
 | Secret | the API keys |
 | ConfigMap | everything else |
-| ClusterRole, ClusterRoleBinding | applab creates a namespace per app, so a namespaced Role is not enough |
+| Role, RoleBinding | applab keeps everything in one namespace, and this is all it needs |
 | Ingress | how a person reaches the console and the API |
 | ServiceMonitor | optional, for `/metrics` |
 
@@ -149,16 +150,25 @@ then, one replica is the honest answer rather than a limitation to work around.
 
 The volume is the only copy of every app's source. **Back it up.**
 
-### The ClusterRole
+### The Role
 
-applab creates a namespace per app and manages objects inside it, so a namespaced
-Role cannot express what it needs: the namespaces it manages do not exist at
-install time and are not the release namespace.
+applab runs in one namespace and deploys every app into it too, so a namespaced
+`Role` and `RoleBinding` are enough — one namespace, one binding, no cluster-wide
+grant.
 
-The rules in `clusterrole.yaml` are exactly what applab uses, each with a comment
-saying why. applab confines itself to namespaces carrying `apps.namespacePrefix`,
-which is enforced in code — a ClusterRole cannot say "only namespaces named like
-this", so the check lives where the name is computed.
+That is the point of the single-namespace model. A platform like this is usually
+bound to a `ClusterRole` (or worse, `cluster-admin`) because it manages resources
+across namespaces; applab does not, so the worst a bug in it can do is what it
+would have done anyway.
+
+The rules in `role.yaml` are exactly what applab uses, each with a comment saying
+why. Nothing is granted for future convenience. In particular there is no
+permission on `namespaces` at all, and none to write pods.
+
+**What this costs:** apps are not isolated from one another by a namespace
+boundary. A resource-hungry app affects its neighbours, and an operator reading
+`kubectl get pods` sees every app at once. The CPU and memory limits on each app
+container are the only bound — which is why `deploy.appResources` exists.
 
 ## Values
 
@@ -169,13 +179,13 @@ does and why it defaults the way it does. The ones that matter most:
 |---|---|---|
 | `auth.keys` | `[]` | **Required.** `openssl rand -hex 32`, one per caller |
 | `auth.existingSecret` | `""` | Preferred over `auth.keys`: keeps keys out of the release |
-| `apps.baseDomain` | `""` | Required with an Ingress |
+| `apps.baseDomain` | `""` | Domain apps are served under |
+| `deploy.gateway` | `""` | **Required with a base domain.** `<namespace>/<name>` |
 | `build.enabled` | `true` | `false` runs applab without building |
 | `build.registry` | `""` | Required when `build.enabled` |
 | `build.rootless` | `true` | See the prerequisites above |
 | `build.cacheRepoPrefix` | `""` | Registry-side layer cache; a Job has no persistent disk |
 | `build.pushSecret` | `""` | Registry credentials for the build Job to push with |
-| `deploy.tlsSecret` / `deploy.clusterIssuer` | `""` | Wildcard certificate, or cert-manager |
 | `deploy.imagePullSecret` | `""` | Registry credentials for the app to pull with |
 | `deploy.appResources` | 2 CPU / 2Gi | Applied to every app applab deploys |
 | `ingress.hosts` | `applab.example.com` | Change this |
@@ -195,7 +205,7 @@ the cluster and are frequently committed.
 
 ```bash
 # The key the chart generated, if you used auth.keys
-kubectl -n applab-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
+kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
 
 # The API contract — what to read before calling anything
 curl -s https://applab.example.com/llms.txt
@@ -207,29 +217,54 @@ applab config
 ## Upgrading
 
 ```bash
-helm upgrade applab applab/applab --namespace applab-system -f my-values.yaml
+helm upgrade applab applab/applab --namespace ops-system -f my-values.yaml
 ```
 
 The database schema migrates on start. A newer applab refuses to run against an
 older one's schema rather than guessing, so roll the image back with the chart if
 an upgrade needs reverting.
 
-Changing `apps.namespacePrefix` does **not** move existing apps: their namespaces
-keep the old name and become invisible to applab. Leave it alone once apps exist.
+### Migrating from a per-app-namespace install
+
+An earlier version gave each app its own namespace (`applab-<app>`). Since every
+app now lives in the release namespace, objects left in those old namespaces are
+**not** adopted: the applab record still names the app, but the Deployment the old
+version created keeps running where it is, invisible to the new one.
+
+Deploying an app recreates it in the release namespace, so the old copy has to be
+removed by hand or you will have two of everything:
+
+```bash
+kubectl get namespaces -l applab.io/app            # what the old version created
+kubectl -n applab-<app> delete deployment,service,ingress --all
+kubectl delete namespace -l applab.io/app          # if nothing else lives there
+```
+
+Source repositories are unaffected: they live on the volume, not in a namespace.
 
 ## Uninstalling
 
 ```bash
-helm uninstall applab --namespace applab-system
+helm uninstall applab --namespace ops-system
 ```
 
-**The namespaces applab created for apps are not removed**, and neither is the
-PersistentVolumeClaim. That is deliberate — both hold data that only exists there
-— but it means an uninstall leaves the apps running and their source on the
-volume. To remove an installation completely:
+**The apps are not removed.** They are Deployments, Services and
+VirtualServices in the release namespace, and the release does not own them —
+they carry `applab.io/app`, not helm's release labels. So an uninstall stops
+applab and leaves every app it deployed running, which is usually what you want
+and occasionally a surprise.
+
+The PersistentVolumeClaim is not removed either, and it holds the only copy of
+every app's source.
+
+To remove an installation completely:
 
 ```bash
-kubectl get namespaces -l applab.io/app          # the apps applab created
-kubectl delete namespace -l applab.io/app        # only if you mean it
-kubectl -n applab-system delete pvc applab       # and the source with it
+kubectl -n ops-system get deployments,services -l applab.io/app   # what it deployed
+kubectl -n ops-system delete deployments,services,jobs,secrets -l applab.io/app
+kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/app
+kubectl -n ops-system delete pvc applab                           # and the source with it
 ```
+
+The namespace itself is yours rather than applab's — it is where applab was
+installed, and it may hold other things. applab never deletes it.

@@ -1,3 +1,11 @@
+{{/*
+How a person reaches applab itself — the console and the API.
+
+This is deliberately a plain Ingress and not the Istio gateway apps go through:
+it is one hostname for the platform, fronted by whatever ingress controller the
+cluster already runs. Apps are published separately, by a VirtualService
+attached to the gateway in deploy.gateway.
+*/}}
 {{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress

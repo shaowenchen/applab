@@ -351,8 +351,11 @@ func TestConfigReportsDeploymentShape(t *testing.T) {
 	if cfg["base_domain"] != "apps.example.com" {
 		t.Errorf("base_domain = %v, want the configured value", cfg["base_domain"])
 	}
-	if cfg["namespace_prefix"] == nil {
-		t.Error("namespace_prefix is not reported; a client cannot predict an app's namespace")
+	// The namespace is reported because it is no longer derivable: every app
+	// lives in the one applab runs in, so "where are my app's objects" has one
+	// answer rather than one per app.
+	if cfg["namespace"] == nil || cfg["namespace"] == "" {
+		t.Error("namespace is not reported; a client cannot say where an app's objects live")
 	}
 	if cfg["chunk_size"] == nil || cfg["max_simple_upload"] == nil {
 		t.Error("upload limits are not reported; a client would have to discover them by being rejected")

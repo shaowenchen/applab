@@ -67,10 +67,10 @@ func TestPodsEndpointReportsState(t *testing.T) {
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
-	_, err := client.CoreV1().Pods("applab-shop").Create(context.Background(), &corev1.Pod{
+	_, err := client.CoreV1().Pods("ops-system").Create(context.Background(), &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "app-shop-1",
-			Namespace: "applab-shop",
+			Namespace: "ops-system",
 			Labels:    map[string]string{"applab.io/app": "shop"},
 		},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "image:abc"}}},
@@ -147,24 +147,41 @@ func TestEventsEndpointCountsWarnings(t *testing.T) {
 	createAppForObserve(t, h, "shop")
 
 	ctx := context.Background()
+
+	// Events are attributed to an app by the objects they concern, so the app
+	// needs a pod for these to belong to. Without one they are treated as
+	// somebody else's and filtered out — which is the behaviour the shared
+	// namespace requires.
+	if _, err := client.CoreV1().Pods("ops-system").Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "app-shop-1",
+			Namespace: "ops-system",
+			Labels:    map[string]string{"applab.io/app": "shop"},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
 	events := []*corev1.Event{
 		{
-			ObjectMeta:    metav1.ObjectMeta{Name: "w1", Namespace: "applab-shop"},
-			Type:          corev1.EventTypeWarning,
-			Reason:        "BackOff",
-			Message:       "Back-off restarting failed container",
-			LastTimestamp: metav1.Now(),
+			ObjectMeta:     metav1.ObjectMeta{Name: "w1", Namespace: "ops-system"},
+			Type:           corev1.EventTypeWarning,
+			Reason:         "BackOff",
+			Message:        "Back-off restarting failed container",
+			LastTimestamp:  metav1.Now(),
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
 		},
 		{
-			ObjectMeta:    metav1.ObjectMeta{Name: "n1", Namespace: "applab-shop"},
-			Type:          corev1.EventTypeNormal,
-			Reason:        "Pulled",
-			Message:       "Successfully pulled image",
-			LastTimestamp: metav1.Now(),
+			ObjectMeta:     metav1.ObjectMeta{Name: "n1", Namespace: "ops-system"},
+			Type:           corev1.EventTypeNormal,
+			Reason:         "Pulled",
+			Message:        "Successfully pulled image",
+			LastTimestamp:  metav1.Now(),
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
 		},
 	}
 	for _, e := range events {
-		if _, err := client.CoreV1().Events("applab-shop").Create(ctx, e, metav1.CreateOptions{}); err != nil {
+		if _, err := client.CoreV1().Events("ops-system").Create(ctx, e, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create event: %v", err)
 		}
 	}
@@ -229,7 +246,7 @@ func TestDiagnoseReportsNoPods(t *testing.T) {
 	createAppForObserve(t, h, "shop")
 
 	// Mark the app deployed so the diagnosis moves past the first check.
-	createNamespaceForTest(t, client, "applab-shop")
+	createNamespaceForTest(t, client, "ops-system")
 	markDeployed(t, srv, "shop")
 
 	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/diagnose", nil)
@@ -254,14 +271,14 @@ func TestDiagnoseReportsUnreadyPodsWithLogs(t *testing.T) {
 	createAppForObserve(t, h, "shop")
 
 	ctx := context.Background()
-	createNamespaceForTest(t, client, "applab-shop")
+	createNamespaceForTest(t, client, "ops-system")
 	markDeployed(t, srv, "shop")
 
 	// A crash-looping pod: not ready, with the reason on the previous instance.
-	if _, err := client.CoreV1().Pods("applab-shop").Create(ctx, &corev1.Pod{
+	if _, err := client.CoreV1().Pods("ops-system").Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "app-shop-1",
-			Namespace: "applab-shop",
+			Namespace: "ops-system",
 			Labels:    map[string]string{"applab.io/app": "shop"},
 		},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "image:abc"}}},
@@ -316,13 +333,13 @@ func TestDiagnoseReportsHealthy(t *testing.T) {
 	createAppForObserve(t, h, "shop")
 
 	ctx := context.Background()
-	createNamespaceForTest(t, client, "applab-shop")
+	createNamespaceForTest(t, client, "ops-system")
 	markDeployed(t, srv, "shop")
 
-	if _, err := client.CoreV1().Pods("applab-shop").Create(ctx, &corev1.Pod{
+	if _, err := client.CoreV1().Pods("ops-system").Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "app-shop-1",
-			Namespace: "applab-shop",
+			Namespace: "ops-system",
 			Labels:    map[string]string{"applab.io/app": "shop"},
 		},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "image:abc"}}},

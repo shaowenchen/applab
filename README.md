@@ -20,7 +20,7 @@ upload source ──▶ build image ──▶ deploy ──▶ https://<app>.<do
 | P0 | Skeleton, auth, contract (`llms.txt`), app CRUD | done |
 | P1 | Source storage: git repositories, tarball ingest, chunked upload, git over HTTP | done |
 | P2 | BuildKit build pipeline | done |
-| P3 | Deploy, namespaces, ingress | done |
+| P3 | Deploy, one namespace, Istio VirtualService | done |
 | P4 | Observability: pods, events, logs, metrics | done |
 | P5 | Console and CLI | done |
 | P6 | Helm chart | done — see [`charts/applab`](charts/applab) |
@@ -134,11 +134,42 @@ an earlier one. A deploy of a commit that has never been built is refused rather
 than quietly building, so a caller always knows which operation is running and a
 build failure is never reported as a deploy failure.
 
-### One namespace per app
+### One namespace, for everything
 
-Each app gets its own namespace, named with the deployment's prefix. Isolation is
-the point, and it makes deletion honest: removing an app removes its namespace, so
-nothing is left behind.
+Every app is deployed into the same namespace applab itself runs in (default
+`ops-system`). That is a deliberate trade, and it is worth being clear about both
+halves.
+
+**What it buys:** applab needs a namespaced `Role` and nothing else. It holds no
+permission anywhere else in the cluster, so a bug here — or a compromise — reaches
+the apps it manages rather than every workload you run. The chart renders a Role
+and a RoleBinding, and there is no ClusterRole to audit.
+
+**What it costs:** apps are not isolated from each other by a namespace boundary.
+One app taking a node's memory affects its neighbours, and `kubectl get pods`
+shows you everything at once. There is no per-app `ResourceQuota`; the CPU and
+memory limits on each app's container are the only bound, which is why
+`deploy.appResources` exists and why its limits are not generous.
+
+Objects are told apart by their `applab.io/app` label rather than by where they
+live. Deleting an app removes its objects and leaves the rest alone — including
+applab's own Deployment, which sits in the same namespace with no app label.
+
+### How apps are published
+
+Through an **Istio gateway**, not an Ingress: the routing in front of these apps
+is Istio, and an Ingress applab created would be ignored by it — the app would
+deploy, report healthy, and be unreachable.
+
+The gateway is cluster infrastructure that already exists. It holds the listeners
+and the certificate for the whole domain, and applab attaches a `VirtualService`
+to it by name (`deploy.gateway`, e.g. `ops-system/gateway`) without ever creating
+or modifying it. TLS is therefore not applab's business and has no per-app
+setting: an app is served over HTTPS when the gateway has an HTTPS listener.
+
+Setting a base domain without a gateway is refused at render time, because the
+result would be a `VirtualService` whose empty gateway list Istio reads as
+mesh-internal only.
 
 ### applab's record versus the cluster
 
