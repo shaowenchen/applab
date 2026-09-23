@@ -20,7 +20,7 @@ upload source ──▶ build image ──▶ deploy ──▶ https://<app>.<do
 | P0 | Skeleton, auth, contract (`llms.txt`), app CRUD | done |
 | P1 | Source storage: git repositories, tarball ingest, chunked upload, git over HTTP | done |
 | P2 | BuildKit build pipeline | done |
-| P3 | Deploy, namespaces, ingress | not started |
+| P3 | Deploy, namespaces, ingress | done |
 | P4 | Observability: pods, events, logs | not started |
 | P5 | Console and CLI | not started |
 | P6 | Helm chart | not started |
@@ -89,7 +89,13 @@ from nothing.
 ### Commits are what you deploy
 
 A deploy names a commit. Rolling back means deploying an earlier one, and if that
-commit was built before, its image is reused rather than rebuilt.
+commit was built before, its image is reused rather than rebuilt — which is what
+makes a rollback fast and unable to fail for a reason the original build did not.
+
+`POST /apps/{app}/deploy` deploys a commit; `POST /apps/{app}/rollback` returns to
+an earlier one. A deploy of a commit that has never been built is refused rather
+than quietly building, so a caller always knows which operation is running and a
+build failure is never reported as a deploy failure.
 
 ### One namespace per app
 

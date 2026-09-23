@@ -251,7 +251,7 @@ func (s *Server) streamBuildLog(ctx context.Context, w http.ResponseWriter, flus
 		return s.writeRecordedLog(ctx, w, flusher, build)
 	}
 
-	app, err := s.store.GetApp(ctx, build.AppID)
+	app, err := s.loadAppByID(ctx, build.AppID)
 	if err != nil {
 		return s.writeRecordedLog(ctx, w, flusher, build)
 	}
@@ -351,7 +351,7 @@ func (s *Server) refreshBuild(ctx context.Context, build *model.Build) {
 		return
 	}
 
-	app, err := s.store.GetApp(ctx, build.AppID)
+	app, err := s.loadAppByID(ctx, build.AppID)
 	if err != nil {
 		return
 	}

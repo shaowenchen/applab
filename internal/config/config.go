@@ -76,11 +76,37 @@ type Config struct {
 	// what a client chose.
 	MaxChunkBytes int64 `yaml:"max_chunk_bytes"`
 
+	// Deploy configures how apps are exposed.
+	Deploy Deploy `yaml:"deploy"`
+
 	// Build configures the image build pipeline. It is a struct rather than
 	// loose fields because the whole group is either configured or absent:
 	// applab runs without any of it (the API and source halves still work) and
 	// reports the build capability as unavailable.
 	Build Build `yaml:"build"`
+}
+
+// Deploy configures how apps are exposed in the cluster.
+type Deploy struct {
+	// IngressClass is the IngressClass apps are served through. Empty means the
+	// cluster's default.
+	IngressClass string `yaml:"ingress_class"`
+
+	// TLSSecret is an existing certificate Secret covering the base domain — in
+	// practice a wildcard. When set, every app references it.
+	TLSSecret string `yaml:"tls_secret"`
+
+	// ClusterIssuer names a cert-manager ClusterIssuer. Used when no wildcard
+	// certificate exists: each app gets its own certificate.
+	ClusterIssuer string `yaml:"cluster_issuer"`
+
+	// ImagePullSecret names a Secret copied into each app namespace for pulling
+	// the built image, when the registry needs credentials to read.
+	ImagePullSecret string `yaml:"image_pull_secret"`
+
+	// Annotations are added to every app Ingress, for ingress-controller
+	// specifics that vary by cluster.
+	Annotations map[string]string `yaml:"annotations"`
 }
 
 // Build configures how images are built and where they are pushed.
@@ -238,6 +264,11 @@ func applyEnv(cfg *Config) {
 	setBool(&cfg.Build.InsecureRegistry, "APPLAB_BUILD_INSECURE_REGISTRY")
 	setBoolPtr(&cfg.Build.Rootless, "APPLAB_BUILD_ROOTLESS")
 	setDuration(&cfg.Build.Timeout, "APPLAB_BUILD_TIMEOUT")
+
+	setString(&cfg.Deploy.IngressClass, "APPLAB_DEPLOY_INGRESS_CLASS")
+	setString(&cfg.Deploy.TLSSecret, "APPLAB_DEPLOY_TLS_SECRET")
+	setString(&cfg.Deploy.ClusterIssuer, "APPLAB_DEPLOY_CLUSTER_ISSUER")
+	setString(&cfg.Deploy.ImagePullSecret, "APPLAB_DEPLOY_IMAGE_PULL_SECRET")
 
 	// Singular APPLAB_KEY is accepted alongside the plural form: a deployment
 	// with one key (the common case) reads better as a single variable, and the

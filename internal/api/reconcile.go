@@ -46,7 +46,7 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 			continue
 		}
 
-		app, err := s.store.GetApp(ctx, b.AppID)
+		app, err := s.loadAppByID(ctx, b.AppID)
 		if err != nil {
 			slog.WarnContext(ctx, "could not reconcile a build: its app is gone",
 				"build", b.ID, "app", b.AppID, "error", err)

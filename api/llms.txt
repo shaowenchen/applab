@@ -133,6 +133,11 @@ requires `Authorization: Bearer <key>`; `no key` means it does not.)_
 - `GET /api/v1/apps/{app}/builds` — An app's builds, newest first. `?limit=` (default 20). _(key)_
 - `GET /api/v1/apps/{app}/builds/{build}` — One build. Its status is read from the cluster, so it reflects the Job rather than what applab last recorded. _(key)_
 - `GET /api/v1/apps/{app}/builds/{build}/logs` — The build's log, as `text/plain`. Follows the build while it runs and ends when it finishes; works unchanged for a build that has already finished. `?follow=false` returns what exists so far and stops. _(key)_
+- `POST /api/v1/apps/{app}/deploy` — Deploy a commit and return the URL it is served at. Body `{commit_sha?, build?}` — omit `commit_sha` to deploy the current tip. If that commit has a successful build its image is reused; if it has none, the call fails with 409 and names the fix unless `build:true` was passed, in which case a build is started and the response is a 202 with the build. Returns 501 if this deployment cannot deploy. _(key)_
+- `POST /api/v1/apps/{app}/rollback` — Deploy an earlier commit. Body `{commit_sha}` (required). Reuses that commit's existing image and never builds, so a rollback stays fast and cannot fail for a reason the original build did not. _(key)_
+- `GET /api/v1/apps/{app}/status` — An app's live state in the cluster alongside what applab recorded. The two are reported separately and deliberately not reconciled: when they disagree, the cluster is right. _(key)_
+- `POST /api/v1/apps/{app}/restart` — Roll the running pods, keeping the same image. For picking up a changed ConfigMap or recovering pods that are wedged. _(key)_
+- `POST /api/v1/apps/{app}/stop` — Stop the app by removing its Deployment, Service and Ingress. The source and history are kept, so starting again is a deploy rather than a re-upload. _(key)_
 - `GET /api/v1/apps/{app}/source/archive/{sha}` — Internal. Download a commit's source as a tar.gz. Authenticated with a single-use source token (issued when a build starts) rather than the API key, so a build job holds no credential that reaches beyond its own commit. _(no key)_
 
 ## Errors

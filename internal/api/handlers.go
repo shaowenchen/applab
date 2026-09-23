@@ -75,7 +75,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			// API and the source half still work — and a caller that assumed
 			// otherwise would get a confusing 500 instead of a clear 501.
 			"build":  s.build != nil && s.build.Ready(),
-			"deploy": s.deploy != nil && s.deploy.Ready(),
+			"deploy": s.deployer != nil && s.deployer.Ready(),
 			"source": s.initSource != nil,
 			"git":    s.git != nil,
 		},

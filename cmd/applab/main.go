@@ -18,6 +18,7 @@ import (
 	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/buildinfo"
 	"github.com/shaowenchen/applab/internal/config"
+	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/gitx"
 	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/source"
@@ -130,6 +131,18 @@ func run() error {
 		} else {
 			slog.Info("build pipeline disabled: no registry, builder image or fetcher image configured")
 		}
+
+		// The deploy half shares the cluster client. It is attached whenever the
+		// cluster is reachable — an app can be deployed from an image that was
+		// built elsewhere, so deploying does not depend on the build half.
+		srv.WithDeployer(deploy.New(client.Clientset(), deploy.Config{
+			IngressClass:    cfg.Deploy.IngressClass,
+			BaseDomain:      cfg.BaseDomain,
+			TLSSecret:       cfg.Deploy.TLSSecret,
+			ClusterIssuer:   cfg.Deploy.ClusterIssuer,
+			ImagePullSecret: cfg.Deploy.ImagePullSecret,
+			Annotations:     cfg.Deploy.Annotations,
+		}))
 	}
 
 	// Bring any build left in flight by a previous process up to date with the

@@ -11,6 +11,7 @@ import (
 
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
+	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/llms"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/source"
@@ -80,8 +81,9 @@ type Server struct {
 	// clusterReady reports whether the cluster is reachable.
 	clusterReady func(ctx context.Context) bool
 
-	// deploy reports whether the deploy half is wired up.
-	deploy Deployer
+	// deployer is the deploy half of the pipeline. Nil means this deployment
+	// cannot deploy.
+	deployer Deployer
 
 	// git is the handler serving repositories over the git smart HTTP protocol.
 	// Nil means this deployment does not serve git.
@@ -115,6 +117,18 @@ type BuildEngine interface {
 type Deployer interface {
 	// Ready reports whether the deployer can reach the cluster.
 	Ready() bool
+
+	// Apply creates or updates an app's resources and returns its hostname.
+	Apply(ctx context.Context, app *model.App, image string) (string, error)
+
+	// Status reads an app's live state.
+	Status(ctx context.Context, app *model.App) (deploy.Status, error)
+
+	// Remove deletes an app's running resources without deleting the app.
+	Remove(ctx context.Context, app *model.App) error
+
+	// Restart triggers a rollout of the running image.
+	Restart(ctx context.Context, app *model.App) error
 }
 
 // New builds a Server.
@@ -224,6 +238,41 @@ func (s *Server) imageFor(appID, commitSHA string) string {
 	}
 	return s.build.ImageFor(appID, commitSHA)
 }
+
+// applyDeployment applies an app's resources through the deployer.
+func (s *Server) applyDeployment(ctx context.Context, app *model.App, image string) (string, error) {
+	if s.deployer == nil {
+		return "", fmt.Errorf("this deployment cannot deploy")
+	}
+	return s.deployer.Apply(ctx, app, image)
+}
+
+// appLiveStatus reads an app's state from the cluster.
+func (s *Server) appLiveStatus(ctx context.Context, app *model.App) (deploy.Status, error) {
+	if s.deployer == nil {
+		return deploy.Status{}, fmt.Errorf("this deployment cannot deploy")
+	}
+	return s.deployer.Status(ctx, app)
+}
+
+// removeDeployment deletes an app's running resources.
+func (s *Server) removeDeployment(ctx context.Context, app *model.App) error {
+	if s.deployer == nil {
+		return fmt.Errorf("this deployment cannot deploy")
+	}
+	return s.deployer.Remove(ctx, app)
+}
+
+// restartDeployment triggers a rollout of an app's running image.
+func (s *Server) restartDeployment(ctx context.Context, app *model.App) error {
+	if s.deployer == nil {
+		return fmt.Errorf("this deployment cannot deploy")
+	}
+	return s.deployer.Restart(ctx, app)
+}
+
+// WithDeployer attaches the deploy half of the pipeline.
+func (s *Server) WithDeployer(d Deployer) *Server { s.deployer = d; return s }
 
 // ensureNamespaceFor creates an app's namespace if needed.
 func (s *Server) ensureNamespaceFor(ctx context.Context, appID string) error {
@@ -398,6 +447,38 @@ func (s *Server) routes() []route {
 			Auth:    true,
 			Doc:     "The build's log, as `text/plain`. Follows the build while it runs and ends when it finishes; works unchanged for a build that has already finished. `?follow=false` returns what exists so far and stops.",
 			Handler: s.handleBuildLogs,
+		},
+
+		// -- Deploy -------------------------------------------------------
+		{
+			Pattern: "POST /api/v1/apps/{app}/deploy",
+			Auth:    true,
+			Doc:     "Deploy a commit and return the URL it is served at. Body `{commit_sha?, build?}` — omit `commit_sha` to deploy the current tip. If that commit has a successful build its image is reused; if it has none, the call fails with 409 and names the fix unless `build:true` was passed, in which case a build is started and the response is a 202 with the build. Returns 501 if this deployment cannot deploy.",
+			Handler: s.handleDeploy,
+		},
+		{
+			Pattern: "POST /api/v1/apps/{app}/rollback",
+			Auth:    true,
+			Doc:     "Deploy an earlier commit. Body `{commit_sha}` (required). Reuses that commit's existing image and never builds, so a rollback stays fast and cannot fail for a reason the original build did not.",
+			Handler: s.handleRollback,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/status",
+			Auth:    true,
+			Doc:     "An app's live state in the cluster alongside what applab recorded. The two are reported separately and deliberately not reconciled: when they disagree, the cluster is right.",
+			Handler: s.handleAppStatus,
+		},
+		{
+			Pattern: "POST /api/v1/apps/{app}/restart",
+			Auth:    true,
+			Doc:     "Roll the running pods, keeping the same image. For picking up a changed ConfigMap or recovering pods that are wedged.",
+			Handler: s.handleRestart,
+		},
+		{
+			Pattern: "POST /api/v1/apps/{app}/stop",
+			Auth:    true,
+			Doc:     "Stop the app by removing its Deployment, Service and Ingress. The source and history are kept, so starting again is a deploy rather than a re-upload.",
+			Handler: s.handleStop,
 		},
 
 		// -- Source archive (for build jobs) ------------------------------

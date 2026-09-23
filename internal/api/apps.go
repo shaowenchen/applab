@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,6 +111,10 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		Dockerfile: strings.TrimSpace(req.Dockerfile),
 		Domain:     strings.TrimSpace(req.Domain),
 		Status:     model.AppStatusCreated,
+
+		// Set here so everything downstream — the namespace creation just
+		// below, and any build or deploy — has it without recomputing.
+		Namespace: s.namespaceFor(req.ID),
 	}
 	if app.Name == "" {
 		app.Name = req.ID
@@ -299,7 +304,7 @@ func (s *Server) loadApp(r *http.Request) (*model.App, *apiError) {
 	if id == "" {
 		return nil, BadRequest("no app id in the request path")
 	}
-	app, err := s.store.GetApp(r.Context(), id)
+	app, err := s.loadAppByID(r.Context(), id)
 	if err != nil {
 		return nil, fromStoreError(err, fmt.Sprintf("app %q", id))
 	}
@@ -307,6 +312,29 @@ func (s *Server) loadApp(r *http.Request) (*model.App, *apiError) {
 		return nil, NotFound("app %q", id)
 	}
 	return app, nil
+}
+
+// loadAppByID loads an app and fills in the namespace derived from this
+// deployment's configuration.
+//
+// The namespace is derived rather than stored, and it is filled here — at the
+// one place an app enters this layer — rather than by each caller. Every
+// operation that touches the cluster needs it, and a caller that forgot would
+// address the empty namespace, which is a mistake that produces no error: the
+// API server treats "" as the default namespace, so objects would be created in
+// the wrong place and the app's own namespace would stay empty.
+func (s *Server) loadAppByID(ctx context.Context, id string) (*model.App, error) {
+	app, err := s.store.GetApp(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	app.Namespace = s.namespaceFor(app.ID)
+	return app, nil
+}
+
+// namespaceFor returns the namespace an app's resources live in.
+func (s *Server) namespaceFor(appID string) string {
+	return model.Namespace(s.cfg.NamespacePrefix, appID)
 }
 
 // validateAppSettings checks the invariants a deploy depends on.
