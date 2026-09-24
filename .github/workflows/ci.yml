@@ -148,21 +148,45 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to the registry
+      - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
-          registry: ${{ vars.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # The tag is derived from the git ref rather than taken on trust, and the
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-beijing.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      # The tags are derived from the git ref rather than taken on trust, and the
       # version stamped into the binary is the same string a user sees on the
       # image — so "which build is this" has one answer.
+      #
+      # Two destinations, one build. A release goes to Docker Hub and to ACR,
+      # because a cluster that cannot reach the first can usually reach the
+      # second — and an installation that has to build applab itself to run it is
+      # not an installation anybody completes.
+      #
+      # ACR's repository lives under a namespace, `opshub/<name>`, while Docker
+      # Hub's is flat: `shaowenchen/applab`. That is why the two are spelled out
+      # rather than one being derived from the other.
+      #
+      # The Docker Hub path is written out rather than built from
+      # secrets.DOCKERHUB_USERNAME: where an image lives is a fact about this
+      # project, not a credential, and deriving it from a secret would mean an
+      # unset secret silently publishes somewhere else. ACR_REPOSITORY keeps a
+      # default for the same reason the other projects in this account do — the
+      # variable is there to redirect the mirror, not to be required.
       - name: Derive tags and labels
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ vars.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: |
+            docker.io/shaowenchen/${{ env.IMAGE_NAME }}
+            registry.cn-beijing.aliyuncs.com/${{ vars.ACR_REPOSITORY || 'opshub/shaowenchen-applab' }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -179,6 +203,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # ACR rejects Buildx's provenance and SBOM attestations, failing the
+          # push with an empty OCI manifest class rather than anything that names
+          # the cause. Off for both, since this is one build pushed twice — and
+          # neither applab's Dockerfile nor its consumers use them.
+          provenance: false
+          sbom: false
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
