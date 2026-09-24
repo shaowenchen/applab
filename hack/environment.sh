@@ -518,7 +518,11 @@ kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
 # publishes the console through the Istio gateway instead — one VirtualService on
 # the base domain, which is the same host the apps are already served on, so the
 # whole environment is reachable through the one address the tunnel publishes.
-helm install applab "$REPO_ROOT/charts/applab" \
+# `if !` rather than letting it fail: under `set -e` a failed install stops the
+# script on the spot, and the one thing worth having then is the state of the
+# cluster it left behind. helm's own message says what it waited for; only the
+# cluster says why.
+if ! helm install applab "$REPO_ROOT/charts/applab" \
   --namespace "$APPLAB_NAMESPACE" \
   --wait \
   --set auth.existingSecret=applab-keys \
@@ -533,6 +537,28 @@ helm install applab "$REPO_ROOT/charts/applab" \
   --set "image.tag=${APPLAB_VERSION}" \
   --set "image.pullPolicy=${APPLAB_IMAGE_PULL_POLICY}" \
   --timeout 10m
+then
+  warn "applab did not install; the state it left behind follows"
+  kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service,pvc 2>&1 | sed 's/^/    /' || true
+  # The reason a pod is not Ready is almost always in these three, and they are
+  # the things a person would otherwise have to guess at: an image that cannot be
+  # pulled, a volume that cannot be mounted, an applab that started and refused
+  # its own configuration.
+  kubectl -n "$APPLAB_NAMESPACE" describe pods 2>&1 | tail -n 60 | sed 's/^/    /' || true
+  kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --all-containers --tail=100 2>&1 | sed 's/^/    /' || true
+  helm -n "$APPLAB_NAMESPACE" status applab 2>&1 | sed 's/^/    /' || true
+  die "helm could not bring applab up: the message above is helm's, the rest is the cluster's"
+fi
+
+# The install reported success, which with --wait means every object it created
+# was ready. Asserted anyway, because "ready" is what helm inferred from the
+# objects it knows about, and the ones that matter here are the two applab writes
+# itself: the console's VirtualService from the chart, and the Service behind it.
+# Both are checked before anything is published, so a broken install fails here
+# rather than at a browser.
+kubectl -n "$APPLAB_NAMESPACE" rollout status deploy/applab --timeout=120s
+kubectl -n "$APPLAB_NAMESPACE" get virtualservice applab-console -o name >/dev/null 2>&1 \
+  || die "the console has no VirtualService, so the gateway would answer 404 at \"/\": the chart rendered one only when ingress.enabled is false, and this install did not produce it"
 
 # ── 5. what came up, and whether it answers ─────────────────────────────────
 
@@ -636,7 +662,7 @@ APPLAB_TUNNEL_SHOWN="$APPLAB_TUNNEL" \
 APPLAB_REGISTRY_SHOWN="$APPLAB_REGISTRY" \
 APPLAB_CLUSTER_SHOWN="$APPLAB_CLUSTER_NAME" \
 APPLAB_RUNTIME_DIR_SHOWN="$RUNTIME_DIR" \
-  "$SCRIPT_DIR/summary.sh"
+  bash "$SCRIPT_DIR/summary.sh"
 
 cat <<EOF
 
@@ -684,7 +710,14 @@ while [ "$DEADLINE" -eq 0 ] || [ "$(date +%s)" -lt "$DEADLINE" ]; do
   # only way in, so nobody can reach the environment, which is a fact the person
   # watching needs before the run ends. Nothing else is watched — everything
   # after the tunnel is the cluster's own health, which Kubernetes reports.
-  kill -0 "$tunnel_pid" 2>/dev/null || { warn "the tunnel agent stopped"; break; }
+  #
+  # Only when there is one: APPLAB_PUBLIC_HOST means no tunnel was started, and
+  # an absent agent is not a stopped one. `kill -0 ""` fails, so without this the
+  # loop would end the environment on its first pass — which is exactly the case
+  # CI runs in.
+  if [ -n "$tunnel_pid" ]; then
+    kill -0 "$tunnel_pid" 2>/dev/null || { warn "the tunnel agent stopped"; break; }
+  fi
   sleep 15
 done
 
