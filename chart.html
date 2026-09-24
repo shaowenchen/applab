@@ -151,10 +151,20 @@ helm install applab applab/applab \
   --version 0.1.0-dev \
   --namespace ops-system --create-namespace \
   --set auth.key=&quot;$(openssl rand -hex 32)&quot; \
+  --set objectStore.endpoint=https://s3.us-east-1.amazonaws.com \
+  --set objectStore.bucket=applab \
+  --set objectStore.accessKey=... --set objectStore.secretKey=... \
   --set apps.baseDomain=apps.example.com \
   --set ingress.host=applab.example.com \
   --set build.registry=registry.example.com/apps
 </code></pre>
+<p>The bucket is not optional and has no default. AppLab keeps everything in it —
+every app, every repository and every key — so a release that omitted it would
+not fail: the server falls back to a directory, which in this chart is the pod's
+scratch space, and the deployment would look healthy until the pod was replaced.
+It is refused at render time for that reason. Create the bucket first; AppLab
+does not create one, because a bucket's name, region and lifecycle policy belong
+to whoever runs the platform.</p>
 <p><code>--version</code> is not optional yet, and leaving it out fails with <code>chart &quot;applab&quot; matching  not found in applab index</code> — which reads like a typo or a stale index
 and is neither. See <a href="#installing-a-development-build">Installing a development
 build</a> for why, and for what changes when a
@@ -166,8 +176,37 @@ export APPLAB_KEY=&lt;the key from the release's Secret&gt;
 applab push myshop
 </code></pre>
 <h2>Before you install</h2>
-<p>Three decisions are much easier to make now than after, because each one changes
-what the cluster has to be able to do.</p>
+<p>A bucket and three decisions. The bucket is required and has no default, and each
+decision is much easier to make now than after, because it changes what the
+cluster has to be able to do.</p>
+<h3>0. A bucket, which is where everything lives</h3>
+<p>AppLab is stateless: every app, every repository, every commit, every build and
+every key are objects in a bucket you point it at. Create the bucket before
+installing — AppLab does not create one, because a bucket's name, region and
+lifecycle policy belong to whoever runs the platform — and give it a credential
+that can read, write, delete and list:</p>
+<pre><code class="language-bash">--set objectStore.endpoint=https://s3.us-east-1.amazonaws.com \
+--set objectStore.bucket=applab \
+--set objectStore.accessKey=... --set objectStore.secretKey=...
+</code></pre>
+<p>AWS needs no <code>endpoint</code> beyond the region's address and no <code>pathStyle</code>. A
+self-hosted service such as MinIO is the opposite on both counts:</p>
+<pre><code class="language-bash">--set objectStore.endpoint=http://minio.ops-system:9000 \
+--set objectStore.pathStyle=true --set objectStore.insecure=true
+</code></pre>
+<p><code>insecure</code> is separate from the scheme on purpose: allowing an http endpoint means
+sending the credential and every app's source in the clear, which is a decision to
+make on purpose rather than one to infer from a typo.</p>
+<p>Two things worth knowing before you put production data in it:</p>
+<ul>
+<li><strong>Back the bucket up.</strong> It is the only copy of every app's source, and an
+uninstall deliberately does not touch it.</li>
+<li><strong>The bucket's credential reaches every app's API key</strong>, which live under
+<code>apps/&lt;id&gt;/key.json</code>. Before, those were in the cluster with a different
+credential; now they are in the same place as the source.</li>
+</ul>
+<p>Put more than one AppLab in one bucket by setting <code>objectStore.prefix</code> to a
+per-installation key prefix.</p>
 <h3>1. A registry the cluster can push to and pull from</h3>
 <p><code>build.registry</code> is where built images go. How an app's image is named depends on
 how much path the registry has — a repository can only be extended so far before
@@ -460,9 +499,29 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <td>The path under it; the server is told the same one</td>
 </tr>
 <tr>
-<td><code>persistence.size</code></td>
-<td><code>50Gi</code></td>
-<td>Holds every app's source</td>
+<td><code>objectStore.endpoint</code></td>
+<td><code>&quot;&quot;</code></td>
+<td><strong>Required.</strong> The bucket AppLab keeps everything in</td>
+</tr>
+<tr>
+<td><code>objectStore.bucket</code></td>
+<td><code>&quot;&quot;</code></td>
+<td><strong>Required.</strong> Created by you, not by the chart</td>
+</tr>
+<tr>
+<td><code>objectStore.accessKey</code> / <code>secretKey</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Or <code>objectStore.existingSecret</code></td>
+</tr>
+<tr>
+<td><code>objectStore.pathStyle</code></td>
+<td><code>false</code></td>
+<td>Most self-hosted services need <code>true</code></td>
+</tr>
+<tr>
+<td><code>scratchSizeLimit</code></td>
+<td><code>2Gi</code></td>
+<td>Scratch only; nothing durable is written there</td>
 </tr>
 </tbody>
 </table>
