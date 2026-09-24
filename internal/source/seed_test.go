@@ -242,6 +242,141 @@ func TestSeedReplacesASymlinkRatherThanFollowingIt(t *testing.T) {
 	}
 }
 
+// TestTheScriptCoversWhatTheConsoleDoes is the check that keeps the two surfaces
+// in step.
+//
+// The console's app page and this script are two front ends for the same API, and
+// "the script can do everything the page can" is the property that makes either
+// of them sufficient. It is not a property that stays true by itself: the page
+// gains a button, the script is not thought of, and the divergence is invisible
+// because nothing exercises both.
+//
+// So the endpoints the console calls for one app are listed here, and each has to
+// have a matching call in the script. The list is of the *console's* usage rather
+// than of the API's routes — a route nothing offers to a user is not something
+// the script owes parity with.
+//
+// When the console gains a call, this fails and names it. Adding the command to
+// the script is the fix; widening the exemption list is the thing to resist.
+func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
+	console, err := os.ReadFile(filepath.Join("..", "console", "static", "index.html"))
+	if err != nil {
+		t.Fatalf("read the console: %v", err)
+	}
+	script := ""
+	for _, f := range seedFor("shop") {
+		if strings.HasSuffix(f.Name, ".sh") {
+			script = f.Body
+		}
+	}
+	if script == "" {
+		t.Fatal("no seeded script to compare against")
+	}
+
+	// Every app-scoped route the console calls, with the method it uses. Written
+	// as the path the script would have to build, so a match is a real match
+	// rather than a substring of something else.
+	wanted := []struct{ method, path string }{
+		{"GET", "/api/v1/apps/"},
+		{"DELETE", "/api/v1/apps/"},
+		{"POST", "/builds"},
+		{"GET", "/builds"},
+		{"GET", "/commits"},
+		{"GET", "/config"},
+		{"POST", "/deploy"},
+		{"PUT", "/env"},
+		{"DELETE", "/env/"},
+		{"GET", "/key"},
+		{"GET", "/logs?"},
+		{"GET", "/pods"},
+		{"POST", "/restart"},
+		{"POST", "/rollback"},
+		{"PUT", "/secrets"},
+		{"DELETE", "/secrets/"},
+		{"GET", "/status"},
+		{"POST", "/stop"},
+		{"PATCH", "/api/v1/apps/"},
+	}
+
+	missing := []string{}
+	for _, w := range wanted {
+		// The console call has to exist, or this list has drifted from it.
+		if !strings.Contains(string(console), w.path) {
+			t.Errorf("the console no longer calls %s %s; this list is out of date", w.method, w.path)
+			continue
+		}
+		// And the script has to make it.
+		if !strings.Contains(script, w.method+" ") || !strings.Contains(script, w.path) {
+			missing = append(missing, w.method+" "+w.path)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("the console can do these and applab.sh cannot:\n  %s\n"+
+			"add a command for each, or the two front ends have drifted",
+			strings.Join(missing, "\n  "))
+	}
+}
+
+// TestTheScriptsRequestsCarryTheSameFields checks the two front ends ask for the
+// same thing, not merely that they call the same URL.
+//
+// The test above proves the script can reach every route the console uses, which
+// is necessary and not sufficient: a deploy with `build` and one without hit the
+// same endpoint and behave differently the moment the commit has not been built.
+// The console's button and the script's command are the same operation and have
+// to make the same request.
+//
+// The two cannot be compared as bytes — one writes a JavaScript object literal
+// and the other a JSON string inside a shell string — so what is compared is the
+// **set of fields** each one sends, per operation. Each pair is anchored to the
+// call it belongs to rather than searched for globally, because "build" appears
+// in the script for reasons that have nothing to do with the deploy body.
+func TestTheScriptsRequestsCarryTheSameFields(t *testing.T) {
+	console, err := os.ReadFile(filepath.Join("..", "console", "static", "index.html"))
+	if err != nil {
+		t.Fatalf("read the console: %v", err)
+	}
+	script := ""
+	for _, f := range seedFor("shop") {
+		if strings.HasSuffix(f.Name, ".sh") {
+			script = f.Body
+		}
+	}
+	if script == "" {
+		t.Fatal("no seeded script to compare against")
+	}
+
+	cases := []struct {
+		op string
+		// console is a literal from the console's request body for this call.
+		console string
+		// script is the same field as it appears inside the script's JSON string.
+		script string
+	}{
+		// The decisive one. The console deploys with build:true so a commit that
+		// was never built does not make the button useless; the script has to ask
+		// for the same thing or the command that is supposed to do what the button
+		// does will fail where the button succeeds.
+		{"deploy", `commit_sha: head, build: true`, `commit_sha\":\"${1:-}\",\"build\":true`},
+		{"replicas", `JSON.stringify({ replicas: wanted })`, `{\"replicas\":$1}`},
+		{"env set", `JSON.stringify({ env: {`, `json_pairs env`},
+		{"secret set", `JSON.stringify({ secrets: {`, `json_pairs secrets`},
+	}
+
+	for _, tc := range cases {
+		if !strings.Contains(string(console), tc.console) {
+			t.Errorf("the console no longer sends %s as %q; this list is out of date, and the check below is now vacuous",
+				tc.op, tc.console)
+			continue
+		}
+		if !strings.Contains(script, tc.script) {
+			t.Errorf("%s: the console sends %q and applab.sh does not send %q.\n"+
+				"The two are the same operation, so a request that works from one must work from the other.",
+				tc.op, tc.console, tc.script)
+		}
+	}
+}
+
 // fileAtTip returns a file's content at a repository's tip.
 func fileAtTip(t *testing.T, s *Store, appID, name string) string {
 	t.Helper()

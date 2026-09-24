@@ -48,6 +48,34 @@ It reads the two variables above, so it needs no arguments beyond the command.
 
 `push` is the normal path. The rest are for when something needs looking at.
 
+It does everything the app's page in the console does — the two are the same
+operations against the same API, so neither is a subset of the other:
+
+    ./applab.sh show              # port, replicas, domain, address
+    ./applab.sh pods              # the pods, and why one is not ready
+    ./applab.sh config            # env vars, and the names of the secrets
+    ./applab.sh replicas 3        # how many copies to run (no argument: print it)
+    ./applab.sh env set K=V ...   # set environment variables
+    ./applab.sh env unset K ...   # remove them
+    ./applab.sh secret set K=V ...  # set secret values
+    ./applab.sh secret unset K ...  # remove them
+    ./applab.sh restart           # roll the pods, keeping the image
+    ./applab.sh stop              # remove the running app, keeping the source
+    ./applab.sh key               # this app's key
+
+Two of these differ from what you might expect, and both are the console's
+behaviour too:
+
+- **`replicas` takes effect on the next deploy**, not immediately. It changes
+  the app's setting, and the deployer is what applies it — the same way the
+  app's port and image work. Set it, then `./applab.sh deploy`.
+- **`deploy` builds if it has to.** A commit with an image reuses it; one that
+  was never built is built first. That is so deploying a commit you just pushed
+  is one command rather than two.
+
+`stop` keeps the source and history, so a deploy brings the app back. `delete`
+does not, which is why it takes the id as an argument and makes you type it.
+
 **Keep it current.** Both files are written into this repository every time
 source is uploaded, so a checkout that has not been pushed in a while carries a
 copy from whenever it last was — and applab's API changes between releases. If a

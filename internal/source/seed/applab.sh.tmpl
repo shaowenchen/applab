@@ -66,9 +66,51 @@ urlencode() {
     -e "s/'/%27/g"
 }
 
+# json_escape makes a value safe to put inside a JSON string.
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# json_pairs builds {"<wrapper>":{"K":"V",...}} from KEY=VALUE arguments.
+#
+# The value may contain "=" — a connection string is the common case — so the
+# split is on the first one only. A value containing a quote or a backslash is
+# escaped rather than refused: a password is exactly the kind of thing that
+# contains one, and telling the caller to go and change it would be absurd.
+json_pairs() {
+  wrapper="$1"; shift
+  [ "$#" -gt 0 ] || { echo "expected at least one KEY=VALUE" >&2; return 1; }
+
+  out=""
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    if [ "$key" = "$pair" ]; then
+      echo "expected KEY=VALUE, got: $pair" >&2
+      return 1
+    fi
+    out="$out\"$(json_escape "$key")\":\"$(json_escape "${pair#*=}")\","
+  done
+  printf '{"%s":{%s}}' "$wrapper" "${out%,}"
+}
+
 # Reads one field out of a JSON response, so the script does not depend on jq.
+#
+# Two forms, because the API returns both: a string value is quoted and a number
+# or boolean is not. Matching only the quoted form silently returns nothing for
+# `replicas`, which reads as "the app has no replica count" rather than as a
+# parse that did not apply.
+#
+# The input is read once and searched twice rather than piped twice: the caller
+# hands it over on stdin, and a second read would find nothing.
 json_field() {
-  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+  input=$(cat)
+
+  value=$(printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1)
+  if [ -z "$value" ]; then
+    value=$(printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p" | head -1)
+  fi
+
+  printf '%s' "$value"
 }
 
 # The app's own id, so the script works without a key for anything local.
@@ -76,19 +118,38 @@ usage() {
   cat <<'EOF'
 usage: ./applab.sh <command>
 
-  push [message]   upload this directory, build it and deploy it
-  upload [message] upload this directory without building
-  build [commit]   build a commit (default: the current tip)
-  deploy [commit]  deploy a commit (default: the current tip)
+Source
+  push [message]     upload this directory, build it and deploy it
+  upload [message]   upload this directory without building
+  build [commit]     build a commit (default: the newest)
+  deploy [commit]    deploy a commit (default: the newest), building it if needed
   rollback <commit>  deploy an earlier commit, reusing its image
-  status           what is running, and where
-  logs [-f]        the app's log; -f follows it
-  diagnose         why the app is not working, if it is not
-  history          the commit history
-  builds           the build history
-  url              just the address the app is served at
-  self-update      fetch the current applab.sh and AGENT.md from the deployment
-  help             this
+
+Looking
+  status             what is running, and where
+  url                just the address the app is served at
+  show               the app itself: port, replicas, domain, address
+  logs [-f]          the app's log; -f follows it
+  pods               the pods, and why one is not ready
+  diagnose           why the app is not working, if it is not
+  history            the commit history
+  builds             the build history
+  config             environment variables, and the names of the secrets
+
+Changing
+  replicas [n]       how many copies to run (no argument: print the current one)
+  env set K=V ...    set environment variables
+  env unset K ...    remove environment variables
+  secret set K=V ... set secret values
+  secret unset K ... remove secrets
+  restart            roll the pods, keeping the same image
+  stop               remove the running app, keeping the source
+  delete <app>       delete the app and its history (needs an admin key)
+
+Keys and upkeep
+  key                print this app's key
+  self-update        fetch the current applab.sh and AGENT.md from the deployment
+  help               this
 
 Environment:
   APPLAB_URL   the deployment, e.g. https://applab.example.com   (required)
@@ -182,6 +243,20 @@ self_update() {
   echo "re-run the script to use the new version" >&2
 }
 
+# require_app_matches guards the one command that is not about a single app.
+#
+# `delete` takes the id as an argument because it is irreversible and the id has
+# to come from the caller rather than from a file the caller may not have read.
+# Checking it against APP is what stops the wrong one being deleted by a script
+# run from the wrong directory.
+require_app_matches() {
+  [ "$1" = "$APP" ] || {
+    echo "this repository is $APP, not $1" >&2
+    echo "delete names the app explicitly because there is no undo" >&2
+    exit 2
+  }
+}
+
 case "${1:-help}" in
   push)
     shift
@@ -212,7 +287,11 @@ case "${1:-help}" in
     ;;
   deploy)
     shift
-    api POST "/api/v1/apps/$APP/deploy" "{\"commit_sha\":\"${1:-}\"}"
+    # build:true so this does not refuse for the one reason that would make it
+    # useless — a commit uploaded but not yet built. A commit that already has an
+    # image reuses it, so the common case is not a rebuild. This is what the
+    # console's "Deploy latest" does, and the two have to agree.
+    api POST "/api/v1/apps/$APP/deploy" "{\"commit_sha\":\"${1:-}\",\"build\":true}"
     ;;
   rollback)
     shift
@@ -238,6 +317,105 @@ case "${1:-help}" in
     ;;
   url)
     api GET "/api/v1/apps/$APP/status" | json_field url
+    ;;
+  show)
+    api GET "/api/v1/apps/$APP"
+    ;;
+  pods)
+    api GET "/api/v1/apps/$APP/pods"
+    ;;
+  config)
+    api GET "/api/v1/apps/$APP/config"
+    ;;
+  replicas)
+    shift
+    if [ "$#" -eq 0 ]; then
+      # No argument reads, which is the other half of what someone wants from a
+      # setting: the value is in `show` too, but this is the one they will reach
+      # for after setting it. `exit` rather than `break` — this is a case arm,
+      # not a loop, and `break` here would fall through to the argument handling
+      # below and read an argument that was never given.
+      api GET "/api/v1/apps/$APP" | json_field replicas
+      exit 0
+    fi
+    # The range is checked here as well as on the server, the same way the
+    # console checks it: the server's answer is a 400 naming a parameter, and
+    # "between 1 and 50" is the answer that tells the caller what to do.
+    case "$1" in
+      ''|*[!0-9]*) echo "replicas takes a whole number" >&2; exit 2 ;;
+    esac
+    if [ "$1" -lt 1 ] || [ "$1" -gt 50 ]; then
+      echo "replicas must be between 1 and 50" >&2
+      exit 2
+    fi
+    api PATCH "/api/v1/apps/$APP" "{\"replicas\":$1}" | json_field replicas
+    echo
+    echo "set; it takes effect on the next deploy" >&2
+    ;;
+  env)
+    shift
+    case "${1:-}" in
+      set)
+        shift
+        api PUT "/api/v1/apps/$APP/env" "$(json_pairs env "$@")"
+        ;;
+      unset)
+        shift
+        for name in "$@"; do
+          api DELETE "/api/v1/apps/$APP/env/$(urlencode "$name")" >/dev/null
+          echo "removed $name" >&2
+        done
+        ;;
+      *)
+        echo "usage: ./applab.sh env set K=V ... | env unset K ..." >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  secret)
+    shift
+    case "${1:-}" in
+      set)
+        shift
+        api PUT "/api/v1/apps/$APP/secrets" "$(json_pairs secrets "$@")"
+        ;;
+      unset)
+        shift
+        for name in "$@"; do
+          api DELETE "/api/v1/apps/$APP/secrets/$(urlencode "$name")" >/dev/null
+          echo "removed $name" >&2
+        done
+        ;;
+      *)
+        echo "usage: ./applab.sh secret set K=V ... | secret unset K ..." >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  restart)
+    api POST "/api/v1/apps/$APP/restart" >/dev/null
+    echo "rolling the pods" >&2
+    ;;
+  stop)
+    api POST "/api/v1/apps/$APP/stop" >/dev/null
+    echo "stopped; the source and history are kept, so a deploy brings it back" >&2
+    ;;
+  delete)
+    shift
+    [ -n "${1:-}" ] || { echo "usage: ./applab.sh delete <app>" >&2; exit 2; }
+    require_app_matches "$1"
+    # Typed out rather than confirmed, for the same reason the console makes you
+    # type it: this removes the source, the history and the running app, and
+    # there is nothing to undo it with. A `y` at a prompt is one keystroke from a
+    # mistyped command.
+    printf 'This deletes %s, its source and its history, with no undo.\nType the app id to confirm: ' "$APP" >&2
+    read -r typed
+    [ "$typed" = "$APP" ] || { echo "not deleted" >&2; exit 1; }
+    api DELETE "/api/v1/apps/$APP" >/dev/null
+    echo "deleted $APP" >&2
+    ;;
+  key)
+    api GET "/api/v1/apps/$APP/key" | json_field key
     ;;
   self-update)
     self_update
