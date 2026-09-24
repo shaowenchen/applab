@@ -96,6 +96,39 @@ reachable from inside the cluster, which it often is not.
 {{- end }}
 
 {{/*
+The URL a person reaches applab itself at.
+
+Two ways in, and which one applies follows from the same settings that decide
+how apps are published:
+
+  ingress.enabled          the console is reached through the cluster's Ingress,
+                           as it always was
+  apps.baseDomain + gateway  there is no Ingress to use, so the console is a
+                           VirtualService on the gateway, beside the apps
+                           (console-virtualservice.yaml)
+
+An Ingress wins when one is enabled, because enabling it is an explicit
+statement about where the console lives; the gateway is the fallback for a
+cluster that has no ingress controller at all.
+
+Neither applies when there is no Ingress and no base domain, and then this is
+empty: the installation is reachable from inside the cluster only, and a URL
+invented here would be one that does not resolve. Callers have to say something
+else in that case, which is the point.
+*/}}
+{{- define "applab.consoleURL" -}}
+{{- if and .Values.ingress.enabled .Values.ingress.hosts -}}
+{{- if .Values.ingress.tls -}}
+{{- printf "https://%s" (index .Values.ingress.hosts 0).host -}}
+{{- else -}}
+{{- printf "http://%s" (index .Values.ingress.hosts 0).host -}}
+{{- end -}}
+{{- else if and .Values.deploy.gateway .Values.apps.baseDomain -}}
+{{- printf "https://%s" .Values.apps.baseDomain -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Fail early on a configuration that would produce a broken deployment, rather
 than letting it fail at runtime where the cause is much harder to see.
 */}}

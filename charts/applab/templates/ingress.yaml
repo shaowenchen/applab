@@ -5,6 +5,9 @@ This is deliberately a plain Ingress and not the Istio gateway apps go through:
 it is one hostname for the platform, fronted by whatever ingress controller the
 cluster already runs. Apps are published separately, by a VirtualService
 attached to the gateway in deploy.gateway.
+
+A cluster with no ingress controller sets ingress.enabled=false and gets the
+console on the gateway instead, from console-virtualservice.yaml.
 */}}
 {{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1

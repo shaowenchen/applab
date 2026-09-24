@@ -21,6 +21,12 @@ fi
 CHART=charts/applab
 NS=ops-system
 
+# Scratch space for a render that is read as a file rather than a here-string.
+# Removed on exit, including on the failures below, so a red check leaves
+# nothing behind.
+RUNTIME_DIR="$(mktemp -d)"
+trap 'rm -rf "$RUNTIME_DIR"' EXIT
+
 # A configuration that exercises every branch the guards protect, so the
 # defaults in values.yaml are not what is being checked.
 BASE=(
@@ -220,6 +226,88 @@ if helm template applab "$CHART" --namespace "$NS" \
 fi
 
 helm lint "$CHART" "${BASE[@]}" >/dev/null || fail "helm lint reported a problem"
+
+# The console is reachable, and the way in flips with the Ingress.
+#
+# A cluster with no ingress controller needs another front door, or the console
+# is reachable only by port-forward — which is what the debugger environment did
+# before, with a proxy in front of it. The three cases below are the whole
+# decision, and the third is the one that must not silently ship: a base domain
+# with no Ingress and no gateway is an installation nobody can open.
+console_vs() { render "$@" | python3 -c '
+import sys, yaml
+for doc in yaml.safe_load_all(sys.stdin):
+    if doc and doc.get("kind") == "VirtualService" and doc["metadata"]["name"].endswith("-console"):
+        print("found")
+        break
+'; }
+
+# With an Ingress there is no gateway route for the console: two front doors to
+# one Service is one more than the release needs. BASE enables the Ingress.
+if [ "$(console_vs)" = "found" ]; then
+  fail "the console VirtualService is rendered even though an Ingress is enabled"
+fi
+
+# Without one it is rendered, and on the host the apps share and through the
+# same gateway, so a request for "/" reaches applab rather than the gateway's
+# own 404 handler.
+if [ "$(console_vs --set ingress.enabled=false)" != "found" ]; then
+  fail "the console is unreachable without an Ingress: no VirtualService is rendered for it"
+fi
+
+# Who serves it, on which host, through which gateway.
+#
+# It has to be a catch-all, and that is what makes it safe rather than lazy: the
+# apps' routes ("/<prefix>/<app>/") are the more specific ones and Istio sorts a
+# catch-all to the end of the virtual host, so the console is evaluated only
+# after every app has declined the request. A match of its own could claim an
+# app's path; a destination other than the release's Service would answer 503.
+render --set ingress.enabled=false > "$RUNTIME_DIR/gatewayed.yaml"
+python3 - "$RUNTIME_DIR/gatewayed.yaml" <<'PY'
+import sys, yaml
+
+with open(sys.argv[1]) as fh:
+    docs = [d for d in yaml.safe_load_all(fh) if d]
+
+console = [d for d in docs if d.get("kind") == "VirtualService"
+           and d["metadata"]["name"].endswith("-console")]
+if len(console) != 1:
+    print(f"expected exactly one console VirtualService, found {len(console)}", file=sys.stderr)
+    sys.exit(1)
+vs = console[0]
+hosts = vs["spec"]["hosts"]
+gateways = vs["spec"]["gateways"]
+
+if hosts != ["apps.example.com"]:
+    print(f"the console is served on {hosts}, not the apps base domain", file=sys.stderr)
+    sys.exit(1)
+if gateways != ["ops-system/gateway"]:
+    print(f"the console is attached to {gateways}, not the apps gateway", file=sys.stderr)
+    sys.exit(1)
+
+http = vs["spec"]["http"]
+if len(http) != 1:
+    print(f"the console has {len(http)} http routes, want one", file=sys.stderr)
+    sys.exit(1)
+if "match" in http[0]:
+    print("the console route carries a match; it must be a catch-all so it can never claim an app path", file=sys.stderr)
+    sys.exit(1)
+dest = http[0]["route"][0]["destination"]
+if dest["host"] != "applab" or dest["port"]["number"] != 80:
+    print(f"the console routes to {dest}, not the release Service on its port", file=sys.stderr)
+    sys.exit(1)
+PY
+
+# With no base domain there is no host to put the console on, so nothing is
+# rendered for it: a VirtualService with an empty host is one Istio cannot
+# match. The release is internal-only instead, which the notes explain, and it
+# still has to be a working Deployment rather than a render failure.
+internal="$(render --set ingress.enabled=false --set apps.baseDomain=)"
+grep -q 'kind: Deployment' <<<"$internal" \
+  || fail "an Ingress-less internal release does not render a Deployment"
+if console_vs --set ingress.enabled=false --set apps.baseDomain= | grep -q found; then
+  fail "the console VirtualService is rendered with no base domain, so it would have no host to match"
+fi
 
 # NOT NOTES.txt: `helm template` does not render it, and `helm install --dry-run`
 # needs a reachable cluster, so its contents cannot be checked here. Asserting on

@@ -1,0 +1,46 @@
+{{/*
+applab's own console and API, published through the Istio gateway.
+
+Apps reach the outside world through a VirtualService applab writes, one per app.
+This is the same thing one level up: the installation's own route, so that the
+gateway serves a whole environment rather than only the apps inside it. Without
+it a gateway that has apps on it still answers 404 at "/" — the host is claimed
+by the apps' VirtualServices and nothing serves its root.
+
+It is written by the chart rather than by applab because it is not per app and
+not per deploy: it names this installation's Service, its host and its gateway,
+all of which are settled at install time and change only with a release.
+
+It is a catch-all, and that is safe rather than lazy. Istio sorts each virtual
+host's routes so that routes matching everything move to the end while the rest
+keep their order (route.SortVHostRoutes), and the apps applab publishes match on
+"/<apps.pathPrefix>/<app>/" — a prefix the console's own paths (/, /api/v1/,
+/git/, /llms.txt, /health, /metrics) do not share. So the apps are always
+evaluated first and this route only sees what nothing else claimed.
+
+Rendered only when there is no Ingress to use: an enabled Ingress is an explicit
+statement about where the console lives, and two front doors to one Service is
+one more than an installation needs. It also needs a base domain and a gateway —
+with no base domain there is no host to serve the console on, and with no
+gateway nothing would route it.
+*/}}
+{{- if and (not .Values.ingress.enabled) .Values.deploy.gateway .Values.apps.baseDomain }}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "applab.fullname" . }}-console
+  namespace: {{ include "applab.namespace" . }}
+  labels:
+    {{- include "applab.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ .Values.apps.baseDomain | quote }}
+  gateways:
+    - {{ .Values.deploy.gateway }}
+  http:
+    - route:
+        - destination:
+            host: {{ include "applab.fullname" . }}
+            port:
+              number: {{ .Values.service.port }}
+{{- end }}

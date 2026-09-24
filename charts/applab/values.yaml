@@ -259,8 +259,15 @@ deploy:
 #
 # This is a standard Kubernetes Ingress for the console and the API — separate
 # from how apps are published, which goes through the Istio gateway above. If
-# your cluster has no ingress controller, set enabled to false and reach applab
-# by port-forward.
+# your cluster has no ingress controller, set enabled to false and applab
+# publishes the console through the Istio gateway instead, on the same host the
+# apps share: there is one way in either way, and a gateway that is serving apps
+# already has a listener for that host.
+#
+# The gateway route is the fallback rather than the default because a base
+# domain and a gateway are what it needs, and an installation can reasonably
+# have neither. Disabling the Ingress without them leaves applab reachable from
+# inside the cluster only, which the install notes say.
 # ---------------------------------------------------------------------------
 ingress:
   enabled: true

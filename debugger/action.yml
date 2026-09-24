@@ -36,8 +36,10 @@ inputs:
     description: >-
       The domain apps are served under, without a scheme. Not tunnel
       configuration: a named Cloudflare tunnel keeps its hostname in its ingress
-      and cannot report it, and this is what applab and the router need. Point
-      the ingress at the tunnel first; nothing here can create it.
+      and cannot report it, and this is what applab needs — it becomes
+      apps.baseDomain, which is both where the apps are served and the host the
+      console's own route matches. Point the ingress at the tunnel first;
+      nothing here can create it.
     required: false
     default: ''
   ngrok_token:
@@ -137,13 +139,6 @@ runs:
           sudo chmod +x /usr/local/bin/ngrok
           ngrok --version
         fi
-
-    # Node runs the router. The GitHub runner already has it; this makes the
-    # version explicit rather than dependent on what the image ships, which is
-    # the kind of thing that changes under a repository without a commit.
-    - uses: actions/setup-node@v4
-      with:
-        node-version: '24'
 
     - name: Start the environment
       shell: bash

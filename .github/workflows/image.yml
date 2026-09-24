@@ -67,7 +67,7 @@ jobs:
 
       # The console is plain JavaScript inside an HTML file, so nothing else
       # parses it — a syntax error would reach a browser before it reached CI.
-      - name: Console and router JavaScript parses
+      - name: Console JavaScript parses
         run: |
           set -eux
           python3 - <<'PY'
@@ -79,14 +79,7 @@ jobs:
               sys.exit(1)
           open('/tmp/console-check.js', 'w').write(m.group(1))
           subprocess.run(['node', '--check', '/tmp/console-check.js'], check=True)
-          subprocess.run(['node', '--check', 'hack/router.mjs'], check=True)
           PY
-
-      # The router decides which half of the environment a request reaches. A
-      # bug there sends people to the wrong thing while everything looks fine,
-      # so the decision is tested directly rather than by driving traffic.
-      - name: Router routing table
-        run: node hack/router.test.mjs
 
       # action.yml declares inputs and environment.sh reads them. A typo means an
       # input that silently does nothing, which a run only reveals an hour later.
@@ -116,7 +109,7 @@ jobs:
           missing = declared - passed
           if missing:
               problems.append(f'inputs declared but never passed to the script: {sorted(missing)}')
-          # The other direction is not checked: APPLLAB_ROUTER_* and friends are
+          # The other direction is not checked: APPLAB_GATEWAY_* and friends are
           # passed as literals by the script itself, not as action inputs.
 
           # Every input the script reads must be one the action can supply, or a
@@ -143,7 +136,7 @@ jobs:
           internal = {'APPLAB_RUNTIME_DIR', 'APPLAB_NAMESPACE', 'APPLAB_PATH_PREFIX',
                       'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME', 'APPLAB_REGISTRY_NAME',
                       'APPLAB_REGISTRY_PORT', 'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
-                      'APPLAB_ROUTER_PORT', 'APPLAB_PUBLIC_HOST',
+                      'APPLAB_GATEWAY_HOST_PORT', 'APPLAB_PUBLIC_HOST',
                       'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS',
                       'APPLAB_LOCAL_IMAGE', 'APPLAB_IMAGE_PULL_POLICY'}
           unreachable = read - supplied - internal

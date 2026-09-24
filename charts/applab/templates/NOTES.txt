@@ -1,20 +1,21 @@
 applab is installed in namespace {{ include "applab.namespace" . }}.
 
-{{ if .Values.ingress.enabled -}}
+{{ $console := include "applab.consoleURL" . -}}
+{{ if $console -}}
 Reach it at:
-{{- range .Values.ingress.hosts }}
-  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
-{{- end }}
+
+    {{ $console }}
 
 {{ else -}}
-It has no Ingress. Forward a local port:
+It is reachable only from inside the cluster: this release has no Ingress, and
+no apps.baseDomain to put the console on the gateway under. Forward a port:
 
     kubectl -n {{ include "applab.namespace" . }} port-forward svc/{{ include "applab.fullname" . }} 8080:{{ .Values.service.port }}
 
 {{ end -}}
 Set up the CLI:
 
-    export APPLAB_URL={{ if .Values.ingress.enabled }}https://{{ (index .Values.ingress.hosts 0).host }}{{ else }}http://localhost:8080{{ end }}
+    export APPLAB_URL={{ if $console }}{{ $console }}{{ else }}http://localhost:8080{{ end }}
     export APPLAB_KEY=<a key from the release's Secret>
 
 Then, from any project:
@@ -60,4 +61,4 @@ build.enabled=true and build.registry.
 {{ end -}}
 Read the API contract:
 
-    curl -s {{ if .Values.ingress.enabled }}https://{{ (index .Values.ingress.hosts 0).host }}{{ else }}http://localhost:8080{{ end }}/llms.txt
+    curl -s {{ if $console }}{{ $console }}{{ else }}http://localhost:8080{{ end }}/llms.txt

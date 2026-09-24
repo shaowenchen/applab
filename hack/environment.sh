@@ -11,13 +11,19 @@
 #
 #   kind cluster (ns ops-system)
 #     applab         the published image, installed with this repository's chart
-#     istio-ingress  the gateway apps are published through (NodePort 30080)
+#     istio-ingress  the gateway everything is published through (NodePort 30080)
 #     registry:2     where built images are pushed (kind-registry:5000)
 #
 #   on the runner
 #     cloudflared    a quick tunnel, so the environment is reachable from anywhere
-#     router.mjs     splits one hostname between applab and the apps
-#     kubectl port-forward  applab's Service, which has no ingress here
+#
+# One gateway serves both halves, and that is the whole of the routing: the
+# console and the API at "/" (a VirtualService the chart installs), each app
+# under "/apps/<app>/" (a VirtualService applab writes at deploy time). Nothing
+# sits in front of the gateway to tell the two apart, because the paths already
+# do: Istio sorts a virtual host's catch-all route to the end and keeps the rest
+# in order, and "/apps/<app>/" is not a prefix any of the console's own paths
+# share. See debugger/README.md.
 #
 # The order below is load-bearing and the reason it is a script rather than a
 # list of workflow steps: the tunnel has to be up *first*, because the hostname
@@ -69,7 +75,10 @@ fi
 : "${APPLAB_NAMESPACE:=ops-system}"
 : "${APPLAB_BUILD_ROOTLESS:=true}"
 : "${APPLAB_GATEWAY_NODEPORT:=30080}"
-: "${APPLAB_ROUTER_PORT:=3080}"
+# A second host port for the same gateway, so the environment can be reached at
+# an address with no port in it. See the kind config below for why that is not
+# merely convenient.
+: "${APPLAB_GATEWAY_HOST_PORT:=80}"
 : "${APPLAB_CLUSTER_NAME:=applab-debugger}"
 : "${APPLAB_PATH_PREFIX:=/apps}"
 : "${APPLAB_IMAGE_REPOSITORY:=docker.io/shaowenchen/applab}"
@@ -193,15 +202,16 @@ find_public_host() {
 # exists for CI, which must not depend on a public tunnel being granted: a quick
 # tunnel's hostname is minted per connection, is rate-limited, and is aimed at
 # trying things rather than at being a test dependency. CI sets it and drives the
-# router over loopback; the tunnel itself is exercised by the debugger workflow,
-# where a flaky link is a person's problem to re-run rather than a red build.
+# gateway over the node port; the tunnel itself is exercised by the debugger
+# workflow, where a flaky link is a person's problem to re-run rather than a red
+# build.
 #
 # APPLAB_DOMAIN names the domain apps are served under, for a tunnel that *is*
 # started. It is not tunnel configuration — a named Cloudflare tunnel keeps its
 # hostname in its ingress, and the connector is never told it, and nothing has to
-# be passed to cloudflared. It is what applab needs: apps.baseDomain, and the
-# host the router hands to Istio so a VirtualService matches. A named tunnel
-# cannot report it, so it has to be supplied.
+# be passed to cloudflared. It is what applab needs: apps.baseDomain, which is
+# both where the apps are served and the host the console's own route matches. A
+# named tunnel cannot report it, so it has to be supplied.
 resolve_tunnel() {
   if [ -n "${APPLAB_PUBLIC_HOST:-}" ]; then
     TUNNEL_HOST="$APPLAB_PUBLIC_HOST"
@@ -272,7 +282,7 @@ open_cloudflare_tunnel() {
     cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_TOKEN" >"$TUNNEL_LOG" 2>&1 &
   else
     log "opening a Cloudflare quick tunnel (no account needed)"
-    cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${APPLAB_ROUTER_PORT}" >"$TUNNEL_LOG" 2>&1 &
+    cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}" >"$TUNNEL_LOG" 2>&1 &
   fi
   tunnel_pid=$!
 }
@@ -282,7 +292,7 @@ open_ngrok_tunnel() {
   [ -n "$NGROK_TOKEN" ] || die "APPLAB_TUNNEL=ngrok needs NGROK_TOKEN"
   log "opening an ngrok tunnel"
   ngrok config add-authtoken "$NGROK_TOKEN" >"$TUNNEL_LOG" 2>&1 || die "ngrok rejected the authtoken"
-  ngrok http "$APPLAB_ROUTER_PORT" >>"$TUNNEL_LOG" 2>&1 &
+  ngrok http "$APPLAB_GATEWAY_NODEPORT" >>"$TUNNEL_LOG" 2>&1 &
   tunnel_pid=$!
 }
 
@@ -295,6 +305,20 @@ log "creating the kind cluster"
 # The containerd patch is what makes the registry usable from the nodes: without
 # a mirror entry, node containerd tries to speak HTTPS to a registry that serves
 # plain HTTP and every app's image pull fails with an x509 error.
+#
+# The second port mapping — the port-free address the environment is also served
+# on — is the one part of this file that a host can refuse, because port 80 may
+# already be taken. Setting APPLAB_GATEWAY_HOST_PORT=0 leaves it out, and then the
+# environment is reachable on the node port only, which is enough for the tunnel:
+# cloudflared forwards the original hostname with no port, so its requests carry
+# the Host the VirtualServices match on whatever port they arrive at.
+gateway_host_port_mapping=""
+if [ "$APPLAB_GATEWAY_HOST_PORT" != "0" ] && [ "$APPLAB_GATEWAY_HOST_PORT" != "$APPLAB_GATEWAY_NODEPORT" ]; then
+  gateway_host_port_mapping="      - containerPort: ${APPLAB_GATEWAY_NODEPORT}
+        hostPort: ${APPLAB_GATEWAY_HOST_PORT}
+        protocol: TCP"
+fi
+
 cat > "$RUNTIME_DIR/kind.yaml" <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -308,10 +332,26 @@ nodes:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true"
     extraPortMappings:
-      # The Istio ingress gateway, so the runner (and the router) can reach it.
+      # The Istio ingress gateway, so the tunnel can reach it.
       - containerPort: ${APPLAB_GATEWAY_NODEPORT}
         hostPort: ${APPLAB_GATEWAY_NODEPORT}
         protocol: TCP
+      # And the same gateway on a port-free address, so a client that builds a
+      # URL out of the deployment's name can reach it without the port leaking
+      # into its Host header.
+      #
+      # That is not a convenience. Istio matches a VirtualService on the Host, and
+      # the Host a client sends is derived from the URL — so a request to
+      # "http://host:30080/path" arrives as "Host: host:30080" and matches
+      # nothing, because the domains Istio writes are bare hostnames. Envoy has an
+      # option to ignore the port when matching, but Istio does not set it
+      # (neither strip_matching_host_port nor strip_any_host_port appears anywhere
+      # in the control plane).
+      #
+      # The tunnel does not need this — cloudflared forwards the original hostname,
+      # with no port, however the request reached it — but anything on the runner
+      # that is pointed at the environment by name does.
+${gateway_host_port_mapping}
 containerdConfigPatches:
   - |-
     [plugins."io.containerd.grpc.v1.cri".registry.mirrors."${APPLAB_REGISTRY}"]
@@ -426,6 +466,15 @@ gateway_nodeport=$(kubectl -n istio-system get svc istio-ingressgateway \
 [ "$gateway_nodeport" = "$APPLAB_GATEWAY_NODEPORT" ] \
   || die "the gateway's HTTP port is on node port '${gateway_nodeport}', expected ${APPLAB_GATEWAY_NODEPORT}"
 
+# The port-free address has to be reachable over loopback, or every client that
+# builds its URL from the environment's name would be sending a Host with a port
+# in it — which matches no VirtualService. Checked here rather than discovered as
+# a 404 from the console later.
+if [ "$APPLAB_GATEWAY_HOST_PORT" != "0" ] && [ "$APPLAB_GATEWAY_HOST_PORT" != "$APPLAB_GATEWAY_NODEPORT" ]; then
+  curl -s -o /dev/null --max-time 5 "http://127.0.0.1:${APPLAB_GATEWAY_HOST_PORT}/" \
+    || die "nothing is listening on 127.0.0.1:${APPLAB_GATEWAY_HOST_PORT}; the gateway's port-free mapping is not in place, and a client pointed at this environment by name would send a Host with a port in it"
+fi
+
 # And confirm the other ports survived. The check above passes even when the
 # patch replaced the whole list, because port 80 is the one it looks at — so the
 # two ports that would be lost silently are asserted separately. 15021 is the
@@ -456,9 +505,15 @@ kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
 # against a half-installed release would hide a first-install failure.
 #
 # --wait, so an image that cannot be pulled fails here. Without it helm reports
-# success the moment the objects are created, and the first symptom is a router
-# that cannot connect ninety attempts later — which says nothing about the image
-# being the problem. The timeout is the chart's own.
+# success the moment the objects are created, and the first symptom is a gateway
+# that cannot reach applab ninety attempts later — which says nothing about the
+# image being the problem. The timeout is the chart's own.
+#
+# ingress.enabled=false, because a kind cluster has no ingress controller and
+# installing one would be a moving part added for nothing. The chart then
+# publishes the console through the Istio gateway instead — one VirtualService on
+# the base domain, which is the same host the apps are already served on, so the
+# whole environment is reachable through the one address the tunnel publishes.
 helm install applab "$REPO_ROOT/charts/applab" \
   --namespace "$APPLAB_NAMESPACE" \
   --wait \
@@ -475,56 +530,46 @@ helm install applab "$REPO_ROOT/charts/applab" \
   --set "image.pullPolicy=${APPLAB_IMAGE_PULL_POLICY}" \
   --timeout 10m
 
-# applab is reached by port-forward: the chart's Ingress is disabled because a
-# kind cluster has no ingress controller, and installing one would add a moving
-# part for the sake of reaching a Service the runner can already reach directly.
-log "forwarding applab's Service to 127.0.0.1:8080"
-kubectl -n "$APPLAB_NAMESPACE" port-forward svc/applab 8080:80 \
-  > "$RUNTIME_DIR/port-forward.log" 2>&1 &
-port_forward_pid=$!
-echo "$port_forward_pid" > "$RUNTIME_DIR/port-forward.pid"
-
-# ── 5. the router ───────────────────────────────────────────────────────────
-
-log "starting the router on 127.0.0.1:${APPLAB_ROUTER_PORT}"
-APPLAB_ROUTER_PORT="$APPLAB_ROUTER_PORT" \
-APPLAB_ROUTER_PREFIX="$APPLAB_PATH_PREFIX" \
-APPLAB_ROUTER_GATEWAY="127.0.0.1:${APPLAB_GATEWAY_NODEPORT}" \
-APPLAB_ROUTER_APPLAB="127.0.0.1:8080" \
-APPLAB_ROUTER_HOST="$TUNNEL_HOST" \
-  node "$SCRIPT_DIR/router.mjs" > "$RUNTIME_DIR/router.log" 2>&1 &
-router_pid=$!
-echo "$router_pid" > "$RUNTIME_DIR/router.pid"
-
-# ── 6. wait until both halves answer ────────────────────────────────────────
+# ── 5. wait until the environment answers ───────────────────────────────────
 
 http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null; }
 
-log "waiting for the environment to become reachable"
-applab_ready() { [ "$(http_code "http://127.0.0.1:${APPLAB_ROUTER_PORT}/health")" = "200" ]; }
-
-for attempt in $(seq 1 90); do
-  if applab_ready; then break; fi
-  if [ $((attempt % 15)) -eq 0 ]; then
-    log "  still waiting... (attempt ${attempt})"
-    tail -n 5 "$RUNTIME_DIR/router.log" 2>/dev/null | sed 's/^/    /' || true
-  fi
-  sleep 2
-done
-applab_ready || {
-  kubectl -n "$APPLAB_NAMESPACE" get pods
-  kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --tail=50 2>/dev/null || true
-  die "applab is not answering through the router"
+# The gateway, not applab's Service, is what has to answer: it is the only thing
+# the tunnel points at, so a healthy Service behind an unprogrammed gateway is
+# still an environment nobody can open.
+#
+# Over loopback, on the port-free mapping, with the environment's own hostname as
+# the Host header. That is deliberately not the node port: a request to
+# "http://host:30080/" carries "Host: host:30080", which matches no
+# VirtualService, since the domains Istio writes are bare hostnames — see the
+# kind config above. Reaching it over loopback with the header set is the same
+# request the tunnel makes, and it does not depend on the hostname resolving,
+# which it may not yet.
+gateway_get() {
+  curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    -H "Host: ${TUNNEL_HOST}" "http://127.0.0.1:${APPLAB_GATEWAY_HOST_PORT}${1}" 2>/dev/null
 }
 
-# The gateway is only exercised by a real deploy, so its readiness is reported
-# rather than waited on: failing the whole environment because Istio is slow to
-# program its first route would block the console and the API, which work.
-gateway_code=$(http_code "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}/")
-log "the ingress gateway answers ${gateway_code} on ${APPLAB_GATEWAY_NODEPORT}"
+log "waiting for the gateway to serve applab"
+for attempt in $(seq 1 90); do
+  if [ "$(gateway_get /health)" = "200" ]; then break; fi
+  if [ $((attempt % 15)) -eq 0 ]; then log "  still waiting... (attempt ${attempt})"; fi
+  sleep 2
+done
+[ "$(gateway_get /health)" = "200" ] || {
+  kubectl -n "$APPLAB_NAMESPACE" get pods
+  kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --tail=50 2>/dev/null || true
+  kubectl -n "$APPLAB_NAMESPACE" get virtualservices 2>/dev/null || true
+  die "the gateway is not serving applab at /health"
+}
 
-# ── 7. publish ──────────────────────────────────────────────────────────────
+# The console is what a person actually opens, and it is a separate object from
+# the Service: the VirtualService the chart writes is what routes it. Checked
+# rather than assumed, because a Service that is ready and a route that is not
+# programmed is a link that opens to a 404.
+log "the console answers $(gateway_get /) at the gateway"
 
+# ── 6. publish ──────────────────────────────────────────────────────────────
 APPLAB_PUBLIC_URL="$public_url" \
 APPLAB_API_KEY_SHOWN="$APPLAB_API_KEY" \
 APPLAB_VERSION_SHOWN="$APPLAB_VERSION" \
@@ -556,13 +601,11 @@ cat <<EOF
 =====================================================================
 EOF
 
-# ── 8. stay alive ───────────────────────────────────────────────────────────
+# ── 7. stay alive ───────────────────────────────────────────────────────────
 
 cleanup() {
   log "ending the environment"
-  for pidfile in router.pid port-forward.pid tail.pid; do
-    [ -f "$RUNTIME_DIR/$pidfile" ] && kill "$(cat "$RUNTIME_DIR/$pidfile")" 2>/dev/null || true
-  done
+  [ -f "$RUNTIME_DIR/tail.pid" ] && kill "$(cat "$RUNTIME_DIR/tail.pid")" 2>/dev/null || true
   [ -n "$tunnel_pid" ] && kill "$tunnel_pid" 2>/dev/null || true
   kind delete cluster --name "$APPLAB_CLUSTER_NAME" >/dev/null 2>&1 || true
 }
@@ -580,10 +623,10 @@ fi
 # cancelled, which is the only kind of no-limit a runner that kills the job
 # anyway can offer.
 while [ "$DEADLINE" -eq 0 ] || [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  # A dead half is worth reporting now rather than at the deadline: the tunnel
-  # or the router dying means nobody can reach the environment, which is a fact
-  # the person watching needs before the run ends.
-  kill -0 "$(cat "$RUNTIME_DIR/router.pid" 2>/dev/null)" 2>/dev/null || { warn "the router stopped"; break; }
+  # A dead tunnel is worth reporting now rather than at the deadline: it is the
+  # only way in, so nobody can reach the environment, which is a fact the person
+  # watching needs before the run ends. Nothing else is watched — everything
+  # after the tunnel is the cluster's own health, which Kubernetes reports.
   kill -0 "$tunnel_pid" 2>/dev/null || { warn "the tunnel agent stopped"; break; }
   sleep 15
 done

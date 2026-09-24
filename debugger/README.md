@@ -54,9 +54,16 @@ see [the overview](../README.md) for how to install it, or drive the API directl
 | **registry:2** | Where built images are pushed, as `kind-registry:5000` — a cluster-local registry with no TLS and no credentials. |
 | **cloudflared** | A quick tunnel, so the environment is reachable from anywhere. Set `tunnel: ngrok` to use ngrok instead. |
 
-One hostname serves everything. Requests under `/apps/<app>/` reach the app,
-published through the Istio gateway; everything else reaches applab — the
-console at `/`, the API under `/api/v1/`, and the git endpoints under `/git/`.
+One hostname serves everything, and the Istio gateway is what serves it. An app
+is published under `/apps/<app>/`, and applab itself — the console at `/`, the
+API under `/api/v1/`, the git endpoints under `/git/` — is a route the chart
+installs on the same gateway, at the root of the same host.
+
+There is nothing in front of the gateway to tell the two apart, because the paths
+already do. Istio sorts a virtual host's catch-all route to the end while leaving
+the rest in order, so the console — which matches everything — is evaluated only
+after every app has declined the request, and an app's route is under a prefix
+none of the console's own paths share.
 
 ## Inputs
 
@@ -96,9 +103,9 @@ domain: applab.example.com
 
 This is app configuration, not tunnel configuration. Nothing is passed to
 `cloudflared` — a named tunnel already knows its ingress, because you configured
-it. What needs the value is applab: it becomes `apps.baseDomain`, and the host the
-router hands to Istio so a `VirtualService` matches. That is why the input is
-named for the domain rather than for the tunnel.
+it. What needs the value is applab: it becomes `apps.baseDomain`, which is both
+the host the apps are served under and the host the console's own route matches.
+That is why the input is named for the domain rather than for the tunnel.
 
 One thing this does **not** do: create the ingress. Point the hostname at the
 tunnel in the Cloudflare dashboard first, or the address will resolve to a tunnel
@@ -142,7 +149,6 @@ are ordinary scripts, and they are documented where they are:
 |---|---|
 | [debugger/action.yml](action.yml) | The composite action: installs kind, kubectl, istioctl, helm and a tunnel agent, then runs the script. |
 | [hack/environment.sh](../hack/environment.sh) | The whole environment, in order. Set `APPLAB_PUBLIC_HOST` to skip the tunnel and use a hostname you already have, or `APPLAB_DOMAIN` to name the domain a named tunnel serves apps under. |
-| [hack/router.mjs](../hack/router.mjs) | Splits one hostname between applab and the apps it publishes. |
 | [hack/summary.sh](../hack/summary.sh) | Publishes the link and the key to the job summary. |
 | [hack/demo-app/Dockerfile](../hack/demo-app/Dockerfile) | A minimal app, used by CI to prove push, build, deploy and serve work. |
 

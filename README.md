@@ -320,14 +320,15 @@ against it.
 
 ```
 hack/environment.sh   the whole environment, in order
-hack/router.mjs       one hostname, split between applab and the apps
 ```
 
-The router exists because an app and applab itself cannot both be routed by
-Istio on one host: each app is its own `VirtualService`, and the order between
-two of them matching one host is undefined. A small proxy in front is
-deterministic where that is not, and its routing decision is unit-tested —
-`node hack/router.test.mjs`, which CI runs.
+One address serves everything, and the gateway is what serves it. Istio routes
+one virtual host's catch-all route last while leaving the rest in order
+(`route.SortVHostRoutes`), so the console — a catch-all the chart installs on the
+base domain — is evaluated only after every app has declined the request, and the
+apps match on `/<pathPrefix>/<app>/`, a prefix the console's own paths do not
+share. That ordering is defined, so nothing has to sit in front of the gateway to
+tell the two apart.
 
 CI runs the same environment and pushes [`hack/demo-app`](hack/demo-app/Dockerfile) through
 it, so "an app can be uploaded, built, deployed and served" is a check rather

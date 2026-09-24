@@ -48,7 +48,7 @@ permissions:
   contents: read
 
 concurrency:
-  # The port-forward, the router and the kind cluster all claim fixed names and
+  # The kind cluster and the gateway's node port both claim fixed names and
   # ports on the runner, so only one environment runs per repository. The
   # end-to-end job overrides this with its own group, because a manual
   # environment can be up for hours and pushing would otherwise mean waiting for
@@ -77,8 +77,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The action is called from the working copy (`uses: ./`), so the chart,
-      # the router and the orchestration script are all this commit's.
+      # The action is called from the working copy (`uses: ./`), so the chart
+      # and the orchestration script are both this commit's.
       - uses: ./debugger
         with:
           # session_hours and tunnel are the two choices worth offering at launch.
@@ -170,10 +170,6 @@ jobs:
           sudo install -m 0755 istio-1.24.2/bin/istioctl /usr/local/bin/istioctl
           istioctl version --remote=false
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
       # The environment runs in the background so the steps below can drive it.
       # APPLAB_PUBLIC_HOST skips the public tunnel: CI must not depend on a quick
       # tunnel being granted, and the tunnel is not what this job is checking.
@@ -188,11 +184,32 @@ jobs:
           APPLAB_RUNTIME_DIR: ${{ github.workspace }}/.applab-debugger
         run: nohup ./hack/environment.sh > /tmp/environment.log 2>&1 &
 
+      # Everything below reaches the environment through the Istio gateway, at
+      # the hostname the apps are configured for.
+      #
+      # Resolving that name to loopback is what makes the Host header — and so
+      # Istio's VirtualService match — come out right without every command
+      # having to carry a header of its own. It matters most for the console:
+      # the requests that matter there are made by a browser, which sends the
+      # hostname, so a check made with a plain loopback address would not be
+      # testing the path a person takes.
+      #
+      # debugger.ci.invalid is the reserved .invalid TLD, so this cannot shadow
+      # a real name, here or in resolve.conf.
+      - name: Point the environment's hostname at the gateway
+        run: |
+          set -eux
+          echo "127.0.0.1 debugger.ci.invalid" | sudo tee -a /etc/hosts
+          getent hosts debugger.ci.invalid
+
       - name: Wait for applab to answer
         run: |
           set -eux
+          # Through the gateway, not over the port-forward this job used to use:
+          # the console is a VirtualService on the gateway now, so a check that
+          # bypassed it would pass while the thing a person opens was broken.
           for attempt in $(seq 1 90); do
-            if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3080/health || true)" = "200" ]; then
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://debugger.ci.invalid/health || true)" = "200" ]; then
               echo "applab is answering"
               exit 0
             fi
@@ -202,6 +219,7 @@ jobs:
           tail -n 200 /tmp/environment.log >&2
           kubectl -n ops-system get pods >&2 || true
           kubectl -n ops-system describe pods >&2 || true
+          kubectl -n ops-system get virtualservices >&2 || true
           exit 1
 
       - name: Build the CLI
@@ -213,7 +231,7 @@ jobs:
       - name: applab answers over the API
         run: |
           set -eux
-          export APPLAB_URL=http://127.0.0.1:3080
+          export APPLAB_URL=http://debugger.ci.invalid
           export APPLAB_KEY
           APPLAB_KEY=$(kubectl -n ops-system get secret applab-keys -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d)
           echo "::add-mask::$APPLAB_KEY"
@@ -241,7 +259,7 @@ jobs:
       - name: Push, build, deploy and serve the demo app
         run: |
           set -eux
-          export APPLAB_URL=http://127.0.0.1:3080
+          export APPLAB_URL=http://debugger.ci.invalid
           APPLAB_KEY=$(kubectl -n ops-system get secret applab-keys -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d)
           export APPLAB_KEY
           echo "::add-mask::$APPLAB_KEY"
@@ -252,16 +270,16 @@ jobs:
       - name: The app is served through the gateway
         run: |
           set -eux
-          # Through the router and the Istio gateway, which is the path a browser
-          # takes: a 200 here means the VirtualService, the gateway listener and
-          # the registry pull all worked.
+          # Through the gateway, which is the path a browser takes: a 200 here
+          # means the VirtualService, the gateway listener and the registry pull
+          # all worked.
           #
-          # --resolve pins the hostname to the router, so the Host header the
-          # VirtualService matches on is the one the deployment was configured
-          # with. That is exactly what the tunnel would present.
+          # The hostname in the URL is what sets the Host header the
+          # VirtualService matches on — which is why the address is port-free.
+          # The same request on the node port would carry "Host: ...:30080" and
+          # match nothing.
           code=$(curl -s -o /tmp/page.html -w '%{http_code}' --max-time 30 \
-            --resolve "debugger.ci.invalid:3080:127.0.0.1" \
-            "http://debugger.ci.invalid:3080/apps/demo/")
+            "http://debugger.ci.invalid/apps/demo/")
           echo "GET /apps/demo/ -> ${code}"
           cat /tmp/page.html
           [ "$code" = "200" ] || { echo "the app did not serve; expected 200" >&2; exit 1; }
@@ -274,8 +292,11 @@ jobs:
       - name: The console is served at the root
         run: |
           set -eux
+          # The console's own route, which the chart installs on the gateway
+          # beside the apps'. Without it this host serves the apps and 404s at
+          # "/" — the regression this step exists to catch.
           code=$(curl -s -o /tmp/console.html -w '%{http_code}' --max-time 30 \
-            --resolve "debugger.ci.invalid:3080:127.0.0.1" "http://debugger.ci.invalid:3080/")
+            "http://debugger.ci.invalid/")
           echo "GET / -> ${code}"
           [ "$code" = "200" ] || { echo "the console did not serve" >&2; exit 1; }
           # The dashboard's own markup, so a console that failed to build or was
@@ -283,10 +304,28 @@ jobs:
           grep -q 'overview-view' /tmp/console.html || { echo "the console page is not the dashboard" >&2; exit 1; }
           grep -q 'nav-overview' /tmp/console.html || { echo "the console has no overview navigation" >&2; exit 1; }
 
+          # And the object behind that, so a 200 that came from somewhere else
+          # cannot stand in for it. The route has to be a catch-all on the
+          # shared host: a match of its own could claim an app's path, and the
+          # app's route is only guaranteed to win because Istio sorts a
+          # catch-all last.
+          kubectl -n ops-system get virtualservices -o json \
+            | python3 -c '
+          import json, sys
+          items = json.load(sys.stdin)["items"]
+          names = [v["metadata"]["name"] for v in items]
+          console = [v for v in items if v["metadata"]["name"].endswith("-console")]
+          assert len(console) == 1, "expected one console VirtualService, found %s" % names
+          http = console[0]["spec"]["http"]
+          assert http[0].get("match") is None, "the console route carries a match; it must be a catch-all"
+          assert "route" in http[0], "the console route does not route anywhere"
+          print("console VirtualService ok:", console[0]["spec"]["hosts"])
+          '
+
       - name: The deployed app is listed and reported healthy
         run: |
           set -eux
-          export APPLAB_URL=http://127.0.0.1:3080
+          export APPLAB_URL=http://debugger.ci.invalid
           APPLAB_KEY=$(kubectl -n ops-system get secret applab-keys -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d)
           export APPLAB_KEY
           echo "::add-mask::$APPLAB_KEY"
