@@ -81,7 +81,7 @@ none of the console's own paths share.
 | `session_hours` | `4` | How long the environment may run. `0` means no self-imposed limit, bounded by the job's timeout. |
 | `tunnel` | `cloudflare` | `cloudflare` (no account needed) or `ngrok`. |
 | `cloudflare_token` | — | Token of a named Cloudflare tunnel; empty starts a quick tunnel. |
-| `domain` | `applab.mytest.com` | The domain apps are served under. Named by default, and explained below. |
+| `domain` | `applab.chenshaowen.com` | The domain apps are served under. Named by default, and explained below. |
 | `ngrok_token` | — | ngrok authtoken; required when `tunnel` is `ngrok`. |
 
 Only `api_key` and `cloudflare_token` are worth passing from a secret: the key is
@@ -95,7 +95,7 @@ with `imagePullPolicy: Always`.
 
 ### The domain, and the named tunnel it needs
 
-`domain` defaults to `applab.mytest.com`, and it is used as given: it becomes
+`domain` defaults to `applab.chenshaowen.com`, and it is used as given: it becomes
 `apps.baseDomain`, so the apps are served under it and the console's own route
 matches it too.
 

@@ -46,7 +46,7 @@ inputs:
     # expected path — a quick tunnel cannot be given this name, so a run with
     # cloudflare_token unset stops and says so rather than quietly publishing
     # somewhere else. Set it empty to go back to a quick tunnel's own hostname.
-    default: 'applab.mytest.com'
+    default: 'applab.chenshaowen.com'
   ngrok_token:
     description: 'ngrok authtoken. Required when tunnel is ngrok.'
     required: false

@@ -43,7 +43,7 @@ on:
         # connection — which means the named tunnel is the expected path, and a
         # run without CLOUDFLARE_TOKEN stops rather than quietly publishing a
         # quick tunnel's address instead.
-        default: 'applab.mytest.com'
+        default: 'applab.chenshaowen.com'
 
 permissions:
   contents: read
