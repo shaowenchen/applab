@@ -320,15 +320,15 @@ elsewhere. <code>applab push</code> will say clearly that this deployment cannot
 <tbody>
 <tr>
 <td>Deployment, Service</td>
-<td>the control plane. <strong>One replica</strong>, see below</td>
-</tr>
-<tr>
-<td>PersistentVolumeClaim</td>
-<td>the database and every app's git repository</td>
+<td>the control plane</td>
 </tr>
 <tr>
 <td>Secret</td>
 <td>the API keys</td>
+</tr>
+<tr>
+<td>Secret</td>
+<td>the bucket credential</td>
 </tr>
 <tr>
 <td>ConfigMap</td>
@@ -348,14 +348,16 @@ elsewhere. <code>applab push</code> will say clearly that this deployment cannot
 </tr>
 </tbody>
 </table>
-<h3>One replica, deliberately</h3>
-<p><code>replicaCount</code> must be 1, and the chart refuses anything else.</p>
-<p>AppLab keeps its state in SQLite on a ReadWriteOnce volume. SQLite cannot be
-shared between processes over a network filesystem — two pods writing one file
-across it corrupts the file — so a second replica would not merely be wasteful,
-it would be unsafe. Scaling out means moving to a database built for it; until
-then, one replica is the honest answer rather than a limitation to work around.</p>
-<p>The volume is the only copy of every app's source. <strong>Back it up.</strong></p>
+<h3>Replicas and the bucket</h3>
+<p>AppLab holds nothing on a replica. Every app, every repository and all of the
+history are in the bucket you point <code>objectStore</code> at, so <code>replicaCount</code> can be
+raised for availability and a pod can be replaced at any moment.</p>
+<p>The one thing that is not coordinated across replicas is a write to one app's
+repository: the lock that serialises those is per process, so two pushes to the
+same app arriving at the same instant on two replicas can lose one of the two.
+A push is a rare event and the next build reads what git actually has, so this
+is a note rather than a warning — but it is why one replica is still the default.</p>
+<p><strong>Back up the bucket.</strong> It is the only copy of every app's source.</p>
 <h3>The Role</h3>
 <p>AppLab runs in one namespace and deploys every app into it too, so a namespaced
 <code>Role</code> and <code>RoleBinding</code> are enough — one namespace, one binding, no cluster-wide
@@ -567,13 +569,15 @@ VirtualServices in the release namespace, and the release does not own them —
 they carry <code>applab.io/app</code>, not helm's release labels. So an uninstall stops
 AppLab and leaves every app it deployed running, which is usually what you want
 and occasionally a surprise.</p>
-<p>The PersistentVolumeClaim is not removed either, and it holds the only copy of
-every app's source.</p>
+<p><strong>The bucket is not touched.</strong> Everything AppLab remembers — the apps, their
+history and their source — is in object storage, which is not part of the
+release. An uninstall that emptied the bucket would be an uninstall that deleted
+every app's source, so it does not; the bucket is yours to keep or remove.</p>
 <p>To remove an installation completely:</p>
 <pre><code class="language-bash">kubectl -n ops-system get deployments,services -l applab.io/app   # what it deployed
 kubectl -n ops-system delete deployments,services,jobs,secrets -l applab.io/app
 kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/app
-kubectl -n ops-system delete pvc applab                           # and the source with it
+# and the source, which is whatever you pointed objectStore at
 </code></pre>
 <p>The namespace itself is yours rather than AppLab's — it is where AppLab was
 installed, and it may hold other things. AppLab never deletes it.</p>
