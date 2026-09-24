@@ -137,7 +137,7 @@ jobs:
           internal = {'APPLAB_RUNTIME_DIR', 'APPLAB_NAMESPACE', 'APPLAB_PATH_PREFIX',
                       'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME', 'APPLAB_REGISTRY_NAME',
                       'APPLAB_REGISTRY_PORT', 'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
-                      'APPLAB_PUBLIC_HOST',
+                      'APPLAB_PUBLIC_HOST', 'APPLAB_INSTALL_TIMEOUT_SECONDS',
                       'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS'}
           unreachable = read - supplied - internal
           if unreachable:

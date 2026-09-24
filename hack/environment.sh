@@ -61,6 +61,14 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 : "${APPLAB_CLUSTER_NAME:=applab-debugger}"
 : "${APPLAB_PATH_PREFIX:=/apps}"
 : "${APPLAB_IMAGE_REPOSITORY:=docker.io/shaowenchen/applab}"
+# How long applab's first rollout may take before the environment gives up. The
+# script waits for the Deployment itself rather than letting helm block on it, so
+# the deadline is here and it is one number rather than two that can drift.
+#
+# Generous, because the first pull of an image on a cold runner is genuinely
+# slow. Raise it on a host that is slower than that; the failure names this
+# variable, so there is nothing to guess.
+: "${APPLAB_INSTALL_TIMEOUT_SECONDS:=300}"
 # The registry runs as a container on the same docker network as the kind nodes,
 # so both the nodes' containerd and the build Jobs' pods can resolve this name
 # and reach it without any TLS or credential.
@@ -492,23 +500,20 @@ kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
 # install, not upgrade: this script assumes a fresh cluster, and an upgrade
 # against a half-installed release would hide a first-install failure.
 #
-# --wait, so an image that cannot be pulled fails here. Without it helm reports
-# success the moment the objects are created, and the first symptom is a gateway
-# that cannot reach applab ninety attempts later — which says nothing about the
-# image being the problem. The timeout is the chart's own.
+# No --wait. It is the obvious flag and the wrong one here: with it helm blocks
+# silently until every object is ready, so an image that cannot be pulled looks
+# exactly like a slow start — ten minutes of nothing, then a timeout that says
+# what it waited for and not why. Without it the install returns as soon as the
+# objects exist, and the waiting is done below, where it can be bounded, printed
+# and diagnosed.
 #
 # ingress.enabled=false, because a kind cluster has no ingress controller and
 # installing one would be a moving part added for nothing. The chart then
 # publishes the console through the Istio gateway instead — one VirtualService on
 # the base domain, which is the same host the apps are already served on, so the
 # whole environment is reachable through the one address the tunnel publishes.
-# `if !` rather than letting it fail: under `set -e` a failed install stops the
-# script on the spot, and the one thing worth having then is the state of the
-# cluster it left behind. helm's own message says what it waited for; only the
-# cluster says why.
 if ! helm install applab "$REPO_ROOT/charts/applab" \
   --namespace "$APPLAB_NAMESPACE" \
-  --wait \
   --set auth.existingSecret=applab-keys \
   --set "apps.baseDomain=${TUNNEL_HOST}" \
   --set "apps.pathPrefix=${APPLAB_PATH_PREFIX}" \
@@ -518,28 +523,61 @@ if ! helm install applab "$REPO_ROOT/charts/applab" \
   --set "build.rootless=${APPLAB_BUILD_ROOTLESS}" \
   --set ingress.enabled=false \
   --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \
-  --set "image.tag=${APPLAB_VERSION}" \
-  --timeout 10m
+  --set "image.tag=${APPLAB_VERSION}"
 then
-  warn "applab did not install; the state it left behind follows"
+  warn "applab could not be installed at all; the state it left behind follows"
   kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service,pvc 2>&1 | sed 's/^/    /' || true
-  # The reason a pod is not Ready is almost always in these three, and they are
-  # the things a person would otherwise have to guess at: an image that cannot be
+  helm -n "$APPLAB_NAMESPACE" status applab 2>&1 | sed 's/^/    /' || true
+  die "helm rejected the release: the message above is helm's, the rest is the cluster's"
+fi
+
+# The rollout, waited for here rather than by helm.
+#
+# The deadline is generous, because the first pull of an image on a cold runner
+# is genuinely slow. What matters is that it is bounded and that the wait is
+# visible: the pod's own state is printed as it changes, so a stuck install shows
+# ImagePullBackOff or a CrashLoopBackOff in the log while it is stuck, rather
+# than ten minutes later as a timeout.
+#
+# `rollout status` is not used for the same reason `--wait` is not: it blocks
+# silently and reports a condition, where the interesting thing is the reason.
+applab_wait_seconds="$APPLAB_INSTALL_TIMEOUT_SECONDS"
+log "waiting up to ${applab_wait_seconds}s for applab to roll out"
+last_state=""
+rolled_out=""
+for attempt in $(seq 1 "$applab_wait_seconds"); do
+  # A single line per pod, in a stable order, so the same state does not print
+  # every second: only a change is worth a line.
+  state=$(kubectl -n "$APPLAB_NAMESPACE" get pods \
+    -o 'custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.waiting.reason' \
+    --no-headers 2>/dev/null | sort || true)
+  if [ "$state" != "$last_state" ]; then
+    printf '%s\n' "$state" | sed 's/^/    /'
+    last_state="$state"
+  fi
+
+  if kubectl -n "$APPLAB_NAMESPACE" rollout status deploy/applab --timeout=1s >/dev/null 2>&1; then
+    rolled_out="yes"
+    break
+  fi
+  sleep 1
+done
+
+if [ -z "$rolled_out" ]; then
+  warn "applab did not become ready within ${applab_wait_seconds}s; the state it is in follows"
+  kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service,pvc 2>&1 | sed 's/^/    /' || true
+  # The reason a pod is not Ready is almost always in these, and they are the
+  # things a person would otherwise have to guess at: an image that cannot be
   # pulled, a volume that cannot be mounted, an applab that started and refused
   # its own configuration.
   kubectl -n "$APPLAB_NAMESPACE" describe pods 2>&1 | tail -n 60 | sed 's/^/    /' || true
   kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --all-containers --tail=100 2>&1 | sed 's/^/    /' || true
-  helm -n "$APPLAB_NAMESPACE" status applab 2>&1 | sed 's/^/    /' || true
-  die "helm could not bring applab up: the message above is helm's, the rest is the cluster's"
+  die "applab never became ready — if this is a slow first pull, raise APPLAB_INSTALL_TIMEOUT_SECONDS"
 fi
 
-# The install reported success, which with --wait means every object it created
-# was ready. Asserted anyway, because "ready" is what helm inferred from the
-# objects it knows about, and the ones that matter here are the two applab writes
-# itself: the console's VirtualService from the chart, and the Service behind it.
-# Both are checked before anything is published, so a broken install fails here
-# rather than at a browser.
-kubectl -n "$APPLAB_NAMESPACE" rollout status deploy/applab --timeout=120s
+# Ready is what the Deployment reports. The console's route is a separate object
+# that applab only has if the chart rendered it, and without it the gateway
+# answers 404 at "/" — so it is checked here rather than discovered at a browser.
 kubectl -n "$APPLAB_NAMESPACE" get virtualservice applab-console -o name >/dev/null 2>&1 \
   || die "the console has no VirtualService, so the gateway would answer 404 at \"/\": the chart rendered one only when ingress.enabled is false, and this install did not produce it"
 
