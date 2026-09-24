@@ -31,6 +31,10 @@ on:
         options:
           - 'cloudflare'
           - 'ngrok'
+      public_host:
+        description: 'Hostname for a named Cloudflare tunnel (empty = quick tunnel)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -70,3 +74,6 @@ jobs:
           # run can see, and these are credentials.
           cloudflare_token: ${{ secrets.CLOUDFLARE_TOKEN }}
           ngrok_token: ${{ secrets.NGROK_TOKEN }}
+          # An input, not a secret: a hostname is not sensitive, and it is the
+          # thing a person has to look up before running a named tunnel.
+          public_host: ${{ inputs.public_host }}

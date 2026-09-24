@@ -66,6 +66,7 @@ console at `/`, the API under `/api/v1/`, and the git endpoints under `/git/`.
 | `session_hours` | `4` | How long the environment may run. `0` means no self-imposed limit, bounded by the job's timeout. |
 | `tunnel` | `cloudflare` | `cloudflare` (no account needed) or `ngrok`. |
 | `cloudflare_token` | — | Token of a named Cloudflare tunnel; empty starts a quick tunnel. |
+| `public_host` | — | The hostname a named tunnel is published at. Required with one, and explained below. |
 | `ngrok_token` | — | ngrok authtoken; required when `tunnel` is `ngrok`. |
 
 Only `api_key` is worth passing from a secret: it is generated when left empty,
@@ -76,12 +77,42 @@ from the checkout — so the environment always runs the version the chart besid
 it installs, and there is no way to ask for a pair that was never tested
 together.
 
+### A named tunnel needs its hostname given to it
+
+With `cloudflare_token` set, the environment runs a **named** tunnel — the one
+whose hostname and ingress live in your Cloudflare dashboard. Cloudflare never
+tells the connector its own name, so the environment cannot discover the address
+it is being served at, and a run without `public_host` stops with:
+
+```
+this is a named tunnel: Cloudflare does not tell the connector its own hostname
+```
+
+Pass the hostname and it is used as given:
+
+```
+public_host: applab.example.com
+```
+
+Two things this does **not** do. It does not create the ingress — point the
+hostname at the tunnel in the Cloudflare dashboard first, or the address will
+resolve to a tunnel that routes nothing. And it cannot be used with a quick
+tunnel or with ngrok: a quick tunnel is assigned a random hostname by Cloudflare,
+and the ngrok path here does not pass the flag a reserved domain needs. Both
+combinations are refused when the run starts, rather than after a wait for a
+hostname that was never coming.
+
+Leaving `cloudflare_token` empty is the simpler path, and the default: a quick
+tunnel is assigned a random `trycloudflare.com` hostname, needs no account, and
+the link appears in the summary.
+
 ## The two things most likely to go wrong
 
 **A named Cloudflare tunnel cannot publish its own link.** Cloudflare never tells
 the connector its hostname, so the environment cannot discover the address it was
-given. Use a quick tunnel (the default) if you want the link in the summary, or
-configure the hostname in the dashboard and read it from there.
+given — and without one it stops rather than publishing nothing. Pass
+`public_host` (see above) with the hostname the tunnel is configured for, or
+leave `cloudflare_token` empty and use a quick tunnel, whose hostname it is told.
 
 **A quick tunnel is for trying things.** It carries no SLA and its hostname is
 minted per connection, so a restart gives a different link. That is exactly right

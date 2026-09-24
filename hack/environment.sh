@@ -170,6 +170,11 @@ find_public_host() {
 # trying things rather than at being a test dependency. CI sets it and drives the
 # router over loopback; the tunnel itself is exercised by the debugger workflow,
 # where a flaky link is a person's problem to re-run rather than a red build.
+#
+# APPLAB_TUNNEL_HOST names the hostname of a tunnel that *is* started, which is
+# the other half of the same problem. A named Cloudflare tunnel keeps its ingress
+# and its hostname in the dashboard, and the connector is never told either — so
+# a hostname that cannot be discovered has to be supplied.
 resolve_tunnel() {
   if [ -n "${APPLAB_PUBLIC_HOST:-}" ]; then
     TUNNEL_HOST="$APPLAB_PUBLIC_HOST"
@@ -179,19 +184,47 @@ resolve_tunnel() {
     return 0
   fi
 
+  # A hostname can only be chosen for a tunnel whose ingress was configured in
+  # advance. A quick tunnel is handed a random name by Cloudflare and cannot be
+  # given one, and the ngrok path here does not pass the --domain flag a reserved
+  # domain needs — so both are refused rather than silently ignored, which would
+  # publish a link that is not the one that was asked for.
+  if [ -n "${APPLAB_TUNNEL_HOST:-}" ]; then
+    case "$APPLAB_TUNNEL" in
+      cloudflare)
+        [ -n "$CLOUDFLARE_TOKEN" ] \
+          || die "APPLAB_TUNNEL_HOST needs CLOUDFLARE_TOKEN: only a named tunnel has an ingress to point a hostname at, and a quick tunnel is assigned a random one"
+        ;;
+      *)
+        die "APPLAB_TUNNEL_HOST is only supported with a named Cloudflare tunnel, not '${APPLAB_TUNNEL}'"
+        ;;
+    esac
+  fi
+
   open_tunnel
+
+  # Taken as given rather than discovered, because a named tunnel's hostname is
+  # not discoverable — see above. The tunnel's ingress has to already point here;
+  # nothing in this script can create or check it.
+  if [ -n "${APPLAB_TUNNEL_HOST:-}" ]; then
+    TUNNEL_HOST="$APPLAB_TUNNEL_HOST"
+    public_url="https://${TUNNEL_HOST}"
+    printf '%s\n' "$public_url" > "$PUBLIC_URL_FILE"
+    log "the environment will be published at ${public_url}"
+    log "  (a named tunnel: its ingress is configured in Cloudflare, not here)"
+    return 0
+  fi
 
   log "waiting for the tunnel to report its public hostname"
   local found
   if ! found=$(find_public_host); then
-    # A named Cloudflare tunnel is remotely managed: the ingress and the hostname
-    # both live in the dashboard, and the connector is never told its own name.
-    # Say that, because the symptom is otherwise an environment that looks fine
-    # and a link that never appears.
+    # Reached only by a named tunnel with no hostname given: nothing else can
+    # fail to report one. Say what to do about it, because the symptom is
+    # otherwise an environment that looks fine and a link that never appears.
     if [ -n "$CLOUDFLARE_TOKEN" ]; then
       warn "this is a named tunnel: Cloudflare does not tell the connector its own"
-      warn "hostname, so it cannot be discovered here. Re-run with the hostname:"
-      warn "  APPLAB_PUBLIC_HOST=<your hostname> ... hack/environment.sh"
+      warn "hostname, so it cannot be discovered here. Supply it instead:"
+      warn "  APPLAB_TUNNEL_HOST=<your hostname> ... hack/environment.sh"
     fi
     die "the tunnel never reported a public hostname; see ${TUNNEL_LOG}"
   fi
