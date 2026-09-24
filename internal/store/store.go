@@ -11,11 +11,22 @@
 // One directory per app, and within it one object per thing that is written
 // independently:
 //
-//	apps/<id>/app.json            the app: name, port, replicas, env, status,
-//	                              the commit and image currently deployed
+//	apps/<id>/app.json            the app: name, port, replicas, env, secrets,
+//	                              status, the commit and image deployed
+//	apps/<id>/key.json            the app's API key and its digest
 //	apps/<id>/commits/<sha>.json  one recorded commit
 //	apps/<id>/builds/<id>.json    one build attempt
-//	apps/<id>/source.git/         the app's repository, see internal/source
+//	apps/<id>/repo/               the app's git repository, see internal/source
+//
+// Each of those is a separate object because each is written on its own: a build
+// updates its own record and nothing else, and a key is rewritten by a rotation
+// that must not touch the app record beside it. The directories are what say
+// which kind of thing an object is — `commits/` and `builds/` hold history that
+// is append-only, `repo/` is git's, and the two loose files are the app itself.
+//
+// What is *not* here: anything per branch or per environment. One app is one
+// repository with one history; see internal/source for how a branch is stored
+// and why a repository is not split by one.
 //
 // The theme is that an object is written by one writer and replaced whole.
 // Object storage has no transactions across keys and no compare-and-swap worth
@@ -137,7 +148,7 @@ const (
 	appFile       = "app.json"
 	commitsDir    = "commits/"
 	buildsDir     = "builds/"
-	sourceGitDir  = "source.git"
+	sourceGitDir  = "repo"
 	uploadsPrefix = "uploads/"
 )
 

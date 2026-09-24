@@ -105,8 +105,15 @@ func (s *Store) openWorkingRepo(ctx context.Context, appID string) (*workingRepo
 // It is built here rather than by the store package so that what is inside a
 // repository is this package's business: the store knows an app has a directory
 // for its source, and this package knows what a source directory contains.
+//
+// The directory is "repo" and holds one bare git repository, not one per branch.
+// A repository is git's own storage format, and what is inside it — refs, the
+// object database, the ref log — is not a set of files that can be split by
+// branch without splitting git itself. See the package comment for what that
+// costs and the branch handling in commit.go for how branches are kept apart
+// within it.
 func (s *Store) repoPrefix(appID string) string {
-	return objectstore.Key("apps", appID, "source.git")
+	return objectstore.Key("apps", appID, "repo")
 }
 
 // download copies the repository out of the bucket.

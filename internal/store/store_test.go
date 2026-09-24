@@ -46,6 +46,62 @@ func TestAppsLiveInOneDirectoryEach(t *testing.T) {
 	}
 }
 
+// TestOneAppIsOneDirectory is the layout, asserted against the bucket.
+//
+// Every path here is a promise to whoever opens the bucket with a browser or a
+// CLI: an app is one directory, what is inside it is told apart by the name of
+// the directory it is in, and nothing an app owns lives outside its own prefix.
+//
+// It is written by *doing* the operations — create an app, record a commit, start
+// a build — and then reading back what the bucket actually received, rather than
+// by calling the path helpers and comparing them to themselves. What it is
+// pinning is where a person will find things, so the assertion has to be over
+// objects that were really written.
+func TestOneAppIsOneDirectory(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	if err := st.CreateApp(ctx, &model.App{ID: "shop", Name: "Shop"}); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	if err := st.RecordCommit(ctx, &model.Commit{AppID: "shop", SHA: strings.Repeat("a", 40)}); err != nil {
+		t.Fatalf("record commit: %v", err)
+	}
+	if err := st.CreateBuild(ctx, &model.Build{AppID: "shop", ID: "b1"}); err != nil {
+		t.Fatalf("create build: %v", err)
+	}
+	// A repository is a directory of git's own objects, written by the source
+	// package rather than the store, so one representative key stands in for it.
+	if err := st.Objects().PutBytes(ctx, SourcePrefix("shop")+"/HEAD", []byte("ref: refs/heads/main\n")); err != nil {
+		t.Fatalf("write repository: %v", err)
+	}
+
+	objects, err := st.Objects().List(ctx, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var keys []string
+	for _, object := range objects {
+		keys = append(keys, object.Key)
+	}
+
+	want := []string{
+		"apps/shop/app.json",
+		"apps/shop/builds/b1.json",
+		"apps/shop/commits/" + strings.Repeat("a", 40) + ".json",
+		"apps/shop/repo/HEAD",
+	}
+	if strings.Join(keys, ",") != strings.Join(want, ",") {
+		t.Errorf("the bucket holds:\n  %s\nwant:\n  %s", strings.Join(keys, "\n  "), strings.Join(want, "\n  "))
+	}
+
+	for _, key := range keys {
+		if !strings.HasPrefix(key, "apps/shop/") {
+			t.Errorf("%s is not under the app's own directory, so deleting the app would leave it behind", key)
+		}
+	}
+}
+
 // TestListAppsIgnoresEverythingBelowAnApp is what makes one listing enough.
 //
 // The prefix "apps/" also covers every app's commits, builds and repository —
@@ -61,10 +117,11 @@ func TestListAppsIgnoresEverythingBelowAnApp(t *testing.T) {
 
 	// Objects that live under an app but are not the app.
 	for _, key := range []string{
+		"apps/shop/key.json",
 		"apps/shop/commits/abc.json",
 		"apps/shop/builds/def.json",
-		"apps/shop/source.git/HEAD",
-		"apps/shop/source.git/objects/ab/cdef",
+		"apps/shop/repo/HEAD",
+		"apps/shop/repo/objects/ab/cdef",
 	} {
 		if err := st.Objects().PutBytes(ctx, key, []byte("{}")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
@@ -217,9 +274,10 @@ func TestDeleteAppRemovesEverythingUnderIt(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	for _, key := range []string{
+		"apps/shop/key.json",
 		"apps/shop/commits/abc.json",
 		"apps/shop/builds/def.json",
-		"apps/shop/source.git/HEAD",
+		"apps/shop/repo/HEAD",
 	} {
 		if err := st.Objects().PutBytes(ctx, key, []byte("{}")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
