@@ -29,6 +29,18 @@ image:
 
 imagePullSecrets: []
 
+# How many AppLab pods to run.
+#
+# More than one works, because a replica holds nothing: every app, every
+# repository and all the history are in the bucket. Raise it for availability
+# rather than for throughput — the work AppLab does is small, and the load is
+# whatever the API sees.
+#
+# One caveat, and it is the only one: two replicas writing the same app's
+# repository at the same instant can lose one of the two writes, because the
+# lock that serialises them is per process. In practice that means two pushes to
+# one app arriving at the same moment; a push is a rare event, and the next
+# build reads what git actually has.
 replicaCount: 1
 
 # ---------------------------------------------------------------------------
@@ -317,24 +329,58 @@ service:
   targetPort: 8080
 
 # ---------------------------------------------------------------------------
-# Storage
+# Object storage
 #
-# Holds the SQLite database and every app's git repository — the only copy of
-# the apps' source, so it must be backed up.
+# Everything AppLab remembers lives here: the apps, their commit and build
+# history, and every app's git repository — the only copy of the apps' source, so
+# the bucket must be backed up.
 #
-# Note the replica count: SQLite cannot be shared between processes over a
-# network volume, so this is a single-replica deployment by design. Scaling out
-# means moving to a database built for it.
+# This is what makes AppLab stateless. There is no volume, no database and no
+# state on a replica, so a pod can be replaced at any moment, a node can be lost,
+# and more than one replica can serve at once.
+#
+# Any S3-compatible service works: AWS, MinIO, Ceph, Cloudflare R2. What differs
+# between them is the endpoint and whether path-style addressing is needed, and
+# both are settings here.
 # ---------------------------------------------------------------------------
-persistence:
-  enabled: true
-  # Defaults to the chart's storageClass when empty.
-  storageClass: ""
-  accessMode: ReadWriteOnce
-  size: 50Gi
-  # Use an existing claim instead of creating one.
-  existingClaim: ""
-  annotations: {}
+objectStore:
+  # The service's address. AWS is https://s3.<region>.amazonaws.com; a
+  # self-hosted service is its own address, e.g. http://minio.ops-system:9000.
+  #
+  # Required. AppLab refuses to start without it rather than quietly writing to a
+  # directory on the pod's own disk, which would look like it worked and lose
+  # everything on the first restart.
+  endpoint: ""
+  bucket: ""
+
+  # Defaults to us-east-1, which is what a self-hosted service expects and what
+  # AWS accepts for a bucket whose region is not otherwise known.
+  region: ""
+
+  # The credential. Create the Secret yourself and point at it, or set the two
+  # values here and let the chart build one — see the README for which.
+  accessKey: ""
+  secretKey: ""
+  existingSecret: ""
+
+  # Path-style addressing puts the bucket in the request path rather than in the
+  # hostname. Required by most self-hosted services, which have no wildcard DNS
+  # to put a bucket under, and by any bucket name containing a dot.
+  pathStyle: false
+
+  # An optional key prefix, so one bucket can hold more than one AppLab.
+  prefix: ""
+
+  # Allows an http endpoint. Explicit rather than inferred from the scheme,
+  # because sending a credential and an app's source in the clear is a decision
+  # someone has to make on purpose.
+  insecure: false
+
+# Scratch space for materialising a repository while git runs against it.
+#
+# Nothing durable is written here, so this is a bound rather than a requirement:
+# without one, cloning a large repository would fill the node's disk.
+scratchSizeLimit: 2Gi
 
 # One of debug, info, warn, error.
 logLevel: info

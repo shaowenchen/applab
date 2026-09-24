@@ -116,7 +116,16 @@ must_fail "bad gateway"       --set "auth.key=k" --set "build.registry=r.example
 # deploy.gateway now has a default, so "unset" no longer produces an empty one;
 # these two blank it explicitly to reach the guard.
 must_fail "blanked gateway"   --set "auth.key=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway="
-must_fail "two replicas"      "${BASE[@]}" --set replicaCount=2
+# More than one replica is allowed now — AppLab holds nothing on a replica, so
+# there is no volume to detach and nothing to corrupt. The check is the other
+# way round: it must render, and it must render without a claim.
+scaled="$(render --set replicaCount=3)"
+grep -qE '^  replicas: 3$' <<<"$scaled" \
+  || fail "replicaCount did not reach the Deployment"
+grep -q 'persistentVolumeClaim' <<<"$scaled" \
+  && fail "the chart still claims a volume; AppLab keeps nothing on a replica"
+grep -qE '^kind: PersistentVolumeClaim$' <<<"$scaled" \
+  && fail "the chart still renders a PersistentVolumeClaim"
 
 # One key is the whole auth surface a release carries, so the value has to reach
 # the Secret the server reads — and only there.
@@ -128,13 +137,27 @@ grep -q 'APPLAB_KEYS: "test-key-do-not-use"' <<<"$keyed" \
 
 # An existing Secret replaces this chart's entirely, and the Deployment has to
 # point at it — that path is the one that carries more than one key.
+#
+# The two Secrets are separate — the API keys and the bucket's credential have
+# different lifetimes — so setting one to an existing Secret must suppress that
+# one and only that one.
 existing="$(render --set auth.existingSecret=my-keys --set auth.key=leak-canary-2f9a)"
 grep -q 'name: my-keys' <<<"$existing" \
   || fail "auth.existingSecret does not reach the Deployment"
-[[ "$(grep -c 'kind: Secret' <<<"$existing")" == 0 ]] \
-  || fail "auth.existingSecret is set but the chart still renders its own Secret"
+grep -qE '^  name: .*-auth$' <<<"$existing" \
+  && fail "auth.existingSecret is set but the chart still renders its own auth Secret"
 if grep -q 'leak-canary-2f9a' <<<"$existing"; then
   fail "auth.key is written into the release even though auth.existingSecret is set"
+fi
+
+# And the bucket's credential, the same way.
+bucket="$(render --set objectStore.existingSecret=my-bucket --set objectStore.secretKey=leak-canary-3c1b)"
+grep -q 'name: my-bucket' <<<"$bucket" \
+  || fail "objectStore.existingSecret does not reach the Deployment"
+grep -qE '^  name: .*-objectstore$' <<<"$bucket" \
+  && fail "objectStore.existingSecret is set but the chart still renders its own Secret"
+if grep -q 'leak-canary-3c1b' <<<"$bucket"; then
+  fail "objectStore.secretKey is written into the release even though objectStore.existingSecret is set"
 fi
 
 # Every manifest's top-level keys have to be ones Kubernetes knows. Text emitted

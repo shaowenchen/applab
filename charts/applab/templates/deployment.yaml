@@ -23,12 +23,12 @@ metadata:
   labels:
     {{- include "applab.labels" . | nindent 4 }}
 spec:
-  {{- if ne (int .Values.replicaCount) 1 }}
-  {{- fail "replicaCount must be 1: applab stores its state in SQLite on a ReadWriteOnce volume, and SQLite cannot be shared between processes over a network volume. Scaling out means moving to a database built for it." }}
-  {{- end }}
   replicas: {{ .Values.replicaCount }}
+  # Rolling rather than Recreate. There is no volume to detach from one pod
+  # before the next can start: AppLab holds nothing but the bucket, which any
+  # number of replicas can use at once.
   strategy:
-    type: Recreate
+    type: RollingUpdate
   selector:
     matchLabels:
       {{- include "applab.selectorLabels" . | nindent 6 }}
@@ -68,18 +68,25 @@ spec:
             # by anyone with get on the namespace.
             - secretRef:
                 name: {{ include "applab.secretName" . }}
+            # The bucket's credential, separately, so rotating it does not mean
+            # rewriting the API keys beside it.
+            - secretRef:
+                name: {{ include "applab.objectStoreSecretName" . }}
             - configMapRef:
                 name: {{ include "applab.fullname" . }}-config
           volumeMounts:
-            - name: data
+            # Scratch space, and only that. A repository is copied here while
+            # git runs against it and removed afterwards; nothing durable is
+            # written to it, so losing it costs nothing and it needs no volume.
+            - name: scratch
               mountPath: /data
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
-          # A generous startup budget: the first start migrates the database and
-          # reconciles builds interrupted by a previous process, and the
-          # readiness probe would otherwise restart the pod mid-migration.
+          # A generous startup budget: the first start reconciles builds
+          # interrupted by a previous process, and the readiness probe would
+          # otherwise restart the pod part-way through.
           startupProbe:
             {{- toYaml .Values.startupProbe | nindent 12 }}
           resources:
@@ -87,18 +94,14 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
       volumes:
-        - name: data
-          {{- if .Values.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ .Values.persistence.existingClaim | default (include "applab.fullname" .) }}
-          {{- else }}
-          {{/*
-          Without persistence the source is lost when the pod restarts. That is
-          a legitimate way to try applab out, and never a way to run it: the data
-          directory is the only copy of every app's source.
-          */}}
-          emptyDir: {}
-          {{- end }}
+        # Everything AppLab persists is in the bucket, so this holds nothing when
+        # the pod is not running — which is what lets a replica be replaced at
+        # any moment. A sizeLimit bounds what a repository materialised for a
+        # clone can take; without one, a large enough repository would fill the
+        # node's disk.
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ .Values.scratchSizeLimit }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

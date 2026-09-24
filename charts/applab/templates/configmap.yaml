@@ -35,6 +35,15 @@ data:
   # unquoted number would be emitted in scientific notation (8388608 becomes
   # 8.388608e+06), which the server's integer parser rejects — leaving the
   # defaults in place and the configured limit silently ignored.
+  # Object storage. The credential is in the Secret beside this; everything here
+  # is the address of the bucket, which is not sensitive.
+  APPLAB_OBJECT_STORE_ENDPOINT: {{ .Values.objectStore.endpoint | quote }}
+  APPLAB_OBJECT_STORE_BUCKET: {{ .Values.objectStore.bucket | quote }}
+  APPLAB_OBJECT_STORE_REGION: {{ .Values.objectStore.region | quote }}
+  APPLAB_OBJECT_STORE_PREFIX: {{ .Values.objectStore.prefix | quote }}
+  APPLAB_OBJECT_STORE_PATH_STYLE: {{ .Values.objectStore.pathStyle | quote }}
+  APPLAB_OBJECT_STORE_INSECURE: {{ .Values.objectStore.insecure | quote }}
+
   APPLAB_MAX_SIMPLE_UPLOAD: {{ .Values.upload.maxSimpleUpload | int64 | quote }}
   APPLAB_CHUNK_SIZE: {{ .Values.upload.chunkSize | int64 | quote }}
   APPLAB_MAX_CHUNK_BYTES: {{ .Values.upload.maxChunkBytes | int64 | quote }}

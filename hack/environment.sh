@@ -76,6 +76,20 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 : "${APPLAB_REGISTRY_PORT:=5000}"
 : "${APPLAB_REGISTRY:=${APPLAB_REGISTRY_NAME}:${APPLAB_REGISTRY_PORT}}"
 
+# The object store, in the same shape and for the same reason as the registry:
+# a container on this host that the cluster reaches by name.
+#
+# The credential is generated here rather than fixed. It is a throwaway — the
+# container is destroyed with the runner — and generating it means no credential
+# is ever written into this repository, which is the rule the seed script's key
+# follows too.
+: "${APPLAB_OBJECT_STORE_NAME:=applab-object-store}"
+: "${APPLAB_OBJECT_STORE_PORT:=9000}"
+: "${APPLAB_OBJECT_STORE_BUCKET:=applab}"
+: "${APPLAB_OBJECT_STORE_ENDPOINT:=${APPLAB_OBJECT_STORE_NAME}:${APPLAB_OBJECT_STORE_PORT}}"
+: "${APPLAB_OBJECT_STORE_ACCESS_KEY:=applab}"
+: "${APPLAB_OBJECT_STORE_SECRET_KEY:=$(openssl rand -hex 16)}"
+
 : "${CLOUDFLARE_TOKEN:=}"
 : "${NGROK_TOKEN:=}"
 
@@ -386,6 +400,46 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$APPLAB_REGISTRY_NAME" 2>/dev/nu
 fi
 docker network connect "kind" "$APPLAB_REGISTRY_NAME" 2>/dev/null || true
 
+# An object store, for the same reason and in the same shape as the registry: a
+# container on this host, joined to the kind network, so AppLab reaches it by
+# name from inside the cluster.
+#
+# AppLab keeps everything it persists in a bucket — the apps, their history and
+# their source repositories — and holds nothing on a replica. There is no volume
+# in the release at all, which is the point of the change: this environment used
+# to prove that a PersistentVolume survived a restart, and now proves the
+# opposite.
+log "starting the object store at ${APPLAB_OBJECT_STORE_ENDPOINT}"
+if [ "$(docker inspect -f '{{.State.Running}}' "$APPLAB_OBJECT_STORE_NAME" 2>/dev/null || echo false)" != "true" ]; then
+  docker run -d --restart=always -p "127.0.0.1:${APPLAB_OBJECT_STORE_PORT}:9000" \
+    --name "$APPLAB_OBJECT_STORE_NAME" \
+    -e "MINIO_ROOT_USER=${APPLAB_OBJECT_STORE_ACCESS_KEY}" \
+    -e "MINIO_ROOT_PASSWORD=${APPLAB_OBJECT_STORE_SECRET_KEY}" \
+    minio/minio:latest server /data >/dev/null
+fi
+docker network connect "kind" "$APPLAB_OBJECT_STORE_NAME" 2>/dev/null || true
+
+# The bucket has to exist before AppLab starts. AppLab does not create one: a
+# bucket is infrastructure, its name and region and lifecycle policy belong to
+# whoever runs the platform, and a service that made one on its own would make it
+# in whatever region it happened to be configured with.
+#
+# `mc` is MinIO's own client, run from this host against the published port, so
+# it is one throwaway container rather than a dependency of the server image.
+log "creating the bucket ${APPLAB_OBJECT_STORE_BUCKET}"
+for _ in $(seq 1 30); do
+  if docker run --rm --network "container:${APPLAB_OBJECT_STORE_NAME}" \
+      --entrypoint sh minio/mc:latest -c \
+      "mc alias set local http://127.0.0.1:9000 '${APPLAB_OBJECT_STORE_ACCESS_KEY}' '${APPLAB_OBJECT_STORE_SECRET_KEY}' >/dev/null 2>&1 && mc mb --ignore-existing local/${APPLAB_OBJECT_STORE_BUCKET}" \
+      >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+show "the object store (a container on this host)" \
+  docker inspect --format '{{.State.Status}} {{.Config.Image}}' "$APPLAB_OBJECT_STORE_NAME"
+
 # The registry is a container on this host, not an object in the cluster, so
 # there is nothing to ask Kubernetes about it — its state is docker's.
 show "the registry (a container on this host)" \
@@ -574,10 +628,16 @@ if ! helm install applab "$REPO_ROOT/charts/applab" \
   --set "build.rootless=${APPLAB_BUILD_ROOTLESS}" \
   --set ingress.enabled=false \
   --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \
-  --set "image.tag=${APPLAB_VERSION}"
+  --set "image.tag=${APPLAB_VERSION}" \
+  --set "objectStore.endpoint=http://${APPLAB_OBJECT_STORE_ENDPOINT}" \
+  --set "objectStore.bucket=${APPLAB_OBJECT_STORE_BUCKET}" \
+  --set "objectStore.accessKey=${APPLAB_OBJECT_STORE_ACCESS_KEY}" \
+  --set "objectStore.secretKey=${APPLAB_OBJECT_STORE_SECRET_KEY}" \
+  --set objectStore.pathStyle=true \
+  --set objectStore.insecure=true
 then
   warn "AppLab could not be installed at all; the state it left behind follows"
-  kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service,pvc 2>&1 | sed 's/^/    /' || true
+  kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service 2>&1 | sed 's/^/    /' || true
   helm -n "$APPLAB_NAMESPACE" status applab 2>&1 | sed 's/^/    /' || true
   die "helm rejected the release: the message above is helm's, the rest is the cluster's"
 fi
@@ -636,7 +696,7 @@ if [ -z "$rolled_out" ]; then
   else
     warn "AppLab did not become ready within ${applab_wait_seconds}s; the state it is in follows"
   fi
-  kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service,pvc 2>&1 | sed 's/^/    /' || true
+  kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service 2>&1 | sed 's/^/    /' || true
   # The reason a container cannot start is in these, and they are the things a
   # person would otherwise have to guess at: an image that cannot be pulled, a
   # volume that cannot be mounted, an AppLab that started and refused its own
@@ -665,7 +725,7 @@ kubectl -n "$APPLAB_NAMESPACE" get virtualservice applab-console -o name >/dev/n
 # is exactly the object to look at when a deploy succeeds and nothing is
 # reachable.
 show "AppLab" \
-  kubectl -n "$APPLAB_NAMESPACE" get deployment,replicaset,pod,service,pvc,secret
+  kubectl -n "$APPLAB_NAMESPACE" get deployment,replicaset,pod,service,secret
 show "AppLab's routes (VirtualServices)" \
   kubectl -n "$APPLAB_NAMESPACE" get virtualservices
 

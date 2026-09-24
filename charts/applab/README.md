@@ -180,25 +180,27 @@ elsewhere. `applab push` will say clearly that this deployment cannot build.
 
 | Resource | Why |
 |---|---|
-| Deployment, Service | the control plane. **One replica**, see below |
-| PersistentVolumeClaim | the database and every app's git repository |
+| Deployment, Service | the control plane |
 | Secret | the API keys |
+| Secret | the bucket credential |
 | ConfigMap | everything else |
 | Role, RoleBinding | AppLab keeps everything in one namespace, and this is all it needs |
 | Ingress | how a person reaches the console and the API |
 | ServiceMonitor | optional, for `/metrics` |
 
-### One replica, deliberately
+### Replicas and the bucket
 
-`replicaCount` must be 1, and the chart refuses anything else.
+AppLab holds nothing on a replica. Every app, every repository and all of the
+history are in the bucket you point `objectStore` at, so `replicaCount` can be
+raised for availability and a pod can be replaced at any moment.
 
-AppLab keeps its state in SQLite on a ReadWriteOnce volume. SQLite cannot be
-shared between processes over a network filesystem — two pods writing one file
-across it corrupts the file — so a second replica would not merely be wasteful,
-it would be unsafe. Scaling out means moving to a database built for it; until
-then, one replica is the honest answer rather than a limitation to work around.
+The one thing that is not coordinated across replicas is a write to one app's
+repository: the lock that serialises those is per process, so two pushes to the
+same app arriving at the same instant on two replicas can lose one of the two.
+A push is a rare event and the next build reads what git actually has, so this
+is a note rather than a warning — but it is why one replica is still the default.
 
-The volume is the only copy of every app's source. **Back it up.**
+**Back up the bucket.** It is the only copy of every app's source.
 
 ### The Role
 
@@ -389,8 +391,10 @@ they carry `applab.io/app`, not helm's release labels. So an uninstall stops
 AppLab and leaves every app it deployed running, which is usually what you want
 and occasionally a surprise.
 
-The PersistentVolumeClaim is not removed either, and it holds the only copy of
-every app's source.
+**The bucket is not touched.** Everything AppLab remembers — the apps, their
+history and their source — is in object storage, which is not part of the
+release. An uninstall that emptied the bucket would be an uninstall that deleted
+every app's source, so it does not; the bucket is yours to keep or remove.
 
 To remove an installation completely:
 
@@ -398,7 +402,7 @@ To remove an installation completely:
 kubectl -n ops-system get deployments,services -l applab.io/app   # what it deployed
 kubectl -n ops-system delete deployments,services,jobs,secrets -l applab.io/app
 kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/app
-kubectl -n ops-system delete pvc applab                           # and the source with it
+# and the source, which is whatever you pointed objectStore at
 ```
 
 The namespace itself is yours rather than AppLab's — it is where AppLab was

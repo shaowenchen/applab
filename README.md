@@ -272,8 +272,9 @@ make coverage       # coverage summary
 make docs           # render the documentation site into ./pages
 ```
 
-Requires Go 1.24+ and `git` on `PATH`. Nothing else: the SQLite driver is pure Go,
-so `CGO_ENABLED=0` and the binary is static.
+Requires Go 1.24+ and `git` on `PATH`. Nothing else — in particular no cloud
+SDK: the S3 client is written against the protocol with the standard library, so
+`CGO_ENABLED=0` and the binary is static.
 
 ### Verification without a cluster
 
@@ -477,7 +478,8 @@ and the surprise is what it leaves. **The apps are not removed** — they are
 Deployments, Services and VirtualServices carrying `applab.io/app` rather than
 helm's release labels, so an uninstall stops AppLab and leaves every app it
 deployed running. That is usually what you want and occasionally a surprise. The
-PersistentVolumeClaim is not removed either, and it holds every app's source.
+bucket is not touched either, and it holds every app's source: an uninstall that
+emptied it would be one that deleted the source of every app.
 
 [The chart's README](charts/applab) has the full teardown, including how to
 remove the apps and the volume along with the installation.

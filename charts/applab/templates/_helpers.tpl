@@ -81,6 +81,21 @@ chart creates.
 {{- end }}
 
 {{/*
+The Secret holding the object storage credential.
+
+Named separately from the auth Secret because the two are rotated for different
+reasons and one may be brought by the operator while the other is built by the
+chart.
+*/}}
+{{- define "applab.objectStoreSecretName" -}}
+{{- if .Values.objectStore.existingSecret }}
+{{- .Values.objectStore.existingSecret }}
+{{- else }}
+{{- printf "%s-objectstore" (include "applab.fullname" .) }}
+{{- end }}
+{{- end }}
+
+{{/*
 The address a build job's init container uses to fetch its source.
 
 Preferring an explicit public URL and falling back to the in-cluster Service
