@@ -151,9 +151,9 @@ helm repo update
 helm install applab applab/applab \
   --version 0.1.0-dev \
   --namespace ops-system --create-namespace \
-  --set auth.keys[0]=&quot;$(openssl rand -hex 32)&quot; \
+  --set auth.key=&quot;$(openssl rand -hex 32)&quot; \
   --set apps.baseDomain=apps.example.com \
-  --set ingress.hosts[0].host=applab.example.com \
+  --set ingress.host=applab.example.com \
   --set build.registry=registry.example.com/apps
 </code></pre>
 <p><code>--version</code> is not optional yet, and leaving it out fails with <code>chart &quot;applab&quot; matching  not found in applab index</code> — which reads like a typo or a stale index
@@ -389,14 +389,14 @@ does and why it defaults the way it does. The ones that matter most:</p>
 </thead>
 <tbody>
 <tr>
-<td><code>auth.keys</code></td>
-<td><code>[]</code></td>
-<td><strong>Required.</strong> Admin keys: <code>openssl rand -hex 32</code>, one per operator. App keys are created by applab, not here</td>
+<td><code>auth.key</code></td>
+<td><code>&quot;&quot;</code></td>
+<td><strong>Required.</strong> The admin key: <code>openssl rand -hex 32</code>. One is enough; see <a href="#keys">Keys</a> for more</td>
 </tr>
 <tr>
 <td><code>auth.existingSecret</code></td>
 <td><code>&quot;&quot;</code></td>
-<td>Preferred over <code>auth.keys</code>: keeps keys out of the release</td>
+<td>Preferred over <code>auth.key</code>: keeps the key out of the release, and carries more than one</td>
 </tr>
 <tr>
 <td><code>apps.baseDomain</code></td>
@@ -449,9 +449,14 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <td>Applied to every app applab deploys</td>
 </tr>
 <tr>
-<td><code>ingress.hosts</code></td>
+<td><code>ingress.host</code></td>
 <td><code>applab.example.com</code></td>
-<td>Change this</td>
+<td>The host the console and API are reached at</td>
+</tr>
+<tr>
+<td><code>ingress.path</code></td>
+<td><code>/applab</code></td>
+<td>The path under it; the server is told the same one</td>
 </tr>
 <tr>
 <td><code>persistence.size</code></td>
@@ -462,10 +467,18 @@ does and why it defaults the way it does. The ones that matter most:</p>
 </table>
 <h3>Keys</h3>
 <p>There are two tiers, and the difference is reach.</p>
-<p><strong>Admin keys</strong> are what this chart configures, in <code>auth.keys</code>. A key that
-authenticates can also delete — every app this installation manages. Give each
-operator their own key so one can be revoked without disturbing the others;
-removing it from the list and upgrading is the whole revocation.</p>
+<p><strong>Admin keys</strong> are what this chart configures. A key that authenticates can also
+delete — every app this installation manages — so give it to nobody you would not
+give the installation to.</p>
+<p><code>auth.key</code> holds one. That is enough to install with, and one is the honest
+default: it is a single credential, and a second copy in the release's values is
+a second place to leak from rather than a second identity. To give several people
+their own key, so one can be revoked without disturbing the others, point
+<code>auth.existingSecret</code> at a Secret you manage, carrying an <code>APPLAB_KEYS</code> key whose
+value is the comma-separated list. Removing an entry from it and upgrading is the
+whole revocation.</p>
+<p>That is also why <code>auth.existingSecret</code> is worth using even with one key. Release
+values are stored in plain text in the cluster and are frequently committed.</p>
 <p><strong>App keys</strong> are created by applab itself, one Secret per app, as apps are
 created. An app key reaches only its app: it can push, build, deploy, roll back
 and read logs, but cannot delete the app and cannot see any other app. That is
@@ -476,8 +489,6 @@ destroy the installation. Read or rotate one with <code>applab keys &lt;app&gt;<
 immediately — and a deployment whose API server is unreachable cannot
 authenticate at all, admin keys included. They need the <code>secrets</code> permission the
 Role already grants; nothing here has to be widened.</p>
-<p><code>auth.existingSecret</code> is worth using. Release values are stored in plain text in
-the cluster and are frequently committed.</p>
 <h3>App configuration</h3>
 <p>An app's configuration is split by sensitivity, and only one half is yours to
 configure here.</p>
@@ -496,7 +507,7 @@ and <strong>take effect on the next deploy</strong>. Nothing to configure in the
 like any Kubernetes Secret. Encryption at rest is the cluster's job, not
 applab's.</p>
 <h2>After installing</h2>
-<pre><code class="language-bash"># The key the chart generated, if you used auth.keys
+<pre><code class="language-bash"># The key the chart generated, if you used auth.key
 kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
 
 # The API contract — what to read before calling anything
