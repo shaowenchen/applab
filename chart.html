@@ -165,9 +165,37 @@ applab push myshop
 <p>Three decisions are much easier to make now than after, because each one changes
 what the cluster has to be able to do.</p>
 <h3>1. A registry the cluster can push to and pull from</h3>
-<p><code>build.registry</code> is where built images go. The image for an app is
-<code>&lt;registry&gt;/&lt;app&gt;:&lt;commit&gt;</code>, so applab needs to create a repository per app under
-that prefix.</p>
+<p><code>build.registry</code> is where built images go. How an app's image is named depends on
+how much path the registry has — a repository can only be extended so far before
+the registry rejects it, so a deep prefix puts the app in the tag instead:</p>
+<table>
+<thead>
+<tr>
+<th><code>build.registry</code></th>
+<th>the image for app <code>shop</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>registry.example.com/apps</code></td>
+<td><code>registry.example.com/apps/shop:&lt;commit&gt;</code></td>
+</tr>
+<tr>
+<td><code>registry.example.com</code></td>
+<td><code>registry.example.com/shop:&lt;commit&gt;</code></td>
+</tr>
+<tr>
+<td><code>shaowenchen</code></td>
+<td><code>shaowenchen/shop:&lt;commit&gt;</code></td>
+</tr>
+<tr>
+<td><code>shaowenchen/applab</code></td>
+<td><code>shaowenchen/applab:shop-&lt;commit&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Either way the tag names the commit, which is what lets a rollback reuse an image
+rather than rebuild it.</p>
 <p>If the registry needs credentials, create a <code>docker-registry</code> Secret <strong>in the
 namespace applab runs in</strong> and name it:</p>
 <pre><code class="language-bash">kubectl -n ops-system create secret docker-registry regcred \
