@@ -315,8 +315,9 @@ The build and deploy halves need real infrastructure, so they are exercised on
 one that is built for the purpose and thrown away: [`debugger`](debugger) is a
 GitHub Action that creates a `kind` cluster, a registry and an Istio gateway,
 installs applab from this repository's own chart, and publishes the result
-through a tunnel. Open the run's summary for a link, and `applab push` works
-against it.
+through a tunnel. It is started by hand — it holds a runner for the whole
+session, which is not something to spend on every push. Open the run's summary
+for a link, and `applab push` works against it.
 
 ```
 hack/environment.sh   the whole environment, in order
@@ -330,8 +331,9 @@ apps match on `/<pathPrefix>/<app>/`, a prefix the console's own paths do not
 share. That ordering is defined, so nothing has to sit in front of the gateway to
 tell the two apart.
 
-CI runs the same environment and pushes [`hack/demo-app`](hack/demo-app/Dockerfile) through
-it, so "an app can be uploaded, built, deployed and served" is a check rather
+The same environment runs as a check on every push, in the `image` workflow's
+`end-to-end` job, which pushes [`hack/demo-app`](hack/demo-app/Dockerfile) through
+it — so "an app can be uploaded, built, deployed and served" is a check rather
 than a claim.
 
 ### The documentation site

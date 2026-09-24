@@ -75,10 +75,6 @@ fi
 : "${APPLAB_NAMESPACE:=ops-system}"
 : "${APPLAB_BUILD_ROOTLESS:=true}"
 : "${APPLAB_GATEWAY_NODEPORT:=30080}"
-# A second host port for the same gateway, so the environment can be reached at
-# an address with no port in it. See the kind config below for why that is not
-# merely convenient.
-: "${APPLAB_GATEWAY_HOST_PORT:=80}"
 : "${APPLAB_CLUSTER_NAME:=applab-debugger}"
 : "${APPLAB_PATH_PREFIX:=/apps}"
 : "${APPLAB_IMAGE_REPOSITORY:=docker.io/shaowenchen/applab}"
@@ -305,20 +301,6 @@ log "creating the kind cluster"
 # The containerd patch is what makes the registry usable from the nodes: without
 # a mirror entry, node containerd tries to speak HTTPS to a registry that serves
 # plain HTTP and every app's image pull fails with an x509 error.
-#
-# The second port mapping — the port-free address the environment is also served
-# on — is the one part of this file that a host can refuse, because port 80 may
-# already be taken. Setting APPLAB_GATEWAY_HOST_PORT=0 leaves it out, and then the
-# environment is reachable on the node port only, which is enough for the tunnel:
-# cloudflared forwards the original hostname with no port, so its requests carry
-# the Host the VirtualServices match on whatever port they arrive at.
-gateway_host_port_mapping=""
-if [ "$APPLAB_GATEWAY_HOST_PORT" != "0" ] && [ "$APPLAB_GATEWAY_HOST_PORT" != "$APPLAB_GATEWAY_NODEPORT" ]; then
-  gateway_host_port_mapping="      - containerPort: ${APPLAB_GATEWAY_NODEPORT}
-        hostPort: ${APPLAB_GATEWAY_HOST_PORT}
-        protocol: TCP"
-fi
-
 cat > "$RUNTIME_DIR/kind.yaml" <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -332,26 +314,17 @@ nodes:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true"
     extraPortMappings:
-      # The Istio ingress gateway, so the tunnel can reach it.
+      # The Istio ingress gateway, so the tunnel — and anything on this runner —
+      # can reach it.
+      #
+      # One mapping is enough, and the port in it does not leak into routing: a
+      # request to "http://host:30080/path" carries "Host: host:30080", but Istio
+      # sets IgnorePortInHostMatching on the gateway's route configuration
+      # (pilot/pkg/networking/core/gateway.go), so Envoy drops the port before
+      # matching and the bare hostnames the VirtualServices carry are what match.
       - containerPort: ${APPLAB_GATEWAY_NODEPORT}
         hostPort: ${APPLAB_GATEWAY_NODEPORT}
         protocol: TCP
-      # And the same gateway on a port-free address, so a client that builds a
-      # URL out of the deployment's name can reach it without the port leaking
-      # into its Host header.
-      #
-      # That is not a convenience. Istio matches a VirtualService on the Host, and
-      # the Host a client sends is derived from the URL — so a request to
-      # "http://host:30080/path" arrives as "Host: host:30080" and matches
-      # nothing, because the domains Istio writes are bare hostnames. Envoy has an
-      # option to ignore the port when matching, but Istio does not set it
-      # (neither strip_matching_host_port nor strip_any_host_port appears anywhere
-      # in the control plane).
-      #
-      # The tunnel does not need this — cloudflared forwards the original hostname,
-      # with no port, however the request reached it — but anything on the runner
-      # that is pointed at the environment by name does.
-${gateway_host_port_mapping}
 containerdConfigPatches:
   - |-
     [plugins."io.containerd.grpc.v1.cri".registry.mirrors."${APPLAB_REGISTRY}"]
@@ -466,15 +439,6 @@ gateway_nodeport=$(kubectl -n istio-system get svc istio-ingressgateway \
 [ "$gateway_nodeport" = "$APPLAB_GATEWAY_NODEPORT" ] \
   || die "the gateway's HTTP port is on node port '${gateway_nodeport}', expected ${APPLAB_GATEWAY_NODEPORT}"
 
-# The port-free address has to be reachable over loopback, or every client that
-# builds its URL from the environment's name would be sending a Host with a port
-# in it — which matches no VirtualService. Checked here rather than discovered as
-# a 404 from the console later.
-if [ "$APPLAB_GATEWAY_HOST_PORT" != "0" ] && [ "$APPLAB_GATEWAY_HOST_PORT" != "$APPLAB_GATEWAY_NODEPORT" ]; then
-  curl -s -o /dev/null --max-time 5 "http://127.0.0.1:${APPLAB_GATEWAY_HOST_PORT}/" \
-    || die "nothing is listening on 127.0.0.1:${APPLAB_GATEWAY_HOST_PORT}; the gateway's port-free mapping is not in place, and a client pointed at this environment by name would send a Host with a port in it"
-fi
-
 # And confirm the other ports survived. The check above passes even when the
 # patch replaced the whole list, because port 80 is the one it looks at — so the
 # two ports that would be lost silently are asserted separately. 15021 is the
@@ -538,16 +502,14 @@ http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/nu
 # the tunnel points at, so a healthy Service behind an unprogrammed gateway is
 # still an environment nobody can open.
 #
-# Over loopback, on the port-free mapping, with the environment's own hostname as
-# the Host header. That is deliberately not the node port: a request to
-# "http://host:30080/" carries "Host: host:30080", which matches no
-# VirtualService, since the domains Istio writes are bare hostnames — see the
-# kind config above. Reaching it over loopback with the header set is the same
-# request the tunnel makes, and it does not depend on the hostname resolving,
-# which it may not yet.
+# Over loopback on the node port, with the environment's own hostname as the Host
+# header — which is what a request through the tunnel carries. The port in that
+# header is harmless: Istio sets IgnorePortInHostMatching on the gateway's route
+# configuration, so Envoy drops it before matching the bare hostname the
+# VirtualServices carry.
 gateway_get() {
   curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-    -H "Host: ${TUNNEL_HOST}" "http://127.0.0.1:${APPLAB_GATEWAY_HOST_PORT}${1}" 2>/dev/null
+    -H "Host: ${TUNNEL_HOST}" "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${1}" 2>/dev/null
 }
 
 log "waiting for the gateway to serve applab"

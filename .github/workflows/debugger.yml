@@ -5,10 +5,11 @@
 # the printed recipe and it is built, deployed and served — the whole platform,
 # on a throwaway cluster, torn down when the run ends.
 #
-# Every push also runs the same environment as a check, in the end-to-end job at
-# the bottom of this file. The two entries are here together because they start
-# the same thing and differ only in what they do with it: one leaves it up for a
-# person, the other asserts it works and takes it down.
+# Manual only, deliberately. It holds a runner for the whole session and starts
+# a real cluster, a registry and a gateway, which is far too much to spend on
+# every push — and a check that runs on every push is what image.yml is for. The
+# same environment is exercised there as a check, in its end-to-end job: it
+# starts what this starts, asserts it works, and tears it down.
 name: debugger
 
 on:
@@ -40,29 +41,21 @@ on:
         description: 'Domain'
         type: string
         default: ''
-  push:
-    branches: ["**"]
-  pull_request:
 
 permissions:
   contents: read
 
 concurrency:
   # The kind cluster and the gateway's node port both claim fixed names and
-  # ports on the runner, so only one environment runs per repository. The
-  # end-to-end job overrides this with its own group, because a manual
-  # environment can be up for hours and pushing would otherwise mean waiting for
-  # its whole session.
+  # ports on the runner, so only one environment runs per repository. A manual
+  # environment can be up for hours, and two at once would collide on those
+  # names.
   group: applab-debugger-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   debugger:
     runs-on: ubuntu-latest
-    # Only when asked for. Without this a push would start a long-lived
-    # environment as well, on a runner held for its whole session — the
-    # end-to-end job below is what a push is supposed to get.
-    if: github.event_name == 'workflow_dispatch'
     # A little longer than the environment's own deadline, so the script's
     # cleanup runs rather than the job being killed at the ceiling. The margin
     # covers boot: the kind cluster plus Istio is about ten minutes on a cold
@@ -93,277 +86,3 @@ jobs:
           # thing a person has to look up before running a named tunnel.
           domain: ${{ inputs.domain }}
 
-  # The environment the debugger action builds, exercised end to end.
-  #
-  # This is the only job that proves an app can actually be pushed, built,
-  # deployed and served — every step after the upload involves the cluster, the
-  # registry and the gateway, and none of it can be checked without a real one.
-  # It is also where the kind environment gets to fail loudly rather than in
-  # someone's run: rootless BuildKit in particular is the part most likely to be
-  # refused by a host.
-  end-to-end:
-    name: end-to-end
-    runs-on: ubuntu-latest
-    # The other job in this file is the manual entry point: it hands a person
-    # a running environment and leaves it up. This one is the check — it starts
-    # the same environment, asserts it works, and tears it down.
-    if: github.event_name != 'workflow_dispatch'
-    # Its own group, not the workflow's. A manual environment may run for
-    # hours, and sharing a group would leave every push queued behind it.
-    concurrency:
-      group: applab-end-to-end-${{ github.repository }}
-      cancel-in-progress: true
-    # Building the cluster, installing Istio and pushing the first app is slow
-    # but bounded; generous rather than tight, because a flaky failure here
-    # teaches nobody anything.
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - uses: azure/setup-helm@v4
-        with:
-          version: v3.16.4
-
-      # Built here, from this commit, and loaded straight into the kind nodes.
-      #
-      # Not pulled. The job's whole purpose is to exercise the code under test,
-      # and an image from a registry is whatever was published last — a different
-      # commit, or nothing at all, which is how this job came to fail on an image
-      # that had never been built: it asked for a tag no release had produced.
-      # Building here also removes the dependency on the image job, which only
-      # runs for a tag and so could never have supplied a branch push.
-      - name: Build the applab image
-        run: |
-          set -eux
-          # The same Dockerfile a release uses, so what is tested and what is
-          # published are the same image rather than two that look alike.
-          docker build \
-            --build-arg VERSION="${GITHUB_REF_NAME}" \
-            --build-arg COMMIT="${GITHUB_SHA}" \
-            --tag applab:ci \
-            .
-          docker image inspect applab:ci --format '{{.Id}} {{.Size}} bytes'
-
-      - name: Install kind
-        run: |
-          set -eux
-          curl -fsSL -o /tmp/kind "https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64"
-          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
-          kind version
-
-      - name: Install kubectl
-        run: |
-          set -eux
-          curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl"
-          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          kubectl version --client
-
-      - name: Install istioctl
-        run: |
-          set -eux
-          curl -fsSL https://istio.io/downloadIstio | ISTIO_VERSION=1.24.2 sh -
-          sudo install -m 0755 istio-1.24.2/bin/istioctl /usr/local/bin/istioctl
-          istioctl version --remote=false
-
-      # The environment runs in the background so the steps below can drive it.
-      # APPLAB_PUBLIC_HOST skips the public tunnel: CI must not depend on a quick
-      # tunnel being granted, and the tunnel is not what this job is checking.
-      - name: Start the environment
-        env:
-          APPLAB_PUBLIC_HOST: debugger.ci.invalid
-          APPLAB_SESSION_HOURS: '0'
-          # The image built above, which the script loads into the nodes and
-          # points the chart at. Without it the script pulls `latest`, which is
-          # not what this job is here to test.
-          APPLAB_LOCAL_IMAGE: applab:ci
-          APPLAB_RUNTIME_DIR: ${{ github.workspace }}/.applab-debugger
-        run: nohup ./hack/environment.sh > /tmp/environment.log 2>&1 &
-
-      # Everything below reaches the environment through the Istio gateway, at
-      # the hostname the apps are configured for.
-      #
-      # Resolving that name to loopback is what makes the Host header — and so
-      # Istio's VirtualService match — come out right without every command
-      # having to carry a header of its own. It matters most for the console:
-      # the requests that matter there are made by a browser, which sends the
-      # hostname, so a check made with a plain loopback address would not be
-      # testing the path a person takes.
-      #
-      # debugger.ci.invalid is the reserved .invalid TLD, so this cannot shadow
-      # a real name, here or in resolve.conf.
-      - name: Point the environment's hostname at the gateway
-        run: |
-          set -eux
-          echo "127.0.0.1 debugger.ci.invalid" | sudo tee -a /etc/hosts
-          getent hosts debugger.ci.invalid
-
-      - name: Wait for applab to answer
-        run: |
-          set -eux
-          # Through the gateway, not over the port-forward this job used to use:
-          # the console is a VirtualService on the gateway now, so a check that
-          # bypassed it would pass while the thing a person opens was broken.
-          for attempt in $(seq 1 90); do
-            if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://debugger.ci.invalid/health || true)" = "200" ]; then
-              echo "applab is answering"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "applab never answered; the environment log follows" >&2
-          tail -n 200 /tmp/environment.log >&2
-          kubectl -n ops-system get pods >&2 || true
-          kubectl -n ops-system describe pods >&2 || true
-          kubectl -n ops-system get virtualservices >&2 || true
-          exit 1
-
-      - name: Build the CLI
-        run: make build-cli
-
-      # The key is read from the environment's own runtime state rather than
-      # invented here, so the CLI is authenticated exactly as a user of the
-      # action would be.
-      - name: applab answers over the API
-        run: |
-          set -eux
-          export APPLAB_URL=http://debugger.ci.invalid
-          export APPLAB_KEY
-          APPLAB_KEY=$(kubectl -n ops-system get secret applab-keys -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d)
-          echo "::add-mask::$APPLAB_KEY"
-
-          ./bin/applab-cli config
-          # The overview is the dashboard's one call; if it answers, the console's
-          # default view has what it needs.
-          ./bin/applab-cli overview
-
-          # A canary on the API's own shape, so a change that silently drops a
-          # field the console reads fails here rather than in a browser.
-          curl -fsS -H "Authorization: Bearer $APPLAB_KEY" "$APPLAB_URL/api/v1/overview" \
-            | python3 -c '
-          import json, sys
-          d = json.load(sys.stdin)["data"]
-          for key in ("apps", "builds", "cluster", "deployment"):
-              assert key in d, f"the overview is missing {key}"
-          assert d["cluster"]["configured"], "the environment should have a cluster"
-          assert d["cluster"]["reachable"], "the environment should reach its cluster"
-          assert d["deployment"]["capabilities"]["build"], "the environment should be able to build"
-          assert d["deployment"]["capabilities"]["deploy"], "the environment should be able to deploy"
-          print("overview shape ok")
-          '
-
-      - name: Push, build, deploy and serve the demo app
-        run: |
-          set -eux
-          export APPLAB_URL=http://debugger.ci.invalid
-          APPLAB_KEY=$(kubectl -n ops-system get secret applab-keys -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d)
-          export APPLAB_KEY
-          echo "::add-mask::$APPLAB_KEY"
-
-          # The whole path in one command: upload, build image, deploy, wait.
-          ./bin/applab-cli push demo --dir hack/demo-app --port 8080
-
-      - name: The app is served through the gateway
-        run: |
-          set -eux
-          # Through the gateway, which is the path a browser takes: a 200 here
-          # means the VirtualService, the gateway listener and the registry pull
-          # all worked.
-          #
-          # The hostname in the URL is what sets the Host header the
-          # VirtualService matches on — which is why the address is port-free.
-          # The same request on the node port would carry "Host: ...:30080" and
-          # match nothing.
-          code=$(curl -s -o /tmp/page.html -w '%{http_code}' --max-time 30 \
-            "http://debugger.ci.invalid/apps/demo/")
-          echo "GET /apps/demo/ -> ${code}"
-          cat /tmp/page.html
-          [ "$code" = "200" ] || { echo "the app did not serve; expected 200" >&2; exit 1; }
-
-          # The body proves the image being served was built from this source,
-          # rather than a cached layer or a stock page.
-          grep -q 'applab-demo-serving' /tmp/page.html \
-            || { echo "the served page is not the demo app's" >&2; exit 1; }
-
-      - name: The console is served at the root
-        run: |
-          set -eux
-          # The console's own route, which the chart installs on the gateway
-          # beside the apps'. Without it this host serves the apps and 404s at
-          # "/" — the regression this step exists to catch.
-          code=$(curl -s -o /tmp/console.html -w '%{http_code}' --max-time 30 \
-            "http://debugger.ci.invalid/")
-          echo "GET / -> ${code}"
-          [ "$code" = "200" ] || { echo "the console did not serve" >&2; exit 1; }
-          # The dashboard's own markup, so a console that failed to build or was
-          # not embedded is caught here.
-          grep -q 'overview-view' /tmp/console.html || { echo "the console page is not the dashboard" >&2; exit 1; }
-          grep -q 'nav-overview' /tmp/console.html || { echo "the console has no overview navigation" >&2; exit 1; }
-
-          # And the object behind that, so a 200 that came from somewhere else
-          # cannot stand in for it. The route has to be a catch-all on the
-          # shared host: a match of its own could claim an app's path, and the
-          # app's route is only guaranteed to win because Istio sorts a
-          # catch-all last.
-          kubectl -n ops-system get virtualservices -o json \
-            | python3 -c '
-          import json, sys
-          items = json.load(sys.stdin)["items"]
-          names = [v["metadata"]["name"] for v in items]
-          console = [v for v in items if v["metadata"]["name"].endswith("-console")]
-          assert len(console) == 1, "expected one console VirtualService, found %s" % names
-          http = console[0]["spec"]["http"]
-          assert http[0].get("match") is None, "the console route carries a match; it must be a catch-all"
-          assert "route" in http[0], "the console route does not route anywhere"
-          print("console VirtualService ok:", console[0]["spec"]["hosts"])
-          '
-
-      - name: The deployed app is listed and reported healthy
-        run: |
-          set -eux
-          export APPLAB_URL=http://debugger.ci.invalid
-          APPLAB_KEY=$(kubectl -n ops-system get secret applab-keys -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d)
-          export APPLAB_KEY
-          echo "::add-mask::$APPLAB_KEY"
-
-          ./bin/applab-cli list
-          ./bin/applab-cli status demo
-          ./bin/applab-cli pods demo
-
-          # The new endpoint must reflect the app that was just deployed — a
-          # dashboard that counts nothing is not a dashboard.
-          curl -fsS -H "Authorization: Bearer $APPLAB_KEY" "$APPLAB_URL/api/v1/overview" \
-            | python3 -c '
-          import json, sys
-          d = json.load(sys.stdin)["data"]
-          assert d["apps"]["total"] >= 1, "no apps counted: %s" % d["apps"]
-          assert d["builds"]["succeeded"] >= 1, "no successful build counted: %s" % d["builds"]
-          assert d["builds"]["recent"], "the recent build list is empty"
-          print("overview reflects the deployed app:", d["apps"], d["builds"]["succeeded"], "builds ok")
-          '
-
-      # Everything worth knowing is in the cluster's own state, so it is
-      # collected on failure rather than left to the next run to guess at.
-      - name: Cluster state on failure
-        if: failure()
-        run: |
-          set +e
-          echo "=== environment log ==="
-          tail -n 200 /tmp/environment.log
-          echo "=== nodes ==="
-          kubectl get nodes -o wide
-          echo "=== ops-system ==="
-          kubectl -n ops-system get all,pvc
-          echo "=== build jobs ==="
-          # Builds are Jobs carrying applab.io/build; there is no separate kind
-          # label, so the build objects are selected by that one.
-          kubectl -n ops-system get jobs,pods -l applab.io/build -o wide
-          echo "=== applab log ==="
-          kubectl -n ops-system logs deploy/applab --tail=100
-          echo "=== istio ==="
-          kubectl -n istio-system get pods
-          kubectl -n ops-system get virtualservices -o yaml
