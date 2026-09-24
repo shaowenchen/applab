@@ -360,7 +360,7 @@ helm install applab "$REPO_ROOT/charts/applab" \
   --set "apps.baseDomain=${TUNNEL_HOST}" \
   --set "apps.pathPrefix=${APPLAB_PATH_PREFIX}" \
   --set deploy.gateway=istio-system/istio-ingressgateway \
-  --set "build.registry=${APPLAB_REGISTRY}/apps" \
+  --set "build.registry=${APPLAB_REGISTRY}" \
   --set build.insecureRegistry=true \
   --set "build.rootless=${APPLAB_BUILD_ROOTLESS}" \
   --set ingress.enabled=false \

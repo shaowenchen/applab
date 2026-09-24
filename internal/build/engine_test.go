@@ -38,11 +38,16 @@ func testApp() *model.App {
 	}
 }
 
-func newTestEngine(t *testing.T) (*Engine, *fake.Clientset) {
+func newTestEngine(t *testing.T, tweak ...func(*Config)) (*Engine, *fake.Clientset) {
 	t.Helper()
 
+	cfg := testConfig()
+	for _, fn := range tweak {
+		fn(&cfg)
+	}
+
 	client := fake.NewSimpleClientset()
-	return New(client, testConfig()), client
+	return New(client, cfg), client
 }
 
 // TestStartCreatesJobAndSecret asserts a build creates everything it needs, and
@@ -240,6 +245,107 @@ func TestImageTagIsTheCommit(t *testing.T) {
 	}
 	if !strings.HasSuffix(image, "abc123def456") {
 		t.Errorf("image = %q, want the tag to be the abbreviated commit", image)
+	}
+}
+
+// TestImageRef covers every shape of registry an app's image has to fit into.
+//
+// A registry is a host plus a path, and how much path there is decides where the
+// app can go. Getting this wrong is not a cosmetic difference: a repository path
+// Docker Hub rejects fails the push, and the build reports a failure that says
+// nothing about the name being the problem.
+func TestImageRef(t *testing.T) {
+	cases := []struct {
+		name     string
+		registry string
+		appID    string
+		wantRepo string
+		wantTag  string
+	}{
+		// One segment of path: the app becomes the next one and gets a
+		// repository of its own. This is the shape every deployment running
+		// applab uses today, so it must not move.
+		{"cluster registry with a prefix", "registry.example.com/apps", "shop", "registry.example.com/apps/shop", ""},
+		{"kind registry", "kind-registry:5000", "demo", "kind-registry:5000/demo", ""},
+		{"docker hub account", "shaowenchen", "demo", "shaowenchen/demo", ""},
+		{"host with no path", "registry.example.com", "shop", "registry.example.com/shop", ""},
+		{"localhost", "localhost:5000", "shop", "localhost:5000/shop", ""},
+
+		// Two segments of path: no room left, so the app moves into the tag.
+		{"docker hub account and repo", "shaowenchen/applab", "demo", "shaowenchen/applab", "demo-"},
+		{"host with a two-segment path", "registry.example.com/team/apps", "shop", "registry.example.com/team/apps", "shop-"},
+		{"ghcr", "ghcr.io/owner/repo", "shop", "ghcr.io/owner/repo", "shop-"},
+
+		// A trailing slash is a typo, not a deeper path.
+		{"trailing slash", "shaowenchen/applab/", "demo", "shaowenchen/applab", "demo-"},
+	}
+
+	commit := "abc123def456789012345678901234567890abcd"
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, _ := newTestEngine(t, func(c *Config) { c.Registry = tc.registry })
+
+			image := engine.ImageFor(tc.appID, commit)
+			want := tc.wantRepo + ":" + tc.wantTag + "abc123def456"
+			if image != want {
+				t.Errorf("ImageFor(%q, ...) = %q, want %q", tc.appID, image, want)
+			}
+		})
+	}
+}
+
+// TestImageRefKeepsAppsApart asserts two apps never resolve to the same image.
+//
+// This is the property that makes the tag-carrying-the-app variant safe: without
+// the app in the tag, every app under a two-segment registry would push to one
+// tag and overwrite each other.
+func TestImageRefKeepsAppsApart(t *testing.T) {
+	for _, registry := range []string{"registry.example.com/apps", "shaowenchen", "shaowenchen/applab"} {
+		t.Run(registry, func(t *testing.T) {
+			engine, _ := newTestEngine(t, func(c *Config) { c.Registry = registry })
+
+			commit := "abc123def456789012345678901234567890abcd"
+			shop := engine.ImageFor("shop", commit)
+			blog := engine.ImageFor("blog", commit)
+
+			if shop == blog {
+				t.Errorf("apps shop and blog both resolve to %q under registry %q", shop, registry)
+			}
+		})
+	}
+}
+
+// TestCacheRefFollowsTheImage asserts the cache reference is built the same way
+// the image is.
+//
+// A cache reference under a registry too deep to hold it would be rejected by
+// the registry, and because the export is not best-effort that fails the build
+// rather than quietly skipping the cache.
+func TestCacheRefFollowsTheImage(t *testing.T) {
+	cases := []struct {
+		registry  string
+		cachePath string
+		want      string
+	}{
+		{"registry.example.com/apps", "cache.example.com", "cache.example.com/shop:buildcache"},
+		{"shaowenchen", "cache", "cache/shop:buildcache"},
+		{"shaowenchen/applab", "shaowenchen/cache", "shaowenchen/cache:shop-buildcache"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.registry, func(t *testing.T) {
+			engine, _ := newTestEngine(t, func(c *Config) {
+				c.Registry = tc.registry
+				c.CacheRepoPrefix = tc.cachePath
+			})
+
+			job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag")
+			args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+
+			if !strings.Contains(args, tc.want) {
+				t.Errorf("the build args do not contain %q:\n%s", tc.want, args)
+			}
+		})
 	}
 }
 

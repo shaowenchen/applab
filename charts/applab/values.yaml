@@ -124,8 +124,17 @@ build:
 
   # Where built images are pushed. Required when enabled.
   #
-  # The image is <registry>/<app>:<commit>, so each app needs its own repository
-  # under this prefix. A cluster-local registry (registry:2 in-cluster) works;
+  # How the image is named depends on how much path the registry has, because a
+  # repository can only be extended so far before the registry rejects it:
+  #
+  #   registry.example.com/apps  ->  registry.example.com/apps/<app>:<commit>
+  #   registry.example.com       ->  registry.example.com/<app>:<commit>
+  #   shaowenchen                ->  shaowenchen/<app>:<commit>
+  #   shaowenchen/applab         ->  shaowenchen/applab:<app>-<commit>
+  #
+  # With no path or one segment, an app gets a repository of its own under the
+  # prefix; with two or more the path is already as deep as it can go, so the app
+  # moves into the tag. A cluster-local registry (registry:2 in-cluster) works;
   # a hosted one needs credentials, see pushSecret.
   registry: ""
 

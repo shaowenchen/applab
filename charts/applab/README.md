@@ -36,9 +36,19 @@ what the cluster has to be able to do.
 
 ### 1. A registry the cluster can push to and pull from
 
-`build.registry` is where built images go. The image for an app is
-`<registry>/<app>:<commit>`, so applab needs to create a repository per app under
-that prefix.
+`build.registry` is where built images go. How an app's image is named depends on
+how much path the registry has — a repository can only be extended so far before
+the registry rejects it, so a deep prefix puts the app in the tag instead:
+
+| `build.registry` | the image for app `shop` |
+|---|---|
+| `registry.example.com/apps` | `registry.example.com/apps/shop:<commit>` |
+| `registry.example.com` | `registry.example.com/shop:<commit>` |
+| `shaowenchen` | `shaowenchen/shop:<commit>` |
+| `shaowenchen/applab` | `shaowenchen/applab:shop-<commit>` |
+
+Either way the tag names the commit, which is what lets a rollback reuse an image
+rather than rebuild it.
 
 If the registry needs credentials, create a `docker-registry` Secret **in the
 namespace applab runs in** and name it:

@@ -147,7 +147,65 @@ func (e *Engine) Ready() bool {
 // makes a rollback able to reuse an image without rebuilding it, and what makes
 // two deploys of the same commit genuinely the same image.
 func (e *Engine) ImageFor(appID, commitSHA string) string {
-	return fmt.Sprintf("%s/%s:%s", strings.TrimSuffix(e.cfg.Registry, "/"), appID, shortSHA(commitSHA))
+	repo, tagPrefix := imageRef(e.cfg.Registry, appID)
+	return fmt.Sprintf("%s:%s%s", repo, tagPrefix, shortSHA(commitSHA))
+}
+
+// imageRef works out where an app's image lives under a registry, as a
+// repository and a prefix the tag must carry.
+//
+// A registry is a host plus a path, and the length of that path decides how an
+// app is named — because a repository path can only be extended so far before
+// the registry rejects it:
+//
+//	registry                     image for app "demo"
+//	registry.example.com/apps    registry.example.com/apps/demo:abc123
+//	kind-registry:5000           kind-registry:5000/demo:abc123
+//	shaowenchen                  shaowenchen/demo:abc123
+//	shaowenchen/applab           shaowenchen/applab:demo-abc123
+//
+// With nothing or one segment after the host, the app becomes the next segment
+// and gets a repository of its own. That is what a cluster-local registry wants,
+// and it is what every deployment actually running applab uses, so it is
+// preserved exactly. With two or more segments the path is already as deep as a
+// Docker Hub repository may be, so the app moves into the tag instead — the only
+// remaining place to put it.
+//
+// The app id is used as-is. It is already constrained to lowercase letters,
+// digits and dashes by model.ValidateAppID, which is the character set a
+// repository and a tag both accept — so no rewriting is needed, and none is done,
+// because a rewrite would be a way for two different apps to collide.
+func imageRef(registry, appID string) (repo, tagPrefix string) {
+	registry = strings.TrimSuffix(strings.TrimSpace(registry), "/")
+	if registry == "" {
+		return appID, ""
+	}
+	if pathSegments(registry) <= 1 {
+		return registry + "/" + appID, ""
+	}
+	return registry, appID + "-"
+}
+
+// pathSegments counts the path segments after a registry's host.
+//
+// The host has to be told apart from the path because it is the path that runs
+// out of room. A first segment containing a dot or a colon is a host —
+// "ghcr.io", "registry.example.com:5000", "localhost" — and everything after it
+// is the path. With no host the whole string is a Docker Hub path, whose first
+// segment is the account name, so "shaowenchen" is one segment and
+// "shaowenchen/applab" is two.
+func pathSegments(registry string) int {
+	segments := strings.Split(registry, "/")
+	if isRegistryHost(segments[0]) {
+		return len(segments) - 1
+	}
+	return len(segments)
+}
+
+// isRegistryHost reports whether a registry's first segment names a host rather
+// than a Docker Hub account.
+func isRegistryHost(segment string) bool {
+	return segment == "localhost" || strings.ContainsAny(segment, ".:")
 }
 
 // JobNameFor returns the Job name for a build.
@@ -422,7 +480,12 @@ func (e *Engine) buildContainer(app *model.App, jobName, buildID, commitSHA, ima
 	// Registry-side caching. Import is best-effort because the first build of an
 	// app has no cache to import, and a missing manifest is not a failure.
 	if e.cfg.CacheRepoPrefix != "" {
-		cacheRef := fmt.Sprintf("%s/%s:buildcache", strings.TrimSuffix(e.cfg.CacheRepoPrefix, "/"), app.ID)
+		// The cache reference is worked out the same way the image is, so that a
+		// registry too deep to hold one repository per app does not get a cache
+		// reference it would reject — which would fail the build rather than
+		// merely skipping the cache.
+		cacheRepo, cacheTagPrefix := imageRef(e.cfg.CacheRepoPrefix, app.ID)
+		cacheRef := fmt.Sprintf("%s:%sbuildcache", cacheRepo, cacheTagPrefix)
 		buildctlArgs = append(buildctlArgs,
 			"--export-cache", "type=registry,ref="+cacheRef+",mode=max",
 			"--import-cache", "type=registry,ref="+cacheRef,
