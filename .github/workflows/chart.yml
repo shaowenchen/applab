@@ -1,0 +1,195 @@
+name: chart
+
+# Publish the Helm chart and the documentation, both to gh-pages. They share a
+# workflow because they share a branch: the pages are generated from this
+# repository's markdown and committed beside the packaged chart.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    name: chart
+    runs-on: ubuntu-latest
+    # Every push to the default branch publishes, as does a tag. A pull request
+    # does not: it would publish a package built from code nobody has agreed to
+    # yet, and a fork's PR has no access to the token regardless.
+    if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      # The packaged chart goes to a gh-pages branch, which is what makes
+      # `helm repo add applab https://<owner>.github.io/applab` work.
+      contents: write
+    steps:
+      # Full history, not the default single commit: the step below diffs this
+      # push against the one before it, and a shallow clone has nothing to diff
+      # against — the comparison would fail rather than say "nothing changed".
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The chart is republished only when something it is built from changed.
+      # A chart release is a package other people install; republishing an
+      # identical one on every commit to the Go code buries the versions that
+      # differ under a listing of versions that do not.
+      #
+      # A tag always publishes. It names a release, and a release with no
+      # installable chart is a release with no way to install it.
+      - name: Did the chart or its documentation change?
+        id: changed
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "a tag: publishing regardless"
+            exit 0
+          fi
+
+          before="${{ github.event.before }}"
+          # A first push to a branch, or one that rewrote history, has no parent
+          # to compare with. Publishing is the safe answer: the cost is one
+          # redundant package, the alternative is a chart that never ships
+          # because the diff could not be taken.
+          if [ -z "$before" ] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "no usable previous commit to compare with; publishing"
+            exit 0
+          fi
+
+          # Everything either the packaged chart or the generated documentation
+          # is built from. They share this job because both write to gh-pages, so
+          # a change to either one has to republish both.
+          changed=$(git diff --name-only "$before" HEAD -- \
+            charts/applab \
+            README.md \
+            debugger/README.md \
+            internal/docs \
+            cmd/gendocs \
+            hack/package-chart.sh)
+
+          if [ -n "$changed" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "changed:"
+            printf '%s\n' "$changed" | sed 's/^/  /'
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "nothing the chart or its documentation is built from changed"
+          fi
+
+      # The chart version is fixed — Chart.yaml's version plus "-dev" — rather
+      # than derived from the commit, so repeated installs take the newest build
+      # instead of accumulating a listing entry per commit. The commit still
+      # reaches the cluster: it is stamped into appVersion, which is the chart
+      # label on every object applab creates.
+      - name: Derive the version
+        if: steps.changed.outputs.publish == 'true'
+        id: version
+        run: |
+          chart_version="$(grep '^version:' charts/applab/Chart.yaml | awk '{print $2}')"
+          if [ -z "$chart_version" ]; then
+            echo "no version found in Chart.yaml" >&2
+            exit 1
+          fi
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # A tag names the release, so it wins over the chart's own version.
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${chart_version}-dev"
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "app_version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # A working copy of gh-pages, so the packages already published are here
+      # and the regenerated index covers them too.
+      #
+      # A worktree of this clone rather than a fresh repository. actions/checkout
+      # stores the credential it authenticates with in this clone's git config,
+      # and a separate `git init` inherits none of it — so its push fails with
+      # exit code 128 and a message about authentication that points at
+      # everything except the actual cause.
+      - name: Prepare the chart repository
+        if: steps.changed.outputs.publish == 'true'
+        run: |
+          git fetch origin gh-pages --depth=1 || true
+
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git worktree add pages --track -b gh-pages origin/gh-pages
+            echo "continuing from the published chart repository"
+          else
+            # Nothing published yet. An orphan branch is the right starting
+            # point: gh-pages shares no history with the code, and the index is
+            # generated from what the directory contains, so starting from the
+            # source tree would index the source as a chart repository.
+            git worktree add --detach pages
+            git -C pages checkout --orphan gh-pages
+            git -C pages rm -rf . >/dev/null 2>&1 || true
+            echo "gh-pages does not exist yet; starting an empty one"
+          fi
+
+      - name: Install helm
+        if: steps.changed.outputs.publish == 'true'
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # The documentation is generated by a Go program in this repository, so
+      # the runner's own toolchain is not enough: the module names its version in
+      # go.mod, and a runner whose Go is older refuses to build it. That failure
+      # is worth naming because it is quiet — the chart half of this job would
+      # still publish, leaving a commit that looks like a successful release with
+      # no documentation in it.
+      - uses: actions/setup-go@v5
+        if: steps.changed.outputs.publish == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Package and index
+        if: steps.changed.outputs.publish == 'true'
+        run: |
+          ./hack/package-chart.sh \
+            "${{ steps.version.outputs.version }}" \
+            "${{ steps.version.outputs.app_version }}" \
+            pages \
+            "https://www.chenshaowen.com/applab"
+
+      # The published root would otherwise be a bare listing of index.yaml and a
+      # .tgz, which is a poor landing place for someone who has just run
+      # `helm repo add`. The pages are generated from this repository's own
+      # markdown, so they cannot drift from the README.
+      #
+      # It runs before the commit rather than in its own job because both write
+      # to gh-pages, and one writer is the whole reason the index is rebuilt from
+      # the directory's contents instead of merged.
+      - name: Render the documentation
+        if: steps.changed.outputs.publish == 'true'
+        run: |
+          go run ./cmd/gendocs \
+            -dest pages \
+            -repo "https://github.com/${{ github.repository }}" \
+            -branch "${{ github.event.repository.default_branch }}"
+
+      - name: Publish
+        if: steps.changed.outputs.publish == 'true'
+        run: |
+          cd pages
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+          git add --all
+          if git diff --cached --quiet; then
+            echo "the chart repository already matches this build"
+            exit 0
+          fi
+          git commit -m "Publish applab chart ${{ steps.version.outputs.version }} (${{ steps.version.outputs.app_version }})"
+          git push origin gh-pages

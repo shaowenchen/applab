@@ -1,0 +1,110 @@
+name: image
+
+# Publish the applab image. Only a tag publishes: a branch push is a candidate,
+# not a release.
+#
+# This used to gate on the checks in ci.yml, and no longer does — the two are
+# separate workflows, and a job in one cannot depend on a job in the other. The
+# trade is deliberate: a red check no longer stops a release from being prepared.
+# The alternative, a reusable workflow called with `needs`, would restore the
+# gate at the cost of making this file unrunnable on its own.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: applab
+
+jobs:
+  image:
+    name: image
+    runs-on: ubuntu-latest
+    # Only a tag publishes. A branch push is a candidate, not a release — and
+    # the debugger job below builds its own image rather than depending on one
+    # being published, so nothing here is on the critical path for CI.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-beijing.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      # The tags are derived from the git ref rather than taken on trust, and the
+      # version stamped into the binary is the same string a user sees on the
+      # image — so "which build is this" has one answer.
+      #
+      # Two destinations, one build. A release goes to Docker Hub and to ACR,
+      # because a cluster that cannot reach the first can usually reach the
+      # second — and an installation that has to build applab itself to run it is
+      # not an installation anybody completes.
+      #
+      # ACR's repository lives under a namespace, `opshub/<name>`, while Docker
+      # Hub's is flat: `shaowenchen/applab`. That is why the two are spelled out
+      # rather than one being derived from the other.
+      #
+      # The Docker Hub path is written out rather than built from
+      # secrets.DOCKERHUB_USERNAME: where an image lives is a fact about this
+      # project, not a credential, and deriving it from a secret would mean an
+      # unset secret silently publishes somewhere else. ACR_REPOSITORY keeps a
+      # default for the same reason the other projects in this account do — the
+      # variable is there to redirect the mirror, not to be required.
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            docker.io/shaowenchen/${{ env.IMAGE_NAME }}
+            registry.cn-beijing.aliyuncs.com/${{ vars.ACR_REPOSITORY || 'opshub/shaowenchen-applab' }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # arm64 as well as amd64: a Kubernetes cluster is rarely all one
+          # architecture, and an image that only runs on one is a puzzle for
+          # whoever lands on the other.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # ACR rejects Buildx's provenance and SBOM attestations, failing the
+          # push with an empty OCI manifest class rather than anything that names
+          # the cause. Off for both, since this is one build pushed twice — and
+          # neither applab's Dockerfile nor its consumers use them.
+          provenance: false
+          sbom: false
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+          # Layer caching across runs. Without it every release rebuilds the Go
+          # module download and the whole binary from nothing.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
