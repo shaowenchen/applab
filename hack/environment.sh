@@ -15,7 +15,7 @@
 #     registry:2     where built images are pushed (kind-registry:5000)
 #
 #   on the runner
-#     cloudflared    a quick tunnel, so the environment is reachable from anywhere
+#     cloudflared    a tunnel, so the environment is reachable from anywhere
 #
 # One gateway serves both halves, and that is the whole of the routing: the
 # console and the API at "/" (a VirtualService the chart installs), each app
@@ -26,10 +26,16 @@
 # share. See debugger/README.md.
 #
 # The order below is load-bearing and the reason it is a script rather than a
-# list of workflow steps: the tunnel has to be up *first*, because the hostname
-# it mints becomes apps.baseDomain, which cannot be set after applab is
-# installed, and because the chart refuses a base domain with no gateway.
-set -euo pipefail
+# list of workflow steps. The hostname has to be settled first, because it
+# becomes apps.baseDomain and that cannot be set after applab is installed — but
+# settling it is not the same as starting a tunnel, and the tunnel only has to be
+# started early when it is the one thing that knows the name. Otherwise it comes
+# up last, once there is something behind it to publish.
+
+# -E so the ERR trap below also fires for a failure inside a function. Without
+# it the trap only sees failures at the top level, which is not where they
+# happen: every step of this script is a function call or a subshell.
+set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
@@ -95,6 +101,16 @@ export PATH="/usr/local/bin:$PATH"
 log()  { printf '\n\033[1;34m[applab-debugger]\033[0m %s\n' "$*"; }
 warn() { printf '\n\033[1;33m[applab-debugger]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\n\033[1;31m[applab-debugger]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# A command that fails under `set -e` stops the script with no message at all,
+# which is the worst way for a long install to end: the log simply stops, and
+# where it stopped is the only clue. This says which command failed, on which
+# line, and with what status.
+#
+# It is a diagnostic, not error handling — nothing is recovered from — so it
+# reports and lets the non-zero status stand.
+trap 'status=$?; printf "\n\033[1;31m[applab-debugger]\033[0m %s failed (exit %d)\n" "$BASH_COMMAND" "$status" >&2' ERR
+
 RUNTIME_DIR="${APPLAB_RUNTIME_DIR:-$PWD/.applab-debugger}"
 mkdir -p "$RUNTIME_DIR"
 PUBLIC_URL_FILE="$RUNTIME_DIR/url.txt"
@@ -110,10 +126,9 @@ if [ -z "$APPLAB_API_KEY" ]; then
   APPLAB_API_KEY=$(openssl rand -hex 32)
 fi
 
-# ── 2. the tunnel, before anything that needs its hostname ──────────────────
+# ── 2. the hostname, before anything that needs it ──────────────────────────
 
 tunnel_pid=""
-TUNNEL_API=""
 
 open_tunnel() {
   case "$APPLAB_TUNNEL" in
@@ -191,8 +206,12 @@ find_public_host() {
   return 1
 }
 
-# resolve_tunnel settles on the domain the environment is served under, from a
-# tunnel or from the caller.
+# resolve_host settles on the hostname the environment is served under.
+#
+# It does not start anything. The hostname has to be known before applab is
+# installed, because it becomes apps.baseDomain — but knowing it is not the same
+# as publishing it, and for every case except a quick tunnel the name is settled
+# without a tunnel running at all. The agent is started later, by publish().
 #
 # APPLAB_PUBLIC_HOST skips the tunnel entirely and uses the given hostname. It
 # exists for CI, which must not depend on a public tunnel being granted: a quick
@@ -202,18 +221,19 @@ find_public_host() {
 # workflow, where a flaky link is a person's problem to re-run rather than a red
 # build.
 #
-# APPLAB_DOMAIN names the domain apps are served under, for a tunnel that *is*
-# started. It is not tunnel configuration — a named Cloudflare tunnel keeps its
-# hostname in its ingress, and the connector is never told it, and nothing has to
-# be passed to cloudflared. It is what applab needs: apps.baseDomain, which is
-# both where the apps are served and the host the console's own route matches. A
-# named tunnel cannot report it, so it has to be supplied.
-resolve_tunnel() {
+# APPLAB_DOMAIN names the domain apps are served under. It is not tunnel
+# configuration — a named Cloudflare tunnel keeps its hostname in its ingress, and
+# the connector is never told it, and nothing has to be passed to cloudflared. It
+# is what applab needs: apps.baseDomain, which is both where the apps are served
+# and the host the console's own route matches.
+resolve_host() {
+  # The one case with nothing to publish: the caller has a name, and there is no
+  # tunnel to start. Recorded here and returned to by publish(), which does
+  # nothing when APPLAB_PUBLIC_HOST is set.
   if [ -n "${APPLAB_PUBLIC_HOST:-}" ]; then
     TUNNEL_HOST="$APPLAB_PUBLIC_HOST"
     public_url="http://${TUNNEL_HOST}"
-    printf '%s\n' "$public_url" > "$PUBLIC_URL_FILE"
-    log "using the supplied hostname ${TUNNEL_HOST}; no tunnel is started"
+    log "using the supplied hostname ${TUNNEL_HOST}; no tunnel will be started"
     return 0
   fi
 
@@ -233,21 +253,22 @@ resolve_tunnel() {
         die "APPLAB_DOMAIN is only supported with a named Cloudflare tunnel, not '${APPLAB_TUNNEL}'"
         ;;
     esac
-  fi
 
-  open_tunnel
-
-  # Taken as given rather than discovered, because a named tunnel's hostname is
-  # not discoverable — see above. The tunnel's ingress has to already point here;
-  # nothing in this script can create or check it.
-  if [ -n "${APPLAB_DOMAIN:-}" ]; then
+    # Taken as given rather than discovered, because a named tunnel's hostname is
+    # not discoverable — see above. The tunnel's ingress has to already point
+    # here; nothing in this script can create or check it.
     TUNNEL_HOST="$APPLAB_DOMAIN"
     public_url="https://${TUNNEL_HOST}"
-    printf '%s\n' "$public_url" > "$PUBLIC_URL_FILE"
-    log "apps will be served under ${TUNNEL_HOST}"
+    log "the environment will be served at ${public_url}"
     log "  (the tunnel's ingress is configured in Cloudflare, not here)"
     return 0
   fi
+
+  # A quick tunnel, or ngrok: the name is whatever the agent is given, and the
+  # only way to learn it is to start the agent and ask. So this is the one path
+  # that has to run early — and it does, from here, before applab is installed.
+  log "starting ${APPLAB_TUNNEL} to find out which hostname it will be given"
+  open_tunnel
 
   log "waiting for the tunnel to report its public hostname"
   local found
@@ -263,7 +284,6 @@ resolve_tunnel() {
     die "the tunnel never reported a public hostname; see ${TUNNEL_LOG}"
   fi
 
-  printf '%s\n' "$found" > "$PUBLIC_URL_FILE"
   TUNNEL_HOST="${found#https://}"
   TUNNEL_HOST="${TUNNEL_HOST#http://}"
   TUNNEL_HOST="${TUNNEL_HOST%%/*}"
@@ -271,8 +291,29 @@ resolve_tunnel() {
   log "the environment will be published at ${public_url}"
 }
 
+# publish starts the tunnel, if one is needed and is not already up.
+#
+# It runs last, after the environment answers, so a tunnel that fails does so
+# with the cluster already proven good — the failure is then the tunnel's alone
+# and cannot be mistaken for the platform not coming up. resolve_host has already
+# started one for the only case that needed the name in advance (a quick tunnel
+# or ngrok), and this returns immediately then.
+publish() {
+  printf '%s\n' "$public_url" > "$PUBLIC_URL_FILE"
+
+  if [ -n "${APPLAB_PUBLIC_HOST:-}" ]; then
+    return 0
+  fi
+  if [ -n "$tunnel_pid" ]; then
+    # Already up, because its hostname was what we had to wait for.
+    return 0
+  fi
+
+  log "opening the ${APPLAB_TUNNEL} tunnel"
+  open_tunnel
+}
+
 open_cloudflare_tunnel() {
-  TUNNEL_API="http://127.0.0.1:20241"
   if [ -n "$CLOUDFLARE_TOKEN" ]; then
     log "opening a Cloudflare named tunnel"
     cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_TOKEN" >"$TUNNEL_LOG" 2>&1 &
@@ -284,7 +325,6 @@ open_cloudflare_tunnel() {
 }
 
 open_ngrok_tunnel() {
-  TUNNEL_API="http://127.0.0.1:4040"
   [ -n "$NGROK_TOKEN" ] || die "APPLAB_TUNNEL=ngrok needs NGROK_TOKEN"
   log "opening an ngrok tunnel"
   ngrok config add-authtoken "$NGROK_TOKEN" >"$TUNNEL_LOG" 2>&1 || die "ngrok rejected the authtoken"
@@ -292,7 +332,7 @@ open_ngrok_tunnel() {
   tunnel_pid=$!
 }
 
-resolve_tunnel
+resolve_host
 
 # ── 3. cluster, registry, gateway ───────────────────────────────────────────
 
@@ -576,6 +616,17 @@ check_endpoint "/api/v1/overview (key)" /api/v1/overview -H "Authorization: Bear
 [ -z "$failed" ] || die "these did not answer 200 through the gateway:${failed}"
 
 # ── 6. publish ──────────────────────────────────────────────────────────────
+
+# The tunnel comes up now rather than at the start. Everything above is the
+# cluster's own business and is already proven — the pods, the Service, both
+# VirtualServices and every endpoint answered — so a tunnel that fails here fails
+# on its own, and cannot be mistaken for the platform not having come up.
+#
+# The exception is a quick tunnel or ngrok, whose hostname had to be known before
+# applab was installed; resolve_host started that one already, and publish()
+# notices and does nothing.
+publish
+
 APPLAB_PUBLIC_URL="$public_url" \
 APPLAB_API_KEY_SHOWN="$APPLAB_API_KEY" \
 APPLAB_VERSION_SHOWN="$APPLAB_VERSION" \

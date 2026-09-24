@@ -40,7 +40,12 @@ on:
       domain:
         description: 'Domain'
         type: string
-        default: ''
+        # The same default the action declares. Named rather than empty so a run
+        # serves a domain that was chosen, not a hostname minted for that one
+        # connection — which means the named tunnel is the expected path, and a
+        # run without CLOUDFLARE_TOKEN stops rather than quietly publishing a
+        # quick tunnel's address instead.
+        default: 'applab.mytest.com'
 
 permissions:
   contents: read

@@ -52,7 +52,7 @@ see [the overview](../README.md) for how to install it, or drive the API directl
 | **applab** | The published image, installed with this repository's [Helm chart](../charts/applab/README.md). |
 | **Istio** | The ingress gateway apps are published through. Install it yourself in a real deployment; here it is part of the environment. |
 | **registry:2** | Where built images are pushed, as `kind-registry:5000` — a cluster-local registry with no TLS and no credentials. |
-| **cloudflared** | A quick tunnel, so the environment is reachable from anywhere. Set `tunnel: ngrok` to use ngrok instead. |
+| **cloudflared** | A named tunnel, published at `domain`. Set `domain` to empty for a quick tunnel instead, or `tunnel: ngrok` to use ngrok. |
 
 One hostname serves everything, and the Istio gateway is what serves it. An app
 is published under `/apps/<app>/`, and applab itself — the console at `/`, the
@@ -73,66 +73,68 @@ none of the console's own paths share.
 | `session_hours` | `4` | How long the environment may run. `0` means no self-imposed limit, bounded by the job's timeout. |
 | `tunnel` | `cloudflare` | `cloudflare` (no account needed) or `ngrok`. |
 | `cloudflare_token` | — | Token of a named Cloudflare tunnel; empty starts a quick tunnel. |
-| `domain` | — | The domain apps are served under. Needed with a named tunnel, and explained below. |
+| `domain` | `applab.mytest.com` | The domain apps are served under. Named by default, and explained below. |
 | `ngrok_token` | — | ngrok authtoken; required when `tunnel` is `ngrok`. |
 
-Only `api_key` is worth passing from a secret: it is generated when left empty,
-so the common case needs no configuration at all.
+Only `api_key` and `cloudflare_token` are worth passing from a secret: the key is
+generated when left empty, so it needs no configuration unless you want a
+particular one, and the token is a credential and never a plain input.
 
 The applab image tag is not an input. It is the published `latest`, so the
 environment runs the newest applab — the same tag the release workflow publishes
 alongside the version tags, re-resolved on every start because the chart pulls
 with `imagePullPolicy: Always`.
 
-### A named tunnel needs the domain named
+### The domain, and the named tunnel it needs
 
-With `cloudflare_token` set, the environment runs a **named** tunnel — the one
-whose hostname and ingress live in your Cloudflare dashboard. Cloudflare never
-tells the connector its own name, so the environment cannot discover the address
-apps should be served under, and a run without `domain` stops with:
+`domain` defaults to `applab.mytest.com`, and it is used as given: it becomes
+`apps.baseDomain`, so the apps are served under it and the console's own route
+matches it too.
+
+This is app configuration, not tunnel configuration. Nothing is passed to
+`cloudflared` — a named tunnel already knows its ingress, because you configured
+it. That is why the input is named for the domain rather than for the tunnel.
+
+It only works with a **named** tunnel — the one whose hostname and ingress live in
+your Cloudflare dashboard. A quick tunnel is assigned a random `trycloudflare.com`
+hostname by Cloudflare and cannot be given another, so apps could not be served
+under the domain you named; the ngrok path here does not pass the flag a reserved
+domain needs. Both combinations are refused when the run starts, rather than after
+a wait for a hostname that was never coming — which means **a default run needs
+`cloudflare_token` set**. Without it the run stops and says so.
+
+A named tunnel keeps its hostname in its ingress, and Cloudflare never tells the
+connector its own name, so the environment cannot discover the address apps should
+be served under:
 
 ```
 this is a named tunnel: Cloudflare does not tell the connector its own hostname
 ```
 
-Pass the domain and it is used as given:
-
-```
-domain: applab.example.com
-```
-
-This is app configuration, not tunnel configuration. Nothing is passed to
-`cloudflared` — a named tunnel already knows its ingress, because you configured
-it. What needs the value is applab: it becomes `apps.baseDomain`, which is both
-the host the apps are served under and the host the console's own route matches.
-That is why the input is named for the domain rather than for the tunnel.
+That is why the domain is declared rather than found, and why it has a default at
+all: the value has to come from a person, and naming it once is better than
+naming it on every run.
 
 One thing this does **not** do: create the ingress. Point the hostname at the
 tunnel in the Cloudflare dashboard first, or the address will resolve to a tunnel
 that routes nothing. Nothing here can make or check that.
 
-Nor can it be used with a quick tunnel or with ngrok. A quick tunnel is assigned
-a random hostname by Cloudflare and cannot be given another, so apps could not be
-served under the domain you named; the ngrok path here does not pass the flag a
-reserved domain needs. Both combinations are refused when the run starts, rather
-than after a wait for a hostname that was never coming.
-
-Leaving `cloudflare_token` empty is the simpler path, and the default: a quick
-tunnel is assigned a random `trycloudflare.com` hostname, needs no account, and
-that hostname is both where the console lives and the domain apps are served
-under. The link appears in the summary.
+Setting `domain` to empty goes back to a quick tunnel: one is assigned a random
+`trycloudflare.com` hostname, needs no account, and that hostname is both where
+the console lives and the domain apps are served under. The link appears in the
+summary. It is the simpler path and the flakier one — see below.
 
 ## The two things most likely to go wrong
 
-**A named Cloudflare tunnel cannot report its own hostname.** Cloudflare never
-tells the connector its name, so the environment cannot discover the domain to
-serve apps under — and without one it stops rather than publishing nothing. Pass
-`domain` (see above), or leave `cloudflare_token` empty and use a quick tunnel,
-whose hostname it *is* told.
+**A run with no `cloudflare_token` stops.** The default `domain` needs a named
+tunnel, and a quick tunnel cannot be given another hostname — so the run refuses
+the combination rather than publishing an address that does not match the domain
+it was told to serve. Set `cloudflare_token`, or set `domain` to empty.
 
 **A quick tunnel is for trying things.** It carries no SLA and its hostname is
 minted per connection, so a restart gives a different link. That is exactly right
-for a session you open now and discard, and wrong for anything you keep.
+for a session you open now and discard, and wrong for anything you keep — which is
+why the default is a named domain rather than one of these.
 
 ## What it costs
 
