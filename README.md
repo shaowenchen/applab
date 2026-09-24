@@ -239,29 +239,36 @@ so restrict the path at the network edge where that matters.
 
 ## The API
 
-[`api/llms.txt`](api/llms.txt) is the authoritative, endpoint-by-endpoint
-reference — query parameters, request bodies, response shapes and side effects.
-It is served at `/llms.txt`, generated from the route table in
-`internal/api/router.go` so the served API and the documented API cannot drift.
+**Start at `GET /api/v1/describe`.** One call answers everything needed to work
+with a deployment: where it is, the full endpoint list with the credential each
+route requires, what it is wired to, what the presented key may do, which apps
+exist and where each is served, and the shortest call for each operation. It
+needs no key, so it is also how you find out what a deployment is before you have
+one — but the answer is fuller with a key, which is what lets it name the apps
+that key reaches.
 
-Two standing rules for its content:
+The endpoint list is generated from the route table in `internal/api/router.go`,
+so the served API and the described API cannot drift: there is nothing to
+regenerate and no committed copy to go stale. Two routes deliberately stay out of
+it — they are destructive maintenance operations, and the list is read by agents
+that act on what they find.
 
-- **Describe capability, not destruction.** It is read by agents that act on what
-  they find, so it documents the functional endpoints in enough detail to call
-  them correctly.
-- **Keep it true.** A new route, a changed parameter or a changed default is an
-  `llms.txt` change in the same commit. Run `make llms` and commit the result;
-  `make check` fails if you forget.
+Two standing rules for the descriptions in that table:
+
+- **Describe capability, not destruction.** Each entry says what the route does
+  and what credential it needs, in enough detail to call it correctly.
+- **Keep it true.** A changed parameter or a changed default is a change to the
+  route's `Doc` in the same commit. A test asserts every served route appears in
+  the list, so a route cannot be added and forgotten.
 
 ## Development
 
 ```bash
 make build-server   # build the control plane
 make run            # run with a development key
-make check          # fmt, vet, llms.txt consistency, tests — the gate CI runs
+make check          # fmt, vet, tests — the gate CI runs
 make test           # tests only
 make coverage       # coverage summary
-make llms           # regenerate api/llms.txt from the route table
 make docs           # render the documentation site into ./pages
 ```
 
@@ -327,7 +334,7 @@ is what a person starts when they want to push an app at something.
 
 `https://www.chenshaowen.com/applab` is both the Helm repository and these
 documents. The site is generated from this repository's own markdown — this file,
-the chart's README, and `api/llms.txt` — by `cmd/gendocs`, so the pages cannot
+the chart's README, and the debugger's — by `cmd/gendocs`, so the pages cannot
 drift from the documents people actually edit.
 
 A link in the markdown names a repository file, which is not where anything lives

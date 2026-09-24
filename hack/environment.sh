@@ -766,15 +766,22 @@ check_endpoint() {
 
 # Open by design: a probe cannot hold a key, and the console is a page a browser
 # fetches before anyone has signed in.
+#
+# /api/v1/describe is the one that matters most for an agent: it is where a
+# caller with no key learns what this deployment is, and it serves the endpoint
+# list. Asserting it here is what proves the front door opens — it is the route
+# whose absence nothing else would catch, because everything else a client uses
+# needs a key first.
 check_endpoint "/health"                /health
 check_endpoint "/api/v1/config"         /api/v1/config
 check_endpoint "/api/v1/version"        /api/v1/version
-check_endpoint "/llms.txt"              /llms.txt
+check_endpoint "/api/v1/describe"       /api/v1/describe
 check_endpoint "/metrics"               /metrics
 check_endpoint "/ (the console)"        /
 # The one thing that proves the admin key works through the gateway, not only
 # that the route exists.
 check_endpoint "/api/v1/overview (key)" /api/v1/overview -H "Authorization: Bearer ${APPLAB_API_KEY}"
+check_endpoint "/api/v1/describe (key)" /api/v1/describe -H "Authorization: Bearer ${APPLAB_API_KEY}"
 
 [ -z "$failed" ] || die "these did not answer 200 through the gateway:${failed}"
 

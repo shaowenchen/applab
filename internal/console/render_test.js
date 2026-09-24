@@ -29,11 +29,23 @@ if (!match) {
 }
 const source = match[1];
 
+// The markup above the script, which is where every id and class comes from.
+// Split out rather than scanning the whole file: the script is full of `<` and
+// `>` in comparisons and in the SVG strings it builds, and a tag regex run over
+// it would invent elements that do not exist.
+const markup = html.slice(0, html.indexOf("<script>"));
+
 // --- A DOM stub, only as complete as the console needs ----------------------
 
 function makeElement(id = "") {
   const el = {
     id,
+    // A browser always reports one, and the console reads it to decide how to
+    // mask a value. Defaulted to a span, which is the text half of that branch;
+    // the harness overrides it from the markup for the ids that are something
+    // else.
+    tagName: "SPAN",
+    type: "",
     textContent: "",
     value: "",
     href: "",
@@ -74,12 +86,46 @@ function makeElement(id = "") {
 }
 
 // Every id the script touches at load time, so the wiring section does not throw.
+//
+// The markup's own ids are included as well: some are reached through a computed
+// name — `$(view + "-view")` in the code that switches views — which a scan of
+// the script cannot see, and a check that asked for one of those by hand would
+// be reading an element the harness never made.
 const ids = new Set();
 for (const m of source.matchAll(/\$\("([^"]+)"\)/g)) ids.add(m[1]);
 for (const m of source.matchAll(/getElementById\("([^"]+)"\)/g)) ids.add(m[1]);
 
+// And which element each id is, read from the markup. It matters: the console
+// masks a credential in one of two ways depending on what it is looking at — a
+// real `<input>` gets its type switched, anything else gets its text replaced —
+// so a stub that reported every element as the same thing would exercise one
+// branch and silently never run the other.
+//
+// The starting classes come from the markup for the same reason: every section
+// is born `hidden` and shown by the script, so a harness that began with them
+// all visible would report a console that greets a signed-out visitor with the
+// overview, the apps list and the nav.
+const tags = new Map();
+const classes = new Map();
+for (const m of markup.matchAll(/<([a-z]+)\b([^>]*)>/g)) {
+  const id = /\bid="([^"]+)"/.exec(m[2]);
+  if (!id) continue;
+  tags.set(id[1], m[1].toUpperCase());
+  ids.add(id[1]);
+  // Attribute order in the markup is whatever reads best — `id` first on some
+  // elements, `class` first on others — so both are read from the tag as a
+  // whole rather than from what follows the id.
+  const cls = /\bclass="([^"]*)"/.exec(m[2]);
+  if (cls) classes.set(id[1], cls[1].split(/\s+/).filter(Boolean));
+}
+
 const elements = new Map();
-for (const id of ids) elements.set(id, makeElement(id));
+for (const id of ids) {
+  const el = makeElement(id);
+  if (tags.has(id)) el.tagName = tags.get(id);
+  for (const c of classes.get(id) || []) el.classList.add(c);
+  elements.set(id, el);
+}
 
 const store = new Map();
 const sandbox = {
@@ -215,8 +261,10 @@ async function render(apps) {
     check("and no stray path", text.includes("undefined"), false);
   }
 
-  // Not deployed: no url, but the address is still known and is what the row
-  // should name.
+  // Not deployed: the app has no `url` from the API yet, but its address is
+  // still known and is still what the row should offer. A plain-text address
+  // that becomes a link on first deploy teaches nothing, and "where will this
+  // be" is exactly the question someone has before deploying.
   {
     const body = await render([
       { id: "shop", status: "created", hostname: "www.example.com", path: "/apps/shop" },
@@ -224,6 +272,17 @@ async function render(apps) {
     const text = body.allText();
     check("an undeployed app shows its address", text.includes("www.example.com/apps/shop"), true);
     check("marked as not deployed", text.includes("not deployed"), true);
+
+    const link = body.children[0].children[3].children.find((c) => c.tagName === "A");
+    check("and the address is a link even before it is serving", link !== undefined, true);
+    check(
+      "pointing at where the app will be",
+      link && link.href,
+      "https://www.example.com/apps/shop"
+    );
+    // The scheme comes from the page: a deployment served over https serves its
+    // apps over https, through the same gateway.
+    check("over the same scheme as the console", link && link.href.startsWith("https://"), true);
   }
 
   // No domain configured at all: the row must not render "null" or "undefined".
@@ -234,7 +293,8 @@ async function render(apps) {
     check("and never the string undefined", text.includes("undefined"), false);
   }
 
-  // The address the console talks to.
+  // The address the console talks to, and the one place it is shown before
+  // anyone has signed in.
   //
   // It has to carry the path the page was served from, not just its origin: a
   // deployment under a path (ingress.path, which the chart defaults to /applab)
@@ -243,9 +303,7 @@ async function render(apps) {
   // trailing slash being trimmed is part of what this checks.
   //
   // Asserted through the sign-in card's own text, which is where the address is
-  // now shown rather than typed. That keeps the check on the same derived value
-  // as before — boot() sets state.url from the page and renders it here — while
-  // the field it used to read no longer exists.
+  // shown rather than typed — the field it used to read no longer exists.
   check(
     "the console reports the address it was served from, trailing slash trimmed",
     elements.get("signin-where").textContent,
@@ -256,7 +314,7 @@ async function render(apps) {
   // anyone should have to bring.
   check(
     "the sign-in form asks for nothing but a key",
-    html.includes("signin-url"),
+    markup.includes("signin-url"),
     false
   );
 
@@ -264,13 +322,51 @@ async function render(apps) {
   // than asserted on the absence of one id, so a second field added under any
   // name is caught: "type the URL and the key" is the shape this replaced.
   {
-    const form = html.match(/<form id="signin-form"[\s\S]*?<\/form>/);
+    const form = markup.match(/<form id="signin-form"[\s\S]*?<\/form>/);
     check("the sign-in form exists", form !== null, true);
     if (form) {
       const fields = form[0].match(/<input\b/g) || [];
       check("and holds exactly one field", fields.length, 1);
       check("which is the key", form[0].includes('id="signin-key"'), true);
     }
+  }
+
+  // Signed out, the console shows the sign-in card and nothing else: no view is
+  // left on screen behind it, and the header keeps only what is useful before a
+  // key exists. This is the state a first visit lands in, and the one the page
+  // has to get right without any JavaScript having run a view.
+  {
+    check("signed out, the sign-in card is up", elements.get("signin").classList.contains("hidden"), false);
+    for (const view of ["overview", "apps", "builds", "app"]) {
+      check(
+        `signed out, the ${view} view is not on screen`,
+        elements.get(view + "-view").classList.contains("hidden"),
+        true
+      );
+    }
+    check("and neither is the nav", elements.get("nav").classList.contains("hidden"), true);
+    // The header itself stays, because the theme and language controls live in
+    // it and they are the whole of what this screen offers besides the card.
+    check("the header stays up for its preference controls", elements.get("app-header").classList.contains("hidden"), false);
+  }
+
+  // The eye on the sign-in field. It is the one control that exists before any
+  // credential does, so it is the one that has to work from a cold start: a real
+  // input, whose type the button toggles.
+  {
+    const key = elements.get("signin-key");
+    const eye = elements.get("signin-reveal");
+    check("the sign-in key is a real field", key.tagName, "INPUT");
+    check("masked to begin with", key.type, "password");
+    check("with an eye beside it", (eye.textContent || eye.innerHTML || "").length > 0, true);
+    check("labelled as what it will do", eye.getAttribute("aria-label"), "Show");
+
+    eye.onclick();
+    check("clicking it reveals the key", key.type, "text");
+    check("and offers the reverse", eye.getAttribute("aria-label"), "Hide");
+
+    eye.onclick();
+    check("clicking again masks it", key.type, "password");
   }
 
   // The theme must be stamped on the root element by boot, before anything is
@@ -290,10 +386,11 @@ async function render(apps) {
     check("and the document language is set", root.getAttribute("lang"), "en");
   }
 
-  // Both preference controls label themselves, which is what the theme function
-  // does with setAttribute — the call that would throw in a real browser only if
-  // the element were missing, and throws here if the stub is incomplete.
-  for (const id of ["theme-toggle", "lang-toggle", "signin-theme-toggle", "signin-lang-toggle"]) {
+  // Every control the header carries has to label itself: two are text buttons
+  // the theme and language functions write into, and the rest are markup. The
+  // ids are the ones the console actually uses, so a control that stopped being
+  // labelled fails here rather than silently rendering blank.
+  for (const id of ["theme-toggle", "lang-toggle"]) {
     check(
       `the ${id} control is labelled`,
       (elements.get(id).textContent || "").length > 0,
@@ -320,12 +417,29 @@ async function render(apps) {
 
     // Keys come from two places: data-i18n attributes in the markup, and string
     // literals passed to t()/tf() in the script.
-    const fromMarkup = [...html.matchAll(/data-i18n(?:-placeholder)?="([^"]+)"/g)].map((m) => m[1]);
+    const fromMarkup = [...markup.matchAll(/data-i18n(?:-placeholder|-title)?="([^"]+)"/g)].map((m) => m[1]);
 
     // Literal arguments only. A value passed through a variable — t(status) —
     // cannot be read statically, and is covered by the runtime checks below.
     const fromJS = [];
     for (const m of source.matchAll(/\btf?\(\s*"((?:[^"\\]|\\.){2,})"/g)) fromJS.push(m[1]);
+    // The i18n title attributes are the same kind of string reached the same
+    // way, and one of them with no entry is a marker that renders its own key.
+    for (const m of markup.matchAll(/data-i18n-title="([^"]+)"/g)) fromJS.push(m[1]);
+
+    // This design has no key space: the English text *is* the key, so a marker
+    // can be checked for being text rather than for existing. A dotted,
+    // separator-free marker like "apps.new.id" is a key that leaked in from a
+    // dictionary mindset — t() returns it unchanged in English, so the reader
+    // sees the key itself, and the coverage checks above pass because it is in
+    // ZH as well. Two rounds of that shipped before this check existed:
+    // "nav.overview" in the navigation, and "apps.new.id" as a placeholder.
+    const keyLike = [...fromMarkup, ...fromJS].filter((s) => /^[a-z][a-z0-9]*(?:\.[a-z0-9_]+)+$/.test(s));
+    check(
+      "no string marker is a dotted key rather than the text it stands for",
+      keyLike.join(" | "),
+      ""
+    );
 
     const wanted = new Set([...fromMarkup, ...fromJS]);
     const missing = [...wanted].filter((k) => !(k in zh));
@@ -342,6 +456,9 @@ async function render(apps) {
       "nothing broken", "failed or build-failed", "{name} on", "{name} off",
       "running", "failed", "build-failed", "building", "deploying", "created",
       "succeeded", "pending", "ready", "not ready", "deployed", "no image",
+      // Reached as t(shown ? "Hide" : "Show"), which the static scan cannot read
+      // — the argument is an expression. Exercised by the eye checks above.
+      "Show", "Hide",
     ]);
     const unreferenced = Object.keys(zh).filter((k) => !wanted.has(k) && !viaVariable.has(k));
     check(

@@ -153,17 +153,3 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		GoVersion: runtime.Version(),
 	})
 }
-
-// handleLlmsTxt serves the agent-facing contract.
-//
-// It is rendered per request rather than served as a static file so that the
-// endpoint list is always the one the running server actually has: a route
-// added without touching a data file cannot end up undocumented here.
-func (s *Server) handleLlmsTxt(w http.ResponseWriter, r *http.Request) {
-	doc, err := RenderLlmsTxt(s)
-	if err != nil {
-		fail(w, r, Errorf(http.StatusInternalServerError, "render llms.txt").Wrap(err))
-		return
-	}
-	writeText(w, http.StatusOK, "text/plain", doc)
-}

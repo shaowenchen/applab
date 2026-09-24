@@ -15,7 +15,7 @@ func testRepo(t *testing.T) string {
 	files := map[string]string{
 		"README.md": `# applab
 
-See [the chart](charts/applab) and [the API](api/llms.txt).
+See [the chart](charts/applab) and [the debugger](debugger/README.md).
 
 Also [the license](LICENSE) and [values](charts/applab/values.yaml).
 
@@ -23,7 +23,7 @@ An [external link](https://example.com) and [a fragment](#section).
 `,
 		"charts/applab/README.md":   "# The chart\n\nBack to [the overview](../../README.md) and [the values](values.yaml).\n",
 		"charts/applab/values.yaml": "replicaCount: 1\n",
-		"api/llms.txt":              "# AppLab\n\nPlain text contract.\n",
+		"debugger/README.md":        "# The debugger\n\nPlain text contract.\n",
 		"LICENSE":                   "MIT\n",
 		"docs/internal-note.md":     "not published\n",
 	}
@@ -49,7 +49,7 @@ func testSite(t *testing.T, root string) Site {
 		Pages: []Page{
 			{Source: "README.md", Output: "index.html", Title: "Overview", Nav: "Overview"},
 			{Source: "charts/applab/README.md", Output: "chart.html", Title: "Chart", Nav: "Installing"},
-			{Source: "api/llms.txt", Output: "api.html", Title: "API", Nav: "API"},
+			{Source: "debugger/README.md", Output: "debugger.html", Title: "Debugger", Nav: "Debugger"},
 		},
 	}
 }
@@ -66,7 +66,7 @@ func TestBuildProducesEveryPage(t *testing.T) {
 		t.Errorf("wrote %v, want three pages and a manifest", result.Written)
 	}
 
-	for _, name := range []string{"index.html", "chart.html", "api.html"} {
+	for _, name := range []string{"index.html", "chart.html", "debugger.html"} {
 		body, err := os.ReadFile(filepath.Join(dest, name))
 		if err != nil {
 			t.Fatalf("%s was not written: %v", name, err)
@@ -96,7 +96,7 @@ func TestLinksResolveToSomethingReal(t *testing.T) {
 
 	for _, want := range []struct{ href, why string }{
 		{`href="chart.html"`, "a directory holding a published page links to that page"},
-		{`href="api.html"`, "a link to a published source document links to its page"},
+		{`href="debugger.html"`, "a directory holding a published page links to that page"},
 		{`href="https://github.com/example/applab/blob/main/LICENSE"`, "a repository file links to where it is readable"},
 		{`href="https://github.com/example/applab/blob/main/charts/applab/values.yaml"`, "and so does one in a subdirectory, resolved from the page that linked it"},
 		{`href="https://example.com"`, "an external link is left alone"},
@@ -109,7 +109,7 @@ func TestLinksResolveToSomethingReal(t *testing.T) {
 
 	// The paths that only exist in the repository must not survive as links:
 	// on the site they are 404s.
-	for _, unwanted := range []string{`href="charts/applab/"`, `href="charts/applab"`, `href="api/llms.txt"`, `href="LICENSE"`} {
+	for _, unwanted := range []string{`href="charts/applab/"`, `href="charts/applab"`, `href="debugger/"`, `href="debugger"`, `href="LICENSE"`} {
 		if strings.Contains(html, unwanted) {
 			t.Errorf("the page still links to %s, which is not a path the site serves", unwanted)
 		}
@@ -219,41 +219,6 @@ func TestTablesRender(t *testing.T) {
 	}
 }
 
-// TestTheContractIsNotParsedAsMarkdown asserts llms.txt is published verbatim.
-//
-// It is plain text by design — indented code blocks and all — and running it
-// through a markdown parser would reflow exactly the formatting that makes it
-// readable as a contract.
-func TestTheContractIsNotParsedAsMarkdown(t *testing.T) {
-	root := testRepo(t)
-	contract := "# AppLab\n\n    Authorization: Bearer <key>\n\n<p>not html</p>\n"
-	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash("api/llms.txt")), []byte(contract), 0o644); err != nil {
-		t.Fatalf("write contract: %v", err)
-	}
-
-	dest := t.TempDir()
-	if _, err := testSite(t, root).Build(dest); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	body, err := os.ReadFile(filepath.Join(dest, "api.html"))
-	if err != nil {
-		t.Fatalf("read api: %v", err)
-	}
-	html := string(body)
-
-	if !strings.Contains(html, `<pre class="contract">`) {
-		t.Error("the contract was not published as preformatted text")
-	}
-	if !strings.Contains(html, "    Authorization: Bearer") {
-		t.Error("the contract's indentation was lost")
-	}
-	// Escaped, not interpreted: it is a document, not a page.
-	if !strings.Contains(html, "&lt;p&gt;not html&lt;/p&gt;") {
-		t.Error("the contract's markup was not escaped")
-	}
-}
-
 // TestStalePagesArePrunedAndChartsSurvive is the one that matters for CI: the
 // destination is also the chart repository, so pruning has to remove the
 // previous build's pages and nothing else.
@@ -284,7 +249,7 @@ func TestStalePagesArePrunedAndChartsSurvive(t *testing.T) {
 		t.Fatalf("second build: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dest, "api.html")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dest, "debugger.html")); !os.IsNotExist(err) {
 		t.Error("the page no longer produced was not removed")
 	}
 	for _, name := range []string{"index.yaml", "applab-0.1.0.tgz", "applab-1.0.0-dev.tgz"} {
@@ -348,7 +313,7 @@ func TestRealRepositoryBuilds(t *testing.T) {
 
 	// The published set is asserted rather than the count, so removing a page
 	// from DefaultSite is caught here instead of on the site.
-	for _, want := range []string{"index.html", "chart.html", "api.html"} {
+	for _, want := range []string{"index.html", "chart.html", "debugger.html"} {
 		if _, err := os.Stat(filepath.Join(dest, want)); err != nil {
 			t.Errorf("%s was not published: %v", want, err)
 		}

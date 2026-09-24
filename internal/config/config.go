@@ -24,7 +24,7 @@ type Config struct {
 	Listen string `yaml:"listen"`
 
 	// BaseURL is the address callers reach this service at, used wherever a URL
-	// is handed back to a client (clone URLs, llms.txt links). Empty means
+	// is handed back to a client (clone URLs). Empty means
 	// derive it from the request's Host header, which is right on a cluster
 	// fronted by an ingress and wrong the moment a proxy rewrites Host — so
 	// setting it explicitly is the safer deployment.

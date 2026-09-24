@@ -12,7 +12,6 @@ import (
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/deploy"
-	"github.com/shaowenchen/applab/internal/llms"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
@@ -488,6 +487,22 @@ type route struct {
 	// destroying the app and its history is the operator's to do.
 	AppAdminOnly bool
 
+	// IdentifyOnly establishes who the caller is without requiring a key: a
+	// request with none is passed through as anonymous rather than refused.
+	//
+	// It is set on the one route that is reachable both ways and means something
+	// different each time — GET /api/v1/describe is the front door, so it has to
+	// answer a caller that has not authenticated yet, but it can say much more to
+	// one that has. The handler is what decides what each caller gets.
+	//
+	// It is a mode of its own rather than a relaxation of AppListScope because
+	// the two differ in exactly the way that matters: AppListScope exists to
+	// *require* a credential on a route with no {app} to scope against, and a
+	// route that quietly stopped requiring one would hand its collection to
+	// anyone. A test asserts the set of routes that are open, so this cannot be
+	// added to one by accident.
+	IdentifyOnly bool
+
 	// TokenAuth requires a single-use source token instead of an API key.
 	//
 	// It exists for the one route a build Job calls. A build runs in the app's
@@ -500,7 +515,8 @@ type route struct {
 	// route sets neither.
 	TokenAuth bool
 
-	// Doc describes the route in one line for llms.txt. Empty means the route
+	// Doc describes the route in one line for the endpoint list GET /api/v1/describe
+	// returns. Empty means the route
 	// is deliberately undocumented — reserved for destructive maintenance
 	// operations, which are not offered to agents that act on what they read.
 	Doc string
@@ -511,7 +527,7 @@ type route struct {
 // routes returns the full route table.
 //
 // The order is irrelevant to routing but this is the order the API reference in
-// llms.txt is generated in, so it is grouped by resource rather than
+// the endpoint list is generated in, so it is grouped by resource rather than
 // alphabetised.
 func (s *Server) routes() []route {
 	return []route{
@@ -536,6 +552,11 @@ func (s *Server) routes() []route {
 			Handler: s.handleConfig,
 		},
 		{
+			// Unauthenticated, like /api/v1/describe, because it is the other
+			// half of the same answer: describe says what this deployment is,
+			// this says what came before it. Together they are how a client that
+			// holds no key can find out what this service is and what it is
+			// compatible with.
 			Pattern: "GET /api/v1/version",
 			Doc:     "Build version and commit.",
 			Handler: s.handleVersion,
@@ -553,35 +574,27 @@ func (s *Server) routes() []route {
 			Handler: s.handleOverview,
 		},
 		{
-			// The orientation call. An agent that has just been handed an
-			// address and a key has to learn what this installation is, what it
-			// can do and what already exists before it can act; every one of
-			// those is answerable from the endpoints above and below, but only
-			// by knowing which of them to call and which parts to read.
+			// The orientation call, and the only one an agent needs to be given:
+			// it answers where this is, what it can do and what already exists.
 			//
-			// Authenticated, unlike /api/v1/config: it lists the apps and names
-			// the registry and gateway, which is the deployment's structure
-			// rather than a client-facing fact.
+			// Unauthenticated, unlike everything below it. It carries no app, no
+			// key and no cluster state — an anonymous caller gets the endpoint
+			// list and the deployment's shape, and nothing about what anyone has
+			// deployed; the app list, the build settings and the registry are all
+			// withheld until a key authenticates.
 			//
-			// AppListScope rather than Auth, because it is the *orientation*
-			// call and an app key needs it most: that key reaches one app, and
-			// the first thing its holder has to learn is which. The middleware
-			// establishes which tier the key is and the handler narrows the app
-			// list to match — the same split as GET /api/v1/apps, and for the
-			// same reason.
-			Pattern:      "GET /api/v1/describe",
-			AppListScope: true,
-			Doc:          "Everything needed to work with this deployment, in one call: a one-line summary, how to reach it, what it is wired to (registry, gateway, domains), what the presented key may do, every app with its address, and the shortest call for each operation. Start here; the full contract is /llms.txt.",
+			// That is what makes it the front door: a caller has to be able to
+			// find out what this service is before it can authenticate to it,
+			// which is the same reason /api/v1/config is open. An app key is
+			// still the better answer for a caller that has one — it gets its
+			// own app's address in the list rather than an empty one.
+			Pattern: "GET /api/v1/describe",
+			// Identified, not required: see the flag's own comment. The handler
+			// narrows to nothing for an anonymous caller.
+			IdentifyOnly: true,
+			Doc:          "Start here. Everything needed to work with this deployment in one call: a one-line summary, how to reach it, the full endpoint list with the credential each requires, what is wired to it (registry, gateway, domains), what the presented key may do, every app with its address, and the shortest call for each operation. Needs no key, but returns less without one: an app key sees its app, an admin key sees every app.",
 			Handler:      s.handleDescribe,
 		},
-		{
-			// Unauthenticated for the same reason as /api/v1/config: this file
-			// is how a caller learns the key is needed and how to present it.
-			Pattern: "GET /llms.txt",
-			Doc:     "This document.",
-			Handler: s.handleLlmsTxt,
-		},
-
 		// -- Apps ---------------------------------------------------------
 		{
 			Pattern: "GET /api/v1/apps",
@@ -842,46 +855,55 @@ func (s *Server) routes() []route {
 	}
 }
 
-// RouteReference renders the API reference block for llms.txt.
+// RouteReference describes every documented route, for the endpoint list that
+// GET /api/v1/describe returns.
 //
-// It is generated from the same table that configures the mux, so a route
-// cannot be documented without existing or exist without being documented —
-// a test asserts the committed llms.txt contains exactly this text.
-func (s *Server) RouteReference() string {
-	var b strings.Builder
+// It is generated from the same table that configures the mux, so a route cannot
+// be described without existing or exist without being described — a test
+// asserts the two are the same set.
+//
+// It is returned as data rather than rendered as a document, so there is no
+// committed copy to go stale and no generator to run: the answer a caller gets
+// is produced from the running server's own table, which is the only thing that
+// can be right about what it serves.
+func (s *Server) RouteReference() []describeEndpoint {
+	out := make([]describeEndpoint, 0, len(s.routes()))
 	for _, r := range s.routes() {
 		if r.Doc == "" {
 			continue
 		}
 		method, path, _ := strings.Cut(r.Pattern, " ")
-		// `(key)` means the API key, which is what a reader of this document
-		// has. A route requiring an AppListScope credential is one — it is the
-		// same key, checked without an {app} to scope against.
-		//
-		// TokenAuth is deliberately not counted. That route takes a single-use
-		// source token minted for one commit of one app, which no reader of this
-		// document holds and none can obtain; labelling it `(key)` would send
-		// someone to call it with a credential that does not work.
-		key := "no key"
-		if r.Auth || r.AppListScope {
-			key = "key"
-		}
-		b.WriteString("- `" + method + " " + path + "` — " + r.Doc + " _(" + key + ")_\n")
+		out = append(out, describeEndpoint{
+			Method: method,
+			Path:   path,
+			Key:    routeKeyTier(r),
+			Doc:    r.Doc,
+		})
 	}
-	return b.String()
+	return out
 }
 
-// DocumentedRouteCount reports how many routes appear in the API reference. It
-// exists so a test can assert the reference is non-trivial — an empty generator
-// would otherwise make the consistency check pass vacuously.
-func (s *Server) DocumentedRouteCount() int {
-	n := 0
-	for _, r := range s.routes() {
-		if r.Doc != "" {
-			n++
-		}
+// routeKeyTier names the credential a route requires, from the flags that
+// actually configure its middleware.
+//
+// It is finer-grained than a boolean because the tiers are not interchangeable
+// and a caller that confuses them gets a 403 it cannot explain: an app key is
+// not a lesser admin key, it is a key that reaches one app, and a source token
+// reaches one commit of one app and cannot be obtained by a caller at all.
+func routeKeyTier(r route) string {
+	switch {
+	case r.TokenAuth:
+		// Minted by the server when a build starts and handed to the build Job.
+		// No client of this API holds one.
+		return "token"
+	case r.AppAuth || r.AppListScope:
+		// Either tier, with the handler narrowing what an app key reaches.
+		return "app"
+	case r.Auth:
+		return "admin"
+	default:
+		return "none"
 	}
-	return n
 }
 
 // PatternRequiresAuth reports whether the route matching pattern is protected.
@@ -902,10 +924,32 @@ func (s *Server) PatternRequiresAuth(pattern string) bool {
 			// AppListScope route that existed also carried Auth, so it answered
 			// correctly by accident and a route declared with the scope alone
 			// would have been reported as open.
-			return r.Auth || r.TokenAuth || r.AppListScope
+			//
+			// IdentifyOnly is deliberately *not* here. That route does not
+			// require a key and does not refuse a request without one, so it is
+			// genuinely open; claiming otherwise would let a route be reachable
+			// anonymously while passing the test that exists to catch exactly
+			// that.
+			return r.Auth || r.TokenAuth || r.AppListScope || r.AppAuth
 		}
 	}
 	return true
+}
+
+// UnauthenticatedPatterns returns every route served without a key, sorted.
+//
+// It exposes the table's own declaration rather than a list maintained beside
+// it, so the test asserting which routes are open cannot disagree with the mux
+// the middleware was actually installed on.
+func (s *Server) UnauthenticatedPatterns() []string {
+	var out []string
+	for _, r := range s.routes() {
+		if !r.Auth && !r.TokenAuth && !r.AppListScope && !r.AppAuth {
+			out = append(out, r.Pattern)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // PatternAcceptsAppKey reports whether the route matching pattern admits the
@@ -973,19 +1017,6 @@ func (s *Server) MarkDeployedForTest(appID, commitSHA, image string) {
 	app.Image = image
 }
 
-// RenderLlmsTxt produces the exact document the llms.txt endpoint serves.
-//
-// It exists so the consistency test and the generator command compare against
-// the same bytes the server would send, rather than a reimplementation that
-// could itself drift.
-func RenderLlmsTxt(s *Server) (string, error) {
-	doc := llms.Render(s.RouteReference())
-	if strings.TrimSpace(doc) == "" {
-		return "", fmt.Errorf("generated llms.txt is empty")
-	}
-	return doc, nil
-}
-
 // Handler builds the HTTP handler: the route table, wrapped in authentication
 // per route and in request logging and panic recovery around everything.
 func (s *Server) Handler() http.Handler {
@@ -998,6 +1029,11 @@ func (s *Server) Handler() http.Handler {
 			// Two tiers, so the route is wrapped by the one middleware that
 			// knows the difference rather than by the admin check alone.
 			h = s.countAuthRejections(s.appAuthMiddleware(h, r.AppAdminOnly))
+		case r.IdentifyOnly:
+			// Identity established, key never required — and no rejection
+			// counting, because a call without a key is the expected case here
+			// rather than something worth counting as a refusal.
+			h = s.identifyOnlyMiddleware(h)
 		case r.AppListScope:
 			// Both tiers too, but there is no {app} to compare against — the
 			// middleware only establishes the identity and the handler narrows

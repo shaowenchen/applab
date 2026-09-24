@@ -113,7 +113,7 @@ func (m *Metrics) ObserveAuthRejection() { m.authRejections.Add(1) }
 // It needs no key: a Prometheus scraper holds credentials awkwardly, the numbers
 // describe the platform rather than any tenant's data, and the endpoint is
 // expected to be network-restricted by the deployment. That is a deliberate
-// trade and is documented in llms.txt.
+// trade, and is reported by GET /api/v1/describe so a client can see it.
 func (m *Metrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 

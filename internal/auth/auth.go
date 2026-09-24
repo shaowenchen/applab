@@ -177,10 +177,27 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 type Identity struct {
 	// App is the app an app key belongs to. Empty means the admin tier.
 	App string
+
+	// Anonymous says no credential was presented at all.
+	//
+	// It has to be a field of its own rather than an empty App, because the zero
+	// Identity is the admin tier: every route that authenticates builds one for
+	// a valid admin key, so "App is empty" cannot mean both "this is the
+	// operator" and "this is nobody". Only the routes that are reachable without
+	// a key ever see this true; a route behind a middleware has already refused
+	// an unauthenticated request before its handler runs.
+	Anonymous bool
 }
 
 // Admin reports whether this identity is the unrestricted tier.
-func (i Identity) Admin() bool { return i.App == "" }
+//
+// An anonymous request is not: it reaches the routes that need no key and
+// nothing else, so anything narrowing what a caller may see has to check this
+// before it checks Admin.
+func (i Identity) Admin() bool { return i.App == "" && !i.Anonymous }
+
+// Authenticated reports whether a credential was presented and recognised.
+func (i Identity) Authenticated() bool { return !i.Anonymous }
 
 // AppKeyResolver maps a presented app key to the app that owns it.
 //

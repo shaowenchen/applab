@@ -110,12 +110,6 @@ func DefaultSite(root, repoURL, branch string) Site {
 				Nav:    "Installing",
 			},
 			{
-				Source: "api/llms.txt",
-				Output: "api.html",
-				Title:  "The HTTP API",
-				Nav:    "API reference",
-			},
-			{
 				Source: "debugger/README.md",
 				Output: "debugger.html",
 				Title:  "A whole platform on a runner",
@@ -139,8 +133,8 @@ func (s Site) Build(dest string) (*Result, error) {
 	// Where a link may land, keyed by every address a document might use for it:
 	// the output path, and the source path it is generated from.
 	//
-	// Both, because a document pointing at api/llms.txt means "read the API
-	// contract" and the site publishes exactly that document — sending the
+	// Both, because a document pointing at charts/applab means "the chart
+	// instructions" and the site publishes exactly that document — sending the
 	// reader to GitHub for it would be technically correct and plainly not what
 	// was meant.
 	landing := make(map[string]string, len(s.Pages)*2)
@@ -214,17 +208,6 @@ func (s Site) render(p Page, landing map[string]string) (template.HTML, error) {
 	source, err := os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(p.Source)))
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", p.Source, err)
-	}
-
-	// The API contract is plain text by design — it is read by agents — and
-	// rendered as a fenced block rather than parsed as markdown, so its
-	// indentation and its own headings survive intact.
-	if strings.HasSuffix(p.Source, ".txt") {
-		var b bytes.Buffer
-		b.WriteString("<pre class=\"contract\"><code>")
-		b.WriteString(template.HTMLEscapeString(string(source)))
-		b.WriteString("</code></pre>")
-		return template.HTML(b.String()), nil
 	}
 
 	var b bytes.Buffer

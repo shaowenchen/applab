@@ -69,20 +69,9 @@ fmt-check:
 	@out=$$(gofmt -s -l .); \
 	if [ -n "$$out" ]; then echo "these files need gofmt:"; echo "$$out"; exit 1; fi
 
-# Regenerate api/llms.txt from the route table. Required whenever a route is
-# added, removed or reworded: the committed copy is checked against the
-# generated one by TestLlmsTxtMatchesCommittedFile.
-.PHONY: llms
-llms:
-	go run ./cmd/genllms
-
-.PHONY: llms-check
-llms-check:
-	go run ./cmd/genllms -check
-
 # The full gate: everything CI should run before a change is acceptable.
 .PHONY: check
-check: fmt-check vet llms-check test
+check: fmt-check vet test
 
 .PHONY: tidy
 tidy:

@@ -15,8 +15,8 @@ It is a catch-all, and that is safe rather than lazy. Istio sorts each virtual
 host's routes so that routes matching everything move to the end while the rest
 keep their order (route.SortVHostRoutes), and the apps applab publishes match on
 "/<apps.pathPrefix>/<app>/" — a prefix the console's own paths (/, /api/v1/,
-/git/, /llms.txt, /health, /metrics) do not share. So the apps are always
-evaluated first and this route only sees what nothing else claimed.
+/git/, /health, /metrics) do not share. So the apps are always evaluated first
+and this route only sees what nothing else claimed.
 
 Rendered only when there is no Ingress to use: an enabled Ingress is an explicit
 statement about where the console lives, and two front doors to one Service is

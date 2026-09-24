@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/model"
 )
 
@@ -22,14 +23,15 @@ import (
 // disagree with them; what it adds is the shape, in one call, with the fields an
 // agent needs named rather than buried.
 //
-// It carries no API reference. The endpoint list and the request shapes are
-// llms.txt, which is generated from the route table and is the contract; this is
-// *this deployment*, which no static document can describe.
+// It carries the endpoint list, generated from the route table, and this
+// deployment's own shape. The list is what a static document used to provide and
+// the shape is what no static document can — so this one call is the whole of
+// what an agent has to read to start.
 type describeResponse struct {
 	// Summary is a sentence an agent can quote back without assembling it.
 	Summary string `json:"summary"`
 
-	// API is how to reach this deployment.
+	// API is how to reach this deployment, including the endpoint list.
 	API describeAPI `json:"api"`
 
 	// Deployment is what this installation is wired to: the same
@@ -67,9 +69,30 @@ type describeAPI struct {
 	// reached this service at.
 	BaseURL string `json:"base_url"`
 
-	// AuthHeader is the exact header every request but /health, /metrics,
-	// /api/v1/config, /api/v1/version and /llms.txt must carry.
+	// AuthHeader is the exact header every request that needs a key must carry.
 	AuthHeader string `json:"auth_header"`
+
+	// Endpoints is every route this deployment serves, with the credential each
+	// requires. Generated from the route table, so it cannot describe a route
+	// that does not exist or miss one that does.
+	Endpoints []describeEndpoint `json:"endpoints"`
+}
+
+// describeEndpoint is one route, as an agent needs it: what to call, and with
+// what.
+type describeEndpoint struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+
+	// Key is the credential the route requires: "none", "admin", "app" or
+	// "token". Reported per route rather than as one note at the top, because
+	// the tiers are not interchangeable — an app key on an admin route is a 403
+	// the caller cannot explain, and a wrong guess about which routes its key
+	// reaches is the most likely way for an agent to waste a call.
+	Key string `json:"key"`
+
+	// Doc is what the route does, in one line, from the route table.
+	Doc string `json:"doc"`
 }
 
 // describeBuild is where images go and whether building works at all.
@@ -123,6 +146,13 @@ type describeHowTo struct {
 }
 
 func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
+	// The app list, and what the caller is not shown. An anonymous caller gets no
+	// apps at all: the ids and addresses of what someone has deployed are the
+	// deployment's data, not this service's shape.
+	//
+	// The line is drawn on whether a credential was presented rather than on the
+	// tier, because "authenticated" is exactly the question — an app key proves
+	// it is someone's key, an anonymous request proves nothing.
 	apps, err := s.store.ListApps(r.Context())
 	if err != nil {
 		fail(w, r, Errorf(http.StatusInternalServerError, "list apps").Wrap(err))
@@ -135,6 +165,9 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]appResponse, 0, len(apps))
 	for _, a := range apps {
+		if !identity.Authenticated() {
+			break
+		}
 		if !identity.Admin() && a.ID != identity.App {
 			continue
 		}
@@ -146,17 +179,49 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.configResponse(r)
 
+	// What a caller with no key is not told. The endpoint list is public — it
+	// describes the service — but the deployment's wiring is not: the namespace
+	// it runs in, where builds push their images and the gateway apps hang off
+	// are the shape of someone's infrastructure, and an anonymous request has
+	// given no reason to disclose it.
+	//
+	// Reported as empty rather than omitted, and said out loud in the summary,
+	// so a caller can tell "there is nothing there" from "you have not shown me
+	// that yet" — the failure mode of withholding silently is an agent that
+	// concludes the deployment cannot build.
+	//
+	// Done before the summary is composed, not after: the summary is a sentence
+	// built out of these same fields, so redacting them afterwards leaves the
+	// namespace sitting in the prose while its field reads empty.
+	anonymous := !identity.Authenticated()
+	withheld := ""
+	if anonymous {
+		withheld = " Needs a key for: the namespace, the build registry, the gateway, the apps and the calls below."
+		cfg.Namespace = ""
+		cfg.Capabilities = map[string]bool{}
+	}
+
 	// One key, one sentence. Assembled here rather than left to the caller
 	// because "what is this" is the question the endpoint exists to answer, and
 	// an agent that has to compose the answer from six fields is one that might
 	// get it wrong.
-	summary := "applab " + cfg.Version + " in namespace " + cfg.Namespace
+	//
+	// The app count is stated only to a caller that was shown the list: "with 0
+	// apps" is a different claim from "you have not been shown the apps", and an
+	// agent reading the first would conclude the platform is empty.
+	summary := "applab " + cfg.Version
+	if !anonymous {
+		summary += " in namespace " + cfg.Namespace
+	}
 	if cfg.BaseDomain != "" {
 		summary += ", serving apps at " + cfg.DomainTemplate
 	} else {
 		summary += ", serving no apps outside the cluster (no base domain is configured)"
 	}
-	summary += ", with " + plural(len(out), "app", "apps") + "."
+	if !anonymous {
+		summary += ", with " + plural(len(out), "app", "apps")
+	}
+	summary += "." + withheld
 
 	respond(w, http.StatusOK, describeResponse{
 		Summary:    summary,
@@ -166,15 +231,16 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			APIVersion: cfg.APIVersion,
 			BaseURL:    base,
 			AuthHeader: "Authorization: Bearer <key>",
+			Endpoints:  s.RouteReference(),
 		},
 		Build: describeBuild{
 			Enabled:  cfg.Capabilities["build"],
-			Registry: s.cfg.Build.Registry,
+			Registry: registryFor(s.cfg, identity),
 			Rootless: s.cfg.Build.Rootless == nil || *s.cfg.Build.Rootless,
 		},
 		Deploy: describeDeploy{
 			Enabled:        cfg.Capabilities["deploy"],
-			Gateway:        s.cfg.Deploy.Gateway,
+			Gateway:        gatewayFor(s.cfg, identity),
 			BaseDomain:     cfg.BaseDomain,
 			PathPrefix:     cfg.PathPrefix,
 			DomainTemplate: cfg.DomainTemplate,
@@ -184,55 +250,91 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			App:   identity.App,
 			Reach: accessReach(identity),
 		},
-		Apps: out,
-		HowTo: describeHowTo{
-			// The commands name the address explicitly rather than relying on
-			// APPLAB_URL being set, so they can be copied into a shell as-is.
-			//
-			// The clone spelling is the URL form, with the key as the password,
-			// because that is what a caller reaches for and what works in every
-			// git client. Any username will do: git needs one to send a password
-			// at all, and only the password is read. The header spelling also
-			// works and keeps the key out of the shell history and out of the
-			// clone's own config, which is worth saying — but it is the harder
-			// thing to type, so it is offered second.
-			Push:  "applab push <app>",
-			Logs:  "applab logs <app> -f",
-			Clone: "git clone " + gitURLWithPassword(base, "<app>"),
-			HTTP: map[string]string{
-				"create_app":   "POST " + base + "/api/v1/apps  {\"id\":\"<app>\",\"port\":8080}",
-				"upload":       "POST " + base + "/api/v1/apps/<app>/source?message=<msg>  (application/gzip)",
-				"build":        "POST " + base + "/api/v1/apps/<app>/builds",
-				"deploy":       "POST " + base + "/api/v1/apps/<app>/deploy",
-				"status":       "GET " + base + "/api/v1/apps/<app>/status",
-				"logs":         "GET " + base + "/api/v1/apps/<app>/logs?follow=false&tail=500",
-				"config":       "GET " + base + "/api/v1/apps/<app>/config",
-				"set_env":      "PUT " + base + "/api/v1/apps/<app>/env  {\"env\":{\"K\":\"V\"}}",
-				"set_secret":   "PUT " + base + "/api/v1/apps/<app>/secrets  {\"secrets\":{\"K\":\"V\"}}",
-				"app_key":      "GET " + base + "/api/v1/apps/<app>/key",
-				"all_apps":     "GET " + base + "/api/v1/apps",
-				"overview":     "GET " + base + "/api/v1/overview",
-				"api_contract": base + "/llms.txt",
-			},
-		},
+		Apps:  out,
+		HowTo: s.describeHowTo(base, identity),
 	})
+}
+
+// registryFor and gatewayFor report the deployment's wiring to a caller that has
+// authenticated, and nothing to one that has not.
+func registryFor(cfg config.Config, identity auth.Identity) string {
+	if !identity.Authenticated() {
+		return ""
+	}
+	return cfg.Build.Registry
+}
+
+func gatewayFor(cfg config.Config, identity auth.Identity) string {
+	if !identity.Authenticated() {
+		return ""
+	}
+	return cfg.Deploy.Gateway
+}
+
+// describeHowTo is the shortest path to each operation, as commands rather than
+// as prose about commands.
+//
+// The commands name the address explicitly rather than relying on APPLAB_URL
+// being set, so they can be copied into a shell as-is.
+func (s *Server) describeHowTo(base string, identity auth.Identity) describeHowTo {
+	out := describeHowTo{
+		Push:  "applab push <app>",
+		Logs:  "applab logs <app> -f",
+		Clone: "git clone " + gitURLWithPassword(base, "<app>"),
+		HTTP: map[string]string{
+			"create_app": "POST " + base + "/api/v1/apps  {\"id\":\"<app>\",\"port\":8080}",
+			"upload":     "POST " + base + "/api/v1/apps/<app>/source?message=<msg>  (application/gzip)",
+			"build":      "POST " + base + "/api/v1/apps/<app>/builds",
+			"deploy":     "POST " + base + "/api/v1/apps/<app>/deploy",
+			"status":     "GET " + base + "/api/v1/apps/<app>/status",
+			"logs":       "GET " + base + "/api/v1/apps/<app>/logs?follow=false&tail=500",
+			"config":     "GET " + base + "/api/v1/apps/<app>/config",
+			"set_env":    "PUT " + base + "/api/v1/apps/<app>/env  {\"env\":{\"K\":\"V\"}}",
+			"set_secret": "PUT " + base + "/api/v1/apps/<app>/secrets  {\"secrets\":{\"K\":\"V\"}}",
+			"app_key":    "GET " + base + "/api/v1/apps/<app>/key",
+			"all_apps":   "GET " + base + "/api/v1/apps",
+			"overview":   "GET " + base + "/api/v1/overview",
+			"describe":   "GET " + base + "/api/v1/describe",
+		},
+	}
+
+	// A caller with no key cannot run any of these, and offering the commands as
+	// though it could is how an agent ends up reporting a 401 as a broken
+	// deployment. The one call it can make is the one it is making.
+	if !identity.Authenticated() {
+		out.Push, out.Logs, out.Clone = "", "", ""
+		out.HTTP = map[string]string{
+			"describe": "GET " + base + "/api/v1/describe",
+			"config":   "GET " + base + "/api/v1/config",
+			"version":  "GET " + base + "/api/v1/version",
+		}
+	}
+	return out
 }
 
 // accessTier names the tier a request's identity belongs to.
 func accessTier(identity auth.Identity) string {
-	if identity.Admin() {
+	switch {
+	case identity.Anonymous:
+		return "none"
+	case identity.Admin():
 		return "admin"
+	default:
+		return "app"
 	}
-	return "app"
 }
 
 // accessReach says what a key of this tier may do, in the words the rest of the
 // documentation uses.
 func accessReach(identity auth.Identity) string {
-	if identity.Admin() {
+	switch {
+	case identity.Anonymous:
+		return "No key presented. The endpoint list above and this deployment's address are readable; nothing else is."
+	case identity.Admin():
 		return "Everything: every app, every app's key, and deletion. This is the platform credential."
+	default:
+		return "One app only: push, build, deploy, roll back, read logs and configure it. It cannot delete the app and cannot see any other."
 	}
-	return "One app only: push, build, deploy, roll back, read logs and configure it. It cannot delete the app and cannot see any other."
 }
 
 // plural renders "1 app" / "2 apps".

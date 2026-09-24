@@ -173,7 +173,7 @@ var appIDPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 // reservedIDs are names that would collide with a route or a static asset of
 // the service itself, so an app may not take one.
 var reservedIDs = map[string]struct{}{
-	"api": {}, "health": {}, "llms.txt": {}, "metrics": {}, "static": {},
+	"api": {}, "health": {}, "metrics": {}, "static": {},
 	"assets": {}, "favicon.ico": {}, "index.html": {}, "login": {},
 	"console": {}, "version": {}, "config": {}, "system": {}, "apps": {},
 }

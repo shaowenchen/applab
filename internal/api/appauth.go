@@ -25,11 +25,18 @@ type identityKey struct{}
 // reports the admin identity: every route that reads this is one an app key
 // could only reach through the middleware, and the zero value is the admin tier
 // — so the fallback is the reading that matches the routes' own declarations.
+// identityFrom reports who the request is.
+//
+// A request that never passed a middleware — one on a route that needs no key —
+// has no identity in its context, and gets an anonymous one. That is the safe
+// default rather than an accident: the zero Identity is the admin tier, so
+// handing it back here would tell every open route that an unauthenticated
+// caller is the operator.
 func identityFrom(ctx context.Context) auth.Identity {
 	if identity, ok := ctx.Value(identityKey{}).(auth.Identity); ok {
 		return identity
 	}
-	return auth.Identity{}
+	return auth.Identity{Anonymous: true}
 }
 
 // withIdentity returns a request carrying an established identity.
@@ -94,6 +101,43 @@ func (s *Server) appAuthMiddleware(next http.Handler, adminOnly bool) http.Handl
 			return
 		}
 
+		next.ServeHTTP(w, withIdentity(r, identity))
+	})
+}
+
+// identifyOnlyMiddleware establishes who the caller is when it presents a key,
+// and lets the request through as anonymous when it does not.
+//
+// It exists for the one route that is reachable both ways and means something
+// different each time: GET /api/v1/describe is the front door — a caller has to
+// be able to read what this service is before it can authenticate to it — but
+// the answer is much better for a caller that does have a key, because it can
+// name the apps they may reach.
+//
+// It is deliberately not a relaxation of appListAuthMiddleware: that one refuses
+// an unauthenticated request, and a route that quietly stopped refusing would
+// hand out an app list to anyone who asked. This one never refuses anything, and
+// the handler is what decides what a caller gets — which is why it is a separate
+// middleware with a name that says so, rather than a flag on the other.
+//
+// A key that is presented but not recognised is *not* refused here. It is
+// treated as no key at all, which is the honest reading: the route does not
+// require one, so a bad one is simply not a credential. A caller that thought it
+// was signing in will find out from the first route that does require one.
+func (s *Server) identifyOnlyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, err := s.auth.Identify(r.Context(), r, s.appKeyResolver())
+		if err != nil {
+			// Unlike the routes that require a key, an unreachable key store is
+			// not a 503 here: nothing about this route depends on resolving one,
+			// so it still answers — with less. Failing the call would turn a
+			// cluster problem into a front door that does not open.
+			if !errors.Is(err, auth.ErrUnauthenticated) {
+				slog.WarnContext(r.Context(), "could not resolve the presented key; answering as anonymous",
+					"path", r.URL.Path, "error", err)
+			}
+			identity = auth.Identity{Anonymous: true}
+		}
 		next.ServeHTTP(w, withIdentity(r, identity))
 	})
 }

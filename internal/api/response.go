@@ -1,7 +1,7 @@
 // Package api serves applab's HTTP interface.
 //
 // The API is the product: the console and the CLI are both just clients of it,
-// and the contract an agent reads is llms.txt. Every route is declared in one
+// and the contract an agent reads is GET /api/v1/describe. Every route is declared in one
 // table in router.go so that the served API, the documented API and the
 // authorization rules cannot drift apart.
 package api
@@ -167,7 +167,7 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	})
 }
 
-// writeText sends a plain-text body, used for llms.txt.
+// writeText sends a plain-text body, used for logs and other non-JSON responses.
 func writeText(w http.ResponseWriter, status int, contentType, body string) {
 	w.Header().Set("Content-Type", contentType+"; charset=utf-8")
 	w.WriteHeader(status)

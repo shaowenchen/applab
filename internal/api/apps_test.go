@@ -131,7 +131,6 @@ func TestCreateAppRejectsBadIDs(t *testing.T) {
 		{"too long", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		{"reserved api", "api"},
 		{"reserved health", "health"},
-		{"reserved llms", "llms.txt"},
 		{"path traversal", "../etc"},
 	}
 
@@ -347,7 +346,7 @@ func TestConfigAndHealthNeedNoKey(t *testing.T) {
 	srv, _ := newTestServer(t)
 	h := srv.Handler()
 
-	for _, path := range []string{"/health", "/api/v1/config", "/api/v1/version", "/llms.txt"} {
+	for _, path := range []string{"/health", "/api/v1/config", "/api/v1/version", "/api/v1/describe"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)

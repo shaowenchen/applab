@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,62 +32,58 @@ func newTestServer(t *testing.T) (*api.Server, *store.Store) {
 	return srv, st
 }
 
-// TestLlmsTxtMatchesCommittedFile is the guard that keeps the agent-facing
-// contract honest.
+// TestRouteReferenceCoversEveryDocumentedRoute is the guard that keeps the
+// endpoint list honest.
 //
-// llms.txt is the API as far as an agent is concerned: it acts on what the file
-// says. The served copy is generated from the route table, so it is always
-// right — but the committed copy in api/llms.txt is what a person reads in the
-// repository and what gets reviewed in a diff, and it goes stale silently the
-// moment a route changes. This test is what makes that staleness loud.
+// The list GET /api/v1/describe returns is what an agent acts on, and it is
+// generated from the route table — so it is always right about what the server
+// serves. What this adds is coverage: a route with a Doc is claiming to be
+// documented, and this asserts the list actually contains it, so a route cannot
+// end up unreachable-by-description because a render step dropped it.
 //
-// When it fails, run `make llms` and commit the result.
-func TestLlmsTxtMatchesCommittedFile(t *testing.T) {
+// It replaces the check that compared a committed api/llms.txt against the
+// generated document. That document is gone — the list is served rather than
+// served-and-also-committed — so there is no copy left to go stale, and the
+// thing worth guarding is now that the served list is complete.
+func TestRouteReferenceCoversEveryDocumentedRoute(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	want, err := api.RenderLlmsTxt(srv)
-	if err != nil {
-		t.Fatalf("render llms.txt: %v", err)
+	ref := srv.RouteReference()
+	if len(ref) < 5 {
+		t.Fatalf("only %d routes are described; the endpoint list is too thin to be useful", len(ref))
 	}
 
-	path := filepath.Join("..", "..", "api", "llms.txt")
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v (run `make llms`)", path, err)
+	described := make(map[string]bool, len(ref))
+	for _, e := range ref {
+		described[e.Method+" "+e.Path] = true
 	}
 
-	if string(got) != want {
-		t.Errorf(`api/llms.txt is out of date with the route table.
-
-The served document is generated from routes() in internal/api/router.go, so
-this file has to be regenerated whenever a route is added, removed or reworded:
-
-    make llms
-
---- diff (first difference) ---
-%s`, firstDifference(string(got), want))
+	for _, pattern := range srv.SortedPatterns() {
+		method, path, _ := strings.Cut(pattern, " ")
+		if !described[method+" "+path] {
+			t.Errorf("route %q is served but does not appear in the endpoint list", pattern)
+		}
 	}
 }
 
-// TestRouteReferenceIsNonEmpty guards the consistency check above against
-// passing vacuously: if the generator returned nothing, the comparison would
-// still catch a stale file, but a document with no endpoints in it would look
-// plausible and tell an agent nothing.
-func TestRouteReferenceIsNonEmpty(t *testing.T) {
+// TestRouteReferenceNeverClaimsAnUnknownCredential guards the one field of the
+// endpoint list that is not copied from the route table.
+//
+// The tier is derived from the route's auth flags, and a route that set no flag
+// at all would be reported as needing nothing — which is the answer that gets a
+// caller a 401 it cannot explain. An empty Doc is the documented way to keep a
+// route out of the list, so a route that is in the list has to name a real tier.
+func TestRouteReferenceNeverClaimsAnUnknownCredential(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	if n := srv.DocumentedRouteCount(); n < 5 {
-		t.Errorf("only %d routes are documented; the generated reference is too thin to be useful", n)
-	}
-
-	ref := srv.RouteReference()
-	for _, want := range []string{
-		"GET /api/v1/apps",
-		"POST /api/v1/apps",
-		"GET /api/v1/apps/{app}",
-	} {
-		if !strings.Contains(ref, want) {
-			t.Errorf("route reference does not mention %q", want)
+	known := map[string]bool{"none": true, "admin": true, "app": true, "token": true}
+	for _, e := range srv.RouteReference() {
+		if !known[e.Key] {
+			t.Errorf("route %s %s reports credential %q, which is not one of the four tiers",
+				e.Method, e.Path, e.Key)
+		}
+		if strings.TrimSpace(e.Doc) == "" {
+			t.Errorf("route %s %s is in the endpoint list with no description", e.Method, e.Path)
 		}
 	}
 }
@@ -103,12 +98,12 @@ func TestEveryDataRouteRequiresAuth(t *testing.T) {
 	srv, _ := newTestServer(t)
 
 	// The only routes that may be open are the ones a caller needs before it
-	// can authenticate, plus liveness.
+	// can authenticate, plus liveness and the scrape endpoint.
 	openAllowed := map[string]bool{
-		"GET /health":         true,
-		"GET /api/v1/config":  true,
-		"GET /llms.txt":       true,
-		"GET /api/v1/version": true,
+		"GET /health":          true,
+		"GET /api/v1/config":   true,
+		"GET /api/v1/describe": true,
+		"GET /api/v1/version":  true,
 		// Open so a Prometheus scraper can reach it; the deployment restricts it
 		// at the network edge instead. See the route's own comment.
 		"GET /metrics": true,
@@ -135,7 +130,7 @@ func TestOpenRoutesAreOnlyTheExpectedOnes(t *testing.T) {
 			continue
 		}
 		switch pattern {
-		case "GET /health", "GET /api/v1/config", "GET /llms.txt", "GET /api/v1/version", "GET /metrics":
+		case "GET /health", "GET /api/v1/config", "GET /api/v1/describe", "GET /api/v1/version", "GET /metrics":
 		default:
 			t.Errorf("route %q is open but is not on the list of routes expected to be open", pattern)
 		}
@@ -197,26 +192,9 @@ func TestKeyNeverAcceptedInQuery(t *testing.T) {
 	}
 }
 
-// firstDifference renders the first differing line of two documents, which is
-// far easier to act on than a wall of escaped text.
-func firstDifference(got, want string) string {
-	gotLines := strings.Split(got, "\n")
-	wantLines := strings.Split(want, "\n")
-
-	for i := 0; i < len(gotLines) && i < len(wantLines); i++ {
-		if gotLines[i] != wantLines[i] {
-			return "line " + itoa(i+1) + ":\n  committed: " + gotLines[i] + "\n  generated: " + wantLines[i]
-		}
-	}
-	switch {
-	case len(gotLines) < len(wantLines):
-		return "committed file ends early at line " + itoa(len(gotLines)+1) + ":\n  generated: " + wantLines[len(gotLines)]
-	case len(wantLines) < len(gotLines):
-		return "committed file has an extra line " + itoa(len(wantLines)+1) + ":\n  committed: " + gotLines[len(wantLines)]
-	}
-	return "(documents are equal)"
-}
-
+// itoa is a local integer formatter, kept so these tests do not pull strconv in
+// for one call. Shared by every test in this package, which is why it lives in
+// this file rather than beside its first user.
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

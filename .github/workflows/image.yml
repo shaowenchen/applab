@@ -59,10 +59,11 @@ jobs:
         with:
           version: v3.16.4
 
-      # fmt-check, vet, llms-check and the test suite. llms-check is the one that
-      # matters most here: api/llms.txt is the contract clients are built from,
-      # and it is generated from the route table, so a route change that did not
-      # update it fails here instead of shipping a wrong contract.
+      # fmt-check, vet and the test suite. The route-table tests are the ones
+      # that matter most here: GET /api/v1/describe serves the endpoint list
+      # clients are built from, and it is generated from the table the mux is
+      # configured with — so a route added without a description, or one served
+      # without the auth it should have, fails here rather than shipping.
       - name: make check
         run: make check
 

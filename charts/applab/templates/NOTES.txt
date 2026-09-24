@@ -59,6 +59,10 @@ build an image from it. `applab push` will say so. To enable it, set
 build.enabled=true and build.registry.
 
 {{ end -}}
-Read the API contract:
+Read what this deployment is, and every endpoint it serves:
 
-    curl -s {{ if $console }}{{ $console }}{{ else }}http://localhost:8080{{ end }}/llms.txt
+    curl -s {{ if $console }}{{ $console }}{{ else }}http://localhost:8080{{ end }}/api/v1/describe
+
+That call needs no key — it is how a caller finds out what this is before it has
+one. The same answer is fuller with a key, which is what lets it name the apps
+that key reaches.

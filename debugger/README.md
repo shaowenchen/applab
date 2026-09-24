@@ -42,7 +42,7 @@ applab push myshop
 The app is served at `<the link>/apps/myshop/` and appears in the console. The
 `applab` CLI is the binary from [the applab repository](https://github.com/shaowenchen/applab);
 see [the overview](../README.md) for how to install it, or drive the API directly —
-[the API reference](../api/llms.txt) is the contract.
+`GET /api/v1/describe` is the contract, and it needs no key.
 
 ## What it starts
 

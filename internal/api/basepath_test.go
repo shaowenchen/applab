@@ -62,7 +62,7 @@ func TestBasePathServesEveryRouteUnderThePrefix(t *testing.T) {
 		"/applab/health",
 		"/applab/api/v1/config",
 		"/applab/api/v1/version",
-		"/applab/llms.txt",
+		"/applab/api/v1/describe",
 	} {
 		rec := doRequestNoKey(t, h, "GET", path)
 		if rec.Code != 200 {
@@ -171,7 +171,7 @@ func TestNoBasePathIsTheRoot(t *testing.T) {
 	srv, _ := newTestServer(t)
 	h := srv.Handler()
 
-	for _, path := range []string{"/health", "/api/v1/config", "/llms.txt"} {
+	for _, path := range []string{"/health", "/api/v1/config", "/api/v1/describe"} {
 		if rec := doRequestNoKey(t, h, "GET", path); rec.Code != 200 {
 			t.Errorf("GET %s -> %d, want 200 (body: %s)", path, rec.Code, rec.Body.String())
 		}

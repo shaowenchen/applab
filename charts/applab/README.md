@@ -308,8 +308,8 @@ applab's.
 # The key the chart generated, if you used auth.key
 kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
 
-# The API contract — what to read before calling anything
-curl -s https://applab.example.com/llms.txt
+# What this deployment is, and every endpoint it serves — read this first
+curl -s https://applab.example.com/api/v1/describe
 
 # What the deployment can do
 applab config

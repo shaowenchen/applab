@@ -3,7 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>applab</title>
+<title>applab · deploy an application by uploading its source</title>
+<!-- What this deployment is, for anything that reads the console page without
+     rendering it: a link preview, a crawler, an agent handed the address. The
+     chart sets the meta tag too, but a deployment reached directly at the pod
+     never passes through that Ingress. -->
+<meta name="description" content="applab builds and deploys an application to Kubernetes from a source upload — no Dockerfile, no CI and no registry on your side. Sign in with an API key.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
 <style>
   /* The palette. Light is the base definition and dark is a redefinition of the
@@ -86,11 +91,18 @@
 
   * { box-sizing: border-box; }
 
+  /* The page is a column that always fills the viewport, so `main` can flex to
+     whatever is left below the header. That is what lets the sign-in screen
+     centre itself without a hardcoded height — a calc() against the header's
+     height goes wrong the moment the header wraps on a narrow screen. */
   body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
     font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
   }
 
   header {
@@ -106,7 +118,6 @@
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   header .spacer { flex: 1; }
-  header .endpoint { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
 
   /* The header's own controls. Small, square-ish and quiet: they change a
      preference, which is not what anyone opened the console to do, so they sit
@@ -123,21 +134,77 @@
   .controls button:hover { color: var(--text); background: var(--bg-sunken); border-color: transparent; }
   .controls button[aria-pressed="true"] { color: var(--text); font-weight: 600; background: var(--bg-sunken); }
 
-  /* The sign-in card carries the same controls, because the two settings are
-     most worth changing on the screen where someone is deciding whether to use
-     this at all — and because there is no header there to hold them. */
-  .signin-controls { display: flex; justify-content: flex-end; gap: 2px; margin-bottom: 4px; }
-  .signin-controls button {
-    padding: 3px 7px;
-    font-size: 12px;
+  /* The language switch, sitting inline in a sentence rather than as a button in
+     a corner: on the sign-in screen it is the one preference worth offering, and
+     every word on that screen comes from the dictionary, so it is the control
+     that decides whether the page can be read at all. Inherits the hint's
+     colour and size so it reads as part of the sentence. */
+  .inline-toggle {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .inline-toggle:hover { color: var(--text); }
+
+  /* A field with its reveal button inside it. The input keeps the left of the
+     box and the button the right, so the two share one border rather than
+     looking like a field with a button after it. */
+  .key-field { display: flex; flex: 1; min-width: 0; position: relative; }
+  .key-field input { flex: 1; padding-right: 34px; }
+
+  /* The eye. One control for every credential the console shows — the key on the
+     sign-in form, the app's key, and the clone URL that carries it — so it is
+     drawn once and positioned by its context rather than styled per card. It is
+     quiet by default: it changes a preference about what is on screen, which is
+     not what anyone opened the page to do. */
+  .reveal {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
     border-color: transparent;
     background: transparent;
     color: var(--text-muted);
+    flex: none;
   }
-  .signin-controls button:hover { color: var(--text); background: var(--bg-sunken); border-color: transparent; }
-  .signin-controls button[aria-pressed="true"] { color: var(--text); font-weight: 600; background: var(--bg-sunken); }
+  .reveal:hover { color: var(--text); background: var(--bg-sunken); border-color: transparent; }
+  .reveal svg { width: 16px; height: 16px; display: block; }
+  /* Inside a text field, the button rides the input's right edge rather than
+     taking a place in a row. */
+  .key-field .reveal {
+    position: absolute;
+    top: 50%;
+    right: 2px;
+    transform: translateY(-50%);
+  }
 
-  main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  /* A value that may be masked, with its eye at the end of the same line. The
+     value takes the space so a long address wraps inside it rather than pushing
+     the button off the card. */
+  .secret { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
+  .secret-value {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    word-break: break-all;
+  }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 20px;
+  }
 
   button {
     font: inherit;
@@ -171,29 +238,71 @@
     padding: 16px;
     margin-bottom: 16px;
   }
+  /* The header block of a card: its title with whatever acts on the whole card
+     pushed to the far end. Kept as one class so the heading and its controls sit
+     on the same baseline everywhere, rather than each card re-deriving it from
+     an inline style. */
+  .card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .card-head h2 { margin: 0; flex: 1; }
+  /* A table is the card's content, not something inside its padding. Bleeding to
+     the edges is what lets the header row's rule run the full width — a rule
+     that stops short of the card's border reads as a mistake. */
+  .card.flush { padding: 0; }
+  .card.flush > .card-head { padding: 14px 16px; margin: 0; }
+  .card.flush > table { border-top: 1px solid var(--border); }
   .card h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+  .card-head h2 { margin: 0; }
   .card p { margin: 0 0 12px; color: var(--text-muted); font-size: 14px; }
 
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
-  /* Sign in. One field, and the only screen that is not the console.
-     Deliberately in the normal flow rather than a fixed overlay: the error
-     banner above it is where a failed sign-in is reported, and an overlay would
-     cover the very message explaining why the form did not accept the key. The
-     header is hidden while this is up — it has no navigation, no endpoint and no
-     sign-out to offer yet — so the card is what is left on the page.
-
-     Centred with a little space above rather than in the middle of the viewport.
-     A min-height that pushed the card to the middle left a large empty area
-     under it, which on a tall screen is most of what the page shows — and the
-     one thing this screen has to say is in the card. */
-  .signin {
+  /* A page's title, above its cards and outside them. Nothing is gained by
+     drawing a border around the words "Apps" and the button next to it, and
+     three pages that each opened with one made the console read as a stack of
+     unrelated boxes rather than as one place. */
+  .page-head {
     display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 4px 0 16px;
+  }
+  .page-head h1 { font-size: 20px; font-weight: 600; margin: 0; flex: 1; letter-spacing: -0.01em; }
+
+  /* An anchor styled as a button, for a control that navigates rather than acts.
+     It has to be an <a> and not a button: the browser's own "copy link address",
+     middle-click and hover preview are the point, and a button that calls
+     window.open has none of them. */
+  a.button {
+    display: inline-flex;
+    align-items: center;
+    font: inherit;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-raised);
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  a.button:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* The sign-in card is the whole page before anyone signs in, so it centres
+     itself in what is left below the header rather than sitting at the top. */
+  .signin {
+    flex: 1;
+    display: flex;
+    align-items: center;
     justify-content: center;
-    /* Vertical space only. The card is inside <main>, which already supplies the
-       page's horizontal padding — adding more here would double it on a narrow
-       screen and squeeze the card. */
-    margin-top: 32px;
+    /* Vertical space only. `main` already supplies the page's horizontal
+       padding; adding more here would double it on a narrow screen. */
+    padding: 24px 0;
   }
   .signin-card {
     width: 100%;
@@ -203,19 +312,10 @@
     border-radius: var(--radius);
     padding: 28px;
   }
-  .signin-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-  .signin-mark {
-    width: 28px; height: 28px;
-    border-radius: 8px;
-    background: var(--accent);
-    color: var(--accent-text);
-    display: grid;
-    place-items: center;
-    font-weight: 700;
-    font-size: 16px;
-  }
-  .signin-head h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
-  .signin-lead { margin: 0 0 16px; color: var(--text-muted); font-size: 14px; }
+  /* The card opens on its one sentence. It carries no mark or product name of
+     its own: the header above it already says "applab", and repeating it here
+     only makes the screen look like two things stacked rather than one. */
+  .signin-lead { margin: 0 0 16px; color: var(--text); font-size: 15px; }
   .signin-form { display: flex; flex-direction: column; gap: 8px; }
   .signin-form input { width: 100%; padding: 9px 11px; }
   .signin-form button { padding: 9px 12px; }
@@ -374,12 +474,27 @@
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
 
+  /* A phone. The header is a single row of controls carrying the theme and
+     language switches, the nav, and sign-out; squeezed to a phone width the
+     theme control is the first thing to go over the edge, and it is half of the
+     only preference a signed-out visitor has. So the header wraps, and the
+     endpoint — a long address with nothing to say on a small screen — goes. */
+  @media (max-width: 640px) {
+    header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px; }
+    main { padding: 14px; }
+  }
+
   .grid-2 { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
 </style>
 </head>
 <body>
 
-<header id="app-header" class="hidden">
+<!-- The header is always up, including on the sign-in screen, where only its
+     theme and language controls have anything to offer. Those two are settings
+     for the console as a whole rather than for a screen, so keeping the header
+     in place is what stops them moving: a control that jumps to a different
+     corner once you sign in reads as two different controls. -->
+<header id="app-header">
   <h1>applab</h1>
   <!-- Which view is showing is navigation, not decoration: it is hidden until
        there is something to navigate, since the sign-in screen has no views. -->
@@ -388,7 +503,6 @@
     <button id="nav-apps" data-i18n="Apps">Apps</button>
     <button id="nav-builds" data-i18n="Builds">Builds</button>
   </nav>
-  <span class="endpoint" id="endpoint"></span>
   <span class="spacer"></span>
   <!-- Grouped so they move together if the header is ever rearranged, and named
        per control rather than as one combined widget: the two settings are
@@ -417,26 +531,19 @@
        in after it. -->
   <section id="signin" class="signin hidden">
     <div class="signin-card">
-      <!-- The same two controls the header carries. They are here because this
-           is the screen where someone decides whether to use this at all, and
-           the header is not up yet — see the CSS note above. -->
-      <div class="signin-controls">
-        <button id="signin-theme-toggle" type="button" aria-label="Theme"></button>
-        <button id="signin-lang-toggle" type="button" aria-label="Language"></button>
-      </div>
-      <div class="signin-head">
-        <span class="signin-mark" aria-hidden="true">a</span>
-        <h2>applab</h2>
-      </div>
       <p class="signin-lead" data-i18n="Enter an API key to continue.">Enter an API key to continue.</p>
       <form id="signin-form" class="signin-form" autocomplete="off">
-        <input id="signin-key" type="password" placeholder="API key" autocomplete="off"
-               spellcheck="false" aria-label="API key" data-i18n-placeholder="API key">
+        <div class="key-field">
+          <input id="signin-key" type="password" placeholder="API key" autocomplete="off"
+                 spellcheck="false" aria-label="API key" data-i18n-placeholder="API key">
+          <button id="signin-reveal" class="reveal" type="button"></button>
+        </div>
         <button id="signin-go" class="primary" type="submit" data-i18n="Sign in">Sign in</button>
       </form>
       <p class="signin-hint">
-        <span data-i18n="Stored in this browser only, and sent to">Stored in this browser only, and sent to</span>
-        <span id="signin-where" class="mono"></span>.
+        <span data-i18n="Sent to">Sent to</span>
+        <span id="signin-where" class="mono"></span><!--
+     --><button id="signin-lang-toggle" class="inline-toggle" type="button"></button>
       </p>
     </div>
   </section>
@@ -446,11 +553,9 @@
        GET /api/v1/overview, which counts server-side rather than making the
        browser list every app and tally. -->
   <section id="overview-view" class="hidden">
-    <div class="card">
-      <div class="row">
-        <h2 style="flex:1;margin:0" data-i18n="Overview">Overview</h2>
-        <button id="overview-refresh" data-i18n="Refresh">Refresh</button>
-      </div>
+    <div class="page-head">
+      <h1 data-i18n="Overview">Overview</h1>
+      <button id="overview-refresh" data-i18n="Refresh">Refresh</button>
     </div>
 
     <!-- The KPI row. A handful of headline numbers is a stat tile, not a chart:
@@ -477,9 +582,9 @@
       </div>
     </div>
 
-    <div class="card" style="padding:0">
-      <div class="row" style="padding:16px">
-        <h2 style="flex:1;margin:0" data-i18n="Recent builds">Recent builds</h2>
+    <div class="card flush">
+      <div class="card-head">
+        <h2 data-i18n="Recent builds">Recent builds</h2>
         <button id="overview-see-builds" data-i18n="All builds">All builds</button>
       </div>
       <table>
@@ -497,13 +602,11 @@
   <!-- Builds. The platform-wide list, which no per-app view can give: it is
        what answers "is anything failing anywhere" without visiting each app. -->
   <section id="builds-view" class="hidden">
-    <div class="card">
-      <div class="row">
-        <h2 style="flex:1;margin:0" data-i18n="Builds">Builds</h2>
-        <button id="builds-refresh" data-i18n="Refresh">Refresh</button>
-      </div>
+    <div class="page-head">
+      <h1 data-i18n="Builds">Builds</h1>
+      <button id="builds-refresh" data-i18n="Refresh">Refresh</button>
     </div>
-    <div class="card" style="padding:0">
+    <div class="card flush">
       <table>
         <thead>
           <tr><th data-i18n="App">App</th><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Age">Age</th><th data-i18n="Image">Image</th></tr>
@@ -517,28 +620,31 @@
   </section>
 
   <section id="apps-view" class="hidden">
-    <div class="card">
-      <div class="row">
-        <h2 style="flex:1;margin:0" data-i18n="Apps">Apps</h2>
-        <button id="apps-refresh" data-i18n="Refresh">Refresh</button>
-        <button id="apps-new" class="primary" data-i18n="New app">New app</button>
-      </div>
-      <!-- Creating an app mints its key, which is the credential whoever deploys
-           it will use. It is shown here once the app exists rather than typed
-           into this form, because the API does not return it from a create — a
-           key field on the app response would reach every list and get, so it is
-           fetched from the app's own key route instead. -->
-      <div id="apps-new-form" class="row hidden" style="margin-top:12px">
-        <input id="apps-new-id" placeholder="app id, e.g. shop" size="24" data-i18n-placeholder="apps.new.id"
-               autocomplete="off" spellcheck="false">
-        <input id="apps-new-port" placeholder="port" size="6" value="8080" data-i18n-placeholder="port"
-               autocomplete="off">
-        <button id="apps-new-create" class="primary" data-i18n="Create">Create</button>
-        <button id="apps-new-cancel" data-i18n="Cancel">Cancel</button>
-      </div>
-      <div id="apps-new-problem" class="error hidden" style="margin-top:12px"></div>
+    <div class="page-head">
+      <h1 data-i18n="Apps">Apps</h1>
+      <button id="apps-refresh" data-i18n="Refresh">Refresh</button>
+      <button id="apps-new" class="primary" data-i18n="New app">New app</button>
     </div>
-    <div class="card" style="padding:0">
+    <!-- Creating an app mints its key, which is the credential whoever deploys
+         it will use. It is shown here once the app exists rather than typed
+         into this form, because the API does not return it from a create — a
+         key field on the app response would reach every list and get, so it is
+         fetched from the app's own key route instead. -->
+    <!-- The form is itself the card, and carries the same border as everything
+         else on the page. Wrapping it in one would leave that border behind as
+         an empty box every time the form is closed. -->
+    <div id="apps-new-form" class="card row hidden">
+      <input id="apps-new-id" placeholder="app id, e.g. shop" size="24" data-i18n-placeholder="app id, e.g. shop"
+             autocomplete="off" spellcheck="false">
+      <input id="apps-new-port" placeholder="port" size="6" value="8080" data-i18n-placeholder="port"
+             autocomplete="off">
+      <button id="apps-new-create" class="primary" data-i18n="Create">Create</button>
+      <button id="apps-new-cancel" data-i18n="Cancel">Cancel</button>
+      <!-- Full width, so the failure sits under the fields it is about rather
+           than inline beside the Cancel button. -->
+      <div id="apps-new-problem" class="error hidden" style="flex-basis:100%"></div>
+    </div>
+    <div class="card flush">
       <table>
         <thead>
           <tr><th data-i18n="App">App</th><th data-i18n="Status">Status</th><th data-i18n="Commit">Commit</th><th data-i18n="Where">Where</th></tr>
@@ -553,8 +659,24 @@
   </section>
 
   <section id="app-view" class="hidden">
+    <div class="page-head">
+      <button id="back">← Apps</button>
+      <h1 id="app-title"></h1>
+      <!-- Opening the app is the reason to come to this page, so it is a button
+           in the title row rather than one line in the state table below, where
+           it was one fact among a dozen. Hidden until there is a URL: an app
+           that has never been deployed has an address but nothing answering at
+           it, and the console should not offer to open that. -->
+      <a id="app-open" class="button hidden" target="_blank" rel="noopener noreferrer"></a>
+      <button id="app-restart" data-i18n="Restart">Restart</button>
+      <button id="app-stop" data-i18n="Stop">Stop</button>
+      <button id="app-delete" class="danger" data-i18n="Delete">Delete</button>
+    </div>
+
     <!-- Shown only to an app key, so the page explains why it looks different
-         from what an admin sees rather than leaving it a mystery. -->
+         from what an admin sees rather than leaving it a mystery. It sits below
+         the title rather than above it because it is a note about the key in
+         hand, not a banner about the app. -->
     <div id="app-key-note" class="card hidden">
       <p style="margin:0">
         <span data-i18n="Signed in with this app's own key. It reaches">Signed in with this app's own key. It reaches</span>
@@ -563,16 +685,6 @@
         it can push, build, deploy and roll back, but cannot delete the app and
         cannot see any other.</span>
       </p>
-    </div>
-
-    <div class="card">
-      <div class="row">
-        <button id="back">← Apps</button>
-        <h2 style="flex:1;margin:0" id="app-title"></h2>
-        <button id="app-restart" data-i18n="Restart">Restart</button>
-        <button id="app-stop" data-i18n="Stop">Stop</button>
-        <button id="app-delete" class="danger" data-i18n="Delete">Delete</button>
-      </div>
     </div>
 
     <div class="card">
@@ -593,7 +705,15 @@
       <p class="muted" style="font-size:13px;margin:8px 0 0">
         <span data-i18n="Clone it with any git client. The key goes in as the password — any username works — or send it as a header:">Clone it with any git client. The key goes in as the password — any username works — or send it as a header:</span>
       </p>
-      <pre id="app-git-hint" style="margin:8px 0 0"></pre>
+      <!-- The clone command carries the app's key, so it is masked until asked
+           for. That is what lets this be a command someone can copy and run
+           rather than one with a <key> placeholder they have to fill in from
+           somewhere else — the placeholder is the reason a credential ends up
+           pasted into a file instead. -->
+      <div class="secret">
+        <span class="secret-value" id="app-git-hint"></span>
+        <button id="app-git-hint-reveal" class="reveal hidden" type="button"></button>
+      </div>
     </div>
 
     <!-- The app's own key. This is the credential to hand whoever deploys the
@@ -601,11 +721,14 @@
          for — see showAppKey — because a credential that renders itself is one
          that ends up in screenshots. -->
     <div class="card">
-      <div class="row">
-        <h2 style="flex:1;margin:0" data-i18n="API key">API key</h2>
+      <div class="card-head">
+        <h2 data-i18n="API key">API key</h2>
         <button id="app-key-show" data-i18n="Show key">Show key</button>
       </div>
-      <p class="mono" id="app-key-value" style="margin:12px 0 0" data-i18n="Not shown.">Not shown.</p>
+      <div class="secret">
+        <span class="secret-value" id="app-key-value" data-i18n="Not shown.">Not shown.</span>
+        <button id="app-key-value-reveal" class="reveal hidden" type="button"></button>
+      </div>
       <p class="muted" style="font-size:13px;margin:8px 0 0">
         <span data-i18n="Reaches">Reaches</span>
         <strong data-i18n="this app only">this app only</strong><span
@@ -617,8 +740,8 @@
     </div>
 
     <div class="card">
-      <div class="row">
-        <h2 style="flex:1;margin:0" data-i18n="Pods">Pods</h2>
+      <div class="card-head">
+        <h2 data-i18n="Pods">Pods</h2>
         <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
       </div>
       <table>
@@ -629,14 +752,14 @@
     </div>
 
     <div class="card">
-      <div class="row">
-        <h2 style="flex:1;margin:0" data-i18n="Log">Log</h2>
+      <div class="card-head">
+        <h2 data-i18n="Log">Log</h2>
         <label class="muted" style="font-size:13px">
           <input type="checkbox" id="logs-previous"> <span data-i18n="previous instance">previous instance</span>
         </label>
         <button id="logs-toggle" data-i18n="Follow">Follow</button>
       </div>
-      <pre id="logs" style="margin-top:12px" data-i18n="(not started)">(not started)</pre>
+      <pre id="logs" style="margin:0" data-i18n="(not started)">(not started)</pre>
     </div>
 
     <div class="card">
@@ -719,6 +842,11 @@ const state = {
   url: "",
   key: "",
   app: "",
+  // Whether a session has been established, which is not the same question as
+  // whether a view is on screen: boot switches the language before it has shown
+  // the sign-in form, and a re-render at that moment would draw the overview
+  // behind a card nobody has signed in through yet.
+  signedIn: false,
   // "admin" or "app", learned from the API at sign-in. It decides which views
   // are reachable: an app key has one app and no platform to look at.
   scope: "admin",
@@ -746,6 +874,28 @@ const $ = (id) => document.getElementById(id);
 function baseURL() {
   return (window.location.origin || "") +
     (window.location.pathname || "").replace(/\/+$/, "");
+}
+
+// appURL is the address an app will be served at, whether or not it is running.
+//
+// It is the same scheme as the page itself, because the deployment serves the
+// console and the apps through one gateway: if this page came over https, so
+// will they. The address is derived here rather than read from the app because
+// the API only fills in its `url` once the app has been deployed — and someone
+// looking at an app they have not deployed yet is precisely the person who wants
+// to know where it is going to land.
+function appURL(app) {
+  return addressURL(app.hostname, app.path, app.url);
+}
+
+// addressURL is the same derivation from the parts, for the callers that have an
+// app's status in hand rather than the app itself.
+function addressURL(host, path, url) {
+  if (url) return url;
+  const address = (host || "") + (path || "");
+  if (!address) return "";
+  const scheme = (window.location.protocol || "https:").replace(/:$/, "");
+  return scheme + "://" + address;
 }
 
 // ---------------------------------------------------------------------------
@@ -779,7 +929,7 @@ const ZH = {
   "Repository": "代码仓库",
   "Clone it with any git client. The key goes in as the password — any username works — or send it as a header:":
     "用任意 git 客户端克隆。key 作为密码传入（用户名随意），或改用请求头传入：",
-  "Stored in this browser only, and sent to": "仅保存在此浏览器中，发送至",
+  "Sent to": "发送至",
   "An API key is required.": "请填写 API key。",
 
   // -- Overview -------------------------------------------------------------
@@ -834,7 +984,7 @@ const ZH = {
 
   // -- Apps -----------------------------------------------------------------
   "New app": "新建应用",
-  "apps.new.id": "应用 ID，例如 shop",
+  "app id, e.g. shop": "应用 ID，例如 shop",
   "port": "端口",
   "Create": "创建",
   "Cancel": "取消",
@@ -853,6 +1003,9 @@ const ZH = {
   "API key": "API key",
   "Show key": "显示 key",
   "Not shown.": "未显示。",
+  "Open": "打开",
+  "Show": "显示",
+  "Hide": "隐藏",
   "Reaches": "仅能访问",
   "this app only": "本应用",
   "— it can push, build, deploy and roll back, but cannot delete the app and cannot see any other. The same key works with the API, the CLI and this console.":
@@ -894,7 +1047,6 @@ const ZH = {
   "{ready}/{desired} ready": "{ready}/{desired} 就绪",
   " (available)": "（可用）",
   "url": "地址",
-  "host": "主机",
 
   // -- Statuses -------------------------------------------------------------
   "running": "运行中",
@@ -997,12 +1149,10 @@ function applyTheme() {
   const next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
   const label = { system: t("System"), light: t("Light"), dark: t("Dark") }[next];
 
-  // Both places the control appears: the header, and the sign-in card, which is
-  // up before there is a header. Labelling only the first leaves the second
-  // blank on the one screen a first-time visitor sees.
-  for (const id of ["theme-toggle", "signin-theme-toggle"]) {
-    const button = $(id);
-    if (!button) continue;
+  // The control lives in the header, which is on screen whether or not anyone
+  // has signed in.
+  const button = $("theme-toggle");
+  if (button) {
     button.textContent = label;
     button.title = t("Theme");
     button.setAttribute("aria-label", t("Theme") + ": " + label);
@@ -1020,6 +1170,117 @@ function loadTheme() {
     // Storage blocked (private window, site data off). The console still has to
     // work; it just cannot remember the choice.
     return "system";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Concealed values
+//
+// Three values on this page are credentials or contain one: the key being typed
+// on the sign-in form, the app's key, and the clone command with the key inside
+// it. One mask and one eye serve all three.
+//
+// The mask is a comfort rather than a safeguard — every one of these is already
+// in this browser, and the clone command is a shell command that has to be
+// readable to be copied. What it protects against is the realistic failure:
+// these values sitting in a screenshot, a shared tab or a screen recording of
+// someone deploying.
+// ---------------------------------------------------------------------------
+
+const EYE_OPEN =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/>' +
+  '<circle cx="12" cy="12" r="2.8"/></svg>';
+
+const EYE_CLOSED =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/>' +
+  '<circle cx="12" cy="12" r="2.8"/>' +
+  '<path d="M4 20 20 4"/></svg>';
+
+// mask replaces every character with a bullet, keeping the count. The count is
+// the only thing the mask carries: it is not an abbreviation of the value, and
+// it makes a masked credential obviously a credential rather than a short
+// string — which is what an equal number of asterisks would not.
+function mask(value) {
+  return "•".repeat(String(value).length);
+}
+
+// setRevealButton draws the eye and names it. The name is what a screen reader
+// announces in place of the icon, and it states what the click will do rather
+// than what is currently shown — a control labelled with the state it is in
+// reads as a status display and gets clicked by mistake.
+function setRevealButton(button, shown) {
+  button.innerHTML = shown ? EYE_CLOSED : EYE_OPEN;
+  const label = t(shown ? "Hide" : "Show");
+  button.title = label;
+  button.setAttribute("aria-label", label);
+}
+
+// concealed registers a value and its eye, in either of the two shapes it comes
+// in: a field the browser masks itself, or a run of text the console masks.
+function concealed(valueId, buttonId) {
+  const valueEl = $(valueId);
+  const button = $(buttonId);
+  if (!valueEl || !button) return { set() {}, reveal() {}, refresh() {} };
+
+  let shown = false;
+
+  // A real field: the browser masks it, the eye switches its type, and its value
+  // is whatever has been typed rather than anything held here — which is what
+  // keeps the typed key out of this function entirely.
+  if (valueEl.tagName === "INPUT") {
+    const render = () => {
+      valueEl.type = shown ? "text" : "password";
+      setRevealButton(button, shown);
+    };
+    button.onclick = () => { shown = !shown; render(); };
+    render();
+    return { set() {}, reveal() {}, refresh: render };
+  }
+
+  // A run of text. The value is held on the element's data rather than in the
+  // text, so a masked page never contains the credential — reading the DOM of a
+  // shared tab would otherwise give it up.
+  const render = () => {
+    const full = valueEl.dataset.value || "";
+    // A value that has not been asked for is a sentence, not a secret — "Not
+    // shown." — so it is left as written and the eye goes away rather than
+    // offering to reveal a sentence.
+    if (!full) {
+      button.classList.add("hidden");
+      return;
+    }
+    button.classList.remove("hidden");
+    valueEl.textContent = shown ? full : mask(full);
+    setRevealButton(button, shown);
+  };
+  button.onclick = () => { shown = !shown; render(); };
+  render();
+
+  return {
+    set(value) { valueEl.dataset.value = value || ""; shown = false; render(); },
+    reveal() { shown = true; render(); },
+    // Re-renders without changing what is shown, which is what a language switch
+    // needs: the value and the eye stay as they are, and only the eye's label is
+    // rebuilt.
+    refresh: render,
+  };
+}
+
+// The three registered on the first call, since the elements only exist once the
+// document has been parsed — which is the case by the time anything runs here.
+let signinReveal = null;
+let appKeyReveal = null;
+let appGitReveal = null;
+
+// refreshReveals rebuilds the eyes' labels, which are translated and so change
+// with the language. Called from setLang, after the dictionary has switched.
+function refreshReveals() {
+  for (const reveal of [signinReveal, appKeyReveal, appGitReveal]) {
+    if (reveal) reveal.refresh();
   }
 }
 
@@ -1041,9 +1302,15 @@ function setLang(value) {
   translateStaticText();
   applyTheme();
 
+  // The eyes are labelled from the one place that draws them rather than from
+  // data-i18n attributes: the sign-in form's exists before any value does, so
+  // its label has to be rebuilt on a language switch either way, and a second
+  // mechanism for the same three strings would be a second place to keep true.
+  refreshReveals();
+
   // The label is the language it switches *to*, so it reads as an offer rather
-  // than as a statement of the current one. Both places it appears, for the same
-  // reason as the theme control above.
+  // than as a statement of the current one. Both places it appears, for the
+  // same reason as the theme control above.
   for (const id of ["lang-toggle", "signin-lang-toggle"]) {
     const button = $(id);
     if (!button) continue;
@@ -1053,9 +1320,10 @@ function setLang(value) {
   }
 
   // Anything already on screen was rendered in the previous language. Only the
-  // visible view needs redrawing, and only if there is one — before sign-in
-  // there is nothing but the static form.
-  if (!$("signin").classList.contains("hidden")) return;
+  // visible view needs redrawing, and there is one only once a session exists —
+  // before that the page is the static sign-in form, and switching the language
+  // on it is entirely covered by the two calls above.
+  if (!state.signedIn) return;
   const view = state.view;
   if (view === "overview") showOverview();
   else if (view === "builds") showBuilds();
@@ -1074,8 +1342,7 @@ function translateStaticText() {
   }
 }
 
-function loadLang() {
-  try {
+function loadLang() {  try {
     const saved = localStorage.getItem(STORE_LANG);
     if (saved) return saved;
   } catch { /* not remembered */ }
@@ -1511,23 +1778,36 @@ async function loadApps() {
     tr.appendChild(commit);
 
     const where = document.createElement("td");
-    // hostname and path are the two halves of an app's address, and with a
-    // shared path prefix the host alone is the deployment's, not the app's —
-    // showing it by itself would label every app with the same string.
+    // The address is the one thing on this row anyone wants to *use* — it is
+    // where the app they just deployed is running — so it is a link, and it is a
+    // link before the app has been deployed too. The target is known from the
+    // moment the app exists, and a clickable address that is not serving yet is
+    // still the honest answer to "where will this be"; a plain-text address that
+    // turns into a link on first deploy teaches nothing.
+    //
+    // Hostname and path are the two halves of that address, and with a shared
+    // prefix the host alone belongs to the deployment rather than to the app — so
+    // they are joined rather than the host being shown by itself.
     const address = (app.hostname || "") + (app.path || "");
-    if (app.url) {
+    const href = appURL(app);
+    if (!href) {
+      where.className = "muted";
+      where.textContent = "—";
+    } else {
       const link = document.createElement("a");
-      link.href = app.url;
+      link.href = href;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       link.textContent = address;
       where.appendChild(link);
-    } else if (address) {
-      where.className = "muted";
-      where.textContent = address + " " + t("(not deployed)");
-    } else {
-      where.className = "muted";
-      where.textContent = "—";
+      // Only the status distinguishes the two, so the note qualifies the link
+      // rather than replacing it.
+      if (!app.url) {
+        const note = document.createElement("span");
+        note.className = "muted";
+        note.textContent = " " + t("(not deployed)");
+        where.appendChild(note);
+      }
     }
     tr.appendChild(where);
 
@@ -1592,17 +1872,35 @@ async function createApp() {
 // every shared tab for a value most visits do not need. One click asks for it,
 // and it is the same call the CLI makes.
 async function showAppKey() {
-  const el = $("app-key-value");
-  el.textContent = "…";
+  const valueEl = $("app-key-value");
+  valueEl.textContent = "…";
   try {
     const key = await api("/api/v1/apps/" + state.app + "/key");
-    el.textContent = key.key;
+    // Handed to the concealed value rather than put straight in the element, so
+    // the key is masked on arrival — and so the clone command, which carries it,
+    // can be filled in at the same time. They are the same credential and there
+    // is no point fetching it twice.
+    appKeyReveal.set(key.key);
+    setCloneHint(key.key);
   } catch (err) {
     // The common failure is a deployment with no cluster, where keys are kept
     // and this endpoint answers 501. That is a fact about the deployment rather
     // than a fault, and the API's own message says which it is.
-    el.textContent = err.message;
+    valueEl.textContent = err.message;
   }
+}
+
+// setCloneHint fills in the clone command with the app's key.
+//
+// It is filled in rather than left as a <key> placeholder because the whole
+// point of showing it here is that it can be copied and run: a command with a
+// placeholder in it is one the reader has to go and find the value for, and the
+// place they usually end up putting it is a file that outlives the clone. The
+// key in it is masked on screen until asked for, so the convenience does not
+// come at the cost of it being legible to whoever walks past.
+function setCloneHint(key) {
+  const base = state.url + "/git/" + state.app + ".git";
+  appGitReveal.set("git clone https://x:" + key + "@" + base.replace(/^https?:\/\//, ""));
 }
 
 async function openApp(id) {
@@ -1625,6 +1923,12 @@ async function openApp(id) {
   show($("app-delete"), state.scope !== "app");
   // Cleared on every open, so a key shown for one app is never left on screen
   // when another is opened. The button re-fetches, so nothing is lost by it.
+  appKeyReveal.set("");
+  // And the Open button, for the same reason: it is filled in from this app's
+  // status, and leaving the previous app's address there between the two calls
+  // would offer to open the wrong one.
+  $("app-open").removeAttribute("href");
+  show($("app-open"), false);
   $("app-key-value").textContent = t("Not shown.");
 
   // The app's repository, from the deployment's own address plus the path the
@@ -1632,10 +1936,12 @@ async function openApp(id) {
   // for the same reason the console derives its own address: the server may be
   // reached under a path, and this is the address the page was actually served
   // from — the one the caller can reach.
-  const gitURL = state.url + "/git/" + id + ".git";
-  $("app-git-url").textContent = gitURL;
-  $("app-git-hint").textContent =
-    "git clone https://x:<key>@" + gitURL.replace(/^https?:\/\//, "");
+  //
+  // The clone command is left empty until the key is asked for: it needs the
+  // credential to be runnable, and fetching that on every app open is what the
+  // Show key button exists to avoid.
+  $("app-git-url").textContent = state.url + "/git/" + id + ".git";
+  appGitReveal.set("");
 
   stopLogs();
 
@@ -1808,6 +2114,23 @@ async function loadAppState() {
   const list = $("app-state");
   list.replaceChildren();
 
+  // The Open button in the title row, from the same status this renders.
+  //
+  // It appears only once the app has actually been deployed. An app that has
+  // never been deployed has an address — the deployment knows where it *would*
+  // be served — but nothing is answering there, and a button that opens a 404
+  // is worse than no button. The address itself still shows in the state table,
+  // marked as not deployed.
+  const open = $("app-open");
+  if (status.url) {
+    open.href = status.url;
+    open.textContent = t("Open") + " ↗";
+    show(open, true);
+  } else {
+    show(open, false);
+    open.removeAttribute("href");
+  }
+
   const add = (term, value) => {
     const dt = document.createElement("dt");
     dt.textContent = term;
@@ -1815,6 +2138,14 @@ async function loadAppState() {
     dd.textContent = value;
     list.append(dt, dd);
   };
+
+  // The address as text. The link that opens it lives in the title row, where
+  // the reason someone opens this page is; repeating it here as a second link
+  // would be a second thing to keep true, and this row is the record.
+  const appAddress = addressURL(status.host, status.path, status.url);
+  if (appAddress) {
+    add(t("url"), appAddress + (status.url ? "" : " " + t("(not deployed)")));
+  }
 
   add(t("recorded"), t(status.status));
   if (status.deployed && status.deployed.commit_sha) add(t("commit"), status.deployed.commit_sha);
@@ -1835,8 +2166,6 @@ async function loadAppState() {
       if (status.live.current_image) add(t("running image"), status.live.current_image);
     }
   }
-  if (status.url) add(t("url"), status.url);
-  else if (status.host) add(t("host"), status.host + (status.path || "") + " " + t("(not deployed)"));
 
   // A rollout that cannot progress carries the reason, which is the most useful
   // single thing to surface when an app will not come up.
@@ -2112,6 +2441,9 @@ function clearCredentials() {
     localStorage.removeItem(STORE_KEY);
   } catch { /* nothing to do */ }
   state.key = "";
+  // Set here rather than at each caller, so no path — a failed sign-in, or a
+  // sign-out — can leave the console believing it still has a session.
+  state.signedIn = false;
 }
 
 // connect signs in and establishes which scope the key has.
@@ -2169,8 +2501,11 @@ async function connect(key) {
 
   state.scope = isAdmin ? "admin" : "app";
   state.app = state.scope === "app" ? apps[0].id : "";
+  // From here the console has a session, so a language switch has a view to
+  // redraw. Set before the first view is shown, so that switch cannot land in
+  // between and be skipped.
+  state.signedIn = true;
 
-  $("endpoint").textContent = state.url;
   show($("app-header"), true);
   show($("signin"), false);
   show($("signout"), true);
@@ -2198,8 +2533,9 @@ function signOut() {
   clearCredentials();
   state.scope = "admin";
   state.app = "";
-  $("endpoint").textContent = "";
-  show($("app-header"), false);
+  // The header stays up — its theme and language controls are the whole of what
+  // the sign-in screen offers — but everything it carries for a signed-in user
+  // goes, along with every view.
   show($("signout"), false);
   show($("nav"), false);
   show($("app-key-note"), false);
@@ -2221,7 +2557,6 @@ $("signin-form").onsubmit = (e) => {
 $("theme-toggle").onclick = () => {
   setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]);
 };
-$("signin-theme-toggle").onclick = $("theme-toggle").onclick;
 $("lang-toggle").onclick = () => setLang(lang === "zh" ? "en" : "zh");
 $("signin-lang-toggle").onclick = $("lang-toggle").onclick;
 
@@ -2299,10 +2634,21 @@ $("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
   setTheme(loadTheme());
   setLang(loadLang());
 
+  // The concealed values, before anything can fill them: the eyes are wired here
+  // rather than at the wiring block below because the sign-in form is on screen
+  // by the time boot runs, and it has one.
+  signinReveal = concealed("signin-key", "signin-reveal");
+  appKeyReveal = concealed("app-key-value", "app-key-value-reveal");
+  appGitReveal = concealed("app-git-hint", "app-git-hint-reveal");
+
+  // The header is up on both screens: on the sign-in screen its theme and
+  // language controls are the whole of what it offers, and keeping it in place
+  // is what stops those two moving once someone signs in.
+  show($("app-header"), true);
+
   state.url = baseURL();
-  // Shown in the sign-in card so it is visible which deployment a key is about to
-  // be sent to — the one thing the removed address field was genuinely telling
-  // anyone, now stated rather than asked for.
+  // The one address on the sign-in screen, since the field that used to ask for
+  // it is gone: it says which deployment a key is about to be sent to.
   $("signin-where").textContent = state.url || "this deployment";
 
   const saved = loadCredentials();
