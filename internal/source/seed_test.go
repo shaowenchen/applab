@@ -15,10 +15,7 @@ var seeded = []string{"applab.sh", "AGENT.md"}
 // treeNames lists every path at a repository's tip.
 func treeNames(t *testing.T, s *Store, appID string) []string {
 	t.Helper()
-	repo, err := s.RepoPath(appID)
-	if err != nil {
-		t.Fatalf("RepoPath: %v", err)
-	}
+	repo := materializeRepo(t, s, appID)
 	out, err := s.run(context.Background(), repo, "ls-tree", "-r", "--name-only", "refs/heads/main")
 	if err != nil {
 		t.Fatalf("ls-tree: %v", err)
@@ -195,7 +192,7 @@ func TestTheSeededScriptIsExecutable(t *testing.T) {
 	if err := s.Create(ctx, "shop"); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	repo, _ := s.RepoPath("shop")
+	repo := materializeRepo(t, s, "shop")
 
 	out, err := s.run(ctx, repo, "ls-tree", "-r", "refs/heads/main")
 	if err != nil {
@@ -229,7 +226,7 @@ func TestSeedReplacesASymlinkRatherThanFollowingIt(t *testing.T) {
 	}
 
 	// The seed is a regular file at the tip, not a symlink to somewhere else.
-	repo, _ := s.RepoPath("shop")
+	repo := materializeRepo(t, s, "shop")
 	out, err := s.run(ctx, repo, "ls-tree", "-r", "refs/heads/main")
 	if err != nil {
 		t.Fatalf("ls-tree: %v", err)
@@ -381,10 +378,7 @@ func TestTheScriptsRequestsCarryTheSameFields(t *testing.T) {
 // fileAtTip returns a file's content at a repository's tip.
 func fileAtTip(t *testing.T, s *Store, appID, name string) string {
 	t.Helper()
-	repo, err := s.RepoPath(appID)
-	if err != nil {
-		t.Fatalf("RepoPath: %v", err)
-	}
+	repo := materializeRepo(t, s, appID)
 	out, err := s.run(context.Background(), repo, "show", "refs/heads/main:"+name)
 	if err != nil {
 		t.Fatalf("show %s: %v", name, err)

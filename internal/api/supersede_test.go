@@ -117,7 +117,7 @@ func TestAnUploadStopsTheBuildInFlight(t *testing.T) {
 		t.Fatalf("cancelled jobs = %v, want [job-in-flight]", got)
 	}
 
-	build, err := st.GetBuild(context.Background(), buildID)
+	build, err := st.GetBuild(context.Background(), "shop", buildID)
 	if err != nil {
 		t.Fatalf("read the build: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestAnUploadDoesNotStopAFinishedBuild(t *testing.T) {
 	sortAppWithCommit(t, srv, h, "shop")
 
 	buildID := unfinishedBuild(t, st, "shop", "aaaa", "job-done")
-	if err := st.SetBuildStatus(context.Background(), buildID, model.BuildStatusSucceeded, ""); err != nil {
+	if err := st.SetBuildStatus(context.Background(), "shop", buildID, model.BuildStatusSucceeded, ""); err != nil {
 		t.Fatalf("finish the build: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestAnUploadDoesNotStopAFinishedBuild(t *testing.T) {
 	if got := engine.cancelledJobs(); len(got) != 0 {
 		t.Fatalf("cancelled jobs = %v, want none: the build had already finished", got)
 	}
-	build, err := st.GetBuild(context.Background(), buildID)
+	build, err := st.GetBuild(context.Background(), "shop", buildID)
 	if err != nil {
 		t.Fatalf("read the build: %v", err)
 	}

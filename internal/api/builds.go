@@ -154,13 +154,13 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, commitSHA strin
 		// The record is kept and marked failed, rather than deleted: the caller
 		// asked for a build and needs to be able to see that it did not start and
 		// why.
-		s.setBuildStatus(ctx, buildID, model.BuildStatusFailed, err.Error())
+		s.setBuildStatus(ctx, app.ID, buildID, model.BuildStatusFailed, err.Error())
 		s.setAppStatus(ctx, app.ID, model.AppStatusBuildFailed, err.Error())
 		return nil, Errorf(http.StatusInternalServerError, "start the build job").Wrap(err)
 	}
 
 	build.JobName = jobName
-	if err := s.store.SetBuildStatus(ctx, buildID, model.BuildStatusPending, ""); err != nil {
+	if err := s.store.SetBuildStatus(ctx, app.ID, buildID, model.BuildStatusPending, ""); err != nil {
 		slog.WarnContext(ctx, "could not record build status", "build", buildID, "error", err)
 	}
 	s.setAppStatus(ctx, app.ID, model.AppStatusBuilding, "building commit "+shortSHA(commitSHA))
@@ -197,7 +197,7 @@ func (s *Server) supersedeOtherBuilds(ctx context.Context, app *model.App, excep
 				"app", app.ID, "build", build.ID, "job", build.JobName, "error", err)
 			continue
 		}
-		s.setBuildStatus(ctx, build.ID, model.BuildStatusCancelled,
+		s.setBuildStatus(ctx, app.ID, build.ID, model.BuildStatusCancelled,
 			"superseded by a newer build of "+app.ID)
 		slog.InfoContext(ctx, "stopped a superseded build",
 			"app", app.ID, "build", build.ID, "job", build.JobName)
@@ -248,7 +248,7 @@ func (s *Server) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.setBuildStatus(r.Context(), build.ID, model.BuildStatusCancelled, "stopped on request")
+	s.setBuildStatus(r.Context(), app.ID, build.ID, model.BuildStatusCancelled, "stopped on request")
 	build.Status = model.BuildStatusCancelled
 	build.Reason = "stopped on request"
 
@@ -303,7 +303,7 @@ func (s *Server) supersedeBuilds(ctx context.Context, app *model.App) {
 			continue
 		}
 
-		s.setBuildStatus(ctx, build.ID, model.BuildStatusCancelled,
+		s.setBuildStatus(ctx, app.ID, build.ID, model.BuildStatusCancelled,
 			"superseded by a newer upload of "+app.ID)
 		slog.InfoContext(ctx, "stopped the build in flight to make way for an upload",
 			"app", app.ID, "build", build.ID, "job", build.JobName)
@@ -519,7 +519,7 @@ func (s *Server) refreshBuild(ctx context.Context, build *model.Build) {
 		return
 	}
 
-	if err := s.store.SetBuildStatus(ctx, build.ID, status, reason); err != nil {
+	if err := s.store.SetBuildStatus(ctx, build.AppID, build.ID, status, reason); err != nil {
 		slog.WarnContext(ctx, "could not record build status", "build", build.ID, "error", err)
 		return
 	}
@@ -530,7 +530,7 @@ func (s *Server) refreshBuild(ctx context.Context, build *model.Build) {
 	// image that does not exist yet.
 	if status == model.BuildStatusSucceeded {
 		image := s.imageFor(build.AppID, build.CommitSHA)
-		if err := s.store.SetBuildImage(ctx, build.ID, image); err != nil {
+		if err := s.store.SetBuildImage(ctx, build.AppID, build.ID, image); err != nil {
 			slog.WarnContext(ctx, "could not record build image", "build", build.ID, "error", err)
 		}
 		build.Image = image
@@ -541,26 +541,29 @@ func (s *Server) refreshBuild(ctx context.Context, build *model.Build) {
 }
 
 // loadBuild reads the {build} path value and loads it.
+//
+// The app id comes from the path, because the layout is one directory per app: a
+// build is addressed under its app in every URL, and its object key contains the
+// app it belongs to. That is also what makes the app in the path a real check
+// rather than a redundancy — a build id from one app cannot be read through
+// another app's path, because the read is scoped to that app's directory and the
+// object is simply not there.
 func (s *Server) loadBuild(r *http.Request) (*model.Build, *apiError) {
 	id := r.PathValue("build")
 	if id == "" {
 		return nil, BadRequest("no build id in the request path")
 	}
+	appID := r.PathValue("app")
+	if appID == "" {
+		return nil, BadRequest("no app id in the request path")
+	}
 
-	build, err := s.store.GetBuild(r.Context(), id)
+	build, err := s.store.GetBuild(r.Context(), appID, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, NotFound("build %q", id)
 		}
 		return nil, Errorf(http.StatusInternalServerError, "read build").Wrap(err)
-	}
-
-	// A build is addressed under its app, so the app in the path must match.
-	// Without this, a build id from one app could be read through another app's
-	// path — which matters because a key holder who guessed an id would otherwise
-	// reach a build they were not looking at.
-	if appID := r.PathValue("app"); appID != "" && appID != build.AppID {
-		return nil, NotFound("build %q", id)
 	}
 	return build, nil
 }
@@ -575,8 +578,8 @@ func (s *Server) setAppStatus(ctx context.Context, appID string, status model.Ap
 	}
 }
 
-func (s *Server) setBuildStatus(ctx context.Context, buildID string, status model.BuildStatus, reason string) {
-	if err := s.store.SetBuildStatus(ctx, buildID, status, reason); err != nil {
+func (s *Server) setBuildStatus(ctx context.Context, appID, buildID string, status model.BuildStatus, reason string) {
+	if err := s.store.SetBuildStatus(ctx, appID, buildID, status, reason); err != nil {
 		slog.WarnContext(ctx, "could not record build status", "build", buildID, "status", status, "error", err)
 	}
 }

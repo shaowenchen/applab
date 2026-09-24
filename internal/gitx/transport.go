@@ -16,6 +16,9 @@ package gitx
 
 import (
 	"bufio"
+	"context"
+	"log/slog"
+	"path/filepath"
 
 	"fmt"
 	"io"
@@ -58,6 +61,34 @@ type Transport struct {
 	// for a caller that has already done so — the API's own key middleware, and
 	// the tests that drive the transport directly.
 	authorize func(r *http.Request, appID string) bool
+
+	// sessions materialises a repository for the duration of a request and
+	// uploads it afterwards.
+	//
+	// The repositories live in object storage, which git cannot read, so every
+	// request works on a local copy and the copy is what git http-backend is
+	// pointed at. It is an interface rather than a concrete dependency so this
+	// package keeps knowing nothing about where the source is kept — and so a
+	// test can serve a directory.
+	sessions Sessions
+}
+
+// Sessions is how a repository is made available to git for one request.
+//
+// The path is only valid until Done is called, and Done must be called exactly
+// once for every Open — it is what uploads a push and removes the local copy.
+type Sessions interface {
+	Open(ctx context.Context, appID string) (repoPath string, done func() error, err error)
+}
+
+// WithSessions attaches the source of repositories.
+//
+// Without it the transport serves nothing: a request that has passed
+// authorization finds no repository to serve, which is the honest answer for a
+// deployment whose source storage was not configured.
+func (t *Transport) WithSessions(s Sessions) *Transport {
+	t.sessions = s
+	return t
 }
 
 // Authorize attaches the per-repository authorization check.
@@ -136,11 +167,49 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The repository is materialised now and uploaded again when the request is
+	// done — which is what makes a push durable, since git has only ever written
+	// to the local copy.
+	if t.sessions == nil {
+		http.Error(w, "repository not found", http.StatusNotFound)
+		return
+	}
+	repoPath, done, err := t.sessions.Open(r.Context(), repoName)
+	if err != nil {
+		// A repository that is not there and one that could not be read are the
+		// same answer to a caller: this endpoint does not disclose which apps
+		// exist, and a storage failure is not theirs to diagnose.
+		http.Error(w, "repository not found", http.StatusNotFound)
+		return
+	}
+	// Deferred rather than called inline: every path out of this handler has to
+	// upload a push, including the ones that return early on a write error.
+	defer func() {
+		if err := done(); err != nil {
+			slog.ErrorContext(r.Context(), "could not store the repository after serving it",
+				"app", repoName, "error", err)
+		}
+	}()
+
+	// The backend resolves PATH_INFO against GIT_PROJECT_ROOT, so both are built
+	// from where the repository actually is for this request rather than from
+	// the configured root: the repository is materialised in scratch space, and
+	// the root the transport was constructed with is not where it lives.
+	//
+	// projectPath already names the repository — it is "/<app>.git/..." straight
+	// out of resolvePath — and the materialised directory is that same name under
+	// its own parent. So the parent is the root and the path is left alone.
+	projectRoot := filepath.Dir(repoPath)
+	projectPath = filepath.ToSlash(projectPath)
+	if strings.HasSuffix(projectPath, ".git") {
+		projectPath += "/"
+	}
+
 	query := r.URL.RawQuery
 	gitProtocol := r.Header.Get("Git-Protocol")
 
 	cmd := exec.CommandContext(r.Context(), t.backend)
-	cmd.Env = t.cgiEnv(r, projectPath, query, gitProtocol)
+	cmd.Env = t.cgiEnv(r, projectRoot, projectPath, query, gitProtocol)
 	cmd.Stdin = r.Body
 	defer r.Body.Close()
 
@@ -174,14 +243,14 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // cgiEnv builds the environment git http-backend expects.
-func (t *Transport) cgiEnv(r *http.Request, projectPath, query, gitProtocol string) []string {
+func (t *Transport) cgiEnv(r *http.Request, projectRoot, projectPath, query, gitProtocol string) []string {
 	env := []string{
 		// PATH and HOME are inherited so the backend can find its own
 		// subprograms and does not try to read a real user's config.
 		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + t.repoRoot,
+		"HOME=" + projectRoot,
 
-		"GIT_PROJECT_ROOT=" + t.repoRoot,
+		"GIT_PROJECT_ROOT=" + projectRoot,
 		"PATH_INFO=" + projectPath,
 		"REQUEST_METHOD=" + r.Method,
 		"QUERY_STRING=" + query,

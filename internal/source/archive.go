@@ -22,26 +22,23 @@ func (s *Store) Archive(ctx context.Context, appID, sha string, w io.Writer) err
 		return fmt.Errorf("archive requires a full commit id, got %q", sha)
 	}
 
-	repoPath, err := s.RepoPath(appID)
-	if err != nil {
-		return err
-	}
+	return s.withRepo(ctx, appID, func(repoPath string) error {
+		// -- is what stops the validated id from being read as an option; it is
+		// belt and braces given the id is already constrained to hex.
+		cmd := exec.CommandContext(ctx, s.gitBin,
+			"--git-dir", repoPath,
+			"archive", "--format=tar.gz", sha, "--")
+		cmd.Env = s.gitEnv(nil)
+		cmd.Stdout = w
 
-	// -- is what stops the validated id from being read as an option; it is
-	// belt and braces given the id is already constrained to hex.
-	cmd := exec.CommandContext(ctx, s.gitBin,
-		"--git-dir", repoPath,
-		"archive", "--format=tar.gz", sha, "--")
-	cmd.Env = s.gitEnv(nil)
-	cmd.Stdout = w
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
 
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("archive commit %s of app %s: %w: %s", sha, appID, err, strings.TrimSpace(stderr.String()))
-	}
-	return nil
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("archive commit %s of app %s: %w: %s", sha, appID, err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	})
 }
 
 // ArchiveSize returns the byte length of a commit's archive without producing

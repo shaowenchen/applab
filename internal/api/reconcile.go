@@ -40,7 +40,7 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 		// nothing in the cluster to consult. It is failed rather than retried:
 		// retrying on every restart would loop, and the caller can ask again.
 		if b.JobName == "" {
-			s.setBuildStatus(ctx, b.ID, model.BuildStatusFailed,
+			s.setBuildStatus(ctx, b.AppID, b.ID, model.BuildStatusFailed,
 				"applab restarted before the build job was created")
 			s.setAppStatus(ctx, b.AppID, model.AppStatusBuildFailed, "applab restarted during the build")
 			continue
@@ -62,7 +62,7 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 
 		switch {
 		case status.Terminal():
-			s.setBuildStatus(ctx, b.ID, status, reason)
+			s.setBuildStatus(ctx, b.AppID, b.ID, status, reason)
 			appStatus := model.AppStatusDeploying
 			if status == model.BuildStatusFailed {
 				appStatus = model.AppStatusBuildFailed
@@ -74,7 +74,7 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 			// The Job is gone entirely — its TTL elapsed while AppLab was down.
 			// The outcome is unknowable, and claiming success would let a caller
 			// deploy an image that may never have been pushed.
-			s.setBuildStatus(ctx, b.ID, model.BuildStatusFailed,
+			s.setBuildStatus(ctx, b.AppID, b.ID, model.BuildStatusFailed,
 				"the build job finished while applab was restarting and its outcome could not be determined")
 			s.setAppStatus(ctx, b.AppID, model.AppStatusBuildFailed,
 				"the build outcome could not be determined after a restart")
@@ -82,7 +82,7 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 		default:
 			// Still running: record the state so the app's status is accurate, and
 			// leave it to the build endpoint to finish reporting.
-			if err := s.store.SetBuildStatus(ctx, b.ID, status, reason); err != nil {
+			if err := s.store.SetBuildStatus(ctx, b.AppID, b.ID, status, reason); err != nil {
 				slog.WarnContext(ctx, "could not record build status", "build", b.ID, "error", err)
 			}
 		}

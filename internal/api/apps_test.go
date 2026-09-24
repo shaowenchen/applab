@@ -13,6 +13,7 @@ import (
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/objectstore"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
@@ -465,11 +466,10 @@ func TestAppResponseHasNoPathWithoutAPrefix(t *testing.T) {
 func newTestServerWithPrefix(t *testing.T, prefix string) *api.Server {
 	t.Helper()
 
-	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
+	st, err := store.OpenLocal(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
 
 	cfg := config.Default()
 	cfg.Keys = []string{"test-key"}
@@ -477,4 +477,19 @@ func newTestServerWithPrefix(t *testing.T, prefix string) *api.Server {
 	cfg.PathPrefix = prefix
 
 	return api.New(cfg, st, auth.New(cfg.Keys))
+}
+
+// newObjects returns an object store in a temporary directory.
+//
+// Every test that builds a Server needs one, because everything AppLab persists
+// — the apps, their history and their source — lives in object storage now. A
+// directory is the same implementation a deployment without a bucket uses, so a
+// test exercises the real paths rather than a stub.
+func newObjects(t *testing.T) objectstore.Store {
+	t.Helper()
+	objs, err := objectstore.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	return objs
 }

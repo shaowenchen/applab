@@ -262,11 +262,8 @@ func TestDataDirIsMadeAbsolute(t *testing.T) {
 	if !filepath.IsAbs(cfg.DataDir) {
 		t.Errorf("DataDir = %q, want an absolute path", cfg.DataDir)
 	}
-	if !filepath.IsAbs(cfg.DBPath) {
-		t.Errorf("DBPath = %q, want an absolute path", cfg.DBPath)
-	}
-	if !strings.HasSuffix(cfg.DBPath, "applab.db") {
-		t.Errorf("DBPath = %q, want it to default inside the data directory", cfg.DBPath)
+	if cfg.ObjectStore.Configured() {
+		t.Errorf("object storage is configured with nothing set: %+v", cfg.ObjectStore)
 	}
 }
 

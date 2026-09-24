@@ -26,16 +26,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/objectstore"
 )
 
 // Store manages the per-app git repositories.
+//
+// The repositories live in object storage and are copied out to a scratch
+// directory for as long as an operation needs one — see workingRepo for why git
+// cannot run against a bucket, and what that costs. Nothing is kept between
+// operations, so a replica holds no state and can be replaced at any moment.
 type Store struct {
-	// dataDir is the configured data directory. Every path this package builds
-	// is derived from it and validated to stay inside it, so an app id can never
-	// address a directory outside AppLab's own storage.
+	// objects is where the repositories live.
+	objects objectstore.Store
+
+	// dataDir is scratch space: the local directory a repository is materialised
+	// into, and where an upload is unpacked. It needs no volume, because nothing
+	// in it survives being useful — a directory emptied on restart loses no
+	// repository.
 	dataDir string
 
 	// gitBin is the resolved path to the git executable, found once at
@@ -49,20 +59,50 @@ type Store struct {
 	// a key holder forge attribution to a person who never made the change.
 	authorName  string
 	authorEmail string
+
+	// locks serialises operations on one app's repository. See lockRepo for why
+	// it is per app, and for what it does not protect against.
+	locksMu sync.Mutex
+	locks   map[string]*repoLock
 }
+
+// repoLock is one app's lock. It is a struct rather than a bare mutex so the map
+// can hold a pointer and the lock's identity does not move when the map grows.
+type repoLock struct{ mu sync.Mutex }
 
 // Options configure a Store.
 type Options struct {
-	DataDir     string
+	// Objects is where repositories are kept. Required.
+	Objects objectstore.Store
+
+	// DataDir is scratch space for materialising a repository and unpacking an
+	// upload. Nothing durable is written here.
+	DataDir string
+
 	AuthorName  string
 	AuthorEmail string
+
+	// GitPath overrides the git executable. Empty means find it in PATH, which
+	// is what a deployment wants; a test may set it to pin one.
+	GitPath string
 }
 
 // New creates a Store, checking that git is available.
 func New(opts Options) (*Store, error) {
-	gitBin, err := exec.LookPath("git")
-	if err != nil {
-		return nil, fmt.Errorf("git is required to store source but was not found in PATH: %w", err)
+	if opts.Objects == nil {
+		return nil, fmt.Errorf("source: no object store given")
+	}
+	if opts.DataDir == "" {
+		return nil, fmt.Errorf("source: no scratch directory given")
+	}
+
+	gitBin := opts.GitPath
+	if gitBin == "" {
+		var err error
+		gitBin, err = exec.LookPath("git")
+		if err != nil {
+			return nil, fmt.Errorf("git is required to store source but was not found in PATH: %w", err)
+		}
 	}
 
 	if opts.AuthorName == "" {
@@ -73,43 +113,36 @@ func New(opts Options) (*Store, error) {
 	}
 
 	s := &Store{
+		objects:     opts.Objects,
 		dataDir:     opts.DataDir,
 		gitBin:      gitBin,
 		authorName:  opts.AuthorName,
 		authorEmail: opts.AuthorEmail,
 	}
 
-	// Create the layout up front so the first upload does not pay for it, and so
-	// a permissions problem surfaces at boot rather than mid-upload.
-	for _, dir := range []string{s.reposDir(), s.uploadsDir(), s.tmpDir()} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("create %s: %w", dir, err)
-		}
+	// The scratch layout is created up front so the first upload does not pay for
+	// it, and so a permissions problem surfaces at boot rather than mid-upload.
+	if err := s.ensureScratch(); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
 
-func (s *Store) reposDir() string   { return filepath.Join(s.dataDir, "repos") }
 func (s *Store) uploadsDir() string { return filepath.Join(s.dataDir, "uploads") }
 func (s *Store) tmpDir() string     { return filepath.Join(s.dataDir, "tmp") }
 
-// RepoPath returns the bare repository directory for an app.
+// localRepoPath is where an app's repository is materialised for one operation.
 //
-// The id is validated first. It has already been checked when the app was
-// created, but this is the function that turns it into a filesystem path, so
-// this is where a traversal would become real — and defence here costs nothing.
-func (s *Store) RepoPath(appID string) (string, error) {
-	if err := model.ValidateAppID(appID); err != nil {
+// It is not the repository's home — that is object storage — and nothing at this
+// path survives the operation that made it. It is inside the scratch directory
+// rather than a system temporary directory so it is on the same filesystem as
+// the working trees an upload builds, which is what lets a tree be moved into a
+// repository rather than copied.
+func (s *Store) localRepoPath(appID string) (string, error) {
+	if err := validateAppID(appID); err != nil {
 		return "", err
 	}
-	path := filepath.Join(s.reposDir(), appID+".git")
-
-	// Belt and braces: even with a validated id, confirm the result is inside
-	// the repositories directory before anyone uses it.
-	if !strings.HasPrefix(path, s.reposDir()+string(os.PathSeparator)) {
-		return "", fmt.Errorf("app id %q resolves outside the repository directory", appID)
-	}
-	return path, nil
+	return filepath.Join(s.tmpDir(), "repos", appID+".git"), nil
 }
 
 // GitPath returns the resolved git executable, for callers that drive git
@@ -118,18 +151,7 @@ func (s *Store) GitPath() string { return s.gitBin }
 
 // Exists reports whether an app already has a repository.
 func (s *Store) Exists(appID string) (bool, error) {
-	path, err := s.RepoPath(appID)
-	if err != nil {
-		return false, err
-	}
-	_, statErr := os.Stat(filepath.Join(path, "HEAD"))
-	if statErr == nil {
-		return true, nil
-	}
-	if errors.Is(statErr, os.ErrNotExist) {
-		return false, nil
-	}
-	return false, statErr
+	return s.existsInBucket(context.Background(), appID)
 }
 
 // Create initialises an app's repository.
@@ -141,11 +163,6 @@ func (s *Store) Exists(appID string) (bool, error) {
 // out and no branch to be "on" — commits are built directly and the default
 // branch is set to main so a clone does not warn about a detached HEAD.
 func (s *Store) Create(ctx context.Context, appID string) error {
-	repoPath, err := s.RepoPath(appID)
-	if err != nil {
-		return err
-	}
-
 	exists, err := s.Exists(appID)
 	if err != nil {
 		return err
@@ -154,9 +171,16 @@ func (s *Store) Create(ctx context.Context, appID string) error {
 		return nil
 	}
 
+	repoPath, err := s.localRepoPath(appID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(repoPath, 0o700); err != nil {
 		return fmt.Errorf("create repository directory: %w", err)
 	}
+	// Whatever happens from here, the scratch directory goes: the repository is
+	// only real once it has been uploaded.
+	defer os.RemoveAll(repoPath)
 
 	if _, err := s.run(ctx, "", "init", "--bare", "--initial-branch=main", repoPath); err != nil {
 		// A failed init leaves a directory that Exists() would report as absent
@@ -185,17 +209,32 @@ func (s *Store) Create(ctx context.Context, appID string) error {
 	// Receive-pack is what a push needs, and the repository was just created by
 	// the same user that runs the server, so the default hooks are already
 	// correct. Nothing further is configured.
-	return nil
+	//
+	// The new repository is uploaded here, before this returns: everything below
+	// this line works from the bucket, so a repository that existed only in
+	// scratch would be invisible to the upload that follows.
+	return s.uploadRepo(ctx, appID, repoPath)
 }
 
 // Remove deletes an app's repository.
 func (s *Store) Remove(ctx context.Context, appID string) error {
-	repoPath, err := s.RepoPath(appID)
-	if err != nil {
+	if err := validateAppID(appID); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(repoPath); err != nil {
-		return fmt.Errorf("remove repository for app %s: %w", appID, err)
+
+	objects, err := s.objects.List(ctx, s.repoPrefix(appID))
+	if err != nil {
+		return fmt.Errorf("list the repository for app %s: %w", appID, err)
+	}
+	for _, object := range objects {
+		if err := s.objects.Delete(ctx, object.Key); err != nil {
+			return fmt.Errorf("remove %s: %w", object.Key, err)
+		}
+	}
+
+	// And the scratch copy, if one is lying around from an interrupted run.
+	if repoPath, err := s.localRepoPath(appID); err == nil {
+		_ = os.RemoveAll(repoPath)
 	}
 	return nil
 }
@@ -207,17 +246,20 @@ func (s *Store) Remove(ctx context.Context, appID string) error {
 // commit that was later removed, or missed for one that was pushed directly
 // over git. What git says is what is actually there.
 func (s *Store) Log(ctx context.Context, appID string, limit int) ([]CommitInfo, error) {
-	repoPath, err := s.RepoPath(appID)
+	var infos []CommitInfo
+	err := s.withRepo(ctx, appID, func(repoPath string) error {
+		var err error
+		infos, err = s.logFrom(ctx, repoPath, limit)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	exists, err := s.Exists(appID)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, nil
-	}
+	return infos, nil
+}
+
+// logFrom reads the history out of a repository that is already on local disk.
+func (s *Store) logFrom(ctx context.Context, repoPath string, limit int) ([]CommitInfo, error) {
 
 	if limit <= 0 {
 		limit = 50
@@ -234,7 +276,7 @@ func (s *Store) Log(ctx context.Context, appID string, limit int) ([]CommitInfo,
 		if isEmptyRepoError(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read commits for app %s: %w", appID, err)
+		return nil, fmt.Errorf("read commits: %w", err)
 	}
 
 	return parseLog(out), nil
@@ -282,31 +324,39 @@ func parseLog(out []byte) []CommitInfo {
 // A caller may refer to a commit by any prefix it was shown, so this is what
 // turns that into the canonical id the rest of the system uses.
 func (s *Store) ResolveCommit(ctx context.Context, appID, revision string) (string, error) {
-	repoPath, err := s.RepoPath(appID)
-	if err != nil {
-		return "", err
-	}
-	out, err := s.run(ctx, repoPath, "rev-parse", "--verify", revision+"^{commit}")
+	var sha string
+	err := s.withRepo(ctx, appID, func(repoPath string) error {
+		out, err := s.run(ctx, repoPath, "rev-parse", "--verify", revision+"^{commit}")
+		if err != nil {
+			return err
+		}
+		sha = strings.TrimSpace(string(out))
+		return nil
+	})
 	if err != nil {
 		return "", fmt.Errorf("resolve %q in app %s: %w", revision, appID, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return sha, nil
 }
 
 // HeadCommit returns the commit at the tip of the default branch.
 func (s *Store) HeadCommit(ctx context.Context, appID string) (string, error) {
-	repoPath, err := s.RepoPath(appID)
-	if err != nil {
-		return "", err
-	}
-	out, err := s.run(ctx, repoPath, "rev-parse", "--verify", "refs/heads/main^{commit}")
+	var sha string
+	err := s.withRepo(ctx, appID, func(repoPath string) error {
+		out, err := s.run(ctx, repoPath, "rev-parse", "--verify", "refs/heads/main^{commit}")
+		if err != nil {
+			return err
+		}
+		sha = strings.TrimSpace(string(out))
+		return nil
+	})
 	if err != nil {
 		if isEmptyRepoError(err) {
 			return "", ErrNoCommits
 		}
 		return "", fmt.Errorf("read head of app %s: %w", appID, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return sha, nil
 }
 
 // ErrNoCommits means the repository exists but has nothing in it yet.
@@ -403,3 +453,10 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// Objects returns the object store the repositories live in.
+//
+// It is exported for tests that need to assert on what a push actually stored:
+// the bucket is the only copy now, so an assertion about the repository is an
+// assertion about the bucket.
+func (s *Store) Objects() objectstore.Store { return s.objects }

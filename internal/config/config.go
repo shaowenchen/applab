@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/shaowenchen/applab/internal/objectstore"
 )
 
 // Config is the whole of AppLab's runtime configuration.
@@ -50,12 +52,17 @@ type Config struct {
 	// anything. Empty is refused at boot rather than served as "open".
 	Keys []string `yaml:"keys"`
 
-	// DataDir holds everything this service persists: the SQLite database and
-	// one bare git repository per app. In Kubernetes this is a PersistentVolume.
+	// DataDir is scratch space, and only that. It used to hold everything this
+	// service persists — the database and one bare git repository per app — and
+	// now holds neither: both live in the object store, and this is the local
+	// directory a repository is materialised into while git is running against
+	// it. It needs no volume and survives no restart; an empty directory on the
+	// node is enough.
 	DataDir string `yaml:"data_dir"`
 
-	// DBPath is the SQLite file. Empty means <DataDir>/applab.db.
-	DBPath string `yaml:"db_path"`
+	// Object storage is where everything this service persists now lives: the
+	// apps, their commit and build history, and their source repositories.
+	ObjectStore ObjectStoreConfig `yaml:"object_store"`
 
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
@@ -116,6 +123,52 @@ type Config struct {
 	// AppLab runs without any of it (the API and source halves still work) and
 	// reports the build capability as unavailable.
 	Build Build `yaml:"build"`
+}
+
+// ObjectStoreConfig points AppLab at the bucket it keeps everything in.
+//
+// It is a bucket rather than a directory on purpose: the point of moving here
+// was that a replica holds nothing, so a node can be replaced without anything
+// being lost and more than one replica can serve at once.
+//
+// The credential is passed explicitly rather than read from the environment the
+// way an AWS SDK would. AppLab has one credential, it comes from a Secret, and
+// making it explicit is what keeps "there is no credential" a legible failure at
+// startup instead of at the first write.
+type ObjectStoreConfig struct {
+	// Endpoint is the service's address: https://s3.us-east-1.amazonaws.com for
+	// AWS, or a self-hosted service's own address.
+	Endpoint string `yaml:"endpoint"`
+
+	// Bucket is the bucket AppLab keeps everything in. It is created if missing
+	// only when CreateBucket is set; otherwise it must exist.
+	Bucket string `yaml:"bucket"`
+
+	// Region is the bucket's region. Defaults to us-east-1.
+	Region string `yaml:"region"`
+
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
+
+	// PathStyle puts the bucket in the request path rather than in the hostname.
+	// It is required by most self-hosted services, which have no wildcard DNS to
+	// put a bucket under, and by any bucket name containing a dot, whose
+	// virtual-hosted certificate would not match.
+	PathStyle bool `yaml:"path_style"`
+
+	// Prefix is an optional key prefix everything is written under, so one
+	// bucket can hold more than one AppLab deployment.
+	Prefix string `yaml:"prefix"`
+
+	// Insecure allows an http endpoint. It is explicit rather than inferred from
+	// the scheme, because sending a credential and an app's source in the clear
+	// is a decision someone has to make on purpose.
+	Insecure bool `yaml:"insecure"`
+}
+
+// Configured reports whether object storage has been pointed somewhere.
+func (c ObjectStoreConfig) Configured() bool {
+	return c.Endpoint != "" && c.Bucket != ""
 }
 
 // Deploy configures how apps are exposed in the cluster.
@@ -316,7 +369,14 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.BaseURL, "APPLAB_BASE_URL")
 	setString(&cfg.BasePath, "APPLAB_BASE_PATH")
 	setString(&cfg.DataDir, "APPLAB_DATA_DIR")
-	setString(&cfg.DBPath, "APPLAB_DB_PATH")
+	setString(&cfg.ObjectStore.Endpoint, "APPLAB_OBJECT_STORE_ENDPOINT")
+	setString(&cfg.ObjectStore.Bucket, "APPLAB_OBJECT_STORE_BUCKET")
+	setString(&cfg.ObjectStore.Region, "APPLAB_OBJECT_STORE_REGION")
+	setString(&cfg.ObjectStore.AccessKey, "APPLAB_OBJECT_STORE_ACCESS_KEY")
+	setString(&cfg.ObjectStore.SecretKey, "APPLAB_OBJECT_STORE_SECRET_KEY")
+	setString(&cfg.ObjectStore.Prefix, "APPLAB_OBJECT_STORE_PREFIX")
+	setBool(&cfg.ObjectStore.PathStyle, "APPLAB_OBJECT_STORE_PATH_STYLE")
+	setBool(&cfg.ObjectStore.Insecure, "APPLAB_OBJECT_STORE_INSECURE")
 	setString(&cfg.LogLevel, "APPLAB_LOG_LEVEL")
 	setString(&cfg.Namespace, "APPLAB_NAMESPACE")
 	setString(&cfg.Kubeconfig, "APPLAB_KUBECONFIG")
@@ -480,16 +540,6 @@ func (c *Config) finalize() error {
 	}
 	c.DataDir = abs
 
-	if c.DBPath == "" {
-		c.DBPath = filepath.Join(c.DataDir, "applab.db")
-	} else {
-		dbAbs, err := filepath.Abs(c.DBPath)
-		if err != nil {
-			return fmt.Errorf("resolve db_path %s: %w", c.DBPath, err)
-		}
-		c.DBPath = dbAbs
-	}
-
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
@@ -625,4 +675,43 @@ func dedupe(in []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+// OpenObjectStore opens the object store this deployment is configured with.
+//
+// A deployment with nothing configured gets a directory, which is what makes
+// `go run ./cmd/applab` work with no bucket and no credential. That is a
+// deliberate convenience and not a fallback that could happen in a cluster: a
+// chart that fails to pass its object store settings gets a directory on the
+// pod's own disk, which is empty on every restart — and the startup log says
+// which backend is in use so that is visible rather than mysterious.
+func (c *Config) OpenObjectStore() (objectstore.Store, error) {
+	if !c.ObjectStore.Configured() {
+		return objectstore.NewLocal(filepath.Join(c.DataDir, "objects"))
+	}
+
+	scheme := "https"
+	if c.ObjectStore.Insecure {
+		scheme = "http"
+	}
+	endpoint := c.ObjectStore.Endpoint
+	if !strings.Contains(endpoint, "://") {
+		endpoint = scheme + "://" + endpoint
+	}
+
+	store, err := objectstore.NewS3(objectstore.S3Options{
+		Endpoint:  endpoint,
+		Bucket:    c.ObjectStore.Bucket,
+		Region:    c.ObjectStore.Region,
+		AccessKey: c.ObjectStore.AccessKey,
+		SecretKey: c.ObjectStore.SecretKey,
+		PathStyle: c.ObjectStore.PathStyle,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if c.ObjectStore.Prefix == "" {
+		return store, nil
+	}
+	return objectstore.Prefixed(store, c.ObjectStore.Prefix), nil
 }

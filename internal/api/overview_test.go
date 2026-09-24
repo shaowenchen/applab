@@ -139,6 +139,12 @@ func TestOverviewCarriesRecentBuildsAcrossApps(t *testing.T) {
 	srv, st := newTestServer(t)
 	ctx := context.Background()
 
+	for _, app := range []string{"shop", "blog"} {
+		if err := st.CreateApp(ctx, &model.App{ID: app, Name: app}); err != nil {
+			t.Fatalf("create app %s: %v", app, err)
+		}
+	}
+
 	for _, b := range []struct {
 		id, app, status string
 	}{
@@ -291,9 +297,11 @@ func TestCountAppsByStatusIgnoresDeleted(t *testing.T) {
 	} {
 		if err := st.CreateApp(ctx, &model.App{
 			ID: app.id, Port: 8080, Replicas: 1, Dockerfile: "Dockerfile",
-			Status: app.status, Namespace: "ops-system",
 		}); err != nil {
 			t.Fatalf("create app %s: %v", app.id, err)
+		}
+		if err := st.SetAppStatus(ctx, app.id, app.status, ""); err != nil {
+			t.Fatalf("set %s status: %v", app.id, err)
 		}
 	}
 
@@ -314,6 +322,12 @@ func TestCountAppsByStatusIgnoresDeleted(t *testing.T) {
 func TestListRecentBuildsOrdersNewestFirst(t *testing.T) {
 	_, st := newTestServer(t)
 	ctx := context.Background()
+
+	// The app has to exist: a build lives under its app's directory, so there is
+	// nowhere to put a build for an app that is not there.
+	if err := st.CreateApp(ctx, &model.App{ID: "shop", Name: "Shop"}); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
 
 	// Created in order, so created_at increases and the newest is last inserted.
 	for _, id := range []string{"b1", "b2", "b3"} {
@@ -344,6 +358,9 @@ func TestListRecentBuildsSpansApps(t *testing.T) {
 	ctx := context.Background()
 
 	for _, app := range []string{"shop", "blog"} {
+		if err := st.CreateApp(ctx, &model.App{ID: app, Name: app}); err != nil {
+			t.Fatalf("create app %s: %v", app, err)
+		}
 		if err := st.CreateBuild(ctx, &model.Build{
 			ID: "build-" + app, AppID: app, CommitSHA: "0123456789012345678901234567890123456789",
 			Status: model.BuildStatusSucceeded, JobName: "job-" + app,

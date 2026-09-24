@@ -11,16 +11,59 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/shaowenchen/applab/internal/objectstore"
 )
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 
-	s, err := New(Options{DataDir: t.TempDir()})
+	s, _ := newTestStoreAndObjects(t)
+	return s
+}
+
+// newTestStoreAndObjects returns the store and the object store behind it, so a
+// test can look at what was actually written — which is where the interesting
+// assertions are now that the bucket is the only copy.
+func newTestStoreAndObjects(t *testing.T) (*Store, objectstore.Store) {
+	t.Helper()
+
+	objs, err := objectstore.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	s, err := New(Options{Objects: objs, DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return s
+	return s, objs
+}
+
+// materializeRepo copies an app's repository out of the object store so a test
+// can run git against it directly.
+//
+// It is the test's own copy, taken independently of the package's own download
+// path, so an assertion about what is in the repository is about the bucket
+// rather than about a copy the package happened to leave lying around.
+func materializeRepo(t *testing.T, s *Store, appID string) string {
+	t.Helper()
+
+	dir := filepath.Join(t.TempDir(), appID+".git")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create %s: %v", dir, err)
+	}
+
+	repo := &workingRepo{
+		store:  s.objects,
+		prefix: s.repoPrefix(appID),
+		dir:    dir,
+		before: map[string]fileState{},
+	}
+	if err := repo.download(context.Background()); err != nil {
+		t.Fatalf("download the repository for %s: %v", appID, err)
+	}
+	return dir
 }
 
 // tarEntry is one entry to place in a test archive.
@@ -123,10 +166,7 @@ func TestIngestCreatesCommitAndIsClonable(t *testing.T) {
 
 	// The real proof: clone it with the git binary and read the files back.
 	cloneDir := filepath.Join(t.TempDir(), "clone")
-	repoPath, err := s.RepoPath("shop")
-	if err != nil {
-		t.Fatalf("RepoPath: %v", err)
-	}
+	repoPath := materializeRepo(t, s, "shop")
 	runGit(t, "", "clone", repoPath, cloneDir)
 
 	for name, want := range map[string]string{
@@ -591,12 +631,7 @@ func TestIngestStripsDangerousModes(t *testing.T) {
 // mustRepoPath is RepoPath with the error turned into a test failure.
 func mustRepoPath(t *testing.T, s *Store, appID string) string {
 	t.Helper()
-
-	path, err := s.RepoPath(appID)
-	if err != nil {
-		t.Fatalf("RepoPath(%q): %v", appID, err)
-	}
-	return path
+	return materializeRepo(t, s, appID)
 }
 
 // runGit executes git in dir and returns its combined output, failing the test

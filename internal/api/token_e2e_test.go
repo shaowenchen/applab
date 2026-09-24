@@ -26,13 +26,12 @@ import (
 // takes: get a token, present it, receive the source.
 func TestSourceArchiveWithToken(t *testing.T) {
 	dataDir := t.TempDir()
-	st, err := store.Open(context.Background(), filepath.Join(dataDir, "t.db"))
+	st, err := store.OpenLocal(context.Background(), filepath.Join(dataDir, "t.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer st.Close()
 
-	src, err := source.New(source.Options{DataDir: dataDir})
+	src, err := source.New(source.Options{Objects: newObjects(t), DataDir: dataDir})
 	if err != nil {
 		t.Fatalf("source.New: %v", err)
 	}

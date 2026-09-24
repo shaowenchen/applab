@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shaowenchen/applab/internal/objectstore"
 	"github.com/shaowenchen/applab/internal/source"
 )
 
@@ -23,7 +24,11 @@ func newTestTransport(t *testing.T, appIDs ...string) (*Transport, *source.Store
 	t.Helper()
 
 	dataDir := t.TempDir()
-	store, err := source.New(source.Options{DataDir: dataDir})
+	objs, err := objectstore.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	store, err := source.New(source.Options{Objects: objs, DataDir: dataDir})
 	if err != nil {
 		t.Fatalf("source.New: %v", err)
 	}
@@ -35,11 +40,13 @@ func newTestTransport(t *testing.T, appIDs ...string) (*Transport, *source.Store
 		}
 	}
 
-	tr, err := New(filepath.Join(dataDir, "repos"), store.GitPath())
+	// The sessions hook is what makes a repository available to git for the
+	// length of a request, since the repositories live in the object store.
+	tr, err := New(dataDir, store.GitPath())
 	if err != nil {
 		t.Fatalf("gitx.New: %v", err)
 	}
-	return tr, store
+	return tr.WithSessions(store), store
 }
 
 // TestCloneOverHTTP is the end-to-end proof that the transport works: a real git
@@ -251,13 +258,18 @@ func buildTar(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
+// mustRepoPath materialises an app's repository so a test can assert on what a
+// push actually stored.
 func mustRepoPath(t *testing.T, s *source.Store, appID string) string {
 	t.Helper()
 
-	path, err := s.RepoPath(appID)
+	path, done, err := s.Open(context.Background(), appID)
 	if err != nil {
-		t.Fatalf("RepoPath: %v", err)
+		t.Fatalf("Open(%q): %v", appID, err)
 	}
+	// The copy is read-only for these assertions, so nothing it changed needs
+	// uploading — but Done still has to run to release the app's lock.
+	t.Cleanup(func() { _ = done() })
 	return path
 }
 

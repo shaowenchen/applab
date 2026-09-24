@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -116,17 +115,26 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	st, err := store.Open(ctx, cfg.DBPath)
+	// Everything AppLab persists lives in object storage: the apps, their
+	// history and their source repositories. A replica therefore holds nothing,
+	// and can be replaced at any moment.
+	objects, err := cfg.OpenObjectStore()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	slog.Info("object storage", "backend", objects.String())
+
+	st, err := store.Open(ctx, objects)
+	if err != nil {
+		return err
+	}
 
 	// Source storage is the first half of the pipeline, and a failure to
 	// initialise it is fatal: a deployment that accepts an app create but cannot
 	// store its source is worse than one that refuses to start, because the
 	// caller only finds out at the end of an upload.
 	src, err := source.New(source.Options{
+		Objects:     objects,
 		DataDir:     cfg.DataDir,
 		AuthorName:  "applab",
 		AuthorEmail: "applab@localhost",
@@ -140,10 +148,15 @@ func run() error {
 	// The git transport serves repositories over git's smart HTTP protocol. It
 	// is mounted rather than absent only when git's own backend could be found,
 	// which source.New has already verified.
-	gitTransport, err := gitx.New(filepath.Join(cfg.DataDir, "repos"), src.GitPath())
+	// The transport materialises a repository for the length of one request and
+	// uploads it afterwards, because git cannot run against a bucket — see
+	// source.StartSession. The root it is given is scratch space; PATH_INFO is
+	// rebuilt from the materialised path per request.
+	gitTransport, err := gitx.New(cfg.DataDir, src.GitPath())
 	if err != nil {
 		return err
 	}
+	gitTransport.WithSessions(src)
 
 	// Which repository a credential may reach is decided by the API layer, which
 	// owns the two tiers — see Server.AuthorizeGitRepo.

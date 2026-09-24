@@ -2,50 +2,44 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shaowenchen/applab/internal/model"
 )
 
-// createBuildColumns is the column list every build query selects, kept in one
-// place so a scan helper and its query cannot drift apart.
-const createBuildColumns = `id, app_id, commit_sha, image, job_name, status, reason, created_at, started_at, finished_at`
-
 // CreateBuild records a new build attempt.
 func (s *Store) CreateBuild(ctx context.Context, b *model.Build) error {
 	if b.CreatedAt.IsZero() {
-		b.CreatedAt = time.Now().UTC()
+		b.CreatedAt = now()
 	}
 	if b.Status == "" {
 		b.Status = model.BuildStatusPending
 	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO builds (id, app_id, commit_sha, image, job_name, status, reason, created_at, started_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.ID, b.AppID, b.CommitSHA, b.Image, b.JobName, b.Status, b.Reason,
-		b.CreatedAt.Unix(), unixOrZero(b.StartedAt), unixOrZero(b.FinishedAt))
-	if err != nil {
-		return fmt.Errorf("create build %s: %w", b.ID, err)
+	if err := s.putJSON(ctx, buildKey(b.AppID, b.ID), b); err != nil {
+		return err
 	}
 	return nil
 }
 
 // GetBuild loads one build by id.
-func (s *Store) GetBuild(ctx context.Context, id string) (*model.Build, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+createBuildColumns+` FROM builds WHERE id = ?`, id)
-
-	b, err := scanBuild(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("build %q: %w", id, ErrNotFound)
+//
+// A build is addressed under its app in every URL, and this is the only way to
+// find it: the layout is per app, so the app id is part of the key and a build
+// cannot be looked up by its own id alone. That is why the caller here has to
+// name the app — which is also what makes guessing a build id insufficient to
+// read someone else's.
+func (s *Store) GetBuild(ctx context.Context, appID, id string) (*model.Build, error) {
+	var build model.Build
+	if err := s.getJSON(ctx, buildKey(appID, id), &build); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("store: build %q: %w", id, ErrNotFound)
+		}
+		return nil, err
 	}
-	if err != nil {
-		return nil, fmt.Errorf("get build %s: %w", id, err)
-	}
-	return b, nil
+	return &build, nil
 }
 
 // ListBuilds returns an app's builds, newest first.
@@ -53,23 +47,28 @@ func (s *Store) ListBuilds(ctx context.Context, appID string, limit int) ([]*mod
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+createBuildColumns+` FROM builds
-		 WHERE app_id = ? ORDER BY created_at DESC, id ASC LIMIT ?`, appID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list builds for app %s: %w", appID, err)
-	}
-	defer rows.Close()
 
-	var out []*model.Build
-	for rows.Next() {
-		b, err := scanBuild(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan build: %w", err)
+	var builds []*model.Build
+	err := s.listJSON(ctx, buildsPrefix(appID), func(body []byte) error {
+		var build model.Build
+		if err := decodeInto(body, &build); err != nil {
+			return err
 		}
-		out = append(out, b)
+		builds = append(builds, &build)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+
+	sortNewestFirst(builds,
+		func(b *model.Build) string { return b.ID },
+		func(b *model.Build) time.Time { return b.CreatedAt })
+
+	if len(builds) > limit {
+		builds = builds[:limit]
+	}
+	return builds, nil
 }
 
 // FindSucceededBuild returns the most recent successful build of a commit.
@@ -78,20 +77,18 @@ func (s *Store) ListBuilds(ctx context.Context, appID string, limit int) ([]*mod
 // rebuilding a byte-identical one. Only succeeded builds with a recorded image
 // qualify: anything else has nothing to deploy.
 func (s *Store) FindSucceededBuild(ctx context.Context, appID, sha string) (*model.Build, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+createBuildColumns+` FROM builds
-		 WHERE app_id = ? AND commit_sha = ? AND status = ? AND image != ''
-		 ORDER BY created_at DESC LIMIT 1`,
-		appID, sha, string(model.BuildStatusSucceeded))
-
-	b, err := scanBuild(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("no successful build of commit %s for app %q: %w", sha, appID, ErrNotFound)
-	}
+	builds, err := s.ListBuilds(ctx, appID, 0)
 	if err != nil {
-		return nil, fmt.Errorf("find build of commit %s for app %s: %w", sha, appID, err)
+		return nil, err
 	}
-	return b, nil
+
+	// Newest first, so the first match is the most recent one.
+	for _, build := range builds {
+		if build.CommitSHA == sha && build.Status == model.BuildStatusSucceeded && build.Image != "" {
+			return build, nil
+		}
+	}
+	return nil, fmt.Errorf("store: no succeeded build of %s in app %q: %w", sha, appID, ErrNotFound)
 }
 
 // SetBuildStatus updates a build's status and reason.
@@ -99,86 +96,63 @@ func (s *Store) FindSucceededBuild(ctx context.Context, appID, sha string) (*mod
 // The timestamps are set from the transition rather than passed in, so a build
 // cannot end up finished before it started: reaching "running" records the
 // start once, and reaching a terminal status records the finish.
-func (s *Store) SetBuildStatus(ctx context.Context, id string, status model.BuildStatus, reason string) error {
-	now := time.Now().UTC().Unix()
+func (s *Store) SetBuildStatus(ctx context.Context, appID, id string, status model.BuildStatus, reason string) error {
+	build, err := s.GetBuild(ctx, appID, id)
+	if err != nil {
+		return err
+	}
 
-	var q string
+	build.Status = status
+	build.Reason = reason
+
+	at := now()
 	switch {
-	case status == model.BuildStatusRunning:
-		// COALESCE keeps the first start time if the build was seen as running
-		// more than once, which is what a status polled against the cluster
-		// will do.
-		q = `UPDATE builds SET status = ?, reason = ?, started_at = COALESCE(NULLIF(started_at, 0), ?) WHERE id = ?`
-	case status.Terminal():
-		q = `UPDATE builds SET status = ?, reason = ?, finished_at = ? WHERE id = ?`
-	default:
-		q = `UPDATE builds SET status = ?, reason = ? WHERE id = ?`
+	case status == model.BuildStatusRunning && build.StartedAt.IsZero():
+		build.StartedAt = at
+	case status.Terminal() && build.FinishedAt.IsZero():
+		build.FinishedAt = at
 	}
 
-	var (
-		res sql.Result
-		err error
-	)
-	if status == model.BuildStatusRunning || status.Terminal() {
-		res, err = s.db.ExecContext(ctx, q, string(status), reason, now, id)
-	} else {
-		res, err = s.db.ExecContext(ctx, q, string(status), reason, id)
-	}
-	if err != nil {
-		return fmt.Errorf("set build %s status: %w", id, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("set build %s status: %w", id, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("build %q: %w", id, ErrNotFound)
-	}
-	return nil
+	return s.putJSON(ctx, buildKey(appID, id), build)
 }
 
 // SetBuildImage records the image a build produced, once the build has pushed
 // it and reported the digest back.
-func (s *Store) SetBuildImage(ctx context.Context, id, image string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE builds SET image = ? WHERE id = ?`, image, id)
+func (s *Store) SetBuildImage(ctx context.Context, appID, id, image string) error {
+	build, err := s.GetBuild(ctx, appID, id)
 	if err != nil {
-		return fmt.Errorf("set build %s image: %w", id, err)
+		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("set build %s image: %w", id, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("build %q: %w", id, ErrNotFound)
-	}
-	return nil
+	build.Image = image
+	return s.putJSON(ctx, buildKey(appID, id), build)
 }
 
-// ListUnfinishedBuilds returns builds that were still pending or running the
-// last time AppLab looked.
+// ListUnfinishedBuilds returns every build on the platform that was still
+// pending or running the last time AppLab looked.
 //
-// It exists for recovery at startup: if the process restarts while a build is
-// in flight, nothing is left to notice the Job finished, so those builds are
+// It exists for recovery at startup: if the process restarts while a build is in
+// flight, nothing is left to notice the Job finished, so those builds are
 // reconciled against the cluster once the server is back.
+//
+// It reads one listing pair per app rather than one listing overall, because the
+// layout is per app: a build's app is part of its key, so a platform-wide query
+// for builds is a query per app. That is the cost of the layout, and it is paid
+// here — once, at startup — rather than anywhere in the request path.
 func (s *Store) ListUnfinishedBuilds(ctx context.Context) ([]*model.Build, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+createBuildColumns+` FROM builds
-		 WHERE status IN (?, ?) ORDER BY created_at ASC`,
-		string(model.BuildStatusPending), string(model.BuildStatusRunning))
+	apps, err := s.ListApps(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list unfinished builds: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 
 	var out []*model.Build
-	for rows.Next() {
-		b, err := scanBuild(rows)
+	for _, app := range apps {
+		unfinished, err := s.ListUnfinishedBuildsForApp(ctx, app.ID)
 		if err != nil {
-			return nil, fmt.Errorf("scan build: %w", err)
+			return nil, err
 		}
-		out = append(out, b)
+		out = append(out, unfinished...)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ListUnfinishedBuildsForApp returns one app's builds that are still pending or
@@ -189,56 +163,27 @@ func (s *Store) ListUnfinishedBuilds(ctx context.Context) ([]*model.Build, error
 // and a Job left running for the earlier commit would push an image for a
 // revision that is no longer the tip.
 func (s *Store) ListUnfinishedBuildsForApp(ctx context.Context, appID string) ([]*model.Build, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+createBuildColumns+` FROM builds
-		 WHERE app_id = ? AND status IN (?, ?) ORDER BY created_at ASC`,
-		appID, string(model.BuildStatusPending), string(model.BuildStatusRunning))
+	builds, err := s.ListBuilds(ctx, appID, 0)
 	if err != nil {
-		return nil, fmt.Errorf("list unfinished builds for app %s: %w", appID, err)
-	}
-	defer rows.Close()
-
-	var out []*model.Build
-	for rows.Next() {
-		b, err := scanBuild(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan build: %w", err)
-		}
-		out = append(out, b)
-	}
-	return out, rows.Err()
-}
-
-func scanBuild(sc rowScanner) (*model.Build, error) {
-	var (
-		b                            model.Build
-		createdAt, startedAt, finish int64
-	)
-	if err := sc.Scan(
-		&b.ID, &b.AppID, &b.CommitSHA, &b.Image, &b.JobName, &b.Status, &b.Reason,
-		&createdAt, &startedAt, &finish,
-	); err != nil {
 		return nil, err
 	}
-	b.CreatedAt = time.Unix(createdAt, 0).UTC()
-	b.StartedAt = timeFromUnix(startedAt)
-	b.FinishedAt = timeFromUnix(finish)
-	return &b, nil
+
+	var out []*model.Build
+	for _, build := range builds {
+		if !build.Status.Terminal() {
+			out = append(out, build)
+		}
+	}
+
+	// Oldest first, which is the order the caller stops them in.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
-// unixOrZero renders a timestamp for storage, mapping the zero time to 0 so a
-// NULL is never needed for "has not happened yet".
-func unixOrZero(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.Unix()
-}
-
-// timeFromUnix is the inverse, returning the zero time for 0.
-func timeFromUnix(v int64) time.Time {
-	if v == 0 {
-		return time.Time{}
-	}
-	return time.Unix(v, 0).UTC()
+// buildIDFromKey recovers a build's id from its object key.
+func buildIDFromKey(key string) string {
+	name := key[strings.LastIndex(key, "/")+1:]
+	return strings.TrimSuffix(name, ".json")
 }

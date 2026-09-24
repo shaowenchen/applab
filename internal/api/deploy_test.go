@@ -43,13 +43,12 @@ func newDeployServerWithSource(t *testing.T) (*api.Server, *fake.Clientset, *sto
 	t.Helper()
 
 	dataDir := t.TempDir()
-	st, err := store.Open(context.Background(), filepath.Join(dataDir, "t.db"))
+	st, err := store.OpenLocal(context.Background(), filepath.Join(dataDir, "t.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
 
-	src, err := source.New(source.Options{DataDir: dataDir})
+	src, err := source.New(source.Options{Objects: newObjects(t), DataDir: dataDir})
 	if err != nil {
 		t.Fatalf("source.New: %v", err)
 	}
@@ -420,10 +419,10 @@ func recordBuild(t *testing.T, st *store.Store, appID, commit, image string) {
 	}); err != nil {
 		t.Fatalf("create build: %v", err)
 	}
-	if err := st.SetBuildImage(ctx, id, image); err != nil {
+	if err := st.SetBuildImage(ctx, appID, id, image); err != nil {
 		t.Fatalf("set build image: %v", err)
 	}
-	if err := st.SetBuildStatus(ctx, id, model.BuildStatusSucceeded, ""); err != nil {
+	if err := st.SetBuildStatus(ctx, appID, id, model.BuildStatusSucceeded, ""); err != nil {
 		t.Fatalf("set build status: %v", err)
 	}
 }
@@ -484,13 +483,12 @@ func TestDeletingAnAppRemovesItsClusterObjects(t *testing.T) {
 // workloads that nothing knows about any more.
 func TestDeleteKeepsTheRecordWhenClusterCleanupFails(t *testing.T) {
 	dataDir := t.TempDir()
-	st, err := store.Open(context.Background(), filepath.Join(dataDir, "t.db"))
+	st, err := store.OpenLocal(context.Background(), filepath.Join(dataDir, "t.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
 
-	src, err := source.New(source.Options{DataDir: dataDir})
+	src, err := source.New(source.Options{Objects: newObjects(t), DataDir: dataDir})
 	if err != nil {
 		t.Fatalf("source.New: %v", err)
 	}

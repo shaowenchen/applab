@@ -23,11 +23,10 @@ import (
 func newBasePathServer(t *testing.T, basePath string) *api.Server {
 	t.Helper()
 
-	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
+	st, err := store.OpenLocal(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
 
 	cfg := config.Default()
 	cfg.Keys = []string{"test-key"}

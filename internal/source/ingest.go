@@ -66,10 +66,10 @@ func (s *Store) Ingest(
 		limits = DefaultIngestLimits
 	}
 
-	repoPath, err := s.RepoPath(appID)
-	if err != nil {
-		return nil, err
-	}
+	// The repository has to exist before the archive is unpacked, because the
+	// commit is built against it. Creating it here rather than requiring the
+	// caller to have done so is what makes an upload the operation that can
+	// bring an app's source into being.
 	if exists, err := s.Exists(appID); err != nil {
 		return nil, err
 	} else if !exists {
@@ -79,8 +79,9 @@ func (s *Store) Ingest(
 	}
 
 	// Scratch space for this upload's working tree and index. It is created
-	// inside the data directory rather than the system temp dir so it shares the
-	// volume's capacity and is cleaned up by the same lifecycle.
+	// inside the scratch directory rather than the system temp dir so it shares
+	// whatever space the node gave AppLab and is cleaned up by the same
+	// lifecycle.
 	workDir, err := os.MkdirTemp(s.tmpDir(), "ingest-")
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
@@ -126,7 +127,17 @@ func (s *Store) Ingest(
 		subject = defaultCommitSubject(appID)
 	}
 
-	sha, files, bytes, err := s.commitWorkTree(ctx, appID, repoPath, workTree, workDir, subject, parent)
+	// The commit is built against a materialised copy of the repository, and the
+	// copy is uploaded again afterwards — which is what makes an upload durable
+	// rather than something that existed only on the node it ran on.
+	var sha string
+	var files int
+	var totalBytes int64
+	err = s.withRepo(ctx, appID, func(repoPath string) error {
+		var commitErr error
+		sha, files, totalBytes, commitErr = s.commitWorkTree(ctx, appID, repoPath, workTree, workDir, subject, parent)
+		return commitErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +145,7 @@ func (s *Store) Ingest(
 	return &IngestResult{
 		SHA:      sha,
 		Files:    files,
-		Bytes:    bytes,
+		Bytes:    totalBytes,
 		Subject:  subject,
 		Stripped: stripped,
 	}, nil

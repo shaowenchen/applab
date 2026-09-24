@@ -2,104 +2,97 @@ package store
 
 import (
 	"context"
-	"fmt"
+	"time"
 
 	"github.com/shaowenchen/applab/internal/model"
 )
 
-// This file holds the aggregate queries the dashboard needs.
+// CountAppsByStatus counts apps by their status.
 //
-// They live in the store rather than being assembled from ListApps and a loop
-// over ListBuilds for two reasons. A count is a count: deriving "how many apps
-// are failing" by loading every app and tallying in Go makes the answer depend
-// on how many apps exist, which is exactly backwards for an overview page. And
-// the build query is genuinely cross-app — the existing ListBuilds is per-app,
-// so the one thing an overview must show, the recent builds of the whole
-// platform, cannot be built from what was already there.
-
-// CountAppsByStatus returns how many apps are in each status.
-//
-// Deleted apps are excluded. Their rows survive so an id is not quietly reused
-// (see ListApps), but counting them would report an app the operator has already
-// removed as if it still existed — a platform overview would then never show
-// zero, which makes the number useless.
-//
-// A status with no apps is simply absent from the map rather than present as
-// zero, so a caller can tell "none of these" from "this deployment has never
-// used that status". Callers that want a fixed set of keys fill the gaps
-// themselves, which is what the overview endpoint does.
+// It is a listing plus one read per app, because a status is a field of the app
+// rather than a key: there is nothing to count without reading the objects that
+// carry it. That is the cost the layout pays for keeping one app in one object,
+// and it is bounded by the number of apps rather than by anything they contain.
 func (s *Store) CountAppsByStatus(ctx context.Context) (map[model.AppStatus]int, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT status, COUNT(*) FROM apps WHERE status != ? GROUP BY status`,
-		string(model.AppStatusDeleted))
+	apps, err := s.ListApps(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("count apps by status: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 
 	counts := map[model.AppStatus]int{}
-	for rows.Next() {
-		var (
-			status string
-			n      int
-		)
-		if err := rows.Scan(&status, &n); err != nil {
-			return nil, fmt.Errorf("scan app status count: %w", err)
+	for _, app := range apps {
+		// A deleted app is a tombstone, not an app: counting it would mean the
+		// number could never return to zero after an app was removed, which
+		// makes it useless for the question it exists to answer.
+		if app.Status == model.AppStatusDeleted {
+			continue
 		}
-		counts[model.AppStatus(status)] = n
+		counts[app.Status]++
 	}
-	return counts, rows.Err()
+	return counts, nil
 }
 
-// CountBuildsByStatus returns how many builds are in each status, across every
-// app.
+// CountBuildsByStatus counts builds by their status, across every app.
+//
+// Every build is read, so the cost grows with the platform's build history —
+// which is why this is the overview's number and not something a request path
+// asks for. A deployment that outgrows it would keep the counts in the app
+// record instead; that is a change of layout, not of interface.
 func (s *Store) CountBuildsByStatus(ctx context.Context) (map[model.BuildStatus]int, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT status, COUNT(*) FROM builds GROUP BY status`)
+	apps, err := s.ListApps(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("count builds by status: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 
 	counts := map[model.BuildStatus]int{}
-	for rows.Next() {
-		var (
-			status string
-			n      int
-		)
-		if err := rows.Scan(&status, &n); err != nil {
-			return nil, fmt.Errorf("scan build status count: %w", err)
+	for _, app := range apps {
+		builds, err := s.ListBuilds(ctx, app.ID, 0)
+		if err != nil {
+			return nil, err
 		}
-		counts[model.BuildStatus(status)] = n
+		for _, build := range builds {
+			counts[build.Status]++
+		}
 	}
-	return counts, rows.Err()
+	return counts, nil
 }
 
 // ListRecentBuilds returns the most recent builds across every app, newest
 // first.
 //
-// It is the cross-app counterpart to ListBuilds, which takes an app id. The
-// ordering matches that one — created_at descending, then id — so a page that
-// shows both does not order them differently.
+// It is the cross-app counterpart to ListBuilds, which takes an app id. Reading
+// every app's builds to take the newest few is more work than a query would be,
+// and it is bounded by the history rather than by the apps: the build objects
+// are small, and this is what the overview's panel and the console's landing
+// view both need.
 func (s *Store) ListRecentBuilds(ctx context.Context, limit int) ([]*model.Build, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+createBuildColumns+` FROM builds
-		 ORDER BY created_at DESC, id ASC LIMIT ?`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list recent builds: %w", err)
-	}
-	defer rows.Close()
 
-	var out []*model.Build
-	for rows.Next() {
-		b, err := scanBuild(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan build: %w", err)
-		}
-		out = append(out, b)
+	apps, err := s.ListApps(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+
+	var all []*model.Build
+	for _, app := range apps {
+		// Only the newest few per app can matter to a platform-wide "recent"
+		// list, so an app with thousands of builds does not have all of them
+		// read.
+		builds, err := s.ListBuilds(ctx, app.ID, limit)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, builds...)
+	}
+
+	sortNewestFirst(all,
+		func(b *model.Build) string { return b.ID },
+		func(b *model.Build) time.Time { return b.CreatedAt })
+
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	return all, nil
 }

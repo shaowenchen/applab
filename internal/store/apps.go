@@ -2,266 +2,188 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shaowenchen/applab/internal/model"
 )
 
-// ErrNotFound is returned when a lookup by primary key finds nothing.
+// CreateApp writes a new app.
 //
-// It is a sentinel so handlers can map it to a 404 without matching on a
-// driver error string, which would be brittle across driver versions.
-var ErrNotFound = errors.New("not found")
-
-// ErrExists is returned when creating a record whose primary key is taken.
-var ErrExists = errors.New("already exists")
-
-// CreateApp inserts a new app.
+// It refuses an id that already exists rather than replacing what is there: a
+// create that silently overwrote an app would take its source, its history and
+// its address with it, and the caller would have no way to tell that from a
+// successful create of an empty app.
 //
-// It returns ErrExists rather than upserting: a create that silently replaced
-// an existing app would destroy that app's recorded history, and the caller's
-// intent — "make me a new app" — is not served by overwriting one.
+// The check and the write are not atomic. Two creates of one id at the same
+// instant can both pass the check, and one of them then wins. That window is
+// accepted: creating the same app twice concurrently is not a thing that
+// happens in practice, and closing it would need a conditional write that not
+// every S3-compatible service implements.
 func (s *Store) CreateApp(ctx context.Context, app *model.App) error {
-	now := time.Now().UTC()
-	if app.CreatedAt.IsZero() {
-		app.CreatedAt = now
+	key := appKey(app.ID)
+
+	exists, err := s.objects.Exists(ctx, key)
+	if err != nil {
+		return fmt.Errorf("store: look for app %s: %w", app.ID, err)
 	}
-	app.UpdatedAt = now
-	if app.Status == "" {
-		app.Status = model.AppStatusCreated
+	if exists {
+		return fmt.Errorf("store: app %q: %w", app.ID, ErrExists)
 	}
 
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO apps (id, name, port, replicas, dockerfile, domain, env, commit_sha, image,
-		                  status, status_reason, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		app.ID, app.Name, app.Port, app.Replicas, app.Dockerfile, app.Domain,
-		encodeEnv(app.Env), app.CommitSHA, app.Image, app.Status, app.StatusReason,
-		app.CreatedAt.Unix(), app.UpdatedAt.Unix(),
-	)
-	if err != nil {
-		if isUniqueViolation(err) {
-			return fmt.Errorf("app %q: %w", app.ID, ErrExists)
-		}
-		return fmt.Errorf("insert app %s: %w", app.ID, err)
+	if app.CreatedAt.IsZero() {
+		app.CreatedAt = now()
+	}
+	app.UpdatedAt = app.CreatedAt
+
+	if err := s.putJSON(ctx, key, appRecord{App: *app}); err != nil {
+		return err
 	}
 	return nil
 }
 
-// GetApp loads one app by id.
+// GetApp reads one app.
 func (s *Store) GetApp(ctx context.Context, id string) (*model.App, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, port, replicas, dockerfile, domain, env, commit_sha, image,
-		       status, status_reason, created_at, updated_at
-		FROM apps WHERE id = ?`, id)
+	var record appRecord
+	if err := s.getJSON(ctx, appKey(id), &record); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("store: app %q: %w", id, ErrNotFound)
+		}
+		return nil, err
+	}
 
-	app, err := scanApp(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("app %q: %w", id, ErrNotFound)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get app %s: %w", id, err)
-	}
-	return app, nil
+	app := record.App
+	// Namespace and the address are derived, not stored: they follow from the
+	// deployment's configuration, and a deployment that changed its base domain
+	// or namespace prefix would otherwise serve apps recorded under the old one
+	// until every one of them happened to be redeployed.
+	s.derive(&app)
+	return &app, nil
 }
 
 // ListApps returns every app, newest first.
 //
-// Deleted apps are included: their rows remain so an id is not quietly reused,
-// and a caller that wants only live apps filters on Status. Excluding them here
-// would make "why did my app vanish" unanswerable from the API.
+// One listing, because the layout puts each app's record at a fixed depth:
+// "apps/" also prefixes every app's commits, builds and repository, and those
+// are one level deeper and are skipped by name rather than by being fetched.
 func (s *Store) ListApps(ctx context.Context) ([]*model.App, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, port, replicas, dockerfile, domain, env, commit_sha, image,
-		       status, status_reason, created_at, updated_at
-		FROM apps ORDER BY created_at DESC, id ASC`)
+	objects, err := s.objects.List(ctx, appsPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("list apps: %w", err)
+		return nil, fmt.Errorf("store: list apps: %w", err)
 	}
-	defer rows.Close()
 
-	var out []*model.App
-	for rows.Next() {
-		app, err := scanApp(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan app: %w", err)
+	var apps []*model.App
+	for _, object := range objects {
+		// Only apps/<id>/app.json is an app. Everything else under the prefix
+		// belongs to one.
+		rest := strings.TrimPrefix(object.Key, appsPrefix)
+		if strings.Count(rest, "/") != 1 || !strings.HasSuffix(rest, "/"+appFile) {
+			continue
 		}
-		out = append(out, app)
+
+		var record appRecord
+		if err := s.getJSON(ctx, object.Key, &record); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		app := record.App
+		s.derive(&app)
+		apps = append(apps, &app)
 	}
-	return out, rows.Err()
+
+	sortNewestFirst(apps,
+		func(a *model.App) string { return a.ID },
+		func(a *model.App) time.Time { return a.CreatedAt })
+	return apps, nil
 }
 
-// UpdateApp writes the mutable fields of an app back.
+// UpdateApp replaces an app's record.
 //
-// It is a full write of those fields rather than a patch: every caller has the
-// app in hand and is setting it to a known state, so a column-by-column update
-// would add surface without changing any outcome.
-//
-// created_at is deliberately not written: it is a fact about when the app came
-// into existence, and no update changes it.
+// It reads first rather than writing the caller's struct straight out, so that a
+// caller which loaded an app and changed one field cannot blank the fields it
+// did not know about. The read and the write are not atomic, which is the
+// last-write-wins property the package comment names.
 func (s *Store) UpdateApp(ctx context.Context, app *model.App) error {
-	app.UpdatedAt = time.Now().UTC()
+	current, err := s.GetApp(ctx, app.ID)
+	if err != nil {
+		return err
+	}
 
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE apps SET
-			name = ?, port = ?, replicas = ?, dockerfile = ?, domain = ?, env = ?,
-			commit_sha = ?, image = ?, status = ?, status_reason = ?, updated_at = ?
-		WHERE id = ?`,
-		app.Name, app.Port, app.Replicas, app.Dockerfile, app.Domain, encodeEnv(app.Env),
-		app.CommitSHA, app.Image, app.Status, app.StatusReason,
-		app.UpdatedAt.Unix(), app.ID,
-	)
-	if err != nil {
-		return fmt.Errorf("update app %s: %w", app.ID, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("update app %s: %w", app.ID, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("app %q: %w", app.ID, ErrNotFound)
-	}
-	return nil
+	// The derived fields are not this store's to keep; the caller's copy came
+	// from a read that filled them in, and writing them back would freeze a
+	// value that is meant to follow the deployment's configuration.
+	app.Namespace = ""
+	app.CreatedAt = current.CreatedAt
+	app.UpdatedAt = now()
+
+	return s.putJSON(ctx, appKey(app.ID), appRecord{App: *app})
 }
 
-// SetAppStatus records the outcome of the most recent operation.
-//
-// It is separate from UpdateApp so that a pipeline stage can report progress
-// without reading and rewriting the whole row — two concurrent writers each
-// doing a full update would otherwise clobber one another's unrelated fields.
+// SetAppStatus records the outcome of the most recent attempt.
 func (s *Store) SetAppStatus(ctx context.Context, id string, status model.AppStatus, reason string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE apps SET status = ?, status_reason = ?, updated_at = ? WHERE id = ?`,
-		status, reason, time.Now().UTC().Unix(), id)
+	app, err := s.GetApp(ctx, id)
 	if err != nil {
-		return fmt.Errorf("set app %s status: %w", id, err)
+		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("set app %s status: %w", id, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("app %q: %w", id, ErrNotFound)
-	}
-	return nil
+	app.Status = status
+	app.StatusReason = reason
+	return s.UpdateApp(ctx, app)
 }
 
-// SetAppDeployed records the commit and image now deployed.
+// SetAppDeployed records what is now running.
 func (s *Store) SetAppDeployed(ctx context.Context, id, commitSHA, image string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE apps SET commit_sha = ?, image = ?, updated_at = ? WHERE id = ?`,
-		commitSHA, image, time.Now().UTC().Unix(), id)
+	app, err := s.GetApp(ctx, id)
 	if err != nil {
-		return fmt.Errorf("set app %s deployment: %w", id, err)
+		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("set app %s deployment: %w", id, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("app %q: %w", id, ErrNotFound)
-	}
-	return nil
+	app.CommitSHA = commitSHA
+	app.Image = image
+	return s.UpdateApp(ctx, app)
 }
 
-// DeleteApp removes an app's row and every record that belongs to it, in one
-// transaction.
+// DeleteApp removes the app and everything under it.
 //
-// Unlike a deploy, which keeps a tombstone row, this is a real removal: the
-// caller asked to be rid of the app. Foreign keys are off by default in SQLite
-// for compatibility, so the dependent rows are deleted explicitly rather than
-// relying on a cascade that may not be enforced.
+// The id becomes available again, which is what an operator re-creating an app
+// expects. Nothing else in AppLab has to know: the app is gone from every
+// listing, so no other app can collide with the name, and the Kubernetes
+// objects it owned were removed before this ran — which is what makes a
+// same-named app built afterwards start from an empty cluster rather than
+// adopting what the last one left.
+//
+// The one thing that is not undone is an image already pushed to the registry.
+// It is addressed by app id and commit, so a new app with the same id and the
+// same commit would find the old image and reuse it — which is the same
+// behaviour a rebuild of an unchanged commit has, and is therefore not a
+// surprise.
 func (s *Store) DeleteApp(ctx context.Context, id string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	objects, err := s.objects.List(ctx, appPrefix(id))
 	if err != nil {
-		return fmt.Errorf("begin delete app %s: %w", id, err)
+		return fmt.Errorf("store: list app %s: %w", id, err)
 	}
-	defer tx.Rollback()
-
-	for _, q := range []string{
-		`DELETE FROM builds WHERE app_id = ?`,
-		`DELETE FROM commits WHERE app_id = ?`,
-		`DELETE FROM uploads WHERE app_id = ?`,
-		`DELETE FROM apps WHERE id = ?`,
-	} {
-		if _, err := tx.ExecContext(ctx, q, id); err != nil {
-			return fmt.Errorf("delete app %s: %w", id, err)
+	for _, object := range objects {
+		if err := s.objects.Delete(ctx, object.Key); err != nil {
+			return fmt.Errorf("store: delete %s: %w", object.Key, err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit delete app %s: %w", id, err)
-	}
 	return nil
 }
 
-// rowScanner is satisfied by both *sql.Row and *sql.Rows, so one scan helper
-// serves single-row and multi-row queries.
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanApp(sc rowScanner) (*model.App, error) {
-	var (
-		app                  model.App
-		env                  string
-		createdAt, updatedAt int64
-	)
-	if err := sc.Scan(
-		&app.ID, &app.Name, &app.Port, &app.Replicas, &app.Dockerfile, &app.Domain, &env,
-		&app.CommitSHA, &app.Image, &app.Status, &app.StatusReason,
-		&createdAt, &updatedAt,
-	); err != nil {
-		return nil, err
-	}
-	decoded, err := decodeEnv(env)
-	if err != nil {
-		return nil, fmt.Errorf("app %s: %w", app.ID, err)
-	}
-	app.Env = decoded
-	app.CreatedAt = time.Unix(createdAt, 0).UTC()
-	app.UpdatedAt = time.Unix(updatedAt, 0).UTC()
-	return &app, nil
-}
-
-// encodeEnv renders the environment map for its column.
+// derive fills in the fields that follow from the deployment rather than from
+// anything stored.
 //
-// A nil map is written as an empty object rather than as NULL, so that every row
-// decodes the same way and a reader never has to tell "no variables" apart from
-// "this row predates the column".
-func encodeEnv(env map[string]string) string {
-	if len(env) == 0 {
-		return "{}"
+// It is a no-op here: the resolver is attached by the server, which is what
+// knows the namespace prefix and the base domain. The method exists so that
+// GetApp and ListApps go through one place, and so that a deployment with no
+// resolver — a test, or a console-only install — works unchanged.
+func (s *Store) derive(app *model.App) {
+	if s.deriveFn != nil {
+		s.deriveFn(app)
 	}
-	encoded, err := json.Marshal(env)
-	if err != nil {
-		// Unreachable for a map[string]string — json.Marshal can only fail on a
-		// value it cannot represent, and every value here is a string. Returning
-		// the empty object keeps the failure from being one that corrupts a row.
-		return "{}"
-	}
-	return string(encoded)
 }
 
-// decodeEnv reads the environment map back out of its column.
-//
-// An empty column is an empty map, not an error: rows written before the column
-// existed carry the ” that ALTER TABLE backfills. A malformed value is reported
-// rather than swallowed, because silently dropping an app's configuration would
-// be worse than refusing to load it.
-func decodeEnv(encoded string) (map[string]string, error) {
-	if encoded == "" {
-		return nil, nil
-	}
-	var env map[string]string
-	if err := json.Unmarshal([]byte(encoded), &env); err != nil {
-		return nil, fmt.Errorf("decode environment: %w", err)
-	}
-	if len(env) == 0 {
-		return nil, nil
-	}
-	return env, nil
-}
+// ErrExists is returned by CreateApp when the id is taken.
+var ErrExists = errors.New("already exists")
