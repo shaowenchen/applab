@@ -14,26 +14,6 @@ upload source ──▶ build image ──▶ deploy ──▶ https://shop.apps
                                              or .../apps/shop
 ```
 
-## Status
-
-| Phase | Scope | State |
-|---|---|---|
-| P0 | Skeleton, auth, contract (`llms.txt`), app CRUD | done |
-| P1 | Source storage: git repositories, tarball ingest, chunked upload, git over HTTP | done |
-| P2 | BuildKit build pipeline | done |
-| P3 | Deploy, one namespace, Istio VirtualService | done |
-| P4 | Observability: pods, events, logs, metrics | done |
-| P5 | Console and CLI | done |
-| P6 | Helm chart | done — see [`charts/applab`](charts/applab) |
-| P7 | Dashboard: platform overview, cross-app builds | done |
-| P8 | Debugger environment: a whole platform on a runner | done — see [`debugger`](debugger) |
-| P9 | Two-tier keys: one admin key, one per app | done — see [Keys](#keys) |
-
-The chart is verified by `make helm-check`, which renders it and asserts the
-things that were wrong: that every setting the server reads reaches it, that
-`build.enabled=false` actually disables the pipeline, and that a malformed
-configuration is refused at render time rather than deployed.
-
 ## Quick start
 
 ```bash
