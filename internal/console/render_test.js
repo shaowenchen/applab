@@ -339,17 +339,37 @@ async function render(apps) {
     }
   }
 
-  // The app detail page's Repository card the same way: the clone command is the
-  // one thing on it. The address on its own was a line nobody reads — the command
-  // contains it — and the sentence explaining the command went with it.
+  // The app detail page's clone command lives in the State card, with the rest
+  // of the app's facts, rather than in a card of its own. The command is the one
+  // thing about the repository a reader needs — the bare address was a line
+  // nobody reads, since the command contains it.
   {
-    const repo = markup.match(/<h2 data-i18n="Repository"[\s\S]*?<\/div>\s*<\/div>/);
-    check("the Repository card exists", repo !== null, true);
-    if (repo) {
-      check("and holds the clone command", repo[0].includes('id="app-git-hint"'), true);
-      check("and no bare repository address", repo[0].includes("app-git-url"), false);
+    const card = markup.match(/<h2 data-i18n="State"[\s\S]*?<\/div>\n    <\/div>/);
+    check("the State card exists", card !== null, true);
+    if (card) {
+      check(
+        "and holds the clone command",
+        card[0].includes('id="app-git-hint"'),
+        true
+      );
+      check("and no bare repository address", card[0].includes("app-git-url"), false);
     }
   }
+
+  // The app's key is not printed anywhere on the page. It was a card of its own,
+  // which put a credential on screen for every visit — including the many where
+  // nobody needed it. It is still what fills the clone command above, and it is
+  // still readable on demand through the API and the CLI.
+  check(
+    "the app's key has no card of its own",
+    markup.includes('id="app-key-value"'),
+    false
+  );
+  check(
+    "and no card heading offers it",
+    /<h2 data-i18n="API key">/.test(markup),
+    false
+  );
 
   // There must be no address input left to fill in: the key is the only thing
   // anyone should have to bring.

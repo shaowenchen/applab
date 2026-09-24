@@ -141,10 +141,10 @@
   .key-field input { flex: 1; padding-right: 34px; }
 
   /* The eye. One control for every credential the console shows — the key on the
-     sign-in form, the app's key, and the clone URL that carries it — so it is
-     drawn once and positioned by its context rather than styled per card. It is
-     quiet by default: it changes a preference about what is on screen, which is
-     not what anyone opened the page to do. */
+     sign-in form, and the clone command in the state table, which carries the
+     app key — so it is drawn once and positioned by its context rather than
+     styled per place. It is quiet by default: it changes a preference about what
+     is on screen, which is not what anyone opened the page to do. */
   .reveal {
     display: flex;
     align-items: center;
@@ -682,7 +682,32 @@
 
     <div class="card">
       <h2 data-i18n="State">State</h2>
-      <dl id="app-state"></dl>
+      <dl id="app-state">
+        <!-- The app's own repository, as the last row of the same table: it is a
+             fact about the app, like the commit and the image, and it exists from
+             the moment the app does. It belongs to this <dl> and not to one of
+             its own so the two columns line up with the rows above — separate
+             lists would each size their own first column.
+
+             Kept in the markup rather than built by loadAppState with the other
+             rows: the value is the clone command, which the conceal helper owns
+             and the rest of the page reaches by id. Detached and put back on each
+             render instead of regenerated, so the eye stays wired to the element
+             it was given.
+
+             The command carries the real key, masked until the eye is clicked,
+             so it can be run as it stands without a credential being legible in
+             every screenshot. -->
+        <dt class="repo-row" data-i18n="Repository">Repository</dt>
+        <dd class="repo-row">
+          <div class="secret" style="margin-top:0">
+            <span class="secret-value" id="app-git-hint"></span>
+            <button id="app-git-hint-reveal" class="reveal hidden" type="button"></button>
+            <button id="app-git-hint-copy" class="reveal hidden" type="button"></button>
+          </div>
+        </dd>
+      </dl>
+
       <div id="app-problem" class="error hidden" style="margin-top:12px"></div>
 
       <!-- What can be changed, next to what is running. These act on the app
@@ -706,57 +731,6 @@
         <button id="app-build" data-i18n="Build latest">Build latest</button>
         <button id="app-deploy" data-i18n="Deploy latest">Deploy latest</button>
       </div>
-    </div>
-
-    <!-- The app's own repository. Creating an app creates its git repository, so
-         this is a fact from the moment the app exists rather than something that
-         appears after a push — which is why it is not hidden until there are
-         commits. -->
-    <div class="card">
-      <h2 data-i18n="Repository">Repository</h2>
-      <!-- The command carries the real key, so it can be copied and run as it
-           stands. It used to hold a <key> placeholder, on the reasoning that a
-           credential in a URL ends up in shell history and in the repository's
-           own config on disk.
-
-           That is sound about URLs in general and wrong about this one: the key
-           is the app's own, it reaches this app and nothing else, and it is
-           already in this browser and in every request the console makes. A
-           placeholder does not keep it out of anywhere — it moves the work to
-           the reader, who has to go and find the value and paste it in, usually
-           into a file. It is masked until the eye is clicked, so the convenience
-           does not also mean a credential legible in every screenshot. -->
-      <div class="secret">
-        <span class="secret-value" id="app-git-hint"></span>
-        <button id="app-git-hint-reveal" class="reveal hidden" type="button"></button>
-        <button id="app-git-hint-copy" class="reveal hidden" type="button"></button>
-      </div>
-    </div>
-
-    <!-- The app's own key. This is the credential to hand whoever deploys the
-         app: it reaches this app and nothing else.
-
-         Masked until the eye is clicked. It used to be withheld until a "Show
-         key" button fetched it, which made the value's existence a two-step
-         question and left the clone command above unfillable until someone
-         happened to press it. The mask is the same protection without the
-         ceremony: nothing is legible until asked for, and asking is one click in
-         the place the value already is. -->
-    <div class="card">
-      <h2 data-i18n="API key">API key</h2>
-      <div class="secret">
-        <span class="secret-value" id="app-key-value" data-i18n="Not shown.">Not shown.</span>
-        <button id="app-key-value-reveal" class="reveal hidden" type="button"></button>
-        <button id="app-key-value-copy" class="reveal hidden" type="button"></button>
-      </div>
-      <p class="muted" style="font-size:13px;margin:8px 0 0">
-        <span data-i18n="Reaches">Reaches</span>
-        <strong data-i18n="this app only">this app only</strong><span
-          data-i18n="— it can push, build, deploy and roll back, but cannot delete the app and cannot see any other. The same key works with the API, the CLI and this console.">—
-        it can push, build, deploy and roll back, but cannot delete the app and
-        cannot see any other. The same key works with the API, the CLI and this
-        console.</span>
-      </p>
     </div>
 
     <div class="card">
@@ -946,7 +920,6 @@ const ZH = {
   "Enter an API key to continue.": "输入 API key 继续。",
   "Sign in": "登录",
   "API key": "API key",
-  "Repository": "代码仓库",
   "An API key is required.": "请填写 API key。",
 
   // -- Overview -------------------------------------------------------------
@@ -1017,8 +990,7 @@ const ZH = {
 
   // -- App detail -----------------------------------------------------------
   "State": "状态",
-  "API key": "API key",
-  "Not shown.": "未显示。",
+  "Repository": "代码仓库",
   "Open": "打开",
   "Show": "显示",
   "Hide": "隐藏",
@@ -1033,10 +1005,7 @@ const ZH = {
   "Could not set replicas: {error}": "设置副本数失败：{error}",
   "Could not start a build: {error}": "触发构建失败：{error}",
   "Could not deploy: {error}": "部署失败：{error}",
-  "Reaches": "仅能访问",
   "this app only": "本应用",
-  "— it can push, build, deploy and roll back, but cannot delete the app and cannot see any other. The same key works with the API, the CLI and this console.":
-    "—— 可以推送、构建、部署和回滚，但不能删除应用，也看不到其他应用。同一个 key 可用于 API、CLI 和本控制台。",
   "Signed in with this app's own key. It reaches": "正在使用本应用自己的 key 登录。它仅能访问",
   "—it can push, build, deploy and roll back, but cannot delete the app and cannot see any other.":
     "—— 可以推送、构建、部署和回滚，但不能删除应用，也看不到其他应用。",
@@ -1364,18 +1333,21 @@ function concealed(valueId, buttonId, copyId) {
   };
 }
 
-// The three registered on the first call, since the elements only exist once the
-// document has been parsed — which is the case by the time anything runs here.
-let signinReveal = null;
-let appKeyReveal = null;
+// The two that need registering on the first call, since the elements only
+// exist once the document has been parsed — which is the case by the time
+// anything runs here. The sign-in field is wired at the same point but kept
+// local to boot, since nothing outside it refers to that one.
 let appGitReveal = null;
 
 // refreshReveals rebuilds the eyes' labels, which are translated and so change
 // with the language. Called from setLang, after the dictionary has switched.
+//
+// Only the app's clone command is reached by name. The sign-in eye is wired in
+// boot and has no other reader — and a language switch on the sign-in screen is
+// exactly when the eyes' labels are rebuilt, so the one that does not need this
+// is the one that must not be made a variable to reach it.
 function refreshReveals() {
-  for (const reveal of [signinReveal, appKeyReveal, appGitReveal]) {
-    if (reveal) reveal.refresh();
-  }
+  if (appGitReveal) appGitReveal.refresh();
 }
 
 // setLang switches language and re-renders everything that carries text.
@@ -1959,39 +1931,39 @@ async function createApp() {
   await openApp(id);
 }
 
-// loadAppKey fetches the app's key and puts it, and the clone command built from
-// it, on the page.
+// loadRepository fills in the clone command shown in the state card.
 //
-// Loaded with the rest of the app view rather than behind a button. It used to
-// be fetched on demand, so that a key most visits do not need was never on
-// screen — but "on screen" is what the mask already handles, and gating it
-// behind a click left the clone command above unable to show a runnable command
-// until someone pressed a button in a different card.
+// The command carries the app's real key, so it can be copied and run as it
+// stands. It used to hold a <key> placeholder, on the reasoning that a
+// credential in a URL ends up in shell history and in the repository's own
+// config on disk. That is sound about URLs in general and wrong about this one:
+// the key is the app's own, it reaches this app and nothing else, and it is
+// already in this browser and in every request the console makes. A placeholder
+// does not keep it out of anywhere — it moves the work to the reader. The value
+// is masked until the eye is clicked, so the convenience does not also mean a
+// credential legible in every screenshot.
 //
-// The value is masked the moment it arrives, so what the page holds is a
-// credential that is not legible until asked for, which is the property worth
-// keeping.
-async function loadAppKey() {
-  const valueEl = $("app-key-value");
+// The key is fetched here rather than shown: the console used to print it in a
+// card of its own, which put a credential on screen for every visit, including
+// the many where nobody needed it. Anyone who does need the value can read it
+// with `applab keys` or GET /api/v1/apps/<app>/key.
+//
+// Loaded with the rest of the app view rather than behind a button, so the
+// command is runnable without a click somewhere else first.
+async function loadRepository() {
   try {
     const key = await api("/api/v1/apps/" + state.app + "/key");
-    appKeyReveal.set(key.key);
-    // The same credential, so it is filled in here rather than fetched again:
-    // one call answers both cards.
     setCloneHint(key.key);
   } catch (err) {
     // The common failure is a deployment with no cluster, where keys are kept
     // and this endpoint answers 501. That is a fact about the deployment rather
     // than a fault, and the API's own message says which it is.
-    valueEl.textContent = err.message;
+    appGitReveal.set("");
+    $("app-git-hint").textContent = err.message;
   }
 }
 
 // setCloneHint fills in the clone command with the app's key.
-//
-// The command carries the real key rather than a <key> placeholder, so it works
-// as it stands. See the card's own comment for why that trade is the right way
-// round here.
 function setCloneHint(key) {
   const base = state.url + "/git/" + state.app + ".git";
   appGitReveal.set("git clone https://x:" + key + "@" + base.replace(/^https?:\/\//, ""));
@@ -2016,12 +1988,9 @@ async function openApp(id) {
   // button is not offered rather than shown as something that always fails.
   show($("app-delete"), state.scope !== "app");
   // Cleared on every open, so a credential belonging to one app is never left on
-  // screen when another is opened.
-  appKeyReveal.set("");
-  $("app-key-value").textContent = t("Not shown.");
-  // The clone command too, until this app's key arrives — it is about to be
-  // rebuilt from that key, and the previous app's command must not sit there in
-  // the meantime.
+  // screen when another is opened — and so the previous app's clone command,
+  // which is about to be rebuilt from this app's key, cannot sit there in the
+  // meantime offering to clone the wrong repository.
   appGitReveal.set("");
   // And the Open button, for the same reason: it is filled in from this app's
   // status, and leaving the previous app's address there between the two calls
@@ -2030,7 +1999,7 @@ async function openApp(id) {
   show($("app-open"), false);
 
   // The clone command is built from the deployment's own address plus the path
-  // the git transport is mounted at, and is filled in by loadAppKey once the
+  // the git transport is mounted at, and is filled in by loadRepository once the
   // app's key arrives. Derived here rather than returned by the API for the same
   // reason the console derives its own address: the server may be reached under
   // a path, and this is the address the page was actually served from — the one
@@ -2038,7 +2007,7 @@ async function openApp(id) {
 
   stopLogs();
 
-  await Promise.all([loadAppState(), loadPods(), loadCommits(), loadAppConfig(), loadAppKey()]);
+  await Promise.all([loadAppState(), loadPods(), loadCommits(), loadAppConfig(), loadRepository()]);
   startLogs();
 }
 
@@ -2214,6 +2183,15 @@ async function loadAppState() {
   }
 
   const list = $("app-state");
+
+  // The rows built from the status. The repository row is part of the markup and
+  // is put back at the end rather than regenerated here: it holds an element the
+  // conceal helper owns, and rebuilding it would re-register the eye on every
+  // poll for no gain.
+  const repoRow = [
+    list.querySelector("dt.repo-row"),
+    list.querySelector("dd.repo-row"),
+  ];
   list.replaceChildren();
 
   // The Open button in the title row, from the same status this renders.
@@ -2268,6 +2246,10 @@ async function loadAppState() {
       if (status.live.current_image) add(t("running image"), status.live.current_image);
     }
   }
+
+  // Last, so the repository reads as part of the record rather than as a
+  // heading for it.
+  list.append(repoRow[0], repoRow[1]);
 
   // A rollout that cannot progress carries the reason, which is the most useful
   // single thing to surface when an app will not come up.
@@ -2831,9 +2813,9 @@ $("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
 
   // The concealed values, before anything can fill them: the eyes are wired here
   // rather than at the wiring block below because the sign-in form is on screen
-  // by the time boot runs, and it has one.
-  signinReveal = concealed("signin-key", "signin-reveal");
-  appKeyReveal = concealed("app-key-value", "app-key-value-reveal", "app-key-value-copy");
+  // by the time boot runs, and it has one. The sign-in eye is local to boot —
+  // refreshReveals reaches the other through the variable above.
+  const signinReveal = concealed("signin-key", "signin-reveal");
   appGitReveal = concealed("app-git-hint", "app-git-hint-reveal", "app-git-hint-copy");
 
   // The header is up on both screens: on the sign-in screen its theme and

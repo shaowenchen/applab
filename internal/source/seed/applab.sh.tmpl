@@ -14,9 +14,10 @@
 # The key is deliberately not built into this script. This repository is cloned,
 # uploaded, built into an image and mirrored like any other source, so a key
 # written here would travel everywhere the source goes — and it is a credential
-# that can deploy this app. Get it from the deployment (the console's app page
-# shows it, or `GET /api/v1/apps/APP/key` with an admin key) and put it in the
-# environment, where it is not committed, not built and not cloned.
+# that can deploy this app. Get it from whoever runs the deployment:
+# `GET /api/v1/apps/APP/key` with an admin key returns it, and `applab keys APP`
+# prints it. Put it in the environment, where it is not committed, not built and
+# not cloned.
 #
 # Run `./applab.sh help` for the commands.
 

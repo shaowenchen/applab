@@ -29,8 +29,7 @@ else: upload, build, deploy, roll back, read logs, change configuration. It
 cannot delete the app and cannot see any other app on the platform. It is
 deliberately not written into this repository — this source is cloned, uploaded,
 built into an image and mirrored, so a key committed here would travel with it.
-Get it from whoever runs the deployment; the console shows it on the app's page,
-and an admin key can fetch it with
+Get it from whoever runs the deployment: an admin key can fetch it with
 `GET $APPLAB_URL/api/v1/apps/{{APP}}/key`.
 
 ## `./applab.sh`
