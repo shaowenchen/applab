@@ -72,10 +72,10 @@ console at `/`, the API under `/api/v1/`, and the git endpoints under `/git/`.
 Only `api_key` is worth passing from a secret: it is generated when left empty,
 so the common case needs no configuration at all.
 
-The applab image tag is not an input. It is the chart's own `appVersion`, read
-from the checkout — so the environment always runs the version the chart beside
-it installs, and there is no way to ask for a pair that was never tested
-together.
+The applab image tag is not an input. It is the published `latest`, so the
+environment runs the newest applab — the same tag the release workflow publishes
+alongside the version tags, re-resolved on every start because the chart pulls
+with `imagePullPolicy: Always`.
 
 ### A named tunnel needs the domain named
 

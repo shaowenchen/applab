@@ -30,14 +30,15 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
 # ── inputs ──────────────────────────────────────────────────────────────────
 
-# Empty means "the version this chart declares", which is the one the chart is
-# tested against. Falling back to `latest` instead would run a moving tag that
-# nothing here has verified — and would do it silently, which is the worst way
-# for a test environment to differ from what it claims to be testing.
-if [ -z "${APPLAB_VERSION:-}" ]; then
-  APPLAB_VERSION=$(grep -E '^appVersion:' "$REPO_ROOT/charts/applab/Chart.yaml" | awk '{print $2}' | tr -d '"')
-  APPLAB_VERSION="${APPLAB_VERSION:-latest}"
-fi
+# The published `latest`, which is what the release workflow produces alongside
+# the version tags. A moving tag, deliberately: the point of this environment is
+# to run the newest applab, and a version read from the chart would pin it to a
+# release that has to exist first — which is the failure that put this here, since
+# the chart's appVersion had never been published at all.
+#
+# imagePullPolicy is Always (set below), so a moving tag is re-resolved on every
+# start rather than being served from a node's cache.
+: "${APPLAB_VERSION:=latest}"
 
 : "${APPLAB_API_KEY:=}"
 : "${APPLAB_SESSION_HOURS:=0}"
@@ -395,8 +396,14 @@ kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
 
 # install, not upgrade: this script assumes a fresh cluster, and an upgrade
 # against a half-installed release would hide a first-install failure.
+#
+# --wait, so an image that cannot be pulled fails here. Without it helm reports
+# success the moment the objects are created, and the first symptom is a router
+# that cannot connect ninety attempts later — which says nothing about the image
+# being the problem. The timeout is the chart's own.
 helm install applab "$REPO_ROOT/charts/applab" \
   --namespace "$APPLAB_NAMESPACE" \
+  --wait \
   --set auth.existingSecret=applab-keys \
   --set "apps.baseDomain=${TUNNEL_HOST}" \
   --set "apps.pathPrefix=${APPLAB_PATH_PREFIX}" \
