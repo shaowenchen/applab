@@ -494,42 +494,86 @@ helm install applab "$REPO_ROOT/charts/applab" \
   --set "image.pullPolicy=${APPLAB_IMAGE_PULL_POLICY}" \
   --timeout 10m
 
-# ── 5. wait until the environment answers ───────────────────────────────────
+# ── 5. what came up, and whether it answers ─────────────────────────────────
 
-http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null; }
-
-# The gateway, not applab's Service, is what has to answer: it is the only thing
-# the tunnel points at, so a healthy Service behind an unprogrammed gateway is
-# still an environment nobody can open.
+# Everything below reaches the gateway the way a browser does: over loopback on
+# the node port, with the environment's own hostname as the Host header — which
+# is what a request arriving through the tunnel carries.
 #
-# Over loopback on the node port, with the environment's own hostname as the Host
-# header — which is what a request through the tunnel carries. The port in that
-# header is harmless: Istio sets IgnorePortInHostMatching on the gateway's route
-# configuration, so Envoy drops it before matching the bare hostname the
-# VirtualServices carry.
-gateway_get() {
+# The port in that header is harmless. Istio sets IgnorePortInHostMatching on the
+# gateway's route configuration (pilot/pkg/networking/core/gateway.go), so Envoy
+# drops it before matching, and the bare hostnames the VirtualServices carry are
+# what match.
+gateway_code() {
+  local path="$1"; shift
+  # `|| true` so a refused connection reports as 000 rather than killing the
+  # script: `set -e` sees curl's non-zero exit inside the command substitution
+  # and stops with no message at all, which is the least useful way for a
+  # gateway that is not listening to fail.
   curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-    -H "Host: ${TUNNEL_HOST}" "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${1}" 2>/dev/null
+    -H "Host: ${TUNNEL_HOST}" "$@" \
+    "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${path}" 2>/dev/null || true
 }
 
+# The gateway is the only thing the tunnel points at, so it is what has to
+# answer: a ready Service behind an unprogrammed gateway is still an environment
+# nobody can open.
 log "waiting for the gateway to serve applab"
 for attempt in $(seq 1 90); do
-  if [ "$(gateway_get /health)" = "200" ]; then break; fi
+  if [ "$(gateway_code /health)" = "200" ]; then break; fi
   if [ $((attempt % 15)) -eq 0 ]; then log "  still waiting... (attempt ${attempt})"; fi
   sleep 2
 done
-[ "$(gateway_get /health)" = "200" ] || {
+if [ "$(gateway_code /health)" != "200" ]; then
   kubectl -n "$APPLAB_NAMESPACE" get pods
   kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --tail=50 2>/dev/null || true
   kubectl -n "$APPLAB_NAMESPACE" get virtualservices 2>/dev/null || true
   die "the gateway is not serving applab at /health"
+fi
+
+# What is actually running. Printed rather than assumed: when something is wrong
+# this is the first thing anyone asks for, and it is worth having in the log of a
+# run that succeeded too — it is the only record of what the environment was.
+log "the cluster, as it came up"
+kubectl get nodes -o wide
+kubectl -n istio-system get deployment,service
+kubectl -n "$APPLAB_NAMESPACE" get deployment,service,pod,secret,pvc
+# VirtualServices are Istio's rather than Kubernetes', so `get all` does not
+# include them — and they are the objects that decide whether anything is
+# reachable at all.
+kubectl -n "$APPLAB_NAMESPACE" get virtualservices
+
+# Every endpoint a person or a client uses, and the status each one answers.
+#
+# Reported and asserted in one pass, because they are the same question: these
+# are all served by one process behind one route, so anything but a 200 is a bug
+# rather than a slow start, and a table of green is the evidence that the gateway,
+# the two VirtualServices, the Service and the deployment all line up.
+log "the endpoints, through the gateway on ${APPLAB_GATEWAY_NODEPORT}"
+printf '  %-32s %s\n' "PATH" "STATUS"
+
+failed=""
+check_endpoint() {
+  local label="$1" path="$2"; shift 2
+  local code
+  code=$(gateway_code "$path" "$@")
+  printf '  %-32s %s\n' "$label" "$code"
+  [ "$code" = "200" ] || failed="${failed} ${label}=${code}"
 }
 
-# The console is what a person actually opens, and it is a separate object from
-# the Service: the VirtualService the chart writes is what routes it. Checked
-# rather than assumed, because a Service that is ready and a route that is not
-# programmed is a link that opens to a 404.
-log "the console answers $(gateway_get /) at the gateway"
+# Open by design: a probe cannot hold a key, and the console is a page a browser
+# fetches before anyone has signed in.
+check_endpoint "/health"                /health
+check_endpoint "/api/v1/config"         /api/v1/config
+check_endpoint "/api/v1/version"        /api/v1/version
+check_endpoint "/llms.txt"              /llms.txt
+check_endpoint "/metrics"               /metrics
+check_endpoint "/ (the console)"        /
+# The one thing that proves the admin key works through the gateway, not only
+# that the route exists.
+check_endpoint "/api/v1/overview (key)" /api/v1/overview -H "Authorization: Bearer ${APPLAB_API_KEY}"
+
+[ -z "$failed" ] || die "these did not answer 200 through the gateway:${failed}"
 
 # ── 6. publish ──────────────────────────────────────────────────────────────
 APPLAB_PUBLIC_URL="$public_url" \
