@@ -78,9 +78,15 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	branch, apiErr := s.requestedBranch(r, app)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
 	commitSHA := strings.TrimSpace(req.CommitSHA)
 	if commitSHA == "" {
-		head, err := s.headCommit(r.Context(), app.ID)
+		head, err := s.headCommit(r.Context(), app.ID, branch)
 		if err != nil {
 			if errors.Is(err, source.ErrNoCommits) {
 				fail(w, r, BadRequest("app %q has no source to build; upload source first", app.ID))
@@ -94,13 +100,13 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 
 	// An abbreviated commit is accepted because that is what a caller was shown,
 	// but it is expanded before use so everything downstream deals in full ids.
-	resolved, err := s.resolveCommit(r.Context(), app.ID, commitSHA)
+	resolved, err := s.resolveCommit(r.Context(), app.ID, branch, commitSHA)
 	if err != nil {
 		fail(w, r, NotFound("commit %q in app %q", commitSHA, app.ID))
 		return
 	}
 
-	build, apiErr := s.startBuild(r.Context(), app, resolved)
+	build, apiErr := s.startBuild(r.Context(), app, branch, resolved)
 	if apiErr != nil {
 		fail(w, r, apiErr)
 		return
@@ -117,7 +123,11 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 // The record is written before the Job is created, so a Job that exists always
 // has something that knows about it. The reverse order would leave a running
 // build nothing is tracking if the second call failed.
-func (s *Server) startBuild(ctx context.Context, app *model.App, commitSHA string) (*model.Build, *apiError) {
+//
+// The branch is what the build's source token is issued for, and it is how the
+// fetch finds the right repository once the build runs: a commit can be reachable
+// from more than one branch, so app and commit alone no longer name one.
+func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitSHA string) (*model.Build, *apiError) {
 	buildID, err := model.NewID()
 	if err != nil {
 		return nil, Errorf(http.StatusInternalServerError, "generate build id").Wrap(err)
@@ -137,7 +147,7 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, commitSHA strin
 	// The token is issued before the record is written so a failure to issue one
 	// costs nothing. It grants access to exactly this commit and is consumed by
 	// the fetch.
-	token, err := s.issueSourceToken(app.ID, commitSHA)
+	token, err := s.issueSourceToken(app.ID, branch, commitSHA)
 	if err != nil {
 		return nil, Errorf(http.StatusInternalServerError, "issue a source token for the build").Wrap(err)
 	}

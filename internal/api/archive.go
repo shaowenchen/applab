@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -55,7 +56,11 @@ func (s *Server) tokenAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// The branch travels on the request rather than in the URL, because it is
+		// not the caller's to choose: it comes from the grant, and the handler
+		// reads it back from here. In the path it would invite a caller to edit
+		// it, and in the query it would look optional.
+		next.ServeHTTP(w, r.WithContext(WithGrantBranch(r.Context(), grant.Branch)))
 	})
 }
 
@@ -72,6 +77,30 @@ func (s *Server) handleSourceArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The commit alone no longer identifies a repository: one commit can be
+	// reachable from two branches, each of which is stored separately, so a
+	// request naming only a commit would be asking for an archive of ambiguous
+	// provenance.
+	//
+	// For a build, the answer is already settled — its token was issued for one
+	// branch and the middleware put that branch on the request — so a build
+	// cannot fetch from a branch it was not started for. An admin caller presents
+	// the API key instead and has no grant, so it names a branch the way every
+	// other source route lets it.
+	branch, branchOK := grantBranch(r)
+	if !branchOK {
+		app, apiErr := s.loadApp(r)
+		if apiErr != nil {
+			fail(w, r, apiErr)
+			return
+		}
+		var branchErr *apiError
+		if branch, branchErr = s.requestedBranch(r, app); branchErr != nil {
+			fail(w, r, branchErr)
+			return
+		}
+	}
+
 	if !model.ValidSHA(sha) {
 		fail(w, r, BadRequest("commit must be a full 40-character commit id"))
 		return
@@ -80,7 +109,7 @@ func (s *Server) handleSourceArchive(w http.ResponseWriter, r *http.Request) {
 	// The size is computed first so the response carries a Content-Length: a
 	// client can then report progress, and a truncated transfer is detectable
 	// rather than looking like a short but complete archive.
-	size, err := s.sourceArchiveSize(r.Context(), appID, sha)
+	size, err := s.sourceArchiveSize(r.Context(), appID, branch, sha)
 	if err != nil {
 		fail(w, r, ingestError(err))
 		return
@@ -94,13 +123,33 @@ func (s *Server) handleSourceArchive(w http.ResponseWriter, r *http.Request) {
 	// Written after the header, so a failure here can only be reported by the
 	// connection ending — the client's tar will notice a truncated stream, which
 	// is the honest signal available.
-	if err := s.sourceArchive(r.Context(), appID, sha, w); err != nil {
+	if err := s.sourceArchive(r.Context(), appID, branch, sha, w); err != nil {
 		// A client that disconnected mid-download is the common case and is not
 		// worth logging as a failure.
 		if !errors.Is(err, r.Context().Err()) {
 			fail(w, r, Errorf(http.StatusInternalServerError, "stream source archive").Wrap(err))
 		}
 	}
+}
+
+// grantBranchKey is the context key the token middleware uses to pass the
+// grant's branch to the handler.
+type grantBranchKey struct{}
+
+// WithGrantBranch records the branch a source token was issued for.
+func WithGrantBranch(ctx context.Context, branch string) context.Context {
+	return context.WithValue(ctx, grantBranchKey{}, branch)
+}
+
+// grantBranch returns the branch a source token was issued for, and whether
+// there was a grant at all.
+//
+// The distinction matters: a build always has one, and an admin caller never
+// does, and the two are handled differently — the first must not be able to
+// choose, the second must.
+func grantBranch(r *http.Request) (string, bool) {
+	branch, ok := r.Context().Value(grantBranchKey{}).(string)
+	return branch, ok && branch != ""
 }
 
 // bearerToken extracts a token, accepting the bare form as well as the scheme.

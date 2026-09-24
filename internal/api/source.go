@@ -59,7 +59,13 @@ func (s *Server) handleUploadSource(w http.ResponseWriter, r *http.Request) {
 	message := strings.TrimSpace(r.URL.Query().Get("message"))
 	parent := strings.TrimSpace(r.URL.Query().Get("parent"))
 
-	result, err := s.sourceIngest(r.Context(), app.ID, body, message, parent)
+	branch, apiErr := s.requestedBranch(r, app)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
+	result, err := s.sourceIngest(r.Context(), app.ID, branch, body, message, parent)
 	if err != nil {
 		fail(w, r, ingestError(err))
 		return
@@ -232,13 +238,19 @@ func (s *Server) handleListCommits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	head, err := s.headCommit(r.Context(), app.ID)
+	branch, apiErr := s.requestedBranch(r, app)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
+	head, err := s.headCommit(r.Context(), app.ID, branch)
 	if err != nil && !errors.Is(err, source.ErrNoCommits) {
 		fail(w, r, Errorf(http.StatusInternalServerError, "read commit history").Wrap(err))
 		return
 	}
 
-	history, err := s.sourceLog(r.Context(), app.ID, limit)
+	history, err := s.sourceLog(r.Context(), app.ID, branch, limit)
 	if err != nil {
 		fail(w, r, Errorf(http.StatusInternalServerError, "read commit history").Wrap(err))
 		return
@@ -307,9 +319,15 @@ func (s *Server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sha, err := s.resolveCommit(r.Context(), app.ID, rev)
+	branch, apiErr := s.requestedBranch(r, app)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
+	sha, err := s.resolveCommit(r.Context(), app.ID, branch, rev)
 	if err != nil {
-		fail(w, r, NotFound("commit %q in app %q", rev, app.ID))
+		fail(w, r, NotFound("commit %q in app %q on branch %q", rev, app.ID, branch))
 		return
 	}
 
@@ -507,7 +525,13 @@ func (s *Server) handleChunkedUploadComplete(w http.ResponseWriter, r *http.Requ
 		message = q
 	}
 
-	result, err := s.sourceIngest(r.Context(), app.ID, assembled, message, "")
+	branch, apiErr := s.requestedBranch(r, app)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
+	result, err := s.sourceIngest(r.Context(), app.ID, branch, assembled, message, "")
 	if err != nil {
 		fail(w, r, ingestError(err))
 		return

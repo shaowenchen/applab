@@ -6,11 +6,20 @@
 // the source can be cloned, diffed, browsed and checked out with ordinary git
 // tools. Nothing about the tarball survives the ingest except its contents.
 //
-// Layout on disk, under the configured data directory:
+// Layout on disk, under the configured data directory. All of it is scratch: the
+// repository lives in a bucket, and what is here exists for the length of one
+// operation.
 //
-//	repos/<app-id>.git/          bare repository, one per app
+//	repos/<app-id>/<branch>.git/ bare repository, one per branch
 //	uploads/<upload-id>/         parts of an in-progress chunked upload
 //	tmp/<random>                 scratch space for assembling an upload
+//
+// One repository per branch, not one repository with several refs. The cost is
+// that each branch holds its own copy of the objects it can reach; what it buys
+// is that a branch is a directory in the bucket — listable by prefix, deletable
+// on its own, and independent of its neighbours. The store interface lists by key
+// prefix and nothing else, so a shared object database could not be split that
+// way: reading one branch would mean materialising every other one too.
 //
 // Every repository is bare: nothing ever checks out a working tree in place,
 // including the ingest itself, which builds its commit with plumbing commands
@@ -25,10 +34,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/objectstore"
 )
 
@@ -131,39 +142,56 @@ func New(opts Options) (*Store, error) {
 func (s *Store) uploadsDir() string { return filepath.Join(s.dataDir, "uploads") }
 func (s *Store) tmpDir() string     { return filepath.Join(s.dataDir, "tmp") }
 
-// localRepoPath is where an app's repository is materialised for one operation.
+// localRepoPath is where one branch of one app is materialised for an operation.
 //
 // It is not the repository's home — that is object storage — and nothing at this
 // path survives the operation that made it. It is inside the scratch directory
 // rather than a system temporary directory so it is on the same filesystem as
 // the working trees an upload builds, which is what lets a tree be moved into a
 // repository rather than copied.
-func (s *Store) localRepoPath(appID string) (string, error) {
+//
+// The branch is a subdirectory of the app's rather than a name concatenated into
+// the app's, so that two branches materialising at once cannot collide and no
+// scratch path depends on how a branch name was spelled. Both components are
+// validated, and the app id is the stricter of the two, so nothing here can
+// leave the scratch tree.
+func (s *Store) localRepoPath(appID, branch string) (string, error) {
 	if err := validateAppID(appID); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.tmpDir(), "repos", appID+".git"), nil
+	if err := model.ValidateBranchName(branch); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.tmpDir(), "repos", appID, branch+".git"), nil
 }
 
 // GitPath returns the resolved git executable, for callers that drive git
 // themselves (the HTTP transport).
 func (s *Store) GitPath() string { return s.gitBin }
 
-// Exists reports whether an app already has a repository.
-func (s *Store) Exists(appID string) (bool, error) {
-	return s.existsInBucket(context.Background(), appID)
+// Exists reports whether an app already has a repository for a branch.
+func (s *Store) Exists(appID, branch string) (bool, error) {
+	return s.existsInBucket(context.Background(), appID, branch)
 }
 
-// Create initialises an app's repository.
+// Create initialises an app's repository for one branch.
 //
-// Initialising an app that already has one is not an error: the operation is
+// Initialising a branch that already has one is not an error: the operation is
 // idempotent, and a retried create should not fail on the second attempt.
 //
 // The repository is bare and has no working tree, so there is nothing to check
-// out and no branch to be "on" — commits are built directly and the default
-// branch is set to main so a clone does not warn about a detached HEAD.
-func (s *Store) Create(ctx context.Context, appID string) error {
-	exists, err := s.Exists(appID)
+// out and no branch to be "on" — commits are built directly, and HEAD is set to
+// this branch so that a clone of it checks out the right thing rather than
+// warning about a detached HEAD.
+//
+// Each branch is a repository of its own, so this is also how a branch comes
+// into existence after the first: a push to a branch that has none is served by
+// creating one here.
+func (s *Store) Create(ctx context.Context, appID, branch string) error {
+	if err := model.ValidateBranchName(branch); err != nil {
+		return err
+	}
+	exists, err := s.Exists(appID, branch)
 	if err != nil {
 		return err
 	}
@@ -171,7 +199,7 @@ func (s *Store) Create(ctx context.Context, appID string) error {
 		return nil
 	}
 
-	repoPath, err := s.localRepoPath(appID)
+	repoPath, err := s.localRepoPath(appID, branch)
 	if err != nil {
 		return err
 	}
@@ -182,19 +210,19 @@ func (s *Store) Create(ctx context.Context, appID string) error {
 	// only real once it has been uploaded.
 	defer os.RemoveAll(repoPath)
 
-	if _, err := s.run(ctx, "", "init", "--bare", "--initial-branch=main", repoPath); err != nil {
+	if _, err := s.run(ctx, "", "init", "--bare", "--initial-branch="+branch, repoPath); err != nil {
 		// A failed init leaves a directory that Exists() would report as absent
 		// (no HEAD), so it is safe to remove and let a retry start clean.
 		_ = os.RemoveAll(repoPath)
-		return fmt.Errorf("initialise repository for app %s: %w", appID, err)
+		return fmt.Errorf("initialise the %s repository for app %s: %w", branch, appID, err)
 	}
 
 	// A bare repository created with init has no branch ref at all, so a fresh
 	// clone reports "remote HEAD refers to nonexistent ref". Setting HEAD
 	// explicitly makes an empty clone behave sensibly, which matters because the
 	// very first thing a caller may do is clone an app it just created.
-	if _, err := s.run(ctx, repoPath, "symbolic-ref", "HEAD", "refs/heads/main"); err != nil {
-		return fmt.Errorf("set default branch for app %s: %w", appID, err)
+	if _, err := s.run(ctx, repoPath, "symbolic-ref", "HEAD", branchRef(branch)); err != nil {
+		return fmt.Errorf("point HEAD at %s for app %s: %w", branch, appID, err)
 	}
 
 	// An opening commit carrying the files that tell a caller how to work with
@@ -202,7 +230,7 @@ func (s *Store) Create(ctx context.Context, appID string) error {
 	// cloning an app that has never been pushed to produces something usable —
 	// and the upload path injects the same files again, because a commit is built
 	// from the uploaded tree alone and would otherwise replace them.
-	if err := s.seedCommit(ctx, appID, repoPath); err != nil {
+	if err := s.seedCommit(ctx, appID, branch, repoPath); err != nil {
 		return fmt.Errorf("commit the seed files for app %s: %w", appID, err)
 	}
 
@@ -213,16 +241,93 @@ func (s *Store) Create(ctx context.Context, appID string) error {
 	// The new repository is uploaded here, before this returns: everything below
 	// this line works from the bucket, so a repository that existed only in
 	// scratch would be invisible to the upload that follows.
-	return s.uploadRepo(ctx, appID, repoPath)
+	return s.uploadRepo(ctx, appID, branch, repoPath)
 }
 
-// Remove deletes an app's repository.
+// initEmpty initialises repoPath as a bare repository when it is not one.
+//
+// It is the check Open makes before handing a directory to git: a request for a
+// branch that has no repository arrives as an empty directory, and git needs a
+// repository there to do anything at all — including to refuse a fetch, which it
+// does by advertising no refs rather than by failing to start.
+//
+// HEAD points at the branch, so a push's ref lands where the caller named and
+// git does not fall back to a default branch name of its own.
+//
+// No seed commit is made here, unlike Create. This path is reached by a push,
+// and a push supplies its own content: a seed commit would be an opening commit
+// that the pushed branch does not contain, so the first push to a branch would
+// either be rejected as a non-fast-forward or silently rebase onto seed files
+// the pusher never wrote.
+func (s *Store) initEmpty(ctx context.Context, repoPath, branch string) error {
+	if _, err := os.Stat(filepath.Join(repoPath, "HEAD")); err == nil {
+		// A repository is already there. download wrote one out.
+		return nil
+	}
+
+	if _, err := s.run(ctx, "", "init", "--bare", "--initial-branch="+branch, repoPath); err != nil {
+		return fmt.Errorf("initialise an empty repository: %w", err)
+	}
+	if _, err := s.run(ctx, repoPath, "symbolic-ref", "HEAD", branchRef(branch)); err != nil {
+		return fmt.Errorf("point HEAD at %s: %w", branch, err)
+	}
+	return nil
+}
+
+// Branches returns the branches an app has a repository for, sorted.
+//
+// It reads the bucket rather than git, and it is safe to: each branch is a
+// directory, so one listing at that depth is the whole answer. Reading the refs
+// instead would mean materialising every branch — which, with a repository per
+// branch, is downloading all of them to answer a question about their names.
+//
+// The repositories are not consulted for their tips either. A branch whose
+// repository exists but holds no commit is a real state — it is what a push that
+// was refused for an unrelated reason leaves behind — and reporting it is more
+// honest than hiding it, because the alternative is a branch the caller pushed
+// to and cannot see.
+func (s *Store) Branches(ctx context.Context, appID string) ([]string, error) {
+	if err := validateAppID(appID); err != nil {
+		return nil, err
+	}
+
+	objects, err := s.objects.List(ctx, s.branchesPrefix(appID))
+	if err != nil {
+		return nil, fmt.Errorf("list the branches of app %s: %w", appID, err)
+	}
+
+	seen := map[string]struct{}{}
+	for _, object := range objects {
+		// Only the directory itself says which branch it is; everything below it
+		// is git's own layout.
+		rest := strings.TrimPrefix(object.Key, s.branchesPrefix(appID)+"/")
+		name, _, ok := strings.Cut(rest, "/")
+		if !ok || name == "" {
+			continue
+		}
+		seen[name] = struct{}{}
+	}
+
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// Remove deletes every repository an app has, on every branch.
+//
+// It is app-wide rather than per branch, and that is the pair to Exists being
+// per branch: an app is removed as a whole — its record, its history and its
+// source — and a caller that wanted one branch gone would be asking to keep an
+// app whose source is half there.
 func (s *Store) Remove(ctx context.Context, appID string) error {
 	if err := validateAppID(appID); err != nil {
 		return err
 	}
 
-	objects, err := s.objects.List(ctx, s.repoPrefix(appID))
+	objects, err := s.objects.List(ctx, s.repoPrefixForRemove(appID))
 	if err != nil {
 		return fmt.Errorf("list the repository for app %s: %w", appID, err)
 	}
@@ -232,10 +337,10 @@ func (s *Store) Remove(ctx context.Context, appID string) error {
 		}
 	}
 
-	// And the scratch copy, if one is lying around from an interrupted run.
-	if repoPath, err := s.localRepoPath(appID); err == nil {
-		_ = os.RemoveAll(repoPath)
-	}
+	// And any scratch copies, if one is lying around from an interrupted run.
+	// They are per branch, so the whole app's scratch directory goes rather than
+	// one repository: an interrupted operation could have left any of them.
+	_ = os.RemoveAll(filepath.Join(s.tmpDir(), "repos", appID))
 	return nil
 }
 
@@ -245,11 +350,11 @@ func (s *Store) Remove(ctx context.Context, appID string) error {
 // repository is the record, and a database row could have been written for a
 // commit that was later removed, or missed for one that was pushed directly
 // over git. What git says is what is actually there.
-func (s *Store) Log(ctx context.Context, appID string, limit int) ([]CommitInfo, error) {
+func (s *Store) Log(ctx context.Context, appID, branch string, limit int) ([]CommitInfo, error) {
 	var infos []CommitInfo
-	err := s.withRepo(ctx, appID, func(repoPath string) error {
+	err := s.withRepo(ctx, appID, branch, func(repoPath string) error {
 		var err error
-		infos, err = s.logFrom(ctx, repoPath, limit)
+		infos, err = s.logFrom(ctx, repoPath, branch, limit)
 		return err
 	})
 	if err != nil {
@@ -259,7 +364,7 @@ func (s *Store) Log(ctx context.Context, appID string, limit int) ([]CommitInfo,
 }
 
 // logFrom reads the history out of a repository that is already on local disk.
-func (s *Store) logFrom(ctx context.Context, repoPath string, limit int) ([]CommitInfo, error) {
+func (s *Store) logFrom(ctx context.Context, repoPath, branch string, limit int) ([]CommitInfo, error) {
 
 	if limit <= 0 {
 		limit = 50
@@ -269,7 +374,7 @@ func (s *Store) logFrom(ctx context.Context, repoPath string, limit int) ([]Comm
 	// newlines in it cannot be mistaken for the start of the next commit. The
 	// format's field separator is a NUL, which cannot appear in a commit header.
 	format := "%H%x00%an%x00%aI%x00%s%x00%x1e"
-	out, err := s.run(ctx, repoPath, "log", "--max-count="+itoa(limit), "--format="+format, "refs/heads/main", "--")
+	out, err := s.run(ctx, repoPath, "log", "--max-count="+itoa(limit), "--format="+format, branchRef(branch), "--")
 	if err != nil {
 		// An empty repository has no commits and git exits non-zero. That is a
 		// normal state for a newly created app, not a failure.
@@ -323,9 +428,9 @@ func parseLog(out []byte) []CommitInfo {
 //
 // A caller may refer to a commit by any prefix it was shown, so this is what
 // turns that into the canonical id the rest of the system uses.
-func (s *Store) ResolveCommit(ctx context.Context, appID, revision string) (string, error) {
+func (s *Store) ResolveCommit(ctx context.Context, appID, branch, revision string) (string, error) {
 	var sha string
-	err := s.withRepo(ctx, appID, func(repoPath string) error {
+	err := s.withRepo(ctx, appID, branch, func(repoPath string) error {
 		out, err := s.run(ctx, repoPath, "rev-parse", "--verify", revision+"^{commit}")
 		if err != nil {
 			return err
@@ -339,11 +444,15 @@ func (s *Store) ResolveCommit(ctx context.Context, appID, revision string) (stri
 	return sha, nil
 }
 
-// HeadCommit returns the commit at the tip of the default branch.
-func (s *Store) HeadCommit(ctx context.Context, appID string) (string, error) {
+// HeadCommit returns the commit at the tip of a branch.
+//
+// ErrNoCommits means the branch's repository exists but has nothing in it yet —
+// which is the state of a branch just created for a push whose objects have not
+// arrived, and not the same as a branch that does not exist at all.
+func (s *Store) HeadCommit(ctx context.Context, appID, branch string) (string, error) {
 	var sha string
-	err := s.withRepo(ctx, appID, func(repoPath string) error {
-		out, err := s.run(ctx, repoPath, "rev-parse", "--verify", "refs/heads/main^{commit}")
+	err := s.withRepo(ctx, appID, branch, func(repoPath string) error {
+		out, err := s.run(ctx, repoPath, "rev-parse", "--verify", branchRef(branch)+"^{commit}")
 		if err != nil {
 			return err
 		}
@@ -354,7 +463,7 @@ func (s *Store) HeadCommit(ctx context.Context, appID string) (string, error) {
 		if isEmptyRepoError(err) {
 			return "", ErrNoCommits
 		}
-		return "", fmt.Errorf("read head of app %s: %w", appID, err)
+		return "", fmt.Errorf("read head of app %s on %s: %w", appID, branch, err)
 	}
 	return sha, nil
 }

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/shaowenchen/applab/internal/model"
 )
 
 // IngestLimits bound what a single upload may consume.
@@ -57,11 +59,15 @@ type IngestResult struct {
 func (s *Store) Ingest(
 	ctx context.Context,
 	appID string,
+	branch string,
 	body io.Reader,
 	message string,
 	parent string,
 	limits IngestLimits,
 ) (*IngestResult, error) {
+	if err := model.ValidateBranchName(branch); err != nil {
+		return nil, err
+	}
 	if limits.MaxBytes <= 0 {
 		limits = DefaultIngestLimits
 	}
@@ -70,10 +76,10 @@ func (s *Store) Ingest(
 	// commit is built against it. Creating it here rather than requiring the
 	// caller to have done so is what makes an upload the operation that can
 	// bring an app's source into being.
-	if exists, err := s.Exists(appID); err != nil {
+	if exists, err := s.Exists(appID, branch); err != nil {
 		return nil, err
 	} else if !exists {
-		if err := s.Create(ctx, appID); err != nil {
+		if err := s.Create(ctx, appID, branch); err != nil {
 			return nil, err
 		}
 	}
@@ -133,9 +139,9 @@ func (s *Store) Ingest(
 	var sha string
 	var files int
 	var totalBytes int64
-	err = s.withRepo(ctx, appID, func(repoPath string) error {
+	err = s.withRepo(ctx, appID, branch, func(repoPath string) error {
 		var commitErr error
-		sha, files, totalBytes, commitErr = s.commitWorkTree(ctx, appID, repoPath, workTree, workDir, subject, parent)
+		sha, files, totalBytes, commitErr = s.commitWorkTree(ctx, appID, branch, repoPath, workTree, workDir, subject, parent)
 		return commitErr
 	})
 	if err != nil {

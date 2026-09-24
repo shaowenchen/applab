@@ -17,12 +17,12 @@ import (
 //
 // sha must be a full commit id. It reaches git as an argument, so it is validated
 // first — a revision string from a request could otherwise be a flag.
-func (s *Store) Archive(ctx context.Context, appID, sha string, w io.Writer) error {
+func (s *Store) Archive(ctx context.Context, appID, branch, sha string, w io.Writer) error {
 	if !validFullSHA(sha) {
 		return fmt.Errorf("archive requires a full commit id, got %q", sha)
 	}
 
-	return s.withRepo(ctx, appID, func(repoPath string) error {
+	return s.withRepo(ctx, appID, branch, func(repoPath string) error {
 		// -- is what stops the validated id from being read as an option; it is
 		// belt and braces given the id is already constrained to hex.
 		cmd := exec.CommandContext(ctx, s.gitBin,
@@ -43,7 +43,7 @@ func (s *Store) Archive(ctx context.Context, appID, sha string, w io.Writer) err
 
 // ArchiveSize returns the byte length of a commit's archive without producing
 // it, so a caller can set Content-Length and the caller can show progress.
-func (s *Store) ArchiveSize(ctx context.Context, appID, sha string) (int64, error) {
+func (s *Store) ArchiveSize(ctx context.Context, appID, branch, sha string) (int64, error) {
 	if !validFullSHA(sha) {
 		return 0, fmt.Errorf("archive requires a full commit id, got %q", sha)
 	}
@@ -52,7 +52,7 @@ func (s *Store) ArchiveSize(ctx context.Context, appID, sha string) (int64, erro
 	// from the tree. It is done to a discarded writer, which is cheap next to the
 	// transfer it is preparing for.
 	var counter countingWriter
-	if err := s.Archive(ctx, appID, sha, &counter); err != nil {
+	if err := s.Archive(ctx, appID, branch, sha, &counter); err != nil {
 		return 0, err
 	}
 	return counter.n, nil

@@ -38,30 +38,39 @@ type Server struct {
 	store *store.Store
 	auth  *auth.Authenticator
 
-	// initSource creates an app's source repository. Nil means this deployment
-	// has no source storage.
-	initSource func(ctx context.Context, appID string) error
+	// The operations below all name a branch, because each one acts on one
+	// branch's repository. AppLab stores a repository per branch, so an operation
+	// that did not say which would have to guess — and the guess that reads as
+	// natural, "the app's", is the one the caller then cannot control.
 
-	// sourceRemover deletes an app's source repository.
+	// initSource creates an app's repository for a branch. Nil means this
+	// deployment has no source storage.
+	initSource func(ctx context.Context, appID, branch string) error
+
+	// sourceRemover deletes an app's source repository, on every branch.
 	sourceRemover func(ctx context.Context, appID string) error
 
-	// sourceIngest turns an uploaded archive into a commit.
-	sourceIngest func(ctx context.Context, appID string, archive io.Reader, message, parent string) (*source.IngestResult, error)
+	// sourceIngest turns an uploaded archive into a commit on a branch.
+	sourceIngest func(ctx context.Context, appID, branch string, archive io.Reader, message, parent string) (*source.IngestResult, error)
 
-	// headCommit returns an app's current tip.
-	headCommit func(ctx context.Context, appID string) (string, error)
+	// headCommit returns the tip of a branch.
+	headCommit func(ctx context.Context, appID, branch string) (string, error)
 
-	// sourceLog returns an app's commits in git's own order.
-	sourceLog func(ctx context.Context, appID string, limit int) ([]source.CommitInfo, error)
+	// sourceLog returns a branch's commits in git's own order.
+	sourceLog func(ctx context.Context, appID, branch string, limit int) ([]source.CommitInfo, error)
 
-	// resolveCommit expands a possibly-abbreviated commit revision.
-	resolveCommit func(ctx context.Context, appID, revision string) (string, error)
+	// resolveCommit expands a possibly-abbreviated commit revision within a
+	// branch's repository.
+	resolveCommit func(ctx context.Context, appID, branch, revision string) (string, error)
 
 	// sourceArchive writes a commit's source tree as a tar.gz.
-	sourceArchive func(ctx context.Context, appID, sha string, w io.Writer) error
+	sourceArchive func(ctx context.Context, appID, branch, sha string, w io.Writer) error
 
 	// sourceArchiveSize reports the archive's byte length.
-	sourceArchiveSize func(ctx context.Context, appID, sha string) (int64, error)
+	sourceArchiveSize func(ctx context.Context, appID, branch, sha string) (int64, error)
+
+	// sourceBranches lists the branches an app has a repository for.
+	sourceBranches func(ctx context.Context, appID string) ([]string, error)
 
 	// appObjectsDeleter removes everything AppLab created for one app.
 	//
@@ -198,10 +207,27 @@ func (s *Server) WithSource(store *source.Store) *Server {
 	s.sourceLog = store.Log
 	s.sourceArchive = store.Archive
 	s.sourceArchiveSize = store.ArchiveSize
-	s.sourceIngest = func(ctx context.Context, appID string, archive io.Reader, message, parent string) (*source.IngestResult, error) {
-		return store.Ingest(ctx, appID, archive, message, parent, source.DefaultIngestLimits)
+	s.sourceBranches = store.Branches
+	s.sourceIngest = func(ctx context.Context, appID, branch string, archive io.Reader, message, parent string) (*source.IngestResult, error) {
+		return store.Ingest(ctx, appID, branch, archive, message, parent, source.DefaultIngestLimits)
 	}
 	return s
+}
+
+// ActiveBranch is the branch lookup the git transport asks for when a URL named
+// no branch — see gitx.Transport.WithActiveBranch.
+//
+// It reads the app record rather than assuming the default, because "which
+// branch is live" is exactly the app state the transport does not hold. An app
+// that cannot be read, or does not exist, yields an empty string, which the
+// transport answers with the same 404 it gives for anything else it cannot
+// serve: this endpoint must not disclose which apps exist.
+func (s *Server) ActiveBranch(ctx context.Context, appID string) string {
+	app, err := s.loadAppByID(ctx, appID)
+	if err != nil {
+		return ""
+	}
+	return app.ActiveBranch()
 }
 
 // WithGit attaches the handler that serves repositories over git's smart HTTP
@@ -243,11 +269,11 @@ func (s *Server) WithClusterStatus(ready func(ctx context.Context) bool) *Server
 // It is a method on Server so the build handlers do not each have to know
 // whether an issuer is configured, and so the failure mode — no issuer — is one
 // clear error where it happens.
-func (s *Server) issueSourceToken(appID, commitSHA string) (string, error) {
+func (s *Server) issueSourceToken(appID, branch, commitSHA string) (string, error) {
 	if s.sourceTokens == nil {
 		return "", fmt.Errorf("no source token issuer is configured; a build job cannot fetch its source")
 	}
-	token, err := s.sourceTokens.Issue(appID, commitSHA)
+	token, err := s.sourceTokens.Issue(appID, branch, commitSHA)
 	if err != nil {
 		return "", err
 	}
@@ -738,8 +764,27 @@ func (s *Server) routes() []route {
 			Pattern: "GET /api/v1/apps/{app}/commits",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "An app's commit history, newest first, with the current tip. `?limit=` (default 50).",
+			Doc:     "An app's commit history, newest first, with the current tip. `?limit=` (default 50). `?branch=` reads another branch's history.",
 			Handler: s.handleListCommits,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/branches",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "The branches this app has source for, and which one is active. A branch is created by pushing to it, so this is what the app has been pushed to.",
+			Handler: s.handleListBranches,
+		},
+		{
+			// Admin only, unlike the routes that merely read source: this one
+			// changes what is running, and an app key's whole purpose is to
+			// deploy one app — so an app key *can* reach it. It is listed here
+			// for the reader rather than as a restriction; see the AppAuth flag
+			// and AuthorizeApp for the actual boundary.
+			Pattern: "PUT /api/v1/apps/{app}/branch",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "Make a branch active and deploy it. Body: `{\"branch\":\"dev\"}`. The branch must already have been pushed to. This replaces what is running: one app runs one branch.",
+			Handler: s.handleSwitchBranch,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/commits/{sha}",

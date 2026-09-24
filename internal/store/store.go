@@ -16,7 +16,8 @@
 //	apps/<id>/key.json            the app's API key and its digest
 //	apps/<id>/commits/<sha>.json  one recorded commit
 //	apps/<id>/builds/<id>.json    one build attempt
-//	apps/<id>/repo/               the app's git repository, see internal/source
+//	apps/<id>/repo/branches/<b>/  the repository for one branch, see
+//	                              internal/source
 //
 // Each of those is a separate object because each is written on its own: a build
 // updates its own record and nothing else, and a key is rewritten by a rotation
@@ -24,9 +25,12 @@
 // which kind of thing an object is — `commits/` and `builds/` hold history that
 // is append-only, `repo/` is git's, and the two loose files are the app itself.
 //
-// What is *not* here: anything per branch or per environment. One app is one
-// repository with one history; see internal/source for how a branch is stored
-// and why a repository is not split by one.
+// `repo/branches/<b>/` is the one place a branch appears in the layout, and the
+// one place an app's contents are multiplied: one repository per branch means
+// one copy of whatever each branch can reach. That is a deliberate cost, paid so
+// that a branch is a directory — listable, deletable, and independent of its
+// neighbours — which a shared object database could not be through an interface
+// that lists by key prefix. See BranchPrefix.
 //
 // The theme is that an object is written by one writer and replaced whole.
 // Object storage has no transactions across keys and no compare-and-swap worth
@@ -149,6 +153,7 @@ const (
 	commitsDir    = "commits/"
 	buildsDir     = "builds/"
 	sourceGitDir  = "repo"
+	branchesDir   = "branches"
 	uploadsPrefix = "uploads/"
 )
 
@@ -175,13 +180,40 @@ func buildsPrefix(appID string) string {
 	return objectstore.Key(appPrefix(appID), buildsDir) + "/"
 }
 
-// SourcePrefix is where one app's repository lives.
+// SourcePrefix is the directory one app's repositories live under.
 //
-// It is exported because internal/source owns what is inside it: the store
-// knows only that an app has a directory for its repository, and the source
-// package knows what a repository is.
+// It is exported because internal/source owns what is inside it: the store knows
+// only that an app has a directory for its repositories, and the source package
+// knows what a repository is.
 func SourcePrefix(appID string) string {
 	return objectstore.Key(appPrefix(appID), sourceGitDir)
+}
+
+// BranchesPrefix is where an app's branches live, one repository each.
+//
+// One repository per branch rather than one shared repository with several refs.
+// That costs storage — each branch holds its own copy of the objects it can
+// reach, so a second branch off a 39 MB history adds 39 MB — and it buys a
+// layout anyone can read: a branch is a directory, deleting it is deleting a
+// prefix, and nothing about one branch is discoverable from another.
+//
+// Sharing the objects instead is what git itself does, and it cannot be
+// expressed here: the store lists by key prefix and nothing else, so "the
+// objects reachable from main but not from dev" is not a listing this interface
+// can make. A shared object store would therefore mean materialising every
+// branch together on every operation, which is the cost this trades away.
+func BranchesPrefix(appID string) string {
+	return objectstore.Key(SourcePrefix(appID), branchesDir)
+}
+
+// BranchPrefix is one branch's repository.
+//
+// The branch name is a path segment, so it is validated before it reaches here —
+// see model.ValidateBranchName. Nothing in this package re-checks it: the check
+// belongs where the name is accepted from a caller, and a second one here would
+// suggest this function is safe to call with an unvalidated name.
+func BranchPrefix(appID, branch string) string {
+	return objectstore.Key(BranchesPrefix(appID), branch)
 }
 
 // uploadKey is where an in-progress chunked upload is described.

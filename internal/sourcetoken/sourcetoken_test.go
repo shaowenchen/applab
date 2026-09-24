@@ -11,7 +11,7 @@ import (
 func TestIssueAndRedeem(t *testing.T) {
 	issuer := NewIssuer(time.Minute)
 
-	token, err := issuer.Issue("shop", strings.Repeat("a", 40))
+	token, err := issuer.Issue("shop", "main", strings.Repeat("a", 40))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestIssueAndRedeem(t *testing.T) {
 func TestRedeemIsSingleUse(t *testing.T) {
 	issuer := NewIssuer(time.Minute)
 
-	token, err := issuer.Issue("shop", strings.Repeat("a", 40))
+	token, err := issuer.Issue("shop", "main", strings.Repeat("a", 40))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestExpiredTokenIsRefused(t *testing.T) {
 	now := time.Now()
 	issuer.now = func() time.Time { return now }
 
-	token, err := issuer.Issue("shop", strings.Repeat("a", 40))
+	token, err := issuer.Issue("shop", "main", strings.Repeat("a", 40))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestExpiredTokenIsConsumed(t *testing.T) {
 	now := time.Now()
 	issuer.now = func() time.Time { return now }
 
-	token, _ := issuer.Issue("shop", strings.Repeat("a", 40))
+	token, _ := issuer.Issue("shop", "main", strings.Repeat("a", 40))
 	issuer.now = func() time.Time { return now.Add(2 * time.Minute) }
 
 	_, _ = issuer.Redeem(token.Value)
@@ -112,7 +112,7 @@ func TestTokensAreUnique(t *testing.T) {
 
 	seen := make(map[string]bool)
 	for i := 0; i < 100; i++ {
-		token, err := issuer.Issue("shop", strings.Repeat("a", 40))
+		token, err := issuer.Issue("shop", "main", strings.Repeat("a", 40))
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -132,7 +132,7 @@ func TestIssuePrunesExpired(t *testing.T) {
 	issuer.now = func() time.Time { return now }
 
 	for i := 0; i < 50; i++ {
-		if _, err := issuer.Issue("shop", strings.Repeat("a", 40)); err != nil {
+		if _, err := issuer.Issue("shop", "main", strings.Repeat("a", 40)); err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
 	}
@@ -142,7 +142,7 @@ func TestIssuePrunesExpired(t *testing.T) {
 
 	// Move past the TTL and issue one more; the prune should have swept the rest.
 	issuer.now = func() time.Time { return now.Add(2 * time.Minute) }
-	if _, err := issuer.Issue("shop", strings.Repeat("a", 40)); err != nil {
+	if _, err := issuer.Issue("shop", "main", strings.Repeat("a", 40)); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestConcurrentIssueAndRedeem(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			token, err := issuer.Issue("shop", strings.Repeat("a", 40))
+			token, err := issuer.Issue("shop", "main", strings.Repeat("a", 40))
 			if err != nil {
 				errs <- err
 				return

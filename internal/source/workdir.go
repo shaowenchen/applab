@@ -10,7 +10,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/objectstore"
+	"github.com/shaowenchen/applab/internal/store"
 )
 
 // workingRepo is an app's repository, materialised on local disk for as long as
@@ -67,7 +69,8 @@ type fileState struct {
 	modTime int64
 }
 
-// openWorkingRepo materialises an app's repository into a scratch directory.
+// openWorkingRepo materialises one branch of an app's repository into a scratch
+// directory.
 //
 // A repository that does not exist yet comes back as an empty directory rather
 // than as an error: creating the repository is one of the things this is used
@@ -76,8 +79,11 @@ type fileState struct {
 //
 // The caller must Close it. Close uploads what changed, so a working repo that
 // is opened and not closed loses every write git made.
-func (s *Store) openWorkingRepo(ctx context.Context, appID string) (*workingRepo, error) {
+func (s *Store) openWorkingRepo(ctx context.Context, appID, branch string) (*workingRepo, error) {
 	if err := validateAppID(appID); err != nil {
+		return nil, err
+	}
+	if err := model.ValidateBranchName(branch); err != nil {
 		return nil, err
 	}
 
@@ -88,7 +94,7 @@ func (s *Store) openWorkingRepo(ctx context.Context, appID string) (*workingRepo
 
 	repo := &workingRepo{
 		store:  s.objects,
-		prefix: s.repoPrefix(appID),
+		prefix: s.branchPrefix(appID, branch),
 		dir:    dir,
 		before: map[string]fileState{},
 	}
@@ -112,8 +118,19 @@ func (s *Store) openWorkingRepo(ctx context.Context, appID string) (*workingRepo
 // branch without splitting git itself. See the package comment for what that
 // costs and the branch handling in commit.go for how branches are kept apart
 // within it.
-func (s *Store) repoPrefix(appID string) string {
-	return objectstore.Key("apps", appID, "repo")
+func (s *Store) branchPrefix(appID, branch string) string {
+	return store.BranchPrefix(appID, branch)
+}
+
+// branchesPrefix is every branch of one app, for a caller that wants them all.
+func (s *Store) branchesPrefix(appID string) string {
+	return store.BranchesPrefix(appID)
+}
+
+// repoPrefixForRemove is the whole of an app's source, which is what removing an
+// app deletes.
+func (s *Store) repoPrefixForRemove(appID string) string {
+	return store.SourcePrefix(appID)
 }
 
 // download copies the repository out of the bucket.
@@ -306,10 +323,10 @@ func (w *workingRepo) discard() {
 // It is a listing of one prefix rather than a marker object, because a repository
 // that exists and is empty — created but never pushed to — is a real state that a
 // marker would have to be kept in step with.
-func (s *Store) existsInBucket(ctx context.Context, appID string) (bool, error) {
-	objects, err := s.objects.List(ctx, s.repoPrefix(appID))
+func (s *Store) existsInBucket(ctx context.Context, appID, branch string) (bool, error) {
+	objects, err := s.objects.List(ctx, s.branchPrefix(appID, branch))
 	if err != nil {
-		return false, fmt.Errorf("list the repository for %s: %w", appID, err)
+		return false, fmt.Errorf("list the %s repository for %s: %w", branch, appID, err)
 	}
 	return len(objects) > 0, nil
 }

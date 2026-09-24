@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"github.com/shaowenchen/applab/internal/model"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,18 +36,25 @@ func newTestTransport(t *testing.T, appIDs ...string) (*Transport, *source.Store
 
 	ctx := context.Background()
 	for _, id := range appIDs {
-		if err := store.Create(ctx, id); err != nil {
+		if err := store.Create(ctx, id, model.DefaultBranch); err != nil {
 			t.Fatalf("create repository %s: %v", id, err)
 		}
 	}
 
 	// The sessions hook is what makes a repository available to git for the
 	// length of a request, since the repositories live in the object store.
+	//
+	// The branch resolver is attached the same way main.go attaches it, because
+	// the URL these tests use — "/shop.git" — names no branch and the transport
+	// cannot know which one that means without being told. Answering with the
+	// default is what an app that has never been pushed to a branch does.
 	tr, err := New(dataDir, store.GitPath())
 	if err != nil {
 		t.Fatalf("gitx.New: %v", err)
 	}
-	return tr.WithSessions(store), store
+	return tr.
+		WithSessions(store).
+		WithActiveBranch(func(context.Context, string) string { return model.DefaultBranch }), store
 }
 
 // TestCloneOverHTTP is the end-to-end proof that the transport works: a real git
@@ -60,7 +68,7 @@ func TestCloneOverHTTP(t *testing.T) {
 		"Dockerfile": "FROM scratch\n",
 		"main.go":    "package main\n",
 	})
-	if _, err := store.Ingest(ctx, "shop", bytes.NewReader(archive), "initial", "", source.DefaultIngestLimits); err != nil {
+	if _, err := store.Ingest(ctx, "shop", model.DefaultBranch, bytes.NewReader(archive), "initial", "", source.DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 
@@ -92,7 +100,7 @@ func TestPushOverHTTP(t *testing.T) {
 	ctx := context.Background()
 
 	archive := buildTar(t, map[string]string{"a.txt": "one\n"})
-	if _, err := store.Ingest(ctx, "shop", bytes.NewReader(archive), "initial", "", source.DefaultIngestLimits); err != nil {
+	if _, err := store.Ingest(ctx, "shop", model.DefaultBranch, bytes.NewReader(archive), "initial", "", source.DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 
@@ -112,7 +120,7 @@ func TestPushOverHTTP(t *testing.T) {
 	runGit(t, workDir, "push", "origin", "main")
 
 	// The push must be visible in the repository AppLab reads.
-	head, err := store.HeadCommit(ctx, "shop")
+	head, err := store.HeadCommit(ctx, "shop", model.DefaultBranch)
 	if err != nil {
 		t.Fatalf("HeadCommit: %v", err)
 	}
@@ -194,7 +202,7 @@ func TestInfoRefsAdvertisesPush(t *testing.T) {
 	ctx := context.Background()
 
 	archive := buildTar(t, map[string]string{"a.txt": "one\n"})
-	if _, err := store.Ingest(ctx, "shop", bytes.NewReader(archive), "initial", "", source.DefaultIngestLimits); err != nil {
+	if _, err := store.Ingest(ctx, "shop", model.DefaultBranch, bytes.NewReader(archive), "initial", "", source.DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 
@@ -260,10 +268,13 @@ func buildTar(t *testing.T, files map[string]string) []byte {
 
 // mustRepoPath materialises an app's repository so a test can assert on what a
 // push actually stored.
+//
+// It opens the default branch, which is the app's active one unless a test says
+// otherwise and the branch every push in this file targets.
 func mustRepoPath(t *testing.T, s *source.Store, appID string) string {
 	t.Helper()
 
-	path, done, err := s.Open(context.Background(), appID)
+	path, done, err := s.Open(context.Background(), appID, model.DefaultBranch)
 	if err != nil {
 		t.Fatalf("Open(%q): %v", appID, err)
 	}

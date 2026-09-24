@@ -33,6 +33,7 @@ import (
 func (s *Store) commitWorkTree(
 	ctx context.Context,
 	appID string,
+	branch string,
 	repoPath string,
 	workTree string,
 	scratch string,
@@ -48,14 +49,14 @@ func (s *Store) commitWorkTree(
 	// because committing onto a commit that is not there would silently produce
 	// an orphan.
 	if parent != "" {
-		resolved, err := s.ResolveCommit(ctx, appID, parent)
+		resolved, err := s.ResolveCommit(ctx, appID, branch, parent)
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("resolve parent commit: %w", err)
 		}
 		parent = resolved
 	} else {
 		// Default to the current tip so an upload extends history.
-		if head, err := s.headWithEnv(ctx, repoPath, env); err == nil {
+		if head, err := s.headWithEnv(ctx, repoPath, branch, env); err == nil {
 			parent = head
 		} else if !errors.Is(err, ErrNoCommits) {
 			return "", 0, 0, err
@@ -106,21 +107,21 @@ func (s *Store) commitWorkTree(
 	sha = strings.TrimSpace(string(commitOut))
 
 	// Update the branch. --create-reflog is not needed on a bare repo created by
-	// AppLab, but the ref is set unconditionally to main so that an upload always
-	// lands on the branch a clone will check out.
-	if _, err := s.run(ctx, repoPath, "update-ref", "refs/heads/main", sha, parent); err != nil {
+	// AppLab, but the ref is set unconditionally to this branch so that an upload
+	// always lands on the branch a clone will check out.
+	if _, err := s.run(ctx, repoPath, "update-ref", branchRef(branch), sha, parent); err != nil {
 		// A concurrent upload moved the branch between reading the parent and
 		// updating it. The object is written and valid; only the ref lost the
 		// race, so retry once on the new tip rather than failing an upload that
 		// did nothing wrong.
-		if head, headErr := s.HeadCommit(ctx, appID); headErr == nil {
+		if head, headErr := s.HeadCommit(ctx, appID, branch); headErr == nil {
 			args := []string{"commit-tree", tree, "-m", subject, "-p", head}
 			retryOut, retryErr := s.runWithEnv(ctx, repoPath, env, args...)
 			if retryErr != nil {
 				return "", 0, 0, fmt.Errorf("create commit: %w", retryErr)
 			}
 			retrySHA := strings.TrimSpace(string(retryOut))
-			if _, retryRefErr := s.run(ctx, repoPath, "update-ref", "refs/heads/main", retrySHA, head); retryRefErr != nil {
+			if _, retryRefErr := s.run(ctx, repoPath, "update-ref", branchRef(branch), retrySHA, head); retryRefErr != nil {
 				return "", 0, 0, fmt.Errorf("update branch after concurrent upload: %w", retryRefErr)
 			}
 			return retrySHA, files, totalBytes, nil
@@ -128,16 +129,16 @@ func (s *Store) commitWorkTree(
 		return "", 0, 0, fmt.Errorf("update branch: %w", err)
 	}
 
-	if _, err := s.run(ctx, repoPath, "symbolic-ref", "HEAD", "refs/heads/main"); err != nil {
-		return "", 0, 0, fmt.Errorf("point HEAD at the default branch: %w", err)
+	if _, err := s.run(ctx, repoPath, "symbolic-ref", "HEAD", branchRef(branch)); err != nil {
+		return "", 0, 0, fmt.Errorf("point HEAD at %s: %w", branch, err)
 	}
 
 	return sha, files, totalBytes, nil
 }
 
 // headWithEnv reads the current tip using a specific git environment.
-func (s *Store) headWithEnv(ctx context.Context, repoPath string, env []string) (string, error) {
-	out, err := s.runWithEnv(ctx, repoPath, env, "rev-parse", "--verify", "refs/heads/main^{commit}")
+func (s *Store) headWithEnv(ctx context.Context, repoPath, branch string, env []string) (string, error) {
+	out, err := s.runWithEnv(ctx, repoPath, env, "rev-parse", "--verify", branchRef(branch)+"^{commit}")
 	if err != nil {
 		if isEmptyRepoError(err) {
 			return "", ErrNoCommits

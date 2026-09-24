@@ -176,7 +176,15 @@ func run() error {
 
 	// Which repository a credential may reach is decided by the API layer, which
 	// owns the two tiers — see Server.AuthorizeGitRepo.
-	srv.WithGit(gitTransport.Authorize(srv.AuthorizeGitRepo))
+	//
+	// Which *branch* a URL with no branch in it means is decided there too,
+	// because it is app state: "/git/shop.git" is whatever branch shop is on, and
+	// the transport has no way to know that. Both are closures over srv so a
+	// request reads the server's state as it is when the request arrives.
+	gitTransport.
+		Authorize(srv.AuthorizeGitRepo).
+		WithActiveBranch(srv.ActiveBranch)
+	srv.WithGit(gitTransport)
 
 	// The console is a client of the same public API, so it holds no privileges
 	// and adds no endpoints — it is a page, and everything it does is a call a

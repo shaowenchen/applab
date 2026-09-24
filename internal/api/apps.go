@@ -58,6 +58,12 @@ type appResponse struct {
 	Path     string `json:"path,omitempty"`
 	URL      string `json:"url,omitempty"`
 
+	// Branch is the app's active branch: what a deploy builds from, and the
+	// branch a git clone with no branch named gets. It is always set — an app
+	// with no branch recorded reports the default — because "which branch is
+	// live" is a question with an answer at all times.
+	Branch string `json:"branch"`
+
 	CommitSHA string `json:"commit_sha,omitempty"`
 	Image     string `json:"image,omitempty"`
 
@@ -86,6 +92,7 @@ func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string) appRespo
 		Domain:       a.Domain,
 		CommitSHA:    a.CommitSHA,
 		Image:        a.Image,
+		Branch:       a.ActiveBranch(),
 		Status:       string(a.Status),
 		StatusReason: a.StatusReason,
 		EnvCount:     len(a.Env),
@@ -226,7 +233,10 @@ func (s *Server) createRepository(r *http.Request, app *model.App) *apiError {
 	if s.initSource == nil {
 		return nil
 	}
-	if err := s.initSource(r.Context(), app.ID); err != nil {
+	// The app's branch, which for a new app is the default. A create does not
+	// take a branch parameter: an app is created with one branch and gains others
+	// by being pushed to, which is the same way git itself does it.
+	if err := s.initSource(r.Context(), app.ID, app.ActiveBranch()); err != nil {
 		return Errorf(http.StatusInternalServerError, "create source repository for app %q", app.ID).Wrap(err)
 	}
 	return nil
@@ -285,6 +295,15 @@ type updateAppRequest struct {
 	Replicas   *int32  `json:"replicas"`
 	Dockerfile *string `json:"dockerfile"`
 	Domain     *string `json:"domain"`
+
+	// Branch sets the app's active branch.
+	//
+	// Setting it here does not deploy anything, which is the difference between
+	// this and PUT /branch: this records what the app is on, and that route
+	// switches to it and rolls it out. Both exist because they are different
+	// intentions — correcting which branch an app is on, versus moving it — and
+	// conflating them would mean a PATCH that silently redeploys.
+	Branch *string `json:"branch"`
 }
 
 func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +336,19 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Domain != nil {
 		app.Domain = strings.TrimSpace(*req.Domain)
+	}
+	if req.Branch != nil {
+		branch := strings.TrimSpace(*req.Branch)
+		if branch == "" {
+			// Clearing it means the default rather than nothing, which is the
+			// same resolution an app that has never had one gets.
+			branch = model.DefaultBranch
+		}
+		if err := model.ValidateBranchName(branch); err != nil {
+			fail(w, r, BadRequest("%s", err.Error()))
+			return
+		}
+		app.Branch = branch
 	}
 
 	if err := validateAppSettings(app); err != nil {
@@ -436,6 +468,32 @@ func (s *Server) loadAppByID(ctx context.Context, id string) (*model.App, error)
 	}
 	app.Namespace = s.namespaceFor(app.ID)
 	return app, nil
+}
+
+// requestedBranch returns the branch a handler should act on.
+//
+// It is the one place "which branch" is decided, because every source operation
+// needs an answer and an operation that answered it differently from its
+// neighbour would act on one branch and read from another.
+//
+// The rule is: a branch the request named, or the app's active one. Naming one
+// is how a caller works with a branch that is not deployed — browsing its
+// history, fetching a commit's tree, or pushing source to it through the tarball
+// API rather than over git — and it is a query parameter rather than a path
+// segment because it is a choice about the operation, not part of what is being
+// addressed.
+//
+// A named branch is validated here rather than deeper down, so a malformed name
+// is a 400 that says what is wrong instead of a 500 from a path join.
+func (s *Server) requestedBranch(r *http.Request, app *model.App) (string, *apiError) {
+	branch := strings.TrimSpace(r.URL.Query().Get("branch"))
+	if branch == "" {
+		return app.ActiveBranch(), nil
+	}
+	if err := model.ValidateBranchName(branch); err != nil {
+		return "", BadRequest("%s", err.Error())
+	}
+	return branch, nil
 }
 
 // namespaceFor returns the namespace an app's resources live in.

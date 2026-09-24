@@ -32,7 +32,7 @@ func treeNames(t *testing.T, s *Store, appID string) []string {
 func TestANewAppIsCloneableWithItsSeedFiles(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.Create(ctx, "shop"); err != nil {
+	if err := s.Create(ctx, "shop", main); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestANewAppIsCloneableWithItsSeedFiles(t *testing.T) {
 func TestTheSeedFilesSurviveAnUpload(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.Create(ctx, "shop"); err != nil {
+	if err := s.Create(ctx, "shop", main); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestTheSeedFilesSurviveAnUpload(t *testing.T) {
 		{name: "main.go", body: "package main\n"},
 		{name: "Dockerfile", body: "FROM scratch\n"},
 	})
-	if _, err := s.Ingest(ctx, "shop", strings.NewReader(string(body)), "first push", "", DefaultIngestLimits); err != nil {
+	if _, err := s.Ingest(ctx, "shop", main, strings.NewReader(string(body)), "first push", "", DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestTheSeedFilesSurviveAnUpload(t *testing.T) {
 func TestTheSeedIsRefreshedOnEveryUpload(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.Create(ctx, "shop"); err != nil {
+	if err := s.Create(ctx, "shop", main); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestTheSeedIsRefreshedOnEveryUpload(t *testing.T) {
 		{name: "applab.sh", body: "#!/bin/sh\necho stale\n"},
 		{name: "main.go", body: "package main\n"},
 	})
-	if _, err := s.Ingest(ctx, "shop", strings.NewReader(string(body)), "upload a stale copy", "", DefaultIngestLimits); err != nil {
+	if _, err := s.Ingest(ctx, "shop", main, strings.NewReader(string(body)), "upload a stale copy", "", DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 
@@ -117,7 +117,7 @@ func TestTheSeedIsRefreshedOnEveryUpload(t *testing.T) {
 // unsubstituted, which is what this catches.
 func TestTheSeedCarriesTheAppID(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.Create(context.Background(), "shop"); err != nil {
+	if err := s.Create(context.Background(), "shop", main); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestTheSeededScriptNeverCarriesAKey(t *testing.T) {
 func TestTheSeededScriptIsExecutable(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.Create(ctx, "shop"); err != nil {
+	if err := s.Create(ctx, "shop", main); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	repo := materializeRepo(t, s, "shop")
@@ -213,7 +213,7 @@ func TestTheSeededScriptIsExecutable(t *testing.T) {
 func TestSeedReplacesASymlinkRatherThanFollowingIt(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.Create(ctx, "shop"); err != nil {
+	if err := s.Create(ctx, "shop", main); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -221,7 +221,7 @@ func TestSeedReplacesASymlinkRatherThanFollowingIt(t *testing.T) {
 		{name: "applab.sh", typeflag: '2', linkname: "../../../../etc/passwd"},
 		{name: "main.go", body: "package main\n"},
 	})
-	if _, err := s.Ingest(ctx, "shop", strings.NewReader(string(body)), "symlink", "", DefaultIngestLimits); err != nil {
+	if _, err := s.Ingest(ctx, "shop", main, strings.NewReader(string(body)), "symlink", "", DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 

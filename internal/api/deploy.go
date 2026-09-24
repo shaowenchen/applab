@@ -43,12 +43,21 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Which branch this deploy is of. An app has one branch deployed at a time,
+	// so a deploy that named none means its active one; naming one is how a
+	// caller deploys a branch without first switching the app to it.
+	branch, apiErr := s.requestedBranch(r, app)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
 	commitSHA := strings.TrimSpace(req.CommitSHA)
 	if commitSHA == "" {
-		head, err := s.headCommit(r.Context(), app.ID)
+		head, err := s.headCommit(r.Context(), app.ID, branch)
 		if err != nil {
 			if errors.Is(err, source.ErrNoCommits) {
-				fail(w, r, BadRequest("app %q has no source to deploy; upload source first", app.ID))
+				fail(w, r, BadRequest("app %q has no source on branch %q to deploy; upload source first", app.ID, branch))
 				return
 			}
 			fail(w, r, Errorf(http.StatusInternalServerError, "read the app's current commit").Wrap(err))
@@ -57,12 +66,25 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		commitSHA = head
 	}
 
-	resolved, err := s.resolveCommit(r.Context(), app.ID, commitSHA)
+	resolved, err := s.resolveCommit(r.Context(), app.ID, branch, commitSHA)
 	if err != nil {
-		fail(w, r, NotFound("commit %q in app %q", commitSHA, app.ID))
+		fail(w, r, NotFound("commit %q in app %q on branch %q", commitSHA, app.ID, branch))
 		return
 	}
 
+	s.deployResolved(w, r, app, branch, resolved, req.Build)
+}
+
+// deployResolved deploys a known commit of a known branch, building it first if
+// it has no image yet, and writes the response.
+//
+// It is the whole of the deploy path after the commit has been decided, and it
+// takes a writer because two routes reach it: POST /deploy, which resolves a
+// commit from the request, and PUT /branch, which resolves the head of the
+// branch being switched to. Duplicating this would mean two copies of the
+// image lookup, the build-or-refuse decision and the response shape — and the
+// two would drift in exactly the case that matters, which is the failure path.
+func (s *Server) deployResolved(w http.ResponseWriter, r *http.Request, app *model.App, branch, resolved string, build bool) {
 	// Deploying means the image needs a build and the resources need creating,
 	// in that order. The namespace is not among them: every app shares AppLab's
 	// own, which exists by definition.
@@ -80,7 +102,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// deploy that silently builds would make the response time unpredictable and
 	// hide a failure behind a different operation.
 	if image == "" {
-		if !req.Build {
+		if !build {
 			fail(w, r, Conflict(
 				"no image exists for commit %s; build it first with POST /api/v1/apps/%s/builds, or deploy with {\"build\":true}",
 				shortSHA(resolved), app.ID))
@@ -91,7 +113,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		build, apiErr := s.startBuild(r.Context(), app, resolved)
+		build, apiErr := s.startBuild(r.Context(), app, branch, resolved)
 		if apiErr != nil {
 			fail(w, r, apiErr)
 			return
@@ -196,9 +218,19 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolved, err := s.resolveCommit(r.Context(), app.ID, commitSHA)
+	// A rollback resolves within the branch that is live, not across branches:
+	// what is being undone is a deploy, and a deploy is built from one branch.
+	// Rolling back to a commit that exists only on another branch would leave the
+	// app running code its record does not say it is on.
+	branch, apiErr := s.requestedBranch(r, app)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
+	resolved, err := s.resolveCommit(r.Context(), app.ID, branch, commitSHA)
 	if err != nil {
-		fail(w, r, NotFound("commit %q in app %q", commitSHA, app.ID))
+		fail(w, r, NotFound("commit %q in app %q on branch %q", commitSHA, app.ID, branch))
 		return
 	}
 

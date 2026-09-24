@@ -71,14 +71,29 @@ type Transport struct {
 	// package keeps knowing nothing about where the source is kept — and so a
 	// test can serve a directory.
 	sessions Sessions
+
+	// activeBranch resolves the branch to serve when the URL named none.
+	//
+	// A URL without a branch means "the app's active one", which is app state
+	// this package does not hold and should not: it knows how to serve a
+	// repository over HTTP and nothing about what a branch is for. The lookup is
+	// attached by the API layer, which owns that state.
+	//
+	// Nil means an unresolved branch is a request for nothing, which is what a
+	// caller with no such state should get rather than a guess.
+	activeBranch func(ctx context.Context, appID string) string
 }
 
 // Sessions is how a repository is made available to git for one request.
 //
 // The path is only valid until Done is called, and Done must be called exactly
 // once for every Open — it is what uploads a push and removes the local copy.
+//
+// The branch is always a real branch name by the time it arrives here: a request
+// that named none has been resolved through activeBranch, and a request that
+// named one has been validated against the same rule an app id is.
 type Sessions interface {
-	Open(ctx context.Context, appID string) (repoPath string, done func() error, err error)
+	Open(ctx context.Context, appID, branch string) (repoPath string, done func() error, err error)
 }
 
 // WithSessions attaches the source of repositories.
@@ -88,6 +103,17 @@ type Sessions interface {
 // deployment whose source storage was not configured.
 func (t *Transport) WithSessions(s Sessions) *Transport {
 	t.sessions = s
+	return t
+}
+
+// WithActiveBranch attaches the lookup that turns an app id into the branch to
+// serve when the request's URL did not name one.
+//
+// An empty branch — a push to an unknown app, or a deployment with no source
+// storage behind it — is answered as an empty string, which the caller treats as
+// "nothing to serve".
+func (t *Transport) WithActiveBranch(fn func(ctx context.Context, appID string) string) *Transport {
+	t.activeBranch = fn
 	return t
 }
 
@@ -149,7 +175,7 @@ func resolveBackend(gitBin string) (string, error) {
 // enforces *which* repository a credential reaches, because authentication alone
 // would let any key read any app's source.
 func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	projectPath, repoName, ok := t.resolvePath(r.URL.Path)
+	projectPath, repoName, branch, ok := t.resolvePath(r.URL.Path)
 	if !ok {
 		// The path failed validation. The response is deliberately the same
 		// 404 a nonexistent repository gives, so a caller probing for a way out
@@ -167,6 +193,22 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A URL that named no branch means the app's active one. This is resolved
+	// after authorization and before the repository is opened, so a request that
+	// was not allowed to reach the app never causes a lookup of its state.
+	if branch == "" {
+		if t.activeBranch == nil {
+			http.Error(w, "repository not found", http.StatusNotFound)
+			return
+		}
+		if branch = t.activeBranch(r.Context(), repoName); branch == "" {
+			// The app has no active branch to speak of — it does not exist, or
+			// its record could not be read. The same 404 either way.
+			http.Error(w, "repository not found", http.StatusNotFound)
+			return
+		}
+	}
+
 	// The repository is materialised now and uploaded again when the request is
 	// done — which is what makes a push durable, since git has only ever written
 	// to the local copy.
@@ -174,7 +216,7 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "repository not found", http.StatusNotFound)
 		return
 	}
-	repoPath, done, err := t.sessions.Open(r.Context(), repoName)
+	repoPath, done, err := t.sessions.Open(r.Context(), repoName, branch)
 	if err != nil {
 		// A repository that is not there and one that could not be read are the
 		// same answer to a caller: this endpoint does not disclose which apps
@@ -187,20 +229,23 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := done(); err != nil {
 			slog.ErrorContext(r.Context(), "could not store the repository after serving it",
-				"app", repoName, "error", err)
+				"app", repoName, "branch", branch, "error", err)
 		}
 	}()
 
 	// The backend resolves PATH_INFO against GIT_PROJECT_ROOT, so both are built
-	// from where the repository actually is for this request rather than from
-	// the configured root: the repository is materialised in scratch space, and
-	// the root the transport was constructed with is not where it lives.
+	// from where the repository actually is rather than from the configured root:
+	// the repository is materialised in scratch space, and the root the transport
+	// was constructed with is not where it lives.
 	//
-	// projectPath already names the repository — it is "/<app>.git/..." straight
-	// out of resolvePath — and the materialised directory is that same name under
-	// its own parent. So the parent is the root and the path is left alone.
+	// The request's own path cannot be reused, and that is new. It used to be —
+	// "/<app>.git/..." was the name of the materialised directory too — but the
+	// URL carries "@branch" where the directory carries "/branch/", so the two
+	// differ by more than a prefix. What is reused is the tail: everything after
+	// the repository segment is git's own protocol path (/info/refs,
+	// /git-receive-pack) and is passed through exactly as it arrived.
 	projectRoot := filepath.Dir(repoPath)
-	projectPath = filepath.ToSlash(projectPath)
+	projectPath = "/" + filepath.ToSlash(filepath.Base(repoPath)) + protocolPathSuffix(r.URL.Path)
 	if strings.HasSuffix(projectPath, ".git") {
 		projectPath += "/"
 	}
@@ -379,9 +424,20 @@ func (f *flushWriter) Write(b []byte) (int, error) {
 // app. Deriving it twice, once here and once by the caller, would be two
 // implementations of the same rule, and the one that mattered would be the
 // caller's.
-func (t *Transport) resolvePath(urlPath string) (projectPath, repoName string, ok bool) {
+// The stem is split on "@": the part before it is the app id and the part after
+// it is the branch, so "/git/shop@dev.git" is the dev branch of shop. A URL with
+// no "@" names no branch, which means the app's active one — see activeBranch.
+//
+// "@" rather than a path segment is a deliberate choice. A second segment
+// ("/git/shop/dev.git") would put the branch inside the repository path that
+// http-backend receives, and git reads a nested path as a subdirectory of a
+// repository rather than as a name of its own. The "@" form keeps the repository
+// one path segment, which is the shape both git and http-backend already agree
+// on — verified against git's own URL parser, which strips credentials from the
+// authority and leaves an "@" later in the path untouched.
+func (t *Transport) resolvePath(urlPath string) (projectPath, repoName, branch string, ok bool) {
 	if urlPath == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	// Work on the cleaned path so "//" and "." segments cannot hide a traversal
@@ -394,12 +450,12 @@ func (t *Transport) resolvePath(urlPath string) (projectPath, repoName string, o
 	// An encoded NUL or a backslash has no legitimate place in a repository URL
 	// and exists only to confuse a later consumer of the string.
 	if strings.ContainsAny(cleaned, "\x00\\") {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	for _, segment := range strings.Split(cleaned, "/") {
 		if segment == ".." {
-			return "", "", false
+			return "", "", "", false
 		}
 	}
 
@@ -408,19 +464,72 @@ func (t *Transport) resolvePath(urlPath string) (projectPath, repoName string, o
 	// matches the URL a caller is given.
 	segments := strings.Split(strings.TrimPrefix(cleaned, "/"), "/")
 	if len(segments) == 0 || !strings.HasSuffix(segments[0], ".git") {
-		return "", "", false
+		return "", "", "", false
 	}
-	name := strings.TrimSuffix(segments[0], ".git")
-	if name == "" {
-		return "", "", false
+	stem := strings.TrimSuffix(segments[0], ".git")
+	if stem == "" {
+		// "/.git" — a request for a repository that has no name, which on a bare
+		// repository would be its own directory.
+		return "", "", "", false
 	}
+
+	// At most one "@": a second one is not a branch name with an @ in it, and
+	// treating it as one would mean deciding how to read "a@b@c", which has no
+	// answer worth having.
+	name, branch, _ := strings.Cut(stem, "@")
+	if strings.Contains(branch, "@") {
+		return "", "", "", false
+	}
+
 	// The repository name is an app id, so it is constrained exactly as one is.
 	// This is what keeps a request from naming a directory AppLab did not create.
 	if !validRepoName(name) {
-		return "", "", false
+		return "", "", "", false
+	}
+	// An empty branch is not a defect here: it means the URL named none, and the
+	// caller resolves that through activeBranch. A branch that was given is
+	// checked against the same rule the rest of AppLab uses, mirrored below.
+	if branch != "" && !validBranchName(branch) {
+		return "", "", "", false
 	}
 
-	return cleaned, name, true
+	return cleaned, name, branch, true
+}
+
+// validBranchName reports whether branch could be a branch name.
+//
+// It mirrors model.ValidateBranchName for the same reason validRepoName mirrors
+// the app id rule: this is a security boundary, and a branch name reaches both a
+// bucket key and git's argv from here. It is shorter than the model's version
+// because it answers yes-or-no rather than explaining, and because the two have
+// to agree rather than to be the same code — a test asserts they do.
+func validBranchName(branch string) bool {
+	if branch == "" || len(branch) > 255 {
+		return false
+	}
+	// The shapes that would let a name out of the repository it belongs to, or
+	// change what git is being asked to do.
+	if strings.HasPrefix(branch, "-") ||
+		strings.HasPrefix(branch, "/") ||
+		strings.HasSuffix(branch, "/") ||
+		strings.HasSuffix(branch, ".") ||
+		strings.HasSuffix(branch, ".lock") ||
+		strings.Contains(branch, "//") ||
+		strings.Contains(branch, "..") ||
+		strings.Contains(branch, "@{") ||
+		branch == "@" {
+		return false
+	}
+	for _, r := range branch {
+		switch r {
+		case ' ', '~', '^', ':', '?', '*', '[', '\\':
+			return false
+		}
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // validRepoName reports whether name could be an app id. It mirrors the model's
@@ -445,6 +554,20 @@ func validRepoName(name string) bool {
 		}
 	}
 	return true
+}
+
+// protocolPathSuffix returns the part of a request path after its first segment.
+//
+// It is what separates "which repository" from "what git is being asked to do":
+// "/shop@dev.git/info/refs" leaves "/info/refs", which is the same string
+// whatever the repository segment said. An empty result means the request named
+// the repository and nothing else.
+func protocolPathSuffix(urlPath string) string {
+	trimmed := strings.TrimPrefix(path.Clean(urlPath), "/")
+	if i := strings.Index(trimmed, "/"); i >= 0 {
+		return trimmed[i:]
+	}
+	return ""
 }
 
 // remoteHost strips the port from a RemoteAddr.

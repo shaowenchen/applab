@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"github.com/shaowenchen/applab/internal/model"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -73,7 +74,7 @@ func TestSourceArchiveWithToken(t *testing.T) {
 	json.Unmarshal(env.Data, &upload)
 
 	// A token issued for this app and commit, as a build start would.
-	tok, err := issuer.Issue("shop", upload.CommitSHA)
+	tok, err := issuer.Issue("shop", model.DefaultBranch, upload.CommitSHA)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestSourceArchiveWithToken(t *testing.T) {
 		{"another app", "/api/v1/apps/other/source/archive/" + upload.CommitSHA},
 		{"another commit", "/api/v1/apps/shop/source/archive/" + strings.Repeat("b", 40)},
 	} {
-		fresh, err := issuer.Issue("shop", upload.CommitSHA)
+		fresh, err := issuer.Issue("shop", model.DefaultBranch, upload.CommitSHA)
 		if err != nil {
 			t.Fatalf("issue: %v", err)
 		}

@@ -38,6 +38,17 @@ type Token struct {
 
 	AppID     string
 	CommitSHA string
+
+	// Branch is the branch the commit was built from.
+	//
+	// The token has to carry it, because app, commit and branch together are what
+	// identify a repository: each branch is stored separately, so the same commit
+	// can exist in two of them and an archive fetched by commit alone would be
+	// ambiguous. Carrying it also means a build cannot fetch from a branch it was
+	// not started for — the middleware checks the request against the grant, and
+	// the grant says which branch the build is of.
+	Branch string
+
 	ExpiresAt time.Time
 }
 
@@ -45,6 +56,7 @@ type Token struct {
 type Grant struct {
 	AppID     string
 	CommitSHA string
+	Branch    string
 	ExpiresAt time.Time
 }
 
@@ -76,12 +88,12 @@ func NewIssuer(ttl time.Duration) *Issuer {
 	}
 }
 
-// Issue mints a token for one app and commit.
+// Issue mints a token for one commit, on one branch, of one app.
 //
 // The token is 32 bytes of cryptographic randomness. It is not derived from the
 // app or the commit, so holding one token tells its holder nothing about any
 // other, and tokens cannot be enumerated by guessing.
-func (i *Issuer) Issue(appID, commitSHA string) (Token, error) {
+func (i *Issuer) Issue(appID, branch, commitSHA string) (Token, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return Token{}, fmt.Errorf("generate source token: %w", err)
@@ -91,6 +103,7 @@ func (i *Issuer) Issue(appID, commitSHA string) (Token, error) {
 	grant := Grant{
 		AppID:     appID,
 		CommitSHA: commitSHA,
+		Branch:    branch,
 		ExpiresAt: i.now().Add(i.ttl),
 	}
 
@@ -105,6 +118,7 @@ func (i *Issuer) Issue(appID, commitSHA string) (Token, error) {
 		Value:     value,
 		AppID:     grant.AppID,
 		CommitSHA: grant.CommitSHA,
+		Branch:    grant.Branch,
 		ExpiresAt: grant.ExpiresAt,
 	}, nil
 }

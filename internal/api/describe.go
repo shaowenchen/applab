@@ -280,7 +280,7 @@ func (s *Server) describeHowTo(base string, identity auth.Identity) describeHowT
 	out := describeHowTo{
 		Push:  "applab push <app>",
 		Logs:  "applab logs <app> -f",
-		Clone: "git clone " + gitURLWithPassword(base, "<app>"),
+		Clone: "git clone " + gitURLWithPassword(base, "<app>", ""),
 		HTTP: map[string]string{
 			"create_app": "POST " + base + "/api/v1/apps  {\"id\":\"<app>\",\"port\":8080}",
 			"upload":     "POST " + base + "/api/v1/apps/<app>/source?message=<msg>  (application/gzip)",
@@ -352,10 +352,19 @@ func plural(n int, one, many string) string {
 // the result is right for a deployment reached over https and over http alike:
 // the address is inserted into a `git clone` line, and that line already names
 // the scheme.
-func gitURLWithPassword(base, appID string) string {
+//
+// The branch is part of the path — "/git/shop@dev.git" — and the default branch
+// is the one URL that omits it, so that an app's address stays stable as it
+// gains branches. See gitx.Transport for why the branch is joined with "@"
+// rather than as a second path segment.
+func gitURLWithPassword(base, appID, branch string) string {
 	host := base
 	if i := strings.Index(host, "://"); i >= 0 {
 		host = host[i+3:]
 	}
-	return "https://x:<key>@" + host + "/git/" + appID + ".git"
+	name := appID
+	if branch != "" && branch != model.DefaultBranch {
+		name += "@" + branch
+	}
+	return "https://x:<key>@" + host + "/git/" + name + ".git"
 }

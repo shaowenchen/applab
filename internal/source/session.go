@@ -7,6 +7,13 @@ import (
 	"path/filepath"
 )
 
+// branchRef is a branch's full ref name.
+//
+// It is built in one place because it appears in more git arguments than
+// anything else here, and a ref that is spelled differently in two of them is a
+// branch that silently does not exist in one of the two operations.
+func branchRef(branch string) string { return "refs/heads/" + branch }
+
 // withRepo runs fn against an app's repository, materialised on local disk.
 //
 // This is the whole of the bridging between object storage and git: the
@@ -23,23 +30,23 @@ import (
 // fn must not keep the path after it returns. It is removed, and the removal is
 // not deferred past the upload: a failure leaves the scratch copy gone rather
 // than lying around to be mistaken for state.
-func (s *Store) withRepo(ctx context.Context, appID string, fn func(repoPath string) error) error {
+func (s *Store) withRepo(ctx context.Context, appID, branch string, fn func(repoPath string) error) error {
 	// Serialise per app. Two operations on one repository would each download a
 	// copy, each change it, and each upload — and the second upload would be
 	// last-write-wins over the whole set of changed files, so one of the two
 	// commits would simply be gone. A lock per app is enough because the
 	// repository is per app; there is no shared state between them.
-	unlock := s.lockRepo(appID)
+	unlock := s.lockRepo(appID, branch)
 	defer unlock()
 
-	repoPath, err := s.localRepoPath(appID)
+	repoPath, err := s.localRepoPath(appID, branch)
 	if err != nil {
 		return err
 	}
 
 	repo := &workingRepo{
 		store:  s.objects,
-		prefix: s.repoPrefix(appID),
+		prefix: s.branchPrefix(appID, branch),
 		dir:    repoPath,
 		before: map[string]fileState{},
 	}
@@ -76,13 +83,13 @@ func (s *Store) withRepo(ctx context.Context, appID string, fn func(repoPath str
 // It is for the one case that has no repository to download first: Create builds
 // one from nothing. It takes the same lock, because a create racing an upload of
 // the same app would otherwise interleave.
-func (s *Store) uploadRepo(ctx context.Context, appID, repoPath string) error {
-	unlock := s.lockRepo(appID)
+func (s *Store) uploadRepo(ctx context.Context, appID, branch, repoPath string) error {
+	unlock := s.lockRepo(appID, branch)
 	defer unlock()
 
 	repo := &workingRepo{
 		store:  s.objects,
-		prefix: s.repoPrefix(appID),
+		prefix: s.branchPrefix(appID, branch),
 		dir:    repoPath,
 		before: map[string]fileState{},
 	}
@@ -102,15 +109,17 @@ func (s *Store) uploadRepo(ctx context.Context, appID, repoPath string) error {
 // getting it wrong is bounded, because a push is followed by a build and the
 // build reads what git actually has. It is named here rather than left to be
 // discovered.
-func (s *Store) lockRepo(appID string) func() {
+func (s *Store) lockRepo(appID, branch string) func() {
+	key := appID + "\x00" + branch
+
 	s.locksMu.Lock()
 	if s.locks == nil {
 		s.locks = map[string]*repoLock{}
 	}
-	lock, ok := s.locks[appID]
+	lock, ok := s.locks[key]
 	if !ok {
 		lock = &repoLock{}
-		s.locks[appID] = lock
+		s.locks[key] = lock
 	}
 	s.locksMu.Unlock()
 
@@ -124,7 +133,9 @@ func (s *Store) lockRepo(appID string) func() {
 // It is not exposed as a long-lived path: the transport materialises a
 // repository for the duration of one request and uploads it afterwards, through
 // StartSession below.
-func (s *Store) repoPathFor(appID string) (string, error) { return s.localRepoPath(appID) }
+func (s *Store) repoPathFor(appID, branch string) (string, error) {
+	return s.localRepoPath(appID, branch)
+}
 
 // Open materialises an app's repository and returns a function that uploads
 // whatever changed.
@@ -133,10 +144,10 @@ func (s *Store) repoPathFor(appID string) (string, error) { return s.localRepoPa
 // callback — it hands the directory to git http-backend and streams the response
 // — so this is the one place the path escapes for longer than one call. The
 // caller must call finish exactly once, and must not use the path afterwards.
-func (s *Store) Open(ctx context.Context, appID string) (repoPath string, finish func() error, err error) {
-	unlock := s.lockRepo(appID)
+func (s *Store) Open(ctx context.Context, appID, branch string) (repoPath string, finish func() error, err error) {
+	unlock := s.lockRepo(appID, branch)
 
-	repoPath, err = s.localRepoPath(appID)
+	repoPath, err = s.localRepoPath(appID, branch)
 	if err != nil {
 		unlock()
 		return "", nil, err
@@ -144,7 +155,7 @@ func (s *Store) Open(ctx context.Context, appID string) (repoPath string, finish
 
 	repo := &workingRepo{
 		store:  s.objects,
-		prefix: s.repoPrefix(appID),
+		prefix: s.branchPrefix(appID, branch),
 		dir:    repoPath,
 		before: map[string]fileState{},
 	}
@@ -157,6 +168,29 @@ func (s *Store) Open(ctx context.Context, appID string) (repoPath string, finish
 		return "", nil, fmt.Errorf("create the working directory: %w", err)
 	}
 	if err := repo.download(ctx); err != nil {
+		_ = os.RemoveAll(repoPath)
+		unlock()
+		return "", nil, err
+	}
+
+	// A branch that has no repository yet is created here rather than refused,
+	// because a push to a new branch is how a branch comes into existence: git
+	// receive-pack needs a repository to write into, and there is nowhere else in
+	// the flow that would make one. The rule is git's own — pushing a branch that
+	// does not exist creates it — so a caller is not being asked to do anything
+	// unusual.
+	//
+	// A download of a prefix that is not there is not distinguishable from one of
+	// an empty repository — both leave an empty directory — so this is decided by
+	// re-reading the bucket rather than by what download returned.
+	//
+	// A fetch of a branch that does not exist takes the same path and is answered
+	// by git: an empty repository advertises no refs, so a clone of it fails with
+	// "repository not found" exactly as a clone of a nonexistent one does, while
+	// the upload this leaves is an empty directory that the next operation
+	// overwrites. The cost is one wasted repository per mistyped clone URL, which
+	// is the price of not being able to tell the two apart here.
+	if err := s.initEmpty(ctx, repoPath, branch); err != nil {
 		_ = os.RemoveAll(repoPath)
 		unlock()
 		return "", nil, err

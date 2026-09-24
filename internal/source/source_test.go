@@ -12,8 +12,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/objectstore"
 )
+
+// main is the branch these tests use, which is the one an app starts on.
+//
+// It is a constant rather than a literal so that what these tests are about —
+// ingest, history, archives, seeding — reads the same after branches became
+// real, and so a test that *is* about branches stands out from the ones that
+// merely need one to exist.
+const main = model.DefaultBranch
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
@@ -56,7 +65,7 @@ func materializeRepo(t *testing.T, s *Store, appID string) string {
 
 	repo := &workingRepo{
 		store:  s.objects,
-		prefix: s.repoPrefix(appID),
+		prefix: s.branchPrefix(appID, main),
 		dir:    dir,
 		before: map[string]fileState{},
 	}
@@ -136,7 +145,7 @@ func TestIngestCreatesCommitAndIsClonable(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if err := s.Create(ctx, "shop"); err != nil {
+	if err := s.Create(ctx, "shop", main); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -146,7 +155,7 @@ func TestIngestCreatesCommitAndIsClonable(t *testing.T) {
 		{name: "README.md", body: "# shop\n"},
 	})
 
-	result, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "initial upload", "", DefaultIngestLimits)
+	result, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "initial upload", "", DefaultIngestLimits)
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -204,7 +213,7 @@ func TestIngestStripsSingleWrapperDirectory(t *testing.T) {
 		{name: "myproject/src/main.go", body: "package main\n"},
 	})
 
-	result, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "", "", DefaultIngestLimits)
+	result, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "", "", DefaultIngestLimits)
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -233,7 +242,7 @@ func TestIngestKeepsWrapperWhenItIsNotAlone(t *testing.T) {
 		{name: "LICENSE", body: "MIT\n"},
 	})
 
-	result, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "", "", DefaultIngestLimits)
+	result, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "", "", DefaultIngestLimits)
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -273,7 +282,7 @@ func TestIngestRejectsTraversal(t *testing.T) {
 				{name: tc.entry, body: "escaped\n"},
 			})
 
-			_, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "", "", DefaultIngestLimits)
+			_, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "", "", DefaultIngestLimits)
 			if err == nil {
 				t.Fatalf("an archive containing %q was accepted; it must be refused", tc.entry)
 			}
@@ -314,7 +323,7 @@ func TestIngestRejectsSymlinkTraversal(t *testing.T) {
 		{name: "link/canary.txt", body: "overwritten\n"},
 	})
 
-	_, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "", "", DefaultIngestLimits)
+	_, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "", "", DefaultIngestLimits)
 	// Whether this succeeds or fails, the canary outside must be untouched —
 	// that is the actual security property, and asserting only on the error
 	// would miss a case where the write happened before the failure.
@@ -338,7 +347,7 @@ func TestIngestGzipTransparently(t *testing.T) {
 		{name: "Dockerfile", body: "FROM scratch\n"},
 	}))
 
-	result, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "gz upload", "", DefaultIngestLimits)
+	result, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "gz upload", "", DefaultIngestLimits)
 	if err != nil {
 		t.Fatalf("Ingest of a gzipped archive: %v", err)
 	}
@@ -359,7 +368,7 @@ func TestIngestSkipsGitDirectory(t *testing.T) {
 		{name: ".git/objects/ab/cdef", body: "junk\n"},
 	})
 
-	if _, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "", "", DefaultIngestLimits); err != nil {
+	if _, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "", "", DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 
@@ -375,14 +384,14 @@ func TestIngestExtendsHistory(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	first, err := s.Ingest(ctx, "shop", bytes.NewReader(buildTar(t, []tarEntry{
+	first, err := s.Ingest(ctx, "shop", main, bytes.NewReader(buildTar(t, []tarEntry{
 		{name: "a.txt", body: "one\n"},
 	})), "first", "", DefaultIngestLimits)
 	if err != nil {
 		t.Fatalf("first Ingest: %v", err)
 	}
 
-	second, err := s.Ingest(ctx, "shop", bytes.NewReader(buildTar(t, []tarEntry{
+	second, err := s.Ingest(ctx, "shop", main, bytes.NewReader(buildTar(t, []tarEntry{
 		{name: "a.txt", body: "two\n"},
 		{name: "b.txt", body: "new\n"},
 	})), "second", "", DefaultIngestLimits)
@@ -400,7 +409,7 @@ func TestIngestExtendsHistory(t *testing.T) {
 		t.Errorf("second commit's parent = %s, want %s", parent, first.SHA)
 	}
 
-	commits, err := s.Log(ctx, "shop", 10)
+	commits, err := s.Log(ctx, "shop", main, 10)
 	if err != nil {
 		t.Fatalf("Log: %v", err)
 	}
@@ -426,11 +435,11 @@ func TestIngestUnchangedSourceIsANoOp(t *testing.T) {
 
 	entries := []tarEntry{{name: "a.txt", body: "same\n"}}
 
-	first, err := s.Ingest(ctx, "shop", bytes.NewReader(buildTar(t, entries)), "first", "", DefaultIngestLimits)
+	first, err := s.Ingest(ctx, "shop", main, bytes.NewReader(buildTar(t, entries)), "first", "", DefaultIngestLimits)
 	if err != nil {
 		t.Fatalf("first Ingest: %v", err)
 	}
-	second, err := s.Ingest(ctx, "shop", bytes.NewReader(buildTar(t, entries)), "again", "", DefaultIngestLimits)
+	second, err := s.Ingest(ctx, "shop", main, bytes.NewReader(buildTar(t, entries)), "again", "", DefaultIngestLimits)
 	if err != nil {
 		t.Fatalf("second Ingest: %v", err)
 	}
@@ -450,7 +459,7 @@ func TestIngestEnforcesSizeLimit(t *testing.T) {
 	big := strings.Repeat("x", 10_000)
 	archive := buildTar(t, []tarEntry{{name: "big.txt", body: big}})
 
-	_, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "", "",
+	_, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "", "",
 		IngestLimits{MaxBytes: 1000, MaxFiles: 10})
 	if err == nil {
 		t.Fatal("an archive larger than the byte limit was accepted")
@@ -471,7 +480,7 @@ func TestIngestEnforcesFileCountLimit(t *testing.T) {
 		entries = append(entries, tarEntry{name: "f" + itoa(i) + ".txt", body: "x"})
 	}
 
-	_, err := s.Ingest(ctx, "shop", bytes.NewReader(buildTar(t, entries)), "", "",
+	_, err := s.Ingest(ctx, "shop", main, bytes.NewReader(buildTar(t, entries)), "", "",
 		IngestLimits{MaxBytes: 1 << 20, MaxFiles: 5})
 	if err == nil {
 		t.Fatal("an archive with more entries than the limit was accepted")
@@ -487,7 +496,7 @@ func TestIngestEmptyArchive(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	result, err := s.Ingest(ctx, "shop", bytes.NewReader(buildTar(t, nil)), "", "", DefaultIngestLimits)
+	result, err := s.Ingest(ctx, "shop", main, bytes.NewReader(buildTar(t, nil)), "", "", DefaultIngestLimits)
 	if err != nil {
 		t.Fatalf("Ingest of an empty archive: %v", err)
 	}
@@ -506,7 +515,7 @@ func TestIngestRejectsInvalidAppID(t *testing.T) {
 	ctx := context.Background()
 
 	for _, id := range []string{"../evil", "Bad", "", "has/slash"} {
-		if _, err := s.Ingest(ctx, id, bytes.NewReader(buildTar(t, nil)), "", "", DefaultIngestLimits); err == nil {
+		if _, err := s.Ingest(ctx, id, main, bytes.NewReader(buildTar(t, nil)), "", "", DefaultIngestLimits); err == nil {
 			t.Errorf("Ingest accepted the invalid app id %q", id)
 		}
 	}
@@ -525,11 +534,11 @@ func TestANewRepositoryHasExactlyTheSeedCommit(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if err := s.Create(ctx, "shop"); err != nil {
+	if err := s.Create(ctx, "shop", main); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	commits, err := s.Log(ctx, "shop", 10)
+	commits, err := s.Log(ctx, "shop", main, 10)
 	if err != nil {
 		t.Fatalf("Log on a new repository: %v", err)
 	}
@@ -540,7 +549,7 @@ func TestANewRepositoryHasExactlyTheSeedCommit(t *testing.T) {
 	// A clone has something to check out, which is the point of the seed commit:
 	// a repository whose HEAD names a ref that does not exist clones to nothing
 	// and warns about a detached HEAD.
-	head, err := s.HeadCommit(ctx, "shop")
+	head, err := s.HeadCommit(ctx, "shop", main)
 	if err != nil {
 		t.Fatalf("HeadCommit on a new repository: %v", err)
 	}
@@ -556,7 +565,7 @@ func TestCreateIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
-		if err := s.Create(ctx, "shop"); err != nil {
+		if err := s.Create(ctx, "shop", main); err != nil {
 			t.Fatalf("Create attempt %d: %v", i+1, err)
 		}
 	}
@@ -572,7 +581,7 @@ func TestIngestExecutableBitIsPreserved(t *testing.T) {
 		{name: "build.sh", body: "#!/bin/sh\necho hi\n", mode: 0o755},
 	})
 
-	if _, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "", "", DefaultIngestLimits); err != nil {
+	if _, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "", "", DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 
@@ -592,7 +601,7 @@ func TestIngestStripsDangerousModes(t *testing.T) {
 		{name: "sneaky", body: "x\n", mode: 0o4755}, // setuid
 	})
 
-	if _, err := s.Ingest(ctx, "shop", bytes.NewReader(archive), "", "", DefaultIngestLimits); err != nil {
+	if _, err := s.Ingest(ctx, "shop", main, bytes.NewReader(archive), "", "", DefaultIngestLimits); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
 

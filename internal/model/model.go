@@ -101,6 +101,20 @@ type App struct {
 	// deployment's default of "<id>.<base domain>".
 	Domain string
 
+	// Branch is the app's active branch: the one a deploy builds from and the
+	// one a clone with no branch named gets.
+	//
+	// Empty means unset, which resolves to DefaultBranch rather than to "no
+	// branch". An app always has one — there is no state in which nothing is
+	// active — so an empty field is a record that predates branches or was
+	// written without one, not a third mode.
+	//
+	// Any branch may be pushed and stored; this is which of them runs. Switching
+	// it is what `applab branch use` does, and it redeploys, because an active
+	// branch that has not been built is not active in any sense a caller cares
+	// about.
+	Branch string
+
 	// Env is the app's plain configuration, applied to the container as
 	// environment variables at deploy time.
 	//
@@ -144,8 +158,19 @@ type App struct {
 
 // Commit is one recorded change to an app's source.
 type Commit struct {
-	AppID     string
-	SHA       string
+	AppID string
+	SHA   string
+
+	// Branch is the branch this commit was pushed to.
+	//
+	// It is recorded rather than derived because it cannot be derived: a commit
+	// is a snapshot and carries no record of which refs point at it, and two
+	// branches commonly share history, so the same SHA can legitimately arrive
+	// on more than one branch. History is what a person reads to find out what
+	// was pushed where, and without this it could only say "something was
+	// recorded" — which is the question it exists to answer.
+	Branch string
+
 	Message   string
 	Author    string
 	Files     int
@@ -183,6 +208,111 @@ type Upload struct {
 	Author    string
 	CreatedAt time.Time
 }
+
+// DefaultBranch is the branch an app starts on and the one a record without a
+// branch is taken to mean.
+//
+// "main" rather than "master" is what `git init` itself produces now, and the
+// repositories here are created by git, so matching it means an app's first
+// branch is whatever a caller would have got from init.
+const DefaultBranch = "main"
+
+// ActiveBranch returns the branch an operation should act on, given an app's
+// possibly-empty Branch field.
+//
+// Every caller that needs a branch goes through this rather than testing for
+// empty, so that "no branch recorded" has one meaning — the default — instead of
+// being resolved at each call site and possibly resolved differently.
+func (a App) ActiveBranch() string {
+	if a.Branch == "" {
+		return DefaultBranch
+	}
+	return a.Branch
+}
+
+// ValidateBranchName reports whether name may be used as a branch.
+//
+// It is the same kind of check as ValidateAppID and for the same reason: a
+// branch name becomes a path segment in three places at once — a bucket key, a
+// URL in the clone address, and an argument to git — so a name that is legal in
+// one and not another is a bug that shows up far from where it was typed.
+//
+// The rules below are the subset of git's own check-ref-format that this needs.
+// They are written out rather than delegated to `git check-ref-format` because
+// this is a validation on the request path, and running a subprocess to decide
+// whether to answer 400 would put a process spawn in front of every push.
+//
+// Two rules are AppLab's rather than git's:
+//
+//   - A leading dash is refused. Branch names reach `git` as command arguments,
+//     and "--upload-pack=..." is a valid ref-name component to git while being
+//     an option to the program. Refusing the shape removes the whole class
+//     rather than relying on every call site remembering a "--" separator.
+//   - So is a name that cannot be a single bucket key segment. git permits a
+//     space in a ref name; a space in a key is legal too, but a name that needs
+//     escaping in one system and not the other is a mismatch waiting to happen,
+//     and no one names a branch with a space on purpose.
+//
+// Empty is refused: an empty branch is not a name, and the one place that means
+// something — "the app's active branch" — is resolved by ActiveBranch before it
+// reaches here.
+func ValidateBranchName(name string) error {
+	if name == "" {
+		return fmt.Errorf("a branch needs a name")
+	}
+	if len(name) > maxBranchLength {
+		return fmt.Errorf("branch name %q is longer than %d characters", name, maxBranchLength)
+	}
+
+	// A ref name is a sequence of slash-separated components, and every rule
+	// below applies to the whole string except where noted.
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("branch name %q must not start with a dash: a branch name becomes an argument to git, and a leading dash is indistinguishable from an option", name)
+	}
+	if strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
+		return fmt.Errorf("branch name %q must not start or end with a slash", name)
+	}
+	if strings.Contains(name, "//") {
+		return fmt.Errorf("branch name %q must not contain an empty component (//)", name)
+	}
+	if strings.HasSuffix(name, ".") {
+		return fmt.Errorf("branch name %q must not end with a dot", name)
+	}
+	if strings.HasSuffix(name, ".lock") {
+		return fmt.Errorf("branch name %q must not end with .lock: git keeps a lock file of that name beside the ref", name)
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("branch name %q must not contain ..: a name becomes a path, and .. would leave the repository it belongs to", name)
+	}
+	if strings.Contains(name, "@{") {
+		return fmt.Errorf("branch name %q must not contain @{, which git reads as a revision operator", name)
+	}
+	if name == "@" {
+		return fmt.Errorf("branch name %q is git's shorthand for HEAD", name)
+	}
+
+	for _, r := range name {
+		// Control characters and DEL, which git refuses outright, plus the
+		// characters that give a ref name a meaning of its own in git's
+		// revision syntax or in a path.
+		switch r {
+		case ' ', '~', '^', ':', '?', '*', '[', '\\':
+			return fmt.Errorf("branch name %q contains %q, which git does not allow in a ref name", name, r)
+		}
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("branch name %q contains a control character", name)
+		}
+	}
+	return nil
+}
+
+// maxBranchLength bounds a branch name.
+//
+// It is not git's limit — git has none worth enforcing — but the bucket's and
+// the URL's: the name is a key segment and a path segment, and both stop being
+// pleasant well before this. 255 is the longest a single key component can be
+// on every object store AppLab talks to.
+const maxBranchLength = 255
 
 // appIDPattern constrains an app id to what can serve as all three of: a URL
 // path segment, a git repository directory name, and a Kubernetes namespace

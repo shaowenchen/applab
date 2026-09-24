@@ -134,7 +134,7 @@ func AgentFileNames() []string {
 // It runs on a repository that was just created and therefore has no tip, so the
 // commit it makes is the root of the history — which is what makes a freshly
 // created app cloneable into something with content rather than an empty tree.
-func (s *Store) seedCommit(ctx context.Context, appID, repoPath string) error {
+func (s *Store) seedCommit(ctx context.Context, appID, branch, repoPath string) error {
 	workDir, err := os.MkdirTemp(s.tmpDir(), "seed-")
 	if err != nil {
 		return fmt.Errorf("create workspace: %w", err)
@@ -150,7 +150,7 @@ func (s *Store) seedCommit(ctx context.Context, appID, repoPath string) error {
 	}
 
 	const subject = "AppLab: how to work with this app"
-	if _, _, _, err := s.commitWorkTree(ctx, appID, repoPath, workTree, workDir, subject, ""); err != nil {
+	if _, _, _, err := s.commitWorkTree(ctx, appID, branch, repoPath, workTree, workDir, subject, ""); err != nil {
 		return err
 	}
 	return nil
