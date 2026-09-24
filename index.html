@@ -133,6 +133,7 @@ img { max-width: 100%; height: auto; }
       <li><a href="index.html" aria-current="page">Overview</a></li>
       <li><a href="chart.html">Installing</a></li>
       <li><a href="api.html">API reference</a></li>
+      <li><a href="debugger.html">Debugger</a></li>
     </ul>
     <div class="repo"><a href="https://github.com/shaowenchen/applab">Source on GitHub</a></div>
   </nav>
@@ -193,6 +194,21 @@ call tells you what is running.</p>
 <td>Helm chart</td>
 <td>done — see <a href="chart.html"><code>charts/applab</code></a></td>
 </tr>
+<tr>
+<td>P7</td>
+<td>Dashboard: platform overview, cross-app builds</td>
+<td>done</td>
+</tr>
+<tr>
+<td>P8</td>
+<td>Debugger environment: a whole platform on a runner</td>
+<td>done — see <a href="debugger.html"><code>debugger</code></a></td>
+</tr>
+<tr>
+<td>P9</td>
+<td>Two-tier keys: one admin key, one per app</td>
+<td>done — see <a href="#keys">Keys</a></td>
+</tr>
 </tbody>
 </table>
 <p>The chart is verified by <code>make helm-check</code>, which renders it and asserts the
@@ -217,17 +233,33 @@ applab push myshop        # uploads, builds and deploys this directory
 <p>That is the whole workflow. <code>push</code> creates the app if it is new, packages the
 directory, uploads it, follows the build and waits for the rollout, and prints the
 URL. Build output and version-control directories are left out automatically.</p>
+<p>An app that needs configuration — a database URL, an API token — gets it with
+<code>applab env</code>, and it takes effect on the next deploy:</p>
+<pre><code class="language-bash">applab env set myshop LOG_LEVEL=debug
+applab env secret set myshop DATABASE_URL=&quot;$DATABASE_URL&quot;
+applab deploy myshop
+</code></pre>
 <p>Everything else answers a question:</p>
-<pre><code class="language-bash">applab list               # what exists
+<pre><code class="language-bash">applab overview           # the whole platform at a glance
+applab list               # what exists
 applab status myshop      # what is running, and where
 applab logs myshop -f     # watch it
+applab pods myshop        # the pods, and why one is not ready
+applab events myshop      # Kubernetes events, warnings first
 applab diagnose myshop    # why it is not working
+applab build myshop       # build a commit without deploying it
+applab update myshop --replicas 3
 applab rollback myshop    # go back to an earlier upload
 </code></pre>
-<h3>The console</h3>
-<p>The same deployment serves a web console at its root. It is a client of the same
-public API — every request it makes is one you could make with <code>curl</code> — so it has
-no privileged position and no separate backend. Sign in with the deployment's
+<h3>The dashboard</h3>
+<p>The same deployment serves a web dashboard at its root, opening on a platform
+overview: how many apps are running, how many need attention, how many builds
+have failed, whether the cluster is reachable, and the most recent builds across
+every app. From there, <strong>Apps</strong> lists everything and <strong>Builds</strong> is the
+platform-wide build history.</p>
+<p>It is a client of the same public API — every request it makes is one you could
+make with <code>curl</code>, and the overview is <code>GET /api/v1/overview</code> — so it has no
+privileged position and no separate backend. Sign in with the deployment's
 address and a key; both are kept in your browser.</p>
 <h2>Or by hand</h2>
 <p>If you would rather not install the CLI:</p>
@@ -379,6 +411,41 @@ own handler with <code>httptest</code>.</p>
 code, only to check the chart. It renders the chart and asserts what the
 rendering has to contain — a chart whose templates are wrong still renders, so
 &quot;it rendered&quot; is not evidence of anything.</p>
+<p>The cluster-backed pieces — app keys, app secrets, the deployer — are tested
+against <code>k8s.io/client-go/kubernetes/fake</code>, which is a real object tracker rather
+than a stub. It is close enough to take the label selectors and create/update
+semantics seriously, with one divergence worth knowing: a real API server folds a
+Secret's <code>StringData</code> into <code>Data</code> on the way in and the fake does not, so
+anything writing a Secret writes <code>Data</code> directly and a test asserts that.</p>
+<p>Two claims are asserted against the object the code produces rather than a
+summary of it, because they are the ones a plausible-looking implementation can
+still get wrong:</p>
+<ul>
+<li><strong>a secret's value never appears in the generated Deployment</strong>, checked by
+searching the whole object, so a leak into a label or an annotation is caught
+as well as one into the env list;</li>
+<li><strong>the migration brings a version-1 database forward without losing it</strong>, since
+every database already in the field is at version 1 and a fresh-database test
+would never exercise that.</li>
+</ul>
+<h3>A whole platform on a runner</h3>
+<p>The build and deploy halves need real infrastructure, so they are exercised on
+one that is built for the purpose and thrown away: <a href="debugger.html"><code>debugger</code></a> is a
+GitHub Action that creates a <code>kind</code> cluster, a registry and an Istio gateway,
+installs applab from this repository's own chart, and publishes the result
+through a tunnel. Open the run's summary for a link, and <code>applab push</code> works
+against it.</p>
+<pre><code>hack/environment.sh   the whole environment, in order
+hack/router.mjs       one hostname, split between applab and the apps
+</code></pre>
+<p>The router exists because an app and applab itself cannot both be routed by
+Istio on one host: each app is its own <code>VirtualService</code>, and the order between
+two of them matching one host is undefined. A small proxy in front is
+deterministic where that is not, and its routing decision is unit-tested —
+<code>node hack/router.test.mjs</code>, which CI runs.</p>
+<p>CI runs the same environment and pushes <a href="https://github.com/shaowenchen/applab/blob/master/hack/demo-app/Dockerfile"><code>hack/demo-app</code></a> through
+it, so &quot;an app can be uploaded, built, deployed and served&quot; is a check rather
+than a claim.</p>
 <h3>The documentation site</h3>
 <p><code>https://www.chenshaowen.com/applab</code> is both the Helm repository and these
 documents. The site is generated from this repository's own markdown — this file,
@@ -400,16 +467,141 @@ the environment.</p>
 openly.</p>
 <h2>Security notes</h2>
 <ul>
-<li><strong>A key is the whole identity, and there is one tier.</strong> A key that
-authenticates can also delete. Treat it as a credential that can destroy data.</li>
+<li><strong>There are two tiers of key.</strong> An <strong>admin key</strong> — what <code>APPLAB_KEYS</code> holds —
+can do everything, including delete. Treat it as a credential that can destroy
+data. An <strong>app key</strong> belongs to one app and reaches only that app: it can push,
+build, deploy, roll back and read logs, but it cannot delete the app and cannot
+see any other. Hand the admin key to operators and an app key to whoever
+deploys that app. See <a href="#keys">Keys</a>.</li>
 <li><strong>Keys are read only from the <code>Authorization</code> header</strong> — never a query
 parameter or a form field, both of which are logged and leaked by default.</li>
 <li><strong>Uploaded archives are untrusted input.</strong> Extraction refuses absolute paths and
 <code>..</code> components, and writes through an <code>os.Root</code> so a symlink cannot be used to
 escape the destination even though the path string looks clean.</li>
 <li><strong>Repositories are never public.</strong> Every git request carries a key, like every
-other request.</li>
+other request, and an app key reaches only its own repository — a repository is
+where the secrets in a project live.</li>
+<li><strong>App keys are kept in the cluster</strong>, one Secret per app, and nothing is
+cached. Two consequences worth knowing: rotating a key takes effect
+immediately, and <strong>if the API server is unreachable then nothing can
+authenticate, the admin key included.</strong> A deployment with no cluster at all
+has no app keys and works on the admin tier alone; set <code>APPLAB_KEY</code> and manage
+apps with it.</li>
+<li><strong>Configuration is split by sensitivity.</strong> Environment variables are not
+secrets: they are stored with the app, returned by the API, and visible to
+anyone who can read the app's Deployment. Secrets are kept in a Kubernetes
+Secret, are never written into the Deployment — it references the Secret and
+the kubelet substitutes the values inside the container — and <strong>no route
+returns a value</strong>, only the names. That is structural rather than a promise:
+the store the API holds has no method that returns a value. See
+<a href="#configuring-an-app">Configuring an app</a>.</li>
+<li><strong>A secret's value still reaches the cluster as API traffic</strong> and is stored in
+<code>etcd</code> like any Kubernetes Secret. Encryption at rest is the cluster's job.</li>
 </ul>
+<h2>Configuring an app</h2>
+<p>An app gets two kinds of configuration, and which one you want matters.</p>
+<pre><code class="language-bash"># Plain variables — visible in the Deployment, readable back.
+applab env set myshop LOG_LEVEL=debug FEATURE_X=on
+applab env unset myshop FEATURE_X
+
+# Secrets — never in the Deployment, never readable back.
+applab env secret set myshop DATABASE_URL=&quot;$DATABASE_URL&quot;
+applab env secret unset myshop DATABASE_URL
+
+applab env myshop              # show both
+</code></pre>
+<p>The distinction is the whole design. A password belongs in a secret; a log level
+does not, and putting it there would make it unreadable for no gain.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Variables</th>
+<th>Secrets</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stored in</td>
+<td>The database, with the app</td>
+<td>A Kubernetes Secret, <code>applab-env-&lt;app&gt;</code></td>
+</tr>
+<tr>
+<td>In the Deployment</td>
+<td>Yes, as env vars</td>
+<td>No — referenced by <code>envFrom</code></td>
+</tr>
+<tr>
+<td>Readable back</td>
+<td>Yes, including through the API and console</td>
+<td><strong>Never.</strong> No route returns a value</td>
+</tr>
+<tr>
+<td>Needs a cluster</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Changes take effect on the next deploy.</strong> Configuration travels the same path
+as code: <code>applab env set myshop A=1 &amp;&amp; applab deploy myshop</code>. The deployer puts a
+hash of the whole configuration into the pod template, which is what makes a
+deploy that changed only a secret value actually roll the pods — Kubernetes does
+not restart pods for a changed Secret on its own, so without that a rotated
+password would be written to the cluster and never reach the running app.</p>
+<p><code>PORT</code> cannot be set: it comes from the app's <code>port</code> setting, which is also what
+the Service targets. Set that instead.</p>
+<p>There is no route that returns a secret's value, and none is planned. If one is
+lost, set it again — recovery is the same operation.</p>
+<h2>Keys</h2>
+<p>Two tiers, for the two kinds of person who use applab: whoever operates the
+platform, and whoever deploys one app.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Admin key</th>
+<th>App key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Where it comes from</td>
+<td><code>APPLAB_KEYS</code>, or <code>auth.keys</code> in the chart</td>
+<td>Created with the app, in a Secret</td>
+</tr>
+<tr>
+<td>Reaches</td>
+<td>Everything</td>
+<td>One app</td>
+</tr>
+<tr>
+<td>Delete that app</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Clone its repository</td>
+<td>Any</td>
+<td>Its own</td>
+</tr>
+<tr>
+<td>Rotate</td>
+<td>Restart with a new value</td>
+<td><code>applab keys rotate &lt;app&gt;</code>, live</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-bash">applab keys myshop              # read the app's key
+applab keys rotate myshop       # replace it; the old one stops working at once
+</code></pre>
+<p>An app key is minted when the app is created, so it always exists. Its value can
+be read back at any time rather than shown once — deliberately, since a key
+nobody can recover is one that has to be rotated the moment it is mislaid.</p>
+<p>The same key works everywhere: <code>Authorization: Bearer &lt;key&gt;</code> on the API, the
+<code>APPLAB_KEY</code> environment variable for the CLI, and the sign-in form on the
+console. The console reads the tier from the API and shows an app key its own
+app only, with no overview, no app list and no delete button.</p>
 <h2>License</h2>
 <p>See <a href="https://github.com/shaowenchen/applab/blob/master/LICENSE">LICENSE</a>.</p>
 

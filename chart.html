@@ -133,6 +133,7 @@ img { max-width: 100%; height: auto; }
       <li><a href="index.html">Overview</a></li>
       <li><a href="chart.html" aria-current="page">Installing</a></li>
       <li><a href="api.html">API reference</a></li>
+      <li><a href="debugger.html">Debugger</a></li>
     </ul>
     <div class="repo"><a href="https://github.com/shaowenchen/applab">Source on GitHub</a></div>
   </nav>
@@ -357,7 +358,7 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <tr>
 <td><code>auth.keys</code></td>
 <td><code>[]</code></td>
-<td><strong>Required.</strong> <code>openssl rand -hex 32</code>, one per caller</td>
+<td><strong>Required.</strong> Admin keys: <code>openssl rand -hex 32</code>, one per operator. App keys are created by applab, not here</td>
 </tr>
 <tr>
 <td><code>auth.existingSecret</code></td>
@@ -427,12 +428,40 @@ does and why it defaults the way it does. The ones that matter most:</p>
 </tbody>
 </table>
 <h3>Keys</h3>
-<p>An API key is the whole identity: there is no user store. <strong>A key that
-authenticates can also delete</strong> — every app this installation manages. Give each
-caller its own key so one can be revoked without disturbing the others; removing
-it from the list and upgrading is the whole revocation.</p>
+<p>There are two tiers, and the difference is reach.</p>
+<p><strong>Admin keys</strong> are what this chart configures, in <code>auth.keys</code>. A key that
+authenticates can also delete — every app this installation manages. Give each
+operator their own key so one can be revoked without disturbing the others;
+removing it from the list and upgrading is the whole revocation.</p>
+<p><strong>App keys</strong> are created by applab itself, one Secret per app, as apps are
+created. An app key reaches only its app: it can push, build, deploy, roll back
+and read logs, but cannot delete the app and cannot see any other app. That is
+the credential to hand to whoever deploys an app, so they never hold one that can
+destroy the installation. Read or rotate one with <code>applab keys &lt;app&gt;</code> (or
+<code>GET /api/v1/apps/&lt;app&gt;/key</code>).</p>
+<p>App keys live in the cluster, so nothing is cached and a rotation takes effect
+immediately — and a deployment whose API server is unreachable cannot
+authenticate at all, admin keys included. They need the <code>secrets</code> permission the
+Role already grants; nothing here has to be widened.</p>
 <p><code>auth.existingSecret</code> is worth using. Release values are stored in plain text in
 the cluster and are frequently committed.</p>
+<h3>App configuration</h3>
+<p>An app's configuration is split by sensitivity, and only one half is yours to
+configure here.</p>
+<p><strong>Environment variables</strong> — <code>LOG_LEVEL</code>, <code>FEATURE_X</code> — are stored in applab's
+database and are visible in an app's Deployment to anyone who can read it. They
+need no setting.</p>
+<p><strong>Secrets</strong> — passwords, tokens, connection strings — are created by applab, one
+Secret per app named <code>applab-env-&lt;app&gt;</code>, as they are set. They are never written
+into the Deployment: it references the Secret through <code>envFrom</code> and the kubelet
+substitutes the values inside the container. No endpoint returns a value, so a
+secret cannot be read back through the API, the CLI or the console — only its
+name.</p>
+<p>Both halves are managed with <code>applab env</code> (or <code>PUT /api/v1/apps/&lt;app&gt;/secrets</code>),
+and <strong>take effect on the next deploy</strong>. Nothing to configure in the chart.</p>
+<p>Worth knowing: secrets reach the cluster as API traffic and are stored in <code>etcd</code>
+like any Kubernetes Secret. Encryption at rest is the cluster's job, not
+applab's.</p>
 <h2>After installing</h2>
 <pre><code class="language-bash"># The key the chart generated, if you used auth.keys
 kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d

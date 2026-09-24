@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A whole platform on a runner</title>
+<meta name="description" content="Deploy an application to Kubernetes by uploading its source.">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6a6a6a;
+  --rule: #e3e3e3;
+  --accent: #0b6bcb;
+  --code-bg: #f5f5f5;
+  --sidebar-bg: #fafafa;
+  --measure: 46rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --fg: #e6e6e6;
+    --muted: #9a9a9a;
+    --rule: #2b2f36;
+    --accent: #6cb2ff;
+    --code-bg: #1c1f24;
+    --sidebar-bg: #17191d;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.layout { display: flex; align-items: flex-start; min-height: 100vh; }
+
+nav {
+  flex: 0 0 15rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 1.75rem 1.25rem;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--rule);
+}
+nav .brand { font-weight: 650; font-size: 1.05rem; letter-spacing: -0.01em; }
+nav .brand a { color: var(--fg); text-decoration: none; }
+nav ul { list-style: none; margin: 1.5rem 0 0; padding: 0; }
+nav li { margin: 0 0 0.15rem; }
+nav a {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  border-radius: 5px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+nav a:hover { color: var(--fg); background: var(--code-bg); }
+nav a[aria-current="page"] { color: var(--fg); background: var(--code-bg); font-weight: 600; }
+nav .repo { margin-top: 1.5rem; font-size: 0.85rem; }
+nav .repo a { padding: 0; }
+
+main { flex: 1 1 auto; min-width: 0; padding: 2.5rem 2.5rem 5rem; }
+article { max-width: var(--measure); }
+
+h1, h2, h3, h4 { line-height: 1.25; letter-spacing: -0.015em; }
+h1 { font-size: 1.9rem; margin: 0 0 1.25rem; }
+h2 { font-size: 1.35rem; margin: 2.5rem 0 0.9rem; padding-top: 0.75rem; border-top: 1px solid var(--rule); }
+h3 { font-size: 1.1rem; margin: 2rem 0 0.7rem; }
+h4 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+p, ul, ol { margin: 0 0 1.05rem; }
+li { margin: 0.25rem 0; }
+
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.875em;
+  background: var(--code-bg);
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+}
+pre code { background: none; padding: 0; font-size: 0.85em; }
+pre.contract { max-height: none; white-space: pre-wrap; word-break: break-word; }
+
+blockquote {
+  margin: 0 0 1.05rem;
+  padding: 0.1rem 0 0.1rem 1rem;
+  border-left: 3px solid var(--rule);
+  color: var(--muted);
+}
+
+table { border-collapse: collapse; width: 100%; margin: 0 0 1.25rem; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--rule); padding: 0.45rem 0.7rem; text-align: left; vertical-align: top; }
+th { background: var(--code-bg); font-weight: 600; }
+
+hr { border: none; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+img { max-width: 100%; height: auto; }
+
+.source {
+  margin-top: 3.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 46rem) {
+  .layout { flex-direction: column; }
+  nav { position: static; height: auto; width: 100%; flex: none; border-right: none; border-bottom: 1px solid var(--rule); }
+  nav ul { margin-top: 1rem; }
+  main { padding: 1.5rem 1.25rem 3.5rem; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav>
+    <div class="brand"><a href="index.html">applab</a></div>
+    <ul>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="chart.html">Installing</a></li>
+      <li><a href="api.html">API reference</a></li>
+      <li><a href="debugger.html" aria-current="page">Debugger</a></li>
+    </ul>
+    <div class="repo"><a href="https://github.com/shaowenchen/applab">Source on GitHub</a></div>
+  </nav>
+  <main>
+    <article>
+<h1>applab debugger environment</h1>
+<p>Start a complete applab platform on a GitHub runner — a Kubernetes cluster, a
+registry, an Istio gateway and applab itself — hand yourself a link, and push an
+app. It is built, deployed and served before you open the console.</p>
+<p>The point is that applab needs real infrastructure before it can do anything: a
+cluster to deploy into, a registry to push to, and a gateway to publish through.
+This action assembles all of it on a throwaway kind cluster, so the first thing
+you have to do is not &quot;install a cluster&quot; but &quot;push an app&quot;.</p>
+<h2>Using it from another repository</h2>
+<pre><code class="language-yaml">name: applab
+on:
+  workflow_dispatch:
+
+jobs:
+  applab:
+    runs-on: ubuntu-latest
+    # A little longer than the environment's own lifetime, so it stops itself
+    # and shuts down cleanly rather than being killed at the runner's ceiling.
+    timeout-minutes: 280
+    steps:
+      - uses: shaowenchen/applab/debugger@master
+        with:
+          session_hours: '4'
+</code></pre>
+<p>That is the whole workflow. Open the run's <strong>Summary</strong> for the console link and
+the API key, then push something at it:</p>
+<pre><code class="language-bash">export APPLAB_URL='https://&lt;the link&gt;'
+export APPLAB_KEY='&lt;the key&gt;'
+
+cd any-project-with-a-Dockerfile
+applab push myshop
+</code></pre>
+<p>The app is served at <code>&lt;the link&gt;/apps/myshop/</code> and appears in the console. The
+<code>applab</code> CLI is the binary from <a href="https://github.com/shaowenchen/applab">the applab repository</a>;
+see <a href="index.html">the overview</a> for how to install it, or drive the API directly —
+<a href="api.html">the API reference</a> is the contract.</p>
+<h2>What it starts</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>kind cluster</strong></td>
+<td>A throwaway Kubernetes cluster, created for this run and deleted with it.</td>
+</tr>
+<tr>
+<td><strong>applab</strong></td>
+<td>The published image, installed with this repository's <a href="chart.html">Helm chart</a>.</td>
+</tr>
+<tr>
+<td><strong>Istio</strong></td>
+<td>The ingress gateway apps are published through. Install it yourself in a real deployment; here it is part of the environment.</td>
+</tr>
+<tr>
+<td><strong>registry:2</strong></td>
+<td>Where built images are pushed, as <code>kind-registry:5000</code> — a cluster-local registry with no TLS and no credentials.</td>
+</tr>
+<tr>
+<td><strong>cloudflared</strong></td>
+<td>A quick tunnel, so the environment is reachable from anywhere. Set <code>tunnel: ngrok</code> to use ngrok instead.</td>
+</tr>
+</tbody>
+</table>
+<p>One hostname serves everything. Requests under <code>/apps/&lt;app&gt;/</code> reach the app,
+published through the Istio gateway; everything else reaches applab — the
+console at <code>/</code>, the API under <code>/api/v1/</code>, and the git endpoints under <code>/git/</code>.</p>
+<h2>Inputs</h2>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>version</code></td>
+<td>the chart's <code>appVersion</code></td>
+<td>applab image tag.</td>
+</tr>
+<tr>
+<td><code>api_key</code></td>
+<td>generated</td>
+<td>API key. Printed in the summary either way, because it is the deliverable.</td>
+</tr>
+<tr>
+<td><code>session_hours</code></td>
+<td><code>4</code></td>
+<td>How long the environment may run. <code>0</code> means no self-imposed limit, bounded by the job's timeout.</td>
+</tr>
+<tr>
+<td><code>tunnel</code></td>
+<td><code>cloudflare</code></td>
+<td><code>cloudflare</code> (no account needed) or <code>ngrok</code>.</td>
+</tr>
+<tr>
+<td><code>cloudflare_token</code></td>
+<td>—</td>
+<td>Token of a named Cloudflare tunnel; empty starts a quick tunnel.</td>
+</tr>
+<tr>
+<td><code>ngrok_token</code></td>
+<td>—</td>
+<td>ngrok authtoken; required when <code>tunnel</code> is <code>ngrok</code>.</td>
+</tr>
+<tr>
+<td><code>build_rootless</code></td>
+<td><code>true</code></td>
+<td>Run BuildKit unprivileged. Set false only if builds fail with a user-namespace error.</td>
+</tr>
+</tbody>
+</table>
+<p>Only <code>api_key</code> is worth passing from a secret: it is generated when left empty,
+so the common case needs no configuration at all.</p>
+<h2>The three things most likely to go wrong</h2>
+<p><strong>Rootless builds need unprivileged user namespaces.</strong> This is the one part of
+the environment the host can refuse, and the chart's installation notes describe
+the prerequisites in full. If a build fails with a namespace or <code>unshare</code> error,
+set <code>build_rootless: false</code> — which works, and makes every build a container
+breakout away from the node, which is why it is not the default.</p>
+<p><strong>A named Cloudflare tunnel cannot publish its own link.</strong> Cloudflare never tells
+the connector its hostname, so the environment cannot discover the address it was
+given. Use a quick tunnel (the default) if you want the link in the summary, or
+configure the hostname in the dashboard and read it from there.</p>
+<p><strong>A quick tunnel is for trying things.</strong> It carries no SLA and its hostname is
+minted per connection, so a restart gives a different link. That is exactly right
+for a session you open now and discard, and wrong for anything you keep.</p>
+<h2>What it costs</h2>
+<p>Roughly ten minutes to come up — most of it Istio — and about two more for the
+first app's build. Everything is deleted when the run ends: the cluster, the
+images, the app's source. Nothing survives, which is the point.</p>
+<h2>Implementing it yourself</h2>
+<p>Nothing here is specific to GitHub Actions except the workflow file. The pieces
+are ordinary scripts, and they are documented where they are:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/shaowenchen/applab/blob/master/debugger/action.yml">debugger/action.yml</a></td>
+<td>The composite action: installs kind, kubectl, istioctl, helm and a tunnel agent, then runs the script.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/shaowenchen/applab/blob/master/hack/environment.sh">hack/environment.sh</a></td>
+<td>The whole environment, in order. Set <code>APPLAB_PUBLIC_HOST</code> to skip the tunnel and use a hostname you already have.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/shaowenchen/applab/blob/master/hack/router.mjs">hack/router.mjs</a></td>
+<td>Splits one hostname between applab and the apps it publishes.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/shaowenchen/applab/blob/master/hack/summary.sh">hack/summary.sh</a></td>
+<td>Publishes the link and the key to the job summary.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/shaowenchen/applab/blob/master/hack/demo-app/Dockerfile">hack/demo-app/Dockerfile</a></td>
+<td>A minimal app, used by CI to prove push, build, deploy and serve work.</td>
+</tr>
+</tbody>
+</table>
+<h2>License</h2>
+<p>See <a href="https://github.com/shaowenchen/applab/blob/master/LICENSE">LICENSE</a>.</p>
+
+      <p class="source">This page is rendered from <a href="https://github.com/shaowenchen/applab/blob/master/debugger/README.md"><code>debugger/README.md</code></a> in the repository.</p>
+    </article>
+  </main>
+</div>
+</body>
+</html>

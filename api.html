@@ -133,6 +133,7 @@ img { max-width: 100%; height: auto; }
       <li><a href="index.html">Overview</a></li>
       <li><a href="chart.html">Installing</a></li>
       <li><a href="api.html" aria-current="page">API reference</a></li>
+      <li><a href="debugger.html">Debugger</a></li>
     </ul>
     <div class="repo"><a href="https://github.com/shaowenchen/applab">Source on GitHub</a></div>
   </nav>
@@ -292,12 +293,20 @@ requires `Authorization: Bearer &lt;key&gt;`; `no key` means it does not.)_
 - `GET /metrics` — Prometheus metrics for this deployment, as text. No key required — a scraper holds one awkwardly and these numbers describe the platform rather than any app. Restrict this path at the network edge where that matters. _(no key)_
 - `GET /api/v1/config` — This deployment&#39;s limits and capabilities. No key required, so it doubles as the cheapest reachability check. _(no key)_
 - `GET /api/v1/version` — Build version and commit. _(no key)_
+- `GET /api/v1/overview` — The platform at a glance: app counts by status, build counts and the most recent builds across every app, whether the cluster is configured and reachable, and this deployment&#39;s self-description. Counts exclude deleted apps. _(key)_
 - `GET /llms.txt` — This document. _(no key)_
 - `GET /api/v1/apps` — List apps. `?include_deleted=true` also returns apps that were deleted but whose id is still reserved. _(key)_
 - `POST /api/v1/apps` — Create an app. Body: `{id, name?, port?, replicas?, dockerfile?, domain?}`. _(key)_
 - `GET /api/v1/apps/{app}` — One app. _(key)_
 - `PATCH /api/v1/apps/{app}` — Change an app&#39;s settings: `{name?, port?, replicas?, dockerfile?, domain?}`. Fields omitted are left alone. _(key)_
-- `DELETE /api/v1/apps/{app}` — Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository. _(key)_
+- `DELETE /api/v1/apps/{app}` — Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository. Requires an admin key: an app key may manage its app but not destroy it. _(key)_
+- `GET /api/v1/apps/{app}/config` — The app&#39;s configuration: environment variables with their values, and the *names* of its secrets. Secret values are never returned by any route. _(key)_
+- `PUT /api/v1/apps/{app}/env` — Set environment variables. Body: `{env: {&#34;NAME&#34;: &#34;value&#34;}}`. Names not mentioned are left alone. `PORT` is refused — it is derived from the app&#39;s `port`. _(key)_
+- `DELETE /api/v1/apps/{app}/env/{name}` — Remove one environment variable. _(key)_
+- `PUT /api/v1/apps/{app}/secrets` — Set secret values. Body: `{secrets: {&#34;NAME&#34;: &#34;value&#34;}}`. Names not mentioned are left alone. The response lists names only, never values. 501 if this deployment has no cluster, where secrets are kept. _(key)_
+- `DELETE /api/v1/apps/{app}/secrets/{name}` — Remove one secret. _(key)_
+- `GET /api/v1/apps/{app}/key` — The app&#39;s API key, in full. Works with the app&#39;s own key or an admin key. This key may be used for the API, the CLI and the console, and reaches only this app. 501 if this deployment has no cluster, where keys are kept. _(key)_
+- `POST /api/v1/apps/{app}/key/rotate` — Replace the app&#39;s API key, invalidating the previous one immediately. Also creates one for an app that has none, so a lost key is recovered here. Returns the new key. _(key)_
 - `POST /api/v1/apps/{app}/source` — Upload source as a tar or tar.gz and commit it. This is the main way to push code. Send the archive as the raw request body (`--data-binary @-`), or as `multipart/form-data` with a `file` field. `?message=` sets the commit message; `?parent=&lt;sha&gt;` commits onto a chosen commit instead of the current tip. A single wrapping directory is stripped, so `tar czf - myproject` lands with its contents at the root. _(key)_
 - `GET /api/v1/apps/{app}/commits` — An app&#39;s commit history, newest first, with the current tip. `?limit=` (default 50). _(key)_
 - `GET /api/v1/apps/{app}/commits/{sha}` — One commit. `{sha}` may be an abbreviated id. _(key)_
