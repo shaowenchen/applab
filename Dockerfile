@@ -68,16 +68,17 @@ FROM alpine:3.21
 
 # git is not optional: applab creates a repository per app, builds commits from
 # uploaded archives, and serves clones and pushes through git's own http-backend.
-# curl is what the *build job's* init container uses, not this container — it is
-# installed here only so an operator can debug from inside a running pod.
+# ca-certificates is for TLS to a registry. tini is the entrypoint, below.
 #
 # git-daemon is a separate package on Alpine, and it is the one that carries
 # `git-http-backend` — Alpine splits git's binaries across subpackages rather
-# than installing them with the main one. Without it applab starts, logs that it
-# is up, and refuses at the first clone or push with "git-http-backend not found;
-# it ships with git" — which is true of git as a whole and false of this package.
-# It is the only thing installed here that nothing else pulls in, so it is the
-# one that gets left out.
+# than installing them with the main one. Without it applab exits at boot with
+# "git-http-backend not found; it ships with git", which is true of git as a
+# whole and false of this package. It is the one dependency here that nothing
+# else pulls in, so it is the one that gets left out.
+#
+# There is deliberately no curl: the build job's init container needs it, and
+# that is a different image. Anything added here is a package to keep patched.
 RUN apk add --no-cache git git-daemon ca-certificates tini \
  && rm -rf /var/cache/apk/*
 

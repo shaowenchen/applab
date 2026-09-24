@@ -1062,6 +1062,26 @@ func (s *Server) withBasePath(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
+		// The paths the cluster itself reaches this pod on are not part of the
+		// public address, so the prefix does not apply to them.
+		//
+		// A kubelet probe connects to the container port and asks for /health;
+		// it knows nothing about what path an Ingress publishes the deployment
+		// under, and it cannot be told without making the chart's probe path
+		// track the Ingress path. A Prometheus scrape is the same: the
+		// ServiceMonitor names /metrics on the Service, which is inside the pod.
+		//
+		// They have to be served here rather than under the prefix, because
+		// these are addresses the cluster uses to reach the process — the
+		// prefix exists for callers arriving from outside through the Ingress,
+		// and nothing external should be sent to either path. Refusing them
+		// makes every probe fail against a server that is healthy and listening,
+		// which reads as a pod that never becomes ready.
+		if directPath(path) {
+			mux.ServeHTTP(w, r)
+			return
+		}
+
 		// The prefix itself, with or without a trailing slash, is the console's
 		// root: "/applab" is what a person types and what a link to the
 		// deployment produces, and it has to serve the same page as "/applab/".
@@ -1084,6 +1104,16 @@ func (s *Server) withBasePath(mux *http.ServeMux) http.Handler {
 		r.URL.Path = strings.TrimPrefix(path, base)
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// directPath reports whether a path is one the cluster reaches the pod on
+// rather than one a caller reaches the deployment on.
+//
+// Kept as a function because the same two paths are recognized by name in
+// logRequests, which quiets them so a busy probe does not bury the log. A third
+// path that the cluster uses belongs in both places.
+func directPath(path string) bool {
+	return path == "/health" || path == "/metrics"
 }
 
 // statusRecorder captures the status code so the log line can report it.

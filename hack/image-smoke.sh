@@ -4,18 +4,20 @@
 #
 # The gap this closes: CI built and pushed an image on every change and never ran
 # it, so everything that differs between a built image and a running one was
-# unverified. Two defects reached a cluster that way —
+# unverified. Three defects reached a cluster that way —
 #
 #   - the data directory was chmod'ed at boot, which fails for a process that
 #     does not own the mounted volume, and the container exited before serving;
 #   - `git-http-backend` lives in Alpine's separate `git-daemon` package, so the
-#     image started and then refused the first clone or push.
+#     image exited at boot rather than serving a repository;
+#   - the base-path prefix refused /health and /metrics, so the server was
+#     healthy and listening while every probe failed and the pod stayed 0/1.
 #
-# Both are invisible to every other check in this repository. The Go tests run
-# against a working copy on a developer's machine, where the data directory is
-# owned by the developer and git is a full install; `helm-check.sh` asserts what
-# the chart renders, not what the image contains. Only running the image can tell
-# you the image is complete.
+# All three are invisible to every other check in this repository. The Go tests
+# run against a working copy on a developer's machine, where the data directory is
+# owned by the developer, git is a full install, and the server is exercised
+# without a prefix; `helm-check.sh` asserts what the chart renders, not what the
+# image does with it. Only running the image can tell you the image works.
 #
 # It runs the container with a volume mounted and no capability overrides, and
 # the checks go through the server's own HTTP API rather than inspecting the
@@ -65,14 +67,22 @@ trap cleanup EXIT
 # The CLI runs inside the container, against the container's own server: no host
 # networking, and no second copy of the client to drift from the one shipping in
 # the image. The address is localhost because it is the same container.
+#
+# Served under a path prefix, which is what the chart installs by default
+# (ingress.path, /applab). Running the smoke test without one would test a
+# configuration no install has: the prefix changes how the server routes, and the
+# probe paths have to keep working under it — a kubelet asks for /health on the
+# container port whatever path the Ingress publishes the deployment under.
 docker run -d --name "$name" \
   -v "$volume:/data" \
+  -p 0:8080 \
   -e APPLAB_KEY=smoke-test-key \
-  -e APPLAB_URL=http://127.0.0.1:8080 \
+  -e APPLAB_BASE_PATH=/applab \
+  -e APPLAB_URL=http://127.0.0.1:8080/applab \
   "$image" >/dev/null
 
 # The container's own log is the evidence, so it is what a failure prints: the
-# two defects above announced themselves there and nowhere else.
+# chmod and the missing backend both announced themselves there and nowhere else.
 logs() {
   echo "--- container log ---" >&2
   docker logs "$name" >&2 2>&1 || true
@@ -97,6 +107,35 @@ until docker exec "$name" /usr/local/bin/applab-cli config >/dev/null 2>&1; do
   sleep 1
 done
 echo "  ok: it boots against a root-owned /data and authenticates over HTTP"
+
+# ── The probe paths work under the prefix ───────────────────────────────────
+#
+# A kubelet probe and a Prometheus scrape reach the pod directly and ask for
+# /health and /metrics, with no prefix — they know nothing about ingress.path.
+# A deployment that refuses them is healthy and listening while every probe
+# fails, which reads as a pod stuck at 0/1 with nothing in the log to say why.
+# This was a real defect: the prefix rule was applied to every path.
+#
+# Curled from the host against the published port rather than from inside the
+# container, which is closer to what these are: a kubelet connects to the pod's
+# port from outside, not through an exec. It also means the check does not depend
+# on what HTTP client the image happens to carry.
+#
+# /metrics answers 501 on a deployment with no cluster — a legitimate answer, and
+# not the one under test. The failure this catches is 404, which is the prefix
+# refusing a path the cluster uses.
+host_port="$(docker port "$name" 8080/tcp | head -1 | sed 's/.*://')"
+[ -n "$host_port" ] || { logs; fail "the container published no port for 8080"; }
+
+for probe in /health /metrics; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${host_port}${probe}" || true)"
+  case "$code" in
+    200|501) ;;
+    404) logs; fail "GET ${probe} -> 404 under the prefix; the cluster reaches the pod on this path, so every probe would fail against a healthy server" ;;
+    *) logs; fail "GET ${probe} -> ${code:-no response}" ;;
+  esac
+done
+echo "  ok: /health and /metrics answer on the pod's port, prefix or not"
 
 # ── It reports itself able to serve git ─────────────────────────────────────
 #
@@ -134,7 +173,7 @@ docker exec "$name" /usr/local/bin/applab-cli create smoke --port 8080 >/dev/nul
 
 if ! docker exec -w /tmp "$name" git \
       -c http.extraHeader="Authorization: Bearer smoke-test-key" \
-      clone http://127.0.0.1:8080/git/smoke.git cloned 2>&1; then
+      clone http://127.0.0.1:8080/applab/git/smoke.git cloned 2>&1; then
   logs
   fail "cloning an app's repository over HTTP failed; this is the path git-http-backend serves"
 fi

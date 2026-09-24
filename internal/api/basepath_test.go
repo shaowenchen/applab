@@ -86,6 +86,39 @@ func TestBasePathLeavesUnprefixedRequestsAlone(t *testing.T) {
 	}
 }
 
+// TestBasePathStillServesTheProbePaths is the regression test for a pod that
+// never became ready.
+//
+// The prefix rule above was applied to every path, including the two the cluster
+// itself uses to reach the pod: a kubelet probe asks for /health on the container
+// port and a ServiceMonitor asks for /metrics, neither through the Ingress and
+// neither knowing the deployment's published path. Refusing them made every probe
+// fail against a server that was healthy and listening — the pod logged
+// "listening" and stayed 0/1, with a 404 in the only place nobody looks, because
+// logRequests quiets these paths.
+//
+// They must also not move under the prefix: a probe path that tracked
+// ingress.path would make the chart's probe configuration depend on the Ingress
+// configuration, and a deployment would break when one changed without the other.
+func TestBasePathStillServesTheProbePaths(t *testing.T) {
+	h := newBasePathServer(t, "/applab").Handler()
+
+	for _, path := range []string{"/health", "/metrics"} {
+		rec := doRequestNoKey(t, h, "GET", path)
+		if rec.Code == 404 {
+			t.Errorf("GET %s -> 404 on a deployment served at /applab; this is an address the cluster "+
+				"reaches the pod on, not one the Ingress publishes, so the prefix does not apply to it", path)
+		}
+	}
+
+	// And the prefix still refuses a path outside it, so exempting these two did
+	// not open the whole root.
+	rec := doRequestNoKey(t, h, "GET", "/api/v1/config")
+	if rec.Code == 200 {
+		t.Errorf("GET /api/v1/config -> 200; the two probe paths are the exemption, not the rule")
+	}
+}
+
 // TestBasePathRootServesTheConsole asserts the bare prefix works.
 //
 // "/applab" without a trailing slash is what a person types and what a link to
