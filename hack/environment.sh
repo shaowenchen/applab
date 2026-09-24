@@ -321,15 +321,19 @@ data:
 EOF
 
 log "installing Istio (this is the slow step)"
-# The default profile, with `platform=kind` so istioctl adjusts for kind's
-# quirks. The gateway's Service is patched afterwards rather than configured
-# here: istioctl's `components.ingressGateways[0].k8s.service.ports` is a
-# positional list whose first entry is the *status* port (15021), not HTTP, so
-# addressing the HTTP port by index is a bug waiting for an Istio release that
-# reorders it. See the patch below, which selects the port by number instead.
-istioctl install --set profile=default \
-  --set values.global.platform=kind \
-  -y
+# The community default profile, into the community default namespace, producing
+# the community default gateway name. Nothing is overridden for kind, because
+# nothing needs to be: Istio's platform profiles carry only CNI paths, and kind
+# uses the standard containerd layout, so there is no profile for it — passing
+# `--set values.global.platform=kind` does not select a kind-specific profile,
+# it fails the render with "unknown platform kind".
+#
+# The gateway's Service is patched afterwards rather than configured here:
+# istioctl's `components.ingressGateways[0].k8s.service.ports` is a positional
+# list whose first entry is the *status* port (15021), not HTTP, so addressing
+# the HTTP port by index is a bug waiting for an Istio release that reorders it.
+# See the patch below, which selects the port by number instead.
+istioctl install --set profile=default -y
 
 kubectl -n istio-system wait --for=condition=available --timeout=300s \
   deployment/istio-ingressgateway
