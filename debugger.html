@@ -128,7 +128,7 @@ img { max-width: 100%; height: auto; }
 <body>
 <div class="layout">
   <nav>
-    <div class="brand"><a href="index.html">applab</a></div>
+    <div class="brand"><a href="index.html">AppLab</a></div>
     <ul>
       <li><a href="index.html">Overview</a></li>
       <li><a href="chart.html">Installing</a></li>
@@ -138,11 +138,11 @@ img { max-width: 100%; height: auto; }
   </nav>
   <main>
     <article>
-<h1>applab debugger environment</h1>
-<p>Start a complete applab platform on a GitHub runner — a Kubernetes cluster, a
-registry, an Istio gateway and applab itself — hand yourself a link, and push an
+<h1>AppLab debugger environment</h1>
+<p>Start a complete AppLab platform on a GitHub runner — a Kubernetes cluster, a
+registry, an Istio gateway and AppLab itself — hand yourself a link, and push an
 app. It is built, deployed and served before you open the console.</p>
-<p>The point is that applab needs real infrastructure before it can do anything: a
+<p>The point is that AppLab needs real infrastructure before it can do anything: a
 cluster to deploy into, a registry to push to, and a gateway to publish through.
 This action assembles all of it on a throwaway kind cluster, so the first thing
 you have to do is not &quot;install a cluster&quot; but &quot;push an app&quot;.</p>
@@ -171,7 +171,7 @@ cd any-project-with-a-Dockerfile
 applab push myshop
 </code></pre>
 <p>The app is served at <code>&lt;the link&gt;/apps/myshop/</code> and appears in the console. The
-<code>applab</code> CLI is the binary from <a href="https://github.com/shaowenchen/applab">the applab repository</a>;
+<code>applab</code> CLI is the binary from <a href="https://github.com/shaowenchen/applab">the AppLab repository</a>;
 see <a href="index.html">the overview</a> for how to install it, or drive the API directly —
 <code>GET /api/v1/describe</code> is the contract, and it needs no key.</p>
 <h2>What it starts</h2>
@@ -188,7 +188,7 @@ see <a href="index.html">the overview</a> for how to install it, or drive the AP
 <td>A throwaway Kubernetes cluster, created for this run and deleted with it.</td>
 </tr>
 <tr>
-<td><strong>applab</strong></td>
+<td><strong>AppLab</strong></td>
 <td>The published image, installed with this repository's <a href="chart.html">Helm chart</a>.</td>
 </tr>
 <tr>
@@ -213,7 +213,7 @@ writes it, with the selector read from the deployment it has to bind to. Without
 it every VirtualService here names a gateway that does not exist: the API server
 accepts it, the chart renders it, and the proxy serves nothing.</p>
 <p>One hostname serves everything, and the Istio gateway is what serves it. An app
-is published under <code>/apps/&lt;app&gt;/</code>, and applab itself — the console at <code>/</code>, the
+is published under <code>/apps/&lt;app&gt;/</code>, and AppLab itself — the console at <code>/</code>, the
 API under <code>/api/v1/</code>, the git endpoints under <code>/git/</code> — is a route the chart
 installs on the same gateway, at the root of the same host.</p>
 <p>There is nothing in front of the gateway to tell the two apart, because the paths
@@ -266,8 +266,8 @@ none of the console's own paths share.</p>
 <p>Only <code>api_key</code> and <code>cloudflare_token</code> are worth passing from a secret: the key is
 generated when left empty, so it needs no configuration unless you want a
 particular one, and the token is a credential and never a plain input.</p>
-<p>The applab image tag is not an input. It is the published <code>latest</code>, so the
-environment runs the newest applab — the same tag the release workflow publishes
+<p>The AppLab image tag is not an input. It is the published <code>latest</code>, so the
+environment runs the newest AppLab — the same tag the release workflow publishes
 alongside the version tags, re-resolved on every start because the chart pulls
 with <code>imagePullPolicy: Always</code>.</p>
 <h3>The domain, and the named tunnel it needs</h3>

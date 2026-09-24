@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Installing the applab chart</title>
+<title>Installing the AppLab chart</title>
 <meta name="description" content="Deploy an application to Kubernetes by uploading its source.">
 <style>
 :root {
@@ -128,7 +128,7 @@ img { max-width: 100%; height: auto; }
 <body>
 <div class="layout">
   <nav>
-    <div class="brand"><a href="index.html">applab</a></div>
+    <div class="brand"><a href="index.html">AppLab</a></div>
     <ul>
       <li><a href="index.html">Overview</a></li>
       <li><a href="chart.html" aria-current="page">Installing</a></li>
@@ -138,7 +138,7 @@ img { max-width: 100%; height: auto; }
   </nav>
   <main>
     <article>
-<h1>applab</h1>
+<h1>AppLab</h1>
 <p>Deploy an application to Kubernetes by uploading its source.</p>
 <p>This chart installs the control plane: it stores source in a git repository per
 app, builds images in the cluster, deploys them and exposes them on a hostname. Give someone its URL and an API key, and they can ship
@@ -201,7 +201,7 @@ the registry rejects it, so a deep prefix puts the app in the tag instead:</p>
 <p>Either way the tag names the commit, which is what lets a rollback reuse an image
 rather than rebuild it.</p>
 <p>If the registry needs credentials, create a <code>docker-registry</code> Secret <strong>in the
-namespace applab runs in</strong> and name it:</p>
+namespace AppLab runs in</strong> and name it:</p>
 <pre><code class="language-bash">kubectl -n ops-system create secret docker-registry regcred \
   --docker-server=registry.example.com \
   --docker-username=&lt;user&gt; \
@@ -235,7 +235,7 @@ it.</p>
 </code></pre>
 <p>The reason to want this is the certificate. One host needs one ordinary
 certificate, not a wildcard, and nothing has to be reissued as apps are added.
-applab strips the prefix before the request reaches the app, so an app sees the
+AppLab strips the prefix before the request reaches the app, so an app sees the
 paths it would see at a root and needs no change to work under one; it also sets
 <code>X-Forwarded-Prefix</code> for an app that builds absolute links. The cost is a shared
 origin — browser connection limits and cookies are shared between apps, and two
@@ -251,7 +251,7 @@ the official <code>istio/gateway</code> chart produces. A cluster installed with
 to say so:</p>
 <pre><code class="language-bash">--set deploy.gateway=istio-system/istio-ingressgateway
 </code></pre>
-<p>applab attaches a <code>VirtualService</code> to that gateway and never creates or modifies
+<p>AppLab attaches a <code>VirtualService</code> to that gateway and never creates or modifies
 it — the gateway is infrastructure you own.</p>
 <p>Setting <code>apps.baseDomain</code> without a gateway is refused at render time: it would
 produce a <code>VirtualService</code> whose empty gateway list Istio reads as mesh-internal
@@ -306,7 +306,7 @@ are yours.</p>
 containers then run privileged. It works everywhere, and it means a build — which
 is arbitrary code from whoever pushed the source — has the run of the node. Prefer
 fixing the node setting.</p>
-<p><strong>Or</strong> set <code>build.enabled=false</code> and run applab without the build pipeline. Source
+<p><strong>Or</strong> set <code>build.enabled=false</code> and run AppLab without the build pipeline. Source
 storage, the API and the console all still work, and you can deploy images built
 elsewhere. <code>applab push</code> will say clearly that this deployment cannot build.</p>
 <h2>What gets installed</h2>
@@ -336,7 +336,7 @@ elsewhere. <code>applab push</code> will say clearly that this deployment cannot
 </tr>
 <tr>
 <td>Role, RoleBinding</td>
-<td>applab keeps everything in one namespace, and this is all it needs</td>
+<td>AppLab keeps everything in one namespace, and this is all it needs</td>
 </tr>
 <tr>
 <td>Ingress</td>
@@ -350,20 +350,20 @@ elsewhere. <code>applab push</code> will say clearly that this deployment cannot
 </table>
 <h3>One replica, deliberately</h3>
 <p><code>replicaCount</code> must be 1, and the chart refuses anything else.</p>
-<p>applab keeps its state in SQLite on a ReadWriteOnce volume. SQLite cannot be
+<p>AppLab keeps its state in SQLite on a ReadWriteOnce volume. SQLite cannot be
 shared between processes over a network filesystem — two pods writing one file
 across it corrupts the file — so a second replica would not merely be wasteful,
 it would be unsafe. Scaling out means moving to a database built for it; until
 then, one replica is the honest answer rather than a limitation to work around.</p>
 <p>The volume is the only copy of every app's source. <strong>Back it up.</strong></p>
 <h3>The Role</h3>
-<p>applab runs in one namespace and deploys every app into it too, so a namespaced
+<p>AppLab runs in one namespace and deploys every app into it too, so a namespaced
 <code>Role</code> and <code>RoleBinding</code> are enough — one namespace, one binding, no cluster-wide
 grant.</p>
 <p>A platform like this is usually bound to a <code>ClusterRole</code>, or worse to
-<code>cluster-admin</code>, because it manages resources across namespaces. applab does not,
+<code>cluster-admin</code>, because it manages resources across namespaces. AppLab does not,
 so the reach of a bug in it is the apps it manages.</p>
-<p>The rules in <code>role.yaml</code> are exactly what applab uses, each with a comment saying
+<p>The rules in <code>role.yaml</code> are exactly what AppLab uses, each with a comment saying
 why. Nothing is granted for future convenience. In particular there is no
 permission on <code>namespaces</code> at all, and none to write pods.</p>
 <p><strong>What this costs:</strong> apps are not isolated from one another by a namespace
@@ -373,7 +373,7 @@ container are the only bound — which is why <code>deploy.appResources</code> e
 <p>One thing the chart cannot do for you: <strong>an app's pods and a build's are given no
 Kubernetes API token</strong> (<code>automountServiceAccountToken: false</code>). A token reads
 every Secret in its namespace, so an app holding one could reach the API keys and
-the registry credentials. applab sets this itself, so there is nothing to
+the registry credentials. AppLab sets this itself, so there is nothing to
 configure — but an app deployed into this namespace by hand needs the same.</p>
 <h2>Values</h2>
 <p>See <a href="https://github.com/shaowenchen/applab/blob/master/charts/applab/values.yaml"><code>values.yaml</code></a> for every option, each with a note on what it
@@ -415,7 +415,7 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <tr>
 <td><code>build.enabled</code></td>
 <td><code>true</code></td>
-<td><code>false</code> runs applab without building</td>
+<td><code>false</code> runs AppLab without building</td>
 </tr>
 <tr>
 <td><code>build.registry</code></td>
@@ -445,7 +445,7 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <tr>
 <td><code>deploy.appResources</code></td>
 <td>2 CPU / 2Gi</td>
-<td>Applied to every app applab deploys</td>
+<td>Applied to every app AppLab deploys</td>
 </tr>
 <tr>
 <td><code>ingress.host</code></td>
@@ -478,7 +478,7 @@ value is the comma-separated list. Removing an entry from it and upgrading is th
 whole revocation.</p>
 <p>That is also why <code>auth.existingSecret</code> is worth using even with one key. Release
 values are stored in plain text in the cluster and are frequently committed.</p>
-<p><strong>App keys</strong> are created by applab itself, one Secret per app, as apps are
+<p><strong>App keys</strong> are created by AppLab itself, one Secret per app, as apps are
 created. An app key reaches only its app: it can push, build, deploy, roll back
 and read logs, but cannot delete the app and cannot see any other app. That is
 the credential to hand to whoever deploys an app, so they never hold one that can
@@ -491,10 +491,10 @@ Role already grants; nothing here has to be widened.</p>
 <h3>App configuration</h3>
 <p>An app's configuration is split by sensitivity, and only one half is yours to
 configure here.</p>
-<p><strong>Environment variables</strong> — <code>LOG_LEVEL</code>, <code>FEATURE_X</code> — are stored in applab's
+<p><strong>Environment variables</strong> — <code>LOG_LEVEL</code>, <code>FEATURE_X</code> — are stored in AppLab's
 database and are visible in an app's Deployment to anyone who can read it. They
 need no setting.</p>
-<p><strong>Secrets</strong> — passwords, tokens, connection strings — are created by applab, one
+<p><strong>Secrets</strong> — passwords, tokens, connection strings — are created by AppLab, one
 Secret per app named <code>applab-env-&lt;app&gt;</code>, as they are set. They are never written
 into the Deployment: it references the Secret through <code>envFrom</code> and the kubelet
 substitutes the values inside the container. No endpoint returns a value, so a
@@ -504,7 +504,7 @@ name.</p>
 and <strong>take effect on the next deploy</strong>. Nothing to configure in the chart.</p>
 <p>Worth knowing: secrets reach the cluster as API traffic and are stored in <code>etcd</code>
 like any Kubernetes Secret. Encryption at rest is the cluster's job, not
-applab's.</p>
+AppLab's.</p>
 <h2>After installing</h2>
 <pre><code class="language-bash"># The key the chart generated, if you used auth.key
 kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
@@ -520,7 +520,7 @@ applab config
 version — so the chart's default <code>image.tag</code> is the image it needs, and an
 install with nothing overridden runs the build that chart was packaged from.</p>
 <p><code>appVersion</code> is the commit the chart was built from, which is what
-<code>app.kubernetes.io/version</code> carries on every object applab creates, so a release
+<code>app.kubernetes.io/version</code> carries on every object AppLab creates, so a release
 that is installed is traceable back to its code. It is deliberately <strong>not</strong> the
 image tag: it names a commit, and no image is published under a bare commit.</p>
 <pre><code class="language-bash">helm repo add applab https://www.chenshaowen.com/applab
@@ -556,7 +556,7 @@ remove a release.</p>
 <p><code>--version</code> is needed here for the same reason it is on install, while only dev
 builds are published: Helm does not resolve a prerelease unless it is asked for
 by name. An upgrade without it fails the same way an install does.</p>
-<p>The database schema migrates on start. A newer applab refuses to run against an
+<p>The database schema migrates on start. A newer AppLab refuses to run against an
 older one's schema rather than guessing, so roll the image back with the chart if
 an upgrade needs reverting.</p>
 <h2>Uninstalling</h2>
@@ -565,7 +565,7 @@ an upgrade needs reverting.</p>
 <p><strong>The apps are not removed.</strong> They are Deployments, Services and
 VirtualServices in the release namespace, and the release does not own them —
 they carry <code>applab.io/app</code>, not helm's release labels. So an uninstall stops
-applab and leaves every app it deployed running, which is usually what you want
+AppLab and leaves every app it deployed running, which is usually what you want
 and occasionally a surprise.</p>
 <p>The PersistentVolumeClaim is not removed either, and it holds the only copy of
 every app's source.</p>
@@ -575,8 +575,8 @@ kubectl -n ops-system delete deployments,services,jobs,secrets -l applab.io/app
 kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/app
 kubectl -n ops-system delete pvc applab                           # and the source with it
 </code></pre>
-<p>The namespace itself is yours rather than applab's — it is where applab was
-installed, and it may hold other things. applab never deletes it.</p>
+<p>The namespace itself is yours rather than AppLab's — it is where AppLab was
+installed, and it may hold other things. AppLab never deletes it.</p>
 
       <p class="source">This page is rendered from <a href="https://github.com/shaowenchen/applab/blob/master/charts/applab/README.md"><code>charts/applab/README.md</code></a> in the repository.</p>
     </article>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>applab: deploy an application by uploading its source</title>
+<title>AppLab: deploy an application by uploading its source</title>
 <meta name="description" content="Deploy an application to Kubernetes by uploading its source.">
 <style>
 :root {
@@ -128,7 +128,7 @@ img { max-width: 100%; height: auto; }
 <body>
 <div class="layout">
   <nav>
-    <div class="brand"><a href="index.html">applab</a></div>
+    <div class="brand"><a href="index.html">AppLab</a></div>
     <ul>
       <li><a href="index.html" aria-current="page">Overview</a></li>
       <li><a href="chart.html">Installing</a></li>
@@ -138,7 +138,7 @@ img { max-width: 100%; height: auto; }
   </nav>
   <main>
     <article>
-<h1>applab</h1>
+<h1>AppLab</h1>
 <p>Deploy an application to Kubernetes by uploading its source. You get back a URL.</p>
 <p>There is no Dockerfile you must write by hand, no CI to configure, no registry to
 push to and no manifest to apply. One HTTP call starts the path from a local
@@ -227,7 +227,7 @@ commit. You can clone it, diff two uploads, browse the history, and check out an
 earlier revision with ordinary git tools.</p>
 <p>The tarball is how the bytes travel. The commit is what is recorded.</p>
 <h3>A build is a Job, not a daemon</h3>
-<p>Each build runs as a one-shot Kubernetes Job: applab operates no build service,
+<p>Each build runs as a one-shot Kubernetes Job: AppLab operates no build service,
 and a build's resources are released the moment it ends. The Job has two
 containers — an init container that downloads one commit's source, and a builder
 that runs BuildKit rootless over it — and <strong>the builder never sees a credential</strong>.
@@ -246,9 +246,9 @@ an earlier one. A deploy of a commit that has never been built is refused rather
 than quietly building, so a caller always knows which operation is running and a
 build failure is never reported as a deploy failure.</p>
 <h3>One namespace, for everything</h3>
-<p>Every app runs in the same namespace as applab itself (default <code>ops-system</code>).
+<p>Every app runs in the same namespace as AppLab itself (default <code>ops-system</code>).
 The trade is deliberate, and both halves of it matter.</p>
-<p><strong>What it buys:</strong> applab needs a namespaced <code>Role</code> and nothing else. It holds no
+<p><strong>What it buys:</strong> AppLab needs a namespaced <code>Role</code> and nothing else. It holds no
 permission anywhere else in the cluster, so the reach of a bug in it, or of a
 compromise, is the apps it manages rather than every workload you run. The chart
 renders a Role and a RoleBinding; there is no ClusterRole to audit.</p>
@@ -258,18 +258,18 @@ shows you everything at once. There is no per-app <code>ResourceQuota</code> —
 memory limits on each app's container are the only bound, which is why
 <code>deploy.appResources</code> exists and why its limits are not generous.</p>
 <p>Objects are told apart by the <code>applab.io/app</code> label they carry. Deleting an app
-removes its objects and leaves everything else alone, including applab's own
+removes its objects and leaves everything else alone, including AppLab's own
 Deployment, which shares the namespace and carries no app label.</p>
 <p><strong>Neither an app's pods nor a build's are given a Kubernetes API token</strong>
 (<code>automountServiceAccountToken: false</code>). A token can read every Secret in its
 namespace, which here means the API keys and the registry credentials, and an
-app is arbitrary code from whoever pushed the source. Nothing applab runs needs
+app is arbitrary code from whoever pushed the source. Nothing AppLab runs needs
 to reach the API server: a build fetches its source over HTTP with a single-use
 token, and an app just serves traffic.</p>
 <h3>How apps are published</h3>
 <p>Apps are published through an <strong>Istio gateway</strong> as <code>VirtualService</code> resources.</p>
 <p>The gateway is cluster infrastructure that already exists, holding the listeners
-and the certificate for the whole domain. applab attaches to it by name
+and the certificate for the whole domain. AppLab attaches to it by name
 (<code>deploy.gateway</code>, default <code>istio-ingress/istio-ingress</code>) and never creates or
 modifies it. TLS is therefore not per-app configuration: an app is served over
 HTTPS when the gateway has an HTTPS listener.</p>
@@ -281,7 +281,7 @@ wildcard DNS record and a wildcard certificate.</p>
 <code>apps.baseDomain</code> and the path says which is meant, so <code>shop</code> is at
 <code>apps.example.com/apps/shop</code>. One ordinary certificate covers any number of
 apps, and nothing has to be reissued as the deployment grows.</p>
-<p>applab strips the prefix before the request reaches the app, so an app sees the
+<p>AppLab strips the prefix before the request reaches the app, so an app sees the
 paths it would see at a root and needs no change to work under one; it also sets
 <code>X-Forwarded-Prefix</code>, which an app that honours it can use to build correct
 absolute links. The cost is a shared origin: browser connection limits and
@@ -298,8 +298,8 @@ plain string prefix rather than a path-segment match, so a route on
 between two VirtualServices on one host is undefined, which app won would not
 even be consistent. <code>/apps/shop/</code> cannot match <code>/apps/shop-2/</code>.</li>
 </ul>
-<h3>applab's record versus the cluster</h3>
-<p>applab records what it last did. <strong>The cluster is the source of truth for what is
+<h3>AppLab's record versus the cluster</h3>
+<p>AppLab records what it last did. <strong>The cluster is the source of truth for what is
 running.</strong> When the two disagree, believe the cluster — <code>/apps/{app}/status</code>
 reports both side by side rather than picking one.</p>
 <h3>Finding out what went wrong</h3>
@@ -313,7 +313,7 @@ events are mostly image pulls and scheduling notes, and burying the one that
 explains the failure among them is the difference between a useful answer and a
 list to dig through.</p>
 <p><code>/metrics</code> publishes the platform's own counters (requests, builds, deploys,
-auth refusals) so a scraper can watch applab itself. It needs no key — a scraper
+auth refusals) so a scraper can watch AppLab itself. It needs no key — a scraper
 holds one awkwardly and these numbers describe the platform rather than any app —
 so restrict the path at the network edge where that matters.</p>
 <h2>The API</h2>
@@ -377,7 +377,7 @@ would never exercise that.</li>
 <p>The build and deploy halves need real infrastructure, so they are exercised on
 one that is built for the purpose and thrown away: <a href="debugger.html"><code>debugger</code></a> is a
 GitHub Action that creates a <code>kind</code> cluster, a registry and an Istio gateway,
-installs applab from this repository's own chart, and publishes the result
+installs AppLab from this repository's own chart, and publishes the result
 through a tunnel. It is started by hand — it holds a runner for the whole
 session, which is not something to spend on every push. Open the run's summary
 for a link, and <code>applab push</code> works against it.</p>
@@ -500,7 +500,7 @@ the Service targets. Set that instead.</p>
 <p>There is no route that returns a secret's value, and none is planned. If one is
 lost, set it again — recovery is the same operation.</p>
 <h2>Keys</h2>
-<p>Two tiers, for the two kinds of person who use applab: whoever operates the
+<p>Two tiers, for the two kinds of person who use AppLab: whoever operates the
 platform, and whoever deploys one app.</p>
 <table>
 <thead>
@@ -555,14 +555,14 @@ leave different things behind.</p>
 <code>APPLAB_DATA_DIR</code> — <code>./data</code> in the quick start — is everything else: the
 database, and a git repository per app. That directory is the only copy of every
 app's source, so deleting it is the point of no return for all of them. Anything
-already deployed to a cluster keeps running, because applab put it there and does
+already deployed to a cluster keeps running, because AppLab put it there and does
 not own it.</p>
 <p><strong>A chart install</strong> is one command:</p>
 <pre><code class="language-bash">helm uninstall applab --namespace ops-system
 </code></pre>
 <p>and the surprise is what it leaves. <strong>The apps are not removed</strong> — they are
 Deployments, Services and VirtualServices carrying <code>applab.io/app</code> rather than
-helm's release labels, so an uninstall stops applab and leaves every app it
+helm's release labels, so an uninstall stops AppLab and leaves every app it
 deployed running. That is usually what you want and occasionally a surprise. The
 PersistentVolumeClaim is not removed either, and it holds every app's source.</p>
 <p><a href="chart.html">The chart's README</a> has the full teardown, including how to
