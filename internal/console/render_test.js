@@ -302,8 +302,7 @@ async function render(apps) {
     check("and never the string undefined", text.includes("undefined"), false);
   }
 
-  // The address the console talks to, and the one place it is shown before
-  // anyone has signed in.
+  // The address the console talks to.
   //
   // It has to carry the path the page was served from, not just its origin: a
   // deployment under a path (ingress.path, which the chart defaults to /applab)
@@ -311,13 +310,46 @@ async function render(apps) {
   // origin would miss the server. The stub's pathname is "/applab/", so the
   // trailing slash being trimmed is part of what this checks.
   //
-  // Asserted through the sign-in card's own text, which is where the address is
-  // shown rather than typed — the field it used to read no longer exists.
+  // Read from baseURL() itself, which is what every call is built from. It used
+  // to be asserted through the sign-in card, which printed it as "Sent to
+  // <address>" — that line was removed, so the check moved to the value rather
+  // than being dropped with the display it happened to be read through.
   check(
     "the console reports the address it was served from, trailing slash trimmed",
-    elements.get("signin-where").textContent,
+    vm.runInContext("baseURL()", context),
     "https://applab.example.com/applab"
   );
+
+  // Nothing on the sign-in screen names the deployment's address. It is in the
+  // page's own location bar, and repeating it was one more thing to read on the
+  // one screen that should say as little as possible.
+  //
+  // Asserted over the whole card rather than on one id, so an address reintroduced
+  // under another name is still caught — the point is that the screen is quiet,
+  // not that a particular element is gone.
+  {
+    const card = markup.match(/<section id="signin"[\s\S]*?<\/section>/);
+    check("the sign-in card exists", card !== null, true);
+    if (card) {
+      check(
+        "and prints no deployment address",
+        /https?:\/\/|signin-where|state\.url/.test(card[0]),
+        false
+      );
+    }
+  }
+
+  // The app detail page's Repository card the same way: the clone command is the
+  // one thing on it. The address on its own was a line nobody reads — the command
+  // contains it — and the sentence explaining the command went with it.
+  {
+    const repo = markup.match(/<h2 data-i18n="Repository"[\s\S]*?<\/div>\s*<\/div>/);
+    check("the Repository card exists", repo !== null, true);
+    if (repo) {
+      check("and holds the clone command", repo[0].includes('id="app-git-hint"'), true);
+      check("and no bare repository address", repo[0].includes("app-git-url"), false);
+    }
+  }
 
   // There must be no address input left to fill in: the key is the only thing
   // anyone should have to bring.

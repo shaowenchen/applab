@@ -134,22 +134,6 @@
   .controls button:hover { color: var(--text); background: var(--bg-sunken); border-color: transparent; }
   .controls button[aria-pressed="true"] { color: var(--text); font-weight: 600; background: var(--bg-sunken); }
 
-  /* The language switch, sitting inline in a sentence rather than as a button in
-     a corner: on the sign-in screen it is the one preference worth offering, and
-     every word on that screen comes from the dictionary, so it is the control
-     that decides whether the page can be read at all. Inherits the hint's
-     colour and size so it reads as part of the sentence. */
-  .inline-toggle {
-    padding: 0;
-    border: 0;
-    background: none;
-    font: inherit;
-    color: var(--accent);
-    text-decoration: underline;
-    cursor: pointer;
-  }
-  .inline-toggle:hover { color: var(--text); }
-
   /* A field with its reveal button inside it. The input keeps the left of the
      box and the button the right, so the two share one border rather than
      looking like a field with a button after it. */
@@ -319,8 +303,6 @@
   .signin-form { display: flex; flex-direction: column; gap: 8px; }
   .signin-form input { width: 100%; padding: 9px 11px; }
   .signin-form button { padding: 9px 12px; }
-  .signin-hint { margin: 14px 0 0; color: var(--text-muted); font-size: 12px; }
-  .signin-hint .mono { font-size: 11px; }
 
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th {
@@ -540,11 +522,6 @@
         </div>
         <button id="signin-go" class="primary" type="submit" data-i18n="Sign in">Sign in</button>
       </form>
-      <p class="signin-hint">
-        <span data-i18n="Sent to">Sent to</span>
-        <span id="signin-where" class="mono"></span><!--
-     --><button id="signin-lang-toggle" class="inline-toggle" type="button"></button>
-      </p>
     </div>
   </section>
 
@@ -699,27 +676,18 @@
          commits. -->
     <div class="card">
       <h2 data-i18n="Repository">Repository</h2>
-      <div class="secret">
-        <span class="secret-value" id="app-git-url"></span>
-        <button id="app-git-url-copy" class="reveal hidden" type="button"></button>
-      </div>
-      <p class="muted" style="font-size:13px;margin:8px 0 0">
-        <span data-i18n="Clone it with any git client — this command already carries the app's key, so it works as it stands. Any username does; only the password is read.">Clone it with any git client — this command already carries the app's key, so it works as it stands. Any username does; only the password is read.</span>
-      </p>
-      <!-- The command carries the real key. It used to hold a <key> placeholder,
-           on the reasoning that a credential in a URL is one that ends up in
-           shell history and in the repository's own config on disk.
+      <!-- The command carries the real key, so it can be copied and run as it
+           stands. It used to hold a <key> placeholder, on the reasoning that a
+           credential in a URL ends up in shell history and in the repository's
+           own config on disk.
 
-           That reasoning is sound about URLs in general and wrong about this
-           one: the key is the app's own, it reaches this app and nothing else,
-           and it is already in this browser and in every request the console
-           makes. A placeholder does not keep the key out of anywhere — it just
-           moves the work to the reader, who goes and gets the value from the API
-           key card above and pastes it in, usually into a file. A command that
-           runs as written is the whole point of showing it.
-
-           It is masked until asked for, so the convenience does not also mean a
-           credential sitting legible in every screenshot of this page. -->
+           That is sound about URLs in general and wrong about this one: the key
+           is the app's own, it reaches this app and nothing else, and it is
+           already in this browser and in every request the console makes. A
+           placeholder does not keep it out of anywhere — it moves the work to
+           the reader, who has to go and find the value and paste it in, usually
+           into a file. It is masked until the eye is clicked, so the convenience
+           does not also mean a credential legible in every screenshot. -->
       <div class="secret">
         <span class="secret-value" id="app-git-hint"></span>
         <button id="app-git-hint-reveal" class="reveal hidden" type="button"></button>
@@ -941,9 +909,6 @@ const ZH = {
   "Sign in": "登录",
   "API key": "API key",
   "Repository": "代码仓库",
-  "Clone it with any git client — this command already carries the app's key, so it works as it stands. Any username does; only the password is read.":
-    "用任意 git 客户端克隆——这条命令里已经带了应用的 key，可以直接执行。用户名随意，只读取密码部分。",
-  "Sent to": "发送至",
   "An API key is required.": "请填写 API key。",
 
   // -- Overview -------------------------------------------------------------
@@ -1357,12 +1322,11 @@ function concealed(valueId, buttonId, copyId) {
 let signinReveal = null;
 let appKeyReveal = null;
 let appGitReveal = null;
-let appGitURLReveal = null;
 
 // refreshReveals rebuilds the eyes' labels, which are translated and so change
 // with the language. Called from setLang, after the dictionary has switched.
 function refreshReveals() {
-  for (const reveal of [signinReveal, appKeyReveal, appGitReveal, appGitURLReveal]) {
+  for (const reveal of [signinReveal, appKeyReveal, appGitReveal]) {
     if (reveal) reveal.refresh();
   }
 }
@@ -1394,7 +1358,7 @@ function setLang(value) {
   // The label is the language it switches *to*, so it reads as an offer rather
   // than as a statement of the current one. Both places it appears, for the
   // same reason as the theme control above.
-  for (const id of ["lang-toggle", "signin-lang-toggle"]) {
+  for (const id of ["lang-toggle"]) {
     const button = $(id);
     if (!button) continue;
     button.textContent = lang === "zh" ? "EN" : "中文";
@@ -2018,16 +1982,12 @@ async function openApp(id) {
   $("app-open").removeAttribute("href");
   show($("app-open"), false);
 
-  // The app's repository, from the deployment's own address plus the path the
-  // git transport is mounted at. Derived here rather than returned by the API
-  // for the same reason the console derives its own address: the server may be
-  // reached under a path, and this is the address the page was actually served
-  // from — the one the caller can reach.
-  //
-  // The address carries no credential, so it is not masked: it is where the
-  // repository is, not how to get into it. The command below it is the one with
-  // the key in it.
-  appGitURLReveal.set(state.url + "/git/" + id + ".git");
+  // The clone command is built from the deployment's own address plus the path
+  // the git transport is mounted at, and is filled in by loadAppKey once the
+  // app's key arrives. Derived here rather than returned by the API for the same
+  // reason the console derives its own address: the server may be reached under
+  // a path, and this is the address the page was actually served from — the one
+  // the caller can reach.
 
   stopLogs();
 
@@ -2644,7 +2604,6 @@ $("theme-toggle").onclick = () => {
   setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]);
 };
 $("lang-toggle").onclick = () => setLang(lang === "zh" ? "en" : "zh");
-$("signin-lang-toggle").onclick = $("lang-toggle").onclick;
 
 $("signout").onclick = signOut;
 
@@ -2724,10 +2683,6 @@ $("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
   // by the time boot runs, and it has one.
   signinReveal = concealed("signin-key", "signin-reveal");
   appKeyReveal = concealed("app-key-value", "app-key-value-reveal", "app-key-value-copy");
-  // The repository address is public — it is the app's URL path, not a
-  // credential — so it is not masked. It gets a copy button because it is a
-  // value someone pastes into a git remote.
-  appGitURLReveal = concealed("app-git-url", "app-git-url-copy", "app-git-url-copy");
   appGitReveal = concealed("app-git-hint", "app-git-hint-reveal", "app-git-hint-copy");
 
   // The header is up on both screens: on the sign-in screen its theme and
@@ -2736,9 +2691,6 @@ $("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
   show($("app-header"), true);
 
   state.url = baseURL();
-  // The one address on the sign-in screen, since the field that used to ask for
-  // it is gone: it says which deployment a key is about to be sent to.
-  $("signin-where").textContent = state.url || "this deployment";
 
   const saved = loadCredentials();
   if (saved.key) {
