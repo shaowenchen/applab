@@ -48,32 +48,9 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 # release that has to exist first — which is the failure that put this here, since
 # the chart's appVersion had never been published at all.
 #
-# imagePullPolicy is Always (set below), so a moving tag is re-resolved on every
-# start rather than being served from a node's cache.
+# The chart pulls with imagePullPolicy: Always, so a moving tag is re-resolved on
+# every start rather than being served from a node's cache.
 : "${APPLAB_VERSION:=latest}"
-
-# APPLAB_LOCAL_IMAGE names an image already built on this machine, which is
-# loaded into the kind nodes instead of being pulled. CI sets it: the point of
-# running an environment there is to exercise the commit under test, and an image
-# pulled from a registry is whatever was published last, which may be neither that
-# commit nor in the registry at all.
-#
-# It also removes a race. A pull depends on someone else having pushed first; a
-# load depends on nothing.
-: "${APPLAB_LOCAL_IMAGE:=}"
-
-# Always when pulling, because the tag is `latest` and a node that already has it
-# would otherwise keep serving the previous build — the deploy reports success
-# while running the old image, which is the hardest kind of failure to notice.
-#
-# Never when the image was loaded locally: there is nothing to pull it from, and
-# `Always` would send the kubelet to a registry that has never heard of it.
-# `IfNotPresent` is right there, because the image is already on the node.
-if [ -n "$APPLAB_LOCAL_IMAGE" ]; then
-  : "${APPLAB_IMAGE_PULL_POLICY:=IfNotPresent}"
-else
-  : "${APPLAB_IMAGE_PULL_POLICY:=Always}"
-fi
 
 : "${APPLAB_API_KEY:=}"
 : "${APPLAB_SESSION_HOURS:=0}"
@@ -386,37 +363,6 @@ docker network connect "kind" "$APPLAB_REGISTRY_NAME" 2>/dev/null || true
 # An image built here goes straight into the nodes, so the cluster never has to
 # reach a registry for it. `kind load` copies the layers into each node's
 # containerd, which is why no pull secret and no network path are needed.
-#
-# The image keeps the name it was built with, and the chart is pointed at that
-# same name below — a load matches on the reference, so retagging it here would
-# only create a second name for the nodes to not find.
-if [ -n "$APPLAB_LOCAL_IMAGE" ]; then
-  log "loading the locally built image ${APPLAB_LOCAL_IMAGE} into the cluster"
-  docker image inspect "$APPLAB_LOCAL_IMAGE" >/dev/null 2>&1 \
-    || die "APPLAB_LOCAL_IMAGE is '${APPLAB_LOCAL_IMAGE}', which is not an image on this machine; build it first"
-  kind load docker-image --name "$APPLAB_CLUSTER_NAME" "$APPLAB_LOCAL_IMAGE"
-
-  # Everything before the tag is the repository, which is what the chart is told.
-  #
-  # A colon may be the tag separator or a registry's port — "registry:5000/apps"
-  # has no tag — so the separator is a colon in the *last* path segment, and only
-  # there. Splitting on the last colon anywhere would read that port as a tag and
-  # hand the chart a repository of "registry".
-  #
-  # A reference with no tag at all is left as the repository, and APPLAB_VERSION
-  # keeps the `latest` set above: an untagged name means `latest` to Docker, so
-  # the two agree without this having to say so.
-  last_segment="${APPLAB_LOCAL_IMAGE##*/}"
-  case "$last_segment" in
-    *:*)
-      APPLAB_VERSION="${last_segment##*:}"
-      APPLAB_IMAGE_REPOSITORY="${APPLAB_LOCAL_IMAGE%:*}"
-      ;;
-    *)
-      APPLAB_IMAGE_REPOSITORY="$APPLAB_LOCAL_IMAGE"
-      ;;
-  esac
-fi
 
 # Advertise the registry to the cluster so a discovery-aware runtime (and
 # anything reading the convention) finds the same answer the mirror gives.
@@ -535,7 +481,6 @@ if ! helm install applab "$REPO_ROOT/charts/applab" \
   --set ingress.enabled=false \
   --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \
   --set "image.tag=${APPLAB_VERSION}" \
-  --set "image.pullPolicy=${APPLAB_IMAGE_PULL_POLICY}" \
   --timeout 10m
 then
   warn "applab did not install; the state it left behind follows"

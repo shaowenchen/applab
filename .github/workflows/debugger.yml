@@ -7,9 +7,7 @@
 #
 # Manual only, deliberately. It holds a runner for the whole session and starts
 # a real cluster, a registry and a gateway, which is far too much to spend on
-# every push — and a check that runs on every push is what image.yml is for. The
-# same environment is exercised there as a check, in its end-to-end job: it
-# starts what this starts, asserts it works, and tears it down.
+# every push — and the checks that run on every push are what image.yml is for.
 name: debugger
 
 on:

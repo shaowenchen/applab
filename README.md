@@ -331,10 +331,8 @@ apps match on `/<pathPrefix>/<app>/`, a prefix the console's own paths do not
 share. That ordering is defined, so nothing has to sit in front of the gateway to
 tell the two apart.
 
-The same environment runs as a check on every push, in the `image` workflow's
-`end-to-end` job, which pushes [`hack/demo-app`](hack/demo-app/Dockerfile) through
-it — so "an app can be uploaded, built, deployed and served" is a check rather
-than a claim.
+CI checks the commit and builds the image on every change; the environment above
+is what a person starts when they want to push an app at something.
 
 ### The documentation site
 

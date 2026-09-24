@@ -152,7 +152,6 @@ are ordinary scripts, and they are documented where they are:
 | [debugger/action.yml](action.yml) | The composite action: installs kind, kubectl, istioctl, helm and a tunnel agent, then runs the script. |
 | [hack/environment.sh](../hack/environment.sh) | The whole environment, in order. Set `APPLAB_PUBLIC_HOST` to skip the tunnel and use a hostname you already have, or `APPLAB_DOMAIN` to name the domain a named tunnel serves apps under. |
 | [hack/summary.sh](../hack/summary.sh) | Publishes the link and the key to the job summary. |
-| [hack/demo-app/Dockerfile](../hack/demo-app/Dockerfile) | A minimal app, used by CI to prove push, build, deploy and serve work. |
 
 ## License
 
