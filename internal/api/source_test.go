@@ -124,8 +124,9 @@ func TestUploadSourceRawBody(t *testing.T) {
 	if result.Message != "hello" {
 		t.Errorf("message = %q, want %q", result.Message, "hello")
 	}
-	if result.Files != 2 {
-		t.Errorf("files = %d, want 2", result.Files)
+	// The upload's two files, plus the ones applab seeds into every tree.
+	if result.Files != 2+source.SeededFileCount() {
+		t.Errorf("files = %d, want %d", result.Files, 2+source.SeededFileCount())
 	}
 }
 
@@ -169,8 +170,8 @@ func TestUploadSourceMultipart(t *testing.T) {
 		Files int `json:"files"`
 	}
 	decodeData(t, rec, &result)
-	if result.Files != 1 {
-		t.Errorf("files = %d, want 1", result.Files)
+	if want := 1 + source.SeededFileCount(); result.Files != want {
+		t.Errorf("files = %d, want %d", result.Files, want)
 	}
 }
 
@@ -293,8 +294,9 @@ func TestCommitHistory(t *testing.T) {
 	}
 	decodeData(t, rec, &listing)
 
-	if len(listing.Commits) != 2 {
-		t.Fatalf("got %d commits, want 2", len(listing.Commits))
+	// Two uploads on top of the commit a new repository starts with.
+	if want := 2 + source.SeededCommitCount(); len(listing.Commits) != want {
+		t.Fatalf("got %d commits, want %d", len(listing.Commits), want)
 	}
 	if listing.Commits[0].SHA != second {
 		t.Errorf("newest commit = %s, want %s", listing.Commits[0].SHA, second)
@@ -398,8 +400,8 @@ func TestChunkedUpload(t *testing.T) {
 	if result.CommitSHA == "" {
 		t.Error("the chunked upload produced no commit")
 	}
-	if result.Files != 2 {
-		t.Errorf("files = %d, want 2; the parts were not reassembled correctly", result.Files)
+	if want := 2 + source.SeededFileCount(); result.Files != want {
+		t.Errorf("files = %d, want %d; the parts were not reassembled correctly", result.Files, want)
 	}
 }
 

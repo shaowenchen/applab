@@ -111,8 +111,11 @@ func TestIngestCreatesCommitAndIsClonable(t *testing.T) {
 	if result.SHA == "" {
 		t.Fatal("Ingest produced no commit")
 	}
-	if result.Files != 3 {
-		t.Errorf("Files = %d, want 3", result.Files)
+	// The count is the upload plus the files applab seeds into every tree — see
+	// seed.go. Asserted against len(seeded) rather than a rewritten literal so
+	// adding a seeded file does not require editing every count in this file.
+	if result.Files != 3+len(seeded) {
+		t.Errorf("Files = %d, want %d", result.Files, 3+len(seeded))
 	}
 	if result.Subject != "initial upload" {
 		t.Errorf("Subject = %q, want %q", result.Subject, "initial upload")
@@ -299,8 +302,8 @@ func TestIngestGzipTransparently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ingest of a gzipped archive: %v", err)
 	}
-	if result.Files != 1 {
-		t.Errorf("Files = %d, want 1", result.Files)
+	if result.Files != 1+len(seeded) {
+		t.Errorf("Files = %d, want %d", result.Files, 1+len(seeded))
 	}
 }
 
@@ -361,8 +364,9 @@ func TestIngestExtendsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Log: %v", err)
 	}
-	if len(commits) != 2 {
-		t.Fatalf("Log returned %d commits, want 2", len(commits))
+	// Two uploads on top of the commit a new repository starts with.
+	if len(commits) != 2+seedCommits {
+		t.Fatalf("Log returned %d commits, want %d", len(commits), 2+seedCommits)
 	}
 	// Newest first.
 	if commits[0].SHA != second.SHA {
@@ -470,7 +474,14 @@ func TestIngestRejectsInvalidAppID(t *testing.T) {
 
 // TestLogOnEmptyRepository asserts a freshly created app reads as having no
 // commits rather than as an error, since that is a normal state.
-func TestLogOnEmptyRepository(t *testing.T) {
+// TestANewRepositoryHasExactlyTheSeedCommit asserts what a repository holds
+// between creation and the first upload.
+//
+// This used to assert it held *nothing*, which was true when creation made a
+// bare repository with no refs. It now holds one commit — the files that tell a
+// caller how to work with the app — so the guarantee worth keeping is that it
+// holds exactly those and that Log and HeadCommit behave on it.
+func TestANewRepositoryHasExactlyTheSeedCommit(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
@@ -480,14 +491,21 @@ func TestLogOnEmptyRepository(t *testing.T) {
 
 	commits, err := s.Log(ctx, "shop", 10)
 	if err != nil {
-		t.Fatalf("Log on an empty repository: %v", err)
+		t.Fatalf("Log on a new repository: %v", err)
 	}
-	if len(commits) != 0 {
-		t.Errorf("got %d commits from an empty repository, want 0", len(commits))
+	if len(commits) != seedCommits {
+		t.Errorf("got %d commits from a new repository, want %d", len(commits), seedCommits)
 	}
 
-	if _, err := s.HeadCommit(ctx, "shop"); err == nil {
-		t.Error("HeadCommit succeeded on an empty repository")
+	// A clone has something to check out, which is the point of the seed commit:
+	// a repository whose HEAD names a ref that does not exist clones to nothing
+	// and warns about a detached HEAD.
+	head, err := s.HeadCommit(ctx, "shop")
+	if err != nil {
+		t.Fatalf("HeadCommit on a new repository: %v", err)
+	}
+	if head != commits[0].SHA {
+		t.Errorf("HeadCommit = %s, want the tip Log reported, %s", head, commits[0].SHA)
 	}
 }
 
@@ -539,12 +557,34 @@ func TestIngestStripsDangerousModes(t *testing.T) {
 	}
 
 	out := runGit(t, mustRepoPath(t, s, "shop"), "ls-tree", "-r", "refs/heads/main")
-	if strings.Contains(out, "1004") || strings.Contains(out, "1006") {
-		t.Errorf("a setuid or setgid mode survived into the committed tree:\n%s", out)
+
+	// The mode is the first field of each line, and it is read as one.
+	//
+	// The original check was a substring search over the whole output, which was
+	// wrong in a way that only showed up once trees grew: a blob's SHA is hex and
+	// contains "1004" often enough that the search reported a setuid mode on a
+	// tree that had none. Reading the field the mode actually lives in is both
+	// correct and narrower — any mode that is not one of the three git stores is
+	// a failure, rather than only the two this test happened to name.
+	sawExecutable := false
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "100644": // regular file
+		case "100755": // executable file
+			sawExecutable = true
+		case "040000": // tree, which -r does not normally list
+		default:
+			t.Errorf("unexpected mode %s in committed tree: %s", fields[0], line)
+		}
 	}
-	// The plain executable bit is the only thing that may remain.
-	if !strings.Contains(out, "100755") && !strings.Contains(out, "100644") {
-		t.Errorf("unexpected mode in committed tree:\n%s", out)
+	// The seed script has to keep its executable bit, which is the legitimate use
+	// of 100755 and the thing the mode stripping must not take away.
+	if !sawExecutable {
+		t.Errorf("no file at the tip is executable; the seed script must be:\n%s", out)
 	}
 }
 

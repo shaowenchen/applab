@@ -173,6 +173,15 @@ func (s *Store) Create(ctx context.Context, appID string) error {
 		return fmt.Errorf("set default branch for app %s: %w", appID, err)
 	}
 
+	// An opening commit carrying the files that tell a caller how to work with
+	// this app. It is committed here rather than left to the first upload so that
+	// cloning an app that has never been pushed to produces something usable —
+	// and the upload path injects the same files again, because a commit is built
+	// from the uploaded tree alone and would otherwise replace them.
+	if err := s.seedCommit(ctx, appID, repoPath); err != nil {
+		return fmt.Errorf("commit the seed files for app %s: %w", appID, err)
+	}
+
 	// Receive-pack is what a push needs, and the repository was just created by
 	// the same user that runs the server, so the default hooks are already
 	// correct. Nothing further is configured.

@@ -1,0 +1,253 @@
+#!/bin/sh
+# The full lifecycle of this app, from a shell, with nothing but curl.
+#
+# This file is written by applab on every upload — edit it and your changes are
+# gone with the next push. It is the same on every app; what changes is the
+# APP below.
+#
+# It needs curl and a key, and nothing else:
+#
+#     export APPLAB_URL="https://applab.example.com"
+#     export APPLAB_KEY="<the app's key>"
+#     ./applab.sh status
+#
+# The key is deliberately not built into this script. This repository is cloned,
+# uploaded, built into an image and mirrored like any other source, so a key
+# written here would travel everywhere the source goes — and it is a credential
+# that can deploy this app. Get it from the deployment (the console's app page
+# shows it, or `GET /api/v1/apps/APP/key` with an admin key) and put it in the
+# environment, where it is not committed, not built and not cloned.
+#
+# Run `./applab.sh help` for the commands.
+
+set -eu
+
+APP="{{APP}}"
+
+: "${APPLAB_URL:?set APPLAB_URL to the deployment, e.g. https://applab.example.com}"
+: "${APPLAB_KEY:?set APPLAB_KEY to the key for this app; see the notes at the top of this file}"
+
+# Every call is JSON in and JSON out. Success is the payload under "data";
+# failure is a non-2xx with {"error": "..."} and sometimes {"retryable": true}.
+# The -f makes curl exit non-zero on a non-2xx, which is what lets the shell
+# stop instead of acting on an error body.
+api() {
+  method="$1"; path="$2"; body="${3:-}"
+  if [ -n "$body" ]; then
+    curl -fsS -X "$method" "$APPLAB_URL$path" \
+      -H "Authorization: Bearer $APPLAB_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$body"
+  else
+    curl -fsS -X "$method" "$APPLAB_URL$path" \
+      -H "Authorization: Bearer $APPLAB_KEY"
+  fi
+}
+
+# urlencode makes a value safe to put in a query string.
+#
+# Commit messages are free text, and a space in one is enough to make curl reject
+# the whole URL — which it does by exiting non-zero *before* sending anything, so
+# a missing encoding is not a mangled message, it is no message and no upload.
+#
+# Only the characters a commit message plausibly contains *and* that carry
+# meaning in a URL are replaced. Anything else — including every non-ASCII byte
+# of a message written in another language — is left as it stands, which is what
+# the API expects from a UTF-8 query value.
+urlencode() {
+  printf '%s' "$1" | sed \
+    -e 's/%/%25/g' \
+    -e 's/ /%20/g' \
+    -e 's/&/%26/g' \
+    -e 's/#/%23/g' \
+    -e 's/?/%3F/g' \
+    -e 's/+/%2B/g' \
+    -e 's/=/%3D/g' \
+    -e "s/'/%27/g"
+}
+
+# Reads one field out of a JSON response, so the script does not depend on jq.
+json_field() {
+  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+# The app's own id, so the script works without a key for anything local.
+usage() {
+  cat <<'EOF'
+usage: ./applab.sh <command>
+
+  push [message]   upload this directory, build it and deploy it
+  upload [message] upload this directory without building
+  build [commit]   build a commit (default: the current tip)
+  deploy [commit]  deploy a commit (default: the current tip)
+  rollback <commit>  deploy an earlier commit, reusing its image
+  status           what is running, and where
+  logs [-f]        the app's log; -f follows it
+  diagnose         why the app is not working, if it is not
+  history          the commit history
+  builds           the build history
+  url              just the address the app is served at
+  self-update      fetch the current applab.sh and AGENT.md from the deployment
+  help             this
+
+Environment:
+  APPLAB_URL   the deployment, e.g. https://applab.example.com   (required)
+  APPLAB_KEY   the key for this app                              (required)
+EOF
+}
+
+# push packages this directory the way applab expects.
+#
+# The exclusions are the ones that would make an upload slower and a build no
+# more correct: build output, dependencies and the git directory itself. A
+# .gitignore is honoured by nothing here — the archive *is* the statement of what
+# to store, so what is listed is what lands.
+package() {
+  tar czf - \
+    --exclude=./.git \
+    --exclude=./node_modules \
+    --exclude=./target \
+    --exclude=./.venv \
+    --exclude=./__pycache__ \
+    --exclude=./applab.sh \
+    --exclude=./AGENT.md \
+    .
+}
+
+upload() {
+  message="$(urlencode "${1:-upload from applab.sh}")"
+
+  # The response is captured first and the commit extracted from it, rather than
+  # piping curl into json_field. Piping hides curl's exit status — a pipeline
+  # reports the last command's, and json_field succeeds on empty input — so a
+  # refused upload would return an empty commit and the caller would carry on to
+  # build nothing. Assigning from a command substitution is not exempt from a
+  # failure either: the assignment has to be checked, which `if !` does.
+  response=$(package | curl -fsS -X POST \
+    "$APPLAB_URL/api/v1/apps/$APP/source?message=$message" \
+    -H "Authorization: Bearer $APPLAB_KEY" \
+    -H "Content-Type: application/gzip" \
+    --data-binary @-) || return 1
+
+  sha=$(printf '%s' "$response" | json_field commit_sha)
+  if [ -z "$sha" ]; then
+    echo "the upload was accepted but named no commit: $response" >&2
+    return 1
+  fi
+  printf '%s' "$sha"
+}
+
+# self-update replaces this script and AGENT.md with the deployment's current
+# copies.
+#
+# applab's API changes between releases, and these files are written into the
+# repository on every upload — so a checkout that has not been pushed in a while
+# carries a script that may call an endpoint that no longer exists. Fetching the
+# current version from the running server is what makes that recoverable without
+# a push, and it is the same content the next upload would write anyway.
+#
+# The script is self-modifying, and it is the only file it could mean — but the
+# directory it writes to is the one the script lives in, not the one the caller
+# happens to be standing in. `../applab.sh self-update` from a subdirectory must
+# replace the script, not drop a second copy into the subdirectory.
+#
+# Each file is written to a temporary and then moved, so an interrupted or failed
+# download cannot leave a half-written script where a working one was.
+self_update() {
+  dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+  for name in applab.sh AGENT.md; do
+    url="$APPLAB_URL/api/v1/apps/$APP/agent/files/$name"
+    tmp="$dir/$name.applab-new"
+
+    if ! curl -fsS -H "Authorization: Bearer $APPLAB_KEY" "$url" -o "$tmp"; then
+      rm -f "$tmp"
+      echo "could not fetch $name from $url" >&2
+      return 1
+    fi
+    # An empty response is not the file, and writing it would replace a working
+    # script with something that cannot run.
+    if [ ! -s "$tmp" ]; then
+      rm -f "$tmp"
+      echo "$name came back empty; nothing was replaced" >&2
+      return 1
+    fi
+    if [ "$name" = "applab.sh" ]; then
+      chmod +x "$tmp"
+    fi
+    mv "$tmp" "$dir/$name"
+    echo "updated $dir/$name" >&2
+  done
+
+  echo "re-run the script to use the new version" >&2
+}
+
+case "${1:-help}" in
+  push)
+    shift
+    sha=$(upload "${1:-push from applab.sh}")
+    echo "committed $sha" >&2
+    api POST "/api/v1/apps/$APP/builds" "{\"commit_sha\":\"$sha\"}" >/dev/null
+    echo "building; the first build has no cache and takes a while" >&2
+    # A build is a Job, so it is polled rather than waited on by the API. The
+    # loop is bounded so a wedged build fails here instead of hanging forever.
+    i=0
+    while [ "$i" -lt 180 ]; do
+      state=$(api GET "/api/v1/apps/$APP/builds/$sha" | json_field status)
+      case "$state" in
+        succeeded) break ;;
+        failed|build-failed) echo "build failed; see: ./applab.sh builds" >&2; exit 1 ;;
+      esac
+      i=$((i + 1)); sleep 5
+    done
+    api POST "/api/v1/apps/$APP/deploy" "{\"commit_sha\":\"$sha\"}" | json_field url
+    ;;
+  upload)
+    shift
+    upload "$@"
+    ;;
+  build)
+    shift
+    api POST "/api/v1/apps/$APP/builds" "{\"commit_sha\":\"${1:-}\"}"
+    ;;
+  deploy)
+    shift
+    api POST "/api/v1/apps/$APP/deploy" "{\"commit_sha\":\"${1:-}\"}"
+    ;;
+  rollback)
+    shift
+    [ -n "${1:-}" ] || { echo "rollback needs a commit; see ./applab.sh history" >&2; exit 2; }
+    api POST "/api/v1/apps/$APP/rollback" "{\"commit_sha\":\"$1\"}"
+    ;;
+  status)
+    api GET "/api/v1/apps/$APP/status"
+    ;;
+  logs)
+    shift
+    if [ "${1:-}" = "-f" ]; then follow=true; else follow=false; fi
+    api GET "/api/v1/apps/$APP/logs?follow=$follow&tail=500"
+    ;;
+  diagnose)
+    api GET "/api/v1/apps/$APP/diagnose"
+    ;;
+  history)
+    api GET "/api/v1/apps/$APP/commits?limit=50"
+    ;;
+  builds)
+    api GET "/api/v1/apps/$APP/builds?limit=20"
+    ;;
+  url)
+    api GET "/api/v1/apps/$APP/status" | json_field url
+    ;;
+  self-update)
+    self_update
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

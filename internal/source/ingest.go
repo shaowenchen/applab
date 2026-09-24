@@ -109,6 +109,18 @@ func (s *Store) Ingest(
 		return &IngestResult{Empty: true, Stripped: stripped}, nil
 	}
 
+	// The seeded files go in last, after the wrapper directory has been stripped
+	// and before the tree is committed, so they land at the root of what the app
+	// actually builds and no uploader can drop them below it.
+	//
+	// This has to happen on every upload, not only when the repository is
+	// created: a commit is built from the uploaded tree alone, so whatever an
+	// earlier commit contained is replaced wholesale. Seeding at creation would
+	// produce files that vanish with the first push.
+	if err := writeSeed(workTree, appID); err != nil {
+		return nil, err
+	}
+
 	subject := firstLine(message)
 	if subject == "" {
 		subject = defaultCommitSubject(appID)

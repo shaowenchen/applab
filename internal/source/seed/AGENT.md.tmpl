@@ -1,0 +1,151 @@
+# Working on `{{APP}}`
+
+This file is written by applab every time source is uploaded to the app
+`{{APP}}`. Editing it here changes nothing: the next push overwrites it. It
+describes how to drive this app's whole lifecycle, and it is the same file in
+every app — what differs is the app's id and its key.
+
+## What this app is
+
+An applab app is one source repository, one image, one Deployment and one
+address. This repository **is** the app's source: uploading to it is how code
+gets in, and what is committed is what can be deployed.
+
+The app is served at a URL the deployment knows. Ask for it:
+
+    curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/status"
+
+## The two things you need
+
+    export APPLAB_URL="<the deployment, e.g. https://applab.example.com>"
+    export APPLAB_KEY="<the app's key>"
+
+`APPLAB_URL` is the base address of the applab that manages this app — the same
+address its console is served at. `GET $APPLAB_URL/api/v1/describe` needs no key
+and reports it, along with every endpoint that exists.
+
+`APPLAB_KEY` is the credential for **this app**. It reaches this app and nothing
+else: upload, build, deploy, roll back, read logs, change configuration. It
+cannot delete the app and cannot see any other app on the platform. It is
+deliberately not written into this repository — this source is cloned, uploaded,
+built into an image and mirrored, so a key committed here would travel with it.
+Get it from whoever runs the deployment; the console shows it on the app's page,
+and an admin key can fetch it with
+`GET $APPLAB_URL/api/v1/apps/{{APP}}/key`.
+
+## `./applab.sh`
+
+The repository carries a script that does all of this with nothing but curl.
+It reads the two variables above, so it needs no arguments beyond the command.
+
+    ./applab.sh push              # upload, build, deploy — the whole path
+    ./applab.sh status            # what is running, and where
+    ./applab.sh logs -f           # watch it
+    ./applab.sh diagnose          # why it is not working, if it is not
+    ./applab.sh history           # commits you can deploy or roll back to
+    ./applab.sh rollback <commit> # go back to an earlier one
+    ./applab.sh help              # everything else
+
+`push` is the normal path. The rest are for when something needs looking at.
+
+**Keep it current.** Both files are written into this repository every time
+source is uploaded, so a checkout that has not been pushed in a while carries a
+copy from whenever it last was — and applab's API changes between releases. If a
+command here fails in a way that suggests the deployment has moved on, refresh
+them from the running server:
+
+    ./applab.sh self-update
+
+That fetches the current `applab.sh` and `AGENT.md`, which is exactly what the
+next upload would write. It needs `APPLAB_URL` and `APPLAB_KEY` set, like
+everything else.
+
+## The API, if you would rather not use the script
+
+Every call takes `Authorization: Bearer $APPLAB_KEY`. Every response is
+`{"data": ...}` on success and `{"error": "..."}` with a non-2xx status on
+failure; a 2xx means it worked. `GET $APPLAB_URL/api/v1/describe` lists them all
+with the credential each one needs.
+
+**Upload source** — a tar or tar.gz of the project, as the raw request body.
+This is the one call that puts code in.
+
+    tar czf - --exclude=./.git . \
+      | curl -sS -X POST "$APPLAB_URL/api/v1/apps/{{APP}}/source?message=<note>" \
+          -H "Authorization: Bearer $APPLAB_KEY" \
+          -H "Content-Type: application/gzip" \
+          --data-binary @-
+
+A single wrapping directory is stripped, so `tar czf - myproject` lands with the
+project's contents at the root. A source tree identical to the current tip is a
+no-op — it returns the existing commit rather than adding an empty one.
+
+**Build it** — from a commit, or from the current tip if `commit_sha` is omitted.
+
+    curl -sS -X POST "$APPLAB_URL/api/v1/apps/{{APP}}/builds" \
+      -H "Authorization: Bearer $APPLAB_KEY" -H "Content-Type: application/json" \
+      -d '{"commit_sha":"<sha>"}'
+
+A build runs as a Job in the cluster and returns immediately. The image is built
+from the `Dockerfile` in the source — the one requirement applab puts on a
+project.
+
+**Deploy it** — names a commit and returns the address it is served at.
+
+    curl -sS -X POST "$APPLAB_URL/api/v1/apps/{{APP}}/deploy" \
+      -H "Authorization: Bearer $APPLAB_KEY" -H "Content-Type: application/json" \
+      -d '{"commit_sha":"<sha>"}'
+
+A deploy of a commit that was never built fails with 409 and names the fix rather
+than quietly building first — pass `{"build":true}` to have it build and deploy
+in one call. A commit that *was* built has its image reused, so deploying an
+earlier commit is a rollback.
+
+**Watch it** — the two calls worth knowing:
+
+    curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/status"  -H "Authorization: Bearer $APPLAB_KEY"
+    curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/logs?follow=false&tail=500" -H "Authorization: Bearer $APPLAB_KEY"
+
+`status` reports what applab recorded *and* what the cluster shows, separately
+and deliberately unreconciled: when the two disagree, the cluster is right.
+
+`GET /api/v1/apps/{{APP}}/diagnose` answers "why is it not working" in one call —
+pods, events and the relevant log, most likely cause first. Reach for it before
+reading the individual endpoints.
+
+## Configuration travels with the code
+
+Environment variables and secrets are set through the API and take effect on the
+next deploy, not immediately — configuration follows the same path as source.
+
+    curl -sS -X PUT "$APPLAB_URL/api/v1/apps/{{APP}}/env" \
+      -H "Authorization: Bearer $APPLAB_KEY" -H "Content-Type: application/json" \
+      -d '{"env":{"LOG_LEVEL":"debug"}}'
+
+Secrets are set the same way at `.../secrets`. A secret's value can never be read
+back — not through this API, not from the console, not from the CLI. Setting one
+again replaces it, and reading the app's configuration returns the *names* of its
+secrets and nothing more.
+
+`PORT` is refused as an environment variable: it is derived from the app's
+configured port.
+
+## Three things that are easy to get wrong
+
+**A deploy is not a build.** They are separate calls on purpose, so a build
+failure is never reported as a deploy failure, and so a rollback cannot fail for
+a reason the original build did not.
+
+**The seeded files are applab's, not yours.** `applab.sh` and `AGENT.md` are
+written on every upload, so an edit to either is gone with the next push. The
+current versions are servable too — `GET $APPLAB_URL/api/v1/apps/{{APP}}/agent/files`
+lists them and each has its own URL — which is what `./applab.sh self-update`
+uses.
+
+**The source is a real git repository.** It can be cloned with any git client —
+the key goes in as the password, any username works:
+
+    git clone "https://x:$APPLAB_KEY@<host>/git/{{APP}}.git"
+
+That address is on the app's page in the console. Everything in the history is
+deployable, which is what makes a rollback possible.

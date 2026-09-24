@@ -697,6 +697,24 @@ func (s *Server) routes() []route {
 			Handler: s.handleRotateAppKey,
 		},
 
+		// -- The files applab keeps in an app's tree ----------------------
+		{
+			// What the seeded files are, served from the running server so a copy
+			// in a repository can update itself — see handleAgentFile.
+			Pattern: "GET /api/v1/apps/{app}/agent/files/{file}",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "One of the files applab keeps in this app's source tree (`applab.sh`, `AGENT.md`), as `text/plain`. This is the current version the deployment would write on the next upload — a copy in a repository can fetch it to bring itself up to date, since applab's API changes between releases. The same content is committed into every app's tree; see `?list` on the app's source for what is there.",
+			Handler: s.handleAgentFile,
+		},
+		{
+			Pattern: "GET /api/v1/apps/{app}/agent/files",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "The names of the files applab keeps in this app's source tree. Each is servable from `GET /api/v1/apps/{app}/agent/files/{file}`.",
+			Handler: s.handleAgentFiles,
+		},
+
 		// -- Source -------------------------------------------------------
 		{
 			Pattern: "POST /api/v1/apps/{app}/source",
