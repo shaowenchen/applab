@@ -181,12 +181,19 @@
      banner above it is where a failed sign-in is reported, and an overlay would
      cover the very message explaining why the form did not accept the key. The
      header is hidden while this is up — it has no navigation, no endpoint and no
-     sign-out to offer yet — so the card is what is left on the page. */
+     sign-out to offer yet — so the card is what is left on the page.
+
+     Centred with a little space above rather than in the middle of the viewport.
+     A min-height that pushed the card to the middle left a large empty area
+     under it, which on a tall screen is most of what the page shows — and the
+     one thing this screen has to say is in the card. */
   .signin {
-    min-height: 70vh;
     display: flex;
-    align-items: center;
     justify-content: center;
+    /* Vertical space only. The card is inside <main>, which already supplies the
+       page's horizontal padding — adding more here would double it on a narrow
+       screen and squeeze the card. */
+    margin-top: 32px;
   }
   .signin-card {
     width: 100%;
