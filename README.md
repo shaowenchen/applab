@@ -419,7 +419,7 @@ platform, and whoever deploys one app.
 
 | | Admin key | App key |
 |---|---|---|
-| Where it comes from | `APPLAB_KEYS`, or `auth.keys` in the chart | Created with the app, in a Secret |
+| Where it comes from | `APPLAB_KEYS`, or `auth.key` in the chart | Created with the app, in a Secret |
 | Reaches | Everything | One app |
 | Delete that app | Yes | No |
 | Clone its repository | Any | Its own |

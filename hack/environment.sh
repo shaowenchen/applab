@@ -490,7 +490,7 @@ log "installing applab in namespace ${APPLAB_NAMESPACE}"
 
 kubectl create namespace "$APPLAB_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-# The key goes in through a Secret rather than --set auth.keys[0]=..., which
+# The key goes in through a Secret rather than --set auth.key=..., which
 # would write it into the release's stored values where anyone with read on the
 # namespace can recover it.
 kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \

@@ -105,7 +105,7 @@ docker-push:
 .PHONY: helm-template
 helm-template:
 	helm template applab charts/applab --namespace applab-system \
-		--set "auth.keys[0]=$${APPLAB_KEY:-replace-me}" \
+		--set "auth.key=$${APPLAB_KEY:-replace-me}" \
 		--set apps.baseDomain=$${BASE_DOMAIN:-apps.example.com} \
 		--set build.registry=$${REGISTRY:-registry.example.com/apps}
 

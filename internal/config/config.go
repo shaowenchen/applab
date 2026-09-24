@@ -28,7 +28,22 @@ type Config struct {
 	// derive it from the request's Host header, which is right on a cluster
 	// fronted by an ingress and wrong the moment a proxy rewrites Host — so
 	// setting it explicitly is the safer deployment.
+	//
+	// It includes BasePath when there is one: this is the whole address, not a
+	// hostname.
 	BaseURL string `yaml:"base_url"`
+
+	// BasePath is the path prefix this service is served under, e.g. "/applab".
+	//
+	// It exists because of how a Kubernetes Ingress works: an Ingress routes on a
+	// path but cannot strip one, so an applab served at "/applab" receives
+	// requests for "/applab/api/v1/...". Without this the server would match
+	// none of them and answer 404 to every request while the Ingress looked
+	// correct.
+	//
+	// Empty means the root, which is the default and what a deployment reached at
+	// its own hostname wants.
+	BasePath string `yaml:"base_path"`
 
 	// Keys are the API keys this deployment accepts. A key is the whole
 	// identity: there is no user store, so a key that authenticates may do
@@ -299,6 +314,7 @@ func Load() (Config, error) {
 func applyEnv(cfg *Config) {
 	setString(&cfg.Listen, "APPLAB_LISTEN")
 	setString(&cfg.BaseURL, "APPLAB_BASE_URL")
+	setString(&cfg.BasePath, "APPLAB_BASE_PATH")
 	setString(&cfg.DataDir, "APPLAB_DATA_DIR")
 	setString(&cfg.DBPath, "APPLAB_DB_PATH")
 	setString(&cfg.LogLevel, "APPLAB_LOG_LEVEL")
@@ -522,6 +538,27 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("path_prefix is %q but base_domain is empty: the prefix distinguishes apps on a shared host, so there has to be a host. Set base_domain, or leave path_prefix empty", c.PathPrefix)
 		}
 		c.PathPrefix = p
+	}
+
+	// The base path is normalized the same way, and for the same reason:
+	// "/applab/" and "applab" are both what someone would write meaning the same
+	// thing. What is refused is a value that cannot be a path.
+	//
+	// "/" normalizes to empty rather than being kept, because empty is what the
+	// root already is — writing "/" is a plausible way to *say* the root, and
+	// storing it as a prefix would make every route "//api/v1/...".
+	if p := strings.TrimSpace(c.BasePath); p != "" {
+		if strings.ContainsAny(p, "?#") {
+			return fmt.Errorf("base_path %q must be a path, without a query or fragment", c.BasePath)
+		}
+		p = "/" + strings.Trim(p, "/")
+		if p == "/" {
+			p = ""
+		}
+		if strings.Contains(p, "//") {
+			return fmt.Errorf("base_path %q has an empty segment", c.BasePath)
+		}
+		c.BasePath = p
 	}
 
 	// A base domain with no gateway produces a VirtualService with an empty

@@ -31,7 +31,7 @@ trap 'rm -rf "$RUNTIME_DIR"' EXIT
 # defaults in values.yaml are not what is being checked.
 BASE=(
   --namespace "$NS"
-  --set "auth.keys[0]=test-key-do-not-use"
+  --set "auth.key=test-key-do-not-use"
   --set "apps.baseDomain=apps.example.com"
   --set "deploy.gateway=$NS/gateway"
   --set "build.registry=registry.example.com/apps"
@@ -111,12 +111,31 @@ must_fail() {
   fi
 }
 must_fail "no API keys"       --set apps.baseDomain=a.example.com
-must_fail "no registry"       --set "auth.keys[0]=k" --set apps.baseDomain=a.example.com --set "deploy.gateway=$NS/gateway"
-must_fail "bad gateway"       --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway=nope"
+must_fail "no registry"       --set "auth.key=k" --set apps.baseDomain=a.example.com --set "deploy.gateway=$NS/gateway"
+must_fail "bad gateway"       --set "auth.key=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway=nope"
 # deploy.gateway now has a default, so "unset" no longer produces an empty one;
 # these two blank it explicitly to reach the guard.
-must_fail "blanked gateway"   --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway="
+must_fail "blanked gateway"   --set "auth.key=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway="
 must_fail "two replicas"      "${BASE[@]}" --set replicaCount=2
+
+# One key is the whole auth surface a release carries, so the value has to reach
+# the Secret the server reads — and only there.
+keyed="$(render)"
+grep -q 'APPLAB_KEYS: "test-key-do-not-use"' <<<"$keyed" \
+  || fail "auth.key does not reach the Secret's APPLAB_KEYS"
+[[ "$(grep -c 'APPLAB_KEYS' <<<"$keyed")" == 1 ]] \
+  || fail "APPLAB_KEYS appears more than once; the key is written somewhere it should not be"
+
+# An existing Secret replaces this chart's entirely, and the Deployment has to
+# point at it — that path is the one that carries more than one key.
+existing="$(render --set auth.existingSecret=my-keys --set auth.key=leak-canary-2f9a)"
+grep -q 'name: my-keys' <<<"$existing" \
+  || fail "auth.existingSecret does not reach the Deployment"
+[[ "$(grep -c 'kind: Secret' <<<"$existing")" == 0 ]] \
+  || fail "auth.existingSecret is set but the chart still renders its own Secret"
+if grep -q 'leak-canary-2f9a' <<<"$existing"; then
+  fail "auth.key is written into the release even though auth.existingSecret is set"
+fi
 
 # Every manifest's top-level keys have to be ones Kubernetes knows. Text emitted
 # outside a YAML structure — a warning written as bare prose, say — becomes a
@@ -185,7 +204,7 @@ grep -q 'APPLAB_DEPLOY_GATEWAY: "ops-system/gateway"' <<<"$out" \
 # deploy.gateway at all, which is the only way to observe the chart's default —
 # `--set deploy.gateway=` blanks it rather than restoring it.
 defaulted="$(helm template applab "$CHART" --namespace "$NS" \
-  --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
+  --set "auth.key=k" --set "build.registry=r.example.com/a" \
   --set "apps.baseDomain=apps.example.com")"
 grep -q 'APPLAB_DEPLOY_GATEWAY: "istio-ingress/istio-ingress"' <<<"$defaulted" \
   || fail "the default deploy.gateway does not reach the server"
@@ -207,7 +226,7 @@ grep -q 'imagePullPolicy: Always' <<<"$out" || fail "applab's own image is not p
 
 # A gateway that is not namespace/name would not resolve.
 if helm template applab "$CHART" --namespace "$NS" \
-  --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
+  --set "auth.key=k" --set "build.registry=r.example.com/a" \
   --set "apps.baseDomain=apps.example.com" --set "deploy.gateway=just-a-name" >/dev/null 2>&1; then
   fail "a gateway without a namespace should be refused"
 fi
@@ -220,7 +239,7 @@ grep -q 'APPLAB_PATH_PREFIX: "/apps"' <<<"$prefixed" \
 # A prefix with no domain cannot route: the prefix is the only thing telling one
 # app from another on a shared host, so every app would be unreachable.
 if helm template applab "$CHART" --namespace "$NS" \
-  --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" \
+  --set "auth.key=k" --set "build.registry=r.example.com/a" \
   --set "apps.pathPrefix=/apps" >/dev/null 2>&1; then
   fail "a path prefix without a base domain should be refused"
 fi
@@ -309,59 +328,78 @@ if console_vs --set ingress.enabled=false --set apps.baseDomain= | grep -q found
   fail "the console VirtualService is rendered with no base domain, so it would have no host to match"
 fi
 
-# A host set on its own gets the root path.
+# The Ingress is one host and one path, as the object it produces — and the
+# server is told the same path.
 #
-# `--set ingress.hosts[0].host=example.com` reads like setting one field and is
-# not: --set replaces the whole list element, so the paths values.yaml puts under
-# it are gone. That spelling is what the README's quick start teaches, so the
-# chart has to make it work — an Ingress rule with no paths is rejected by the API
-# server, and the caller who asked for a hostname would get an error naming a
-# field they never mentioned.
+# Asserted rather than inferred from a successful render: an Ingress whose rule
+# had no paths renders fine and is rejected by the API server, which is how this
+# was found.
 #
-# Asserted as the object it produces rather than as "it rendered": rendering
-# succeeded before this was defaulted too, with `paths: null` in it.
-render --set "ingress.hosts[0].host=only.example.com" > "$RUNTIME_DIR/hostonly.yaml"
-render \
-  --set "ingress.hosts[0].host=h.example.com" \
-  --set "ingress.hosts[0].paths[0].path=/admin" \
-  --set "ingress.hosts[0].paths[0].pathType=Exact" > "$RUNTIME_DIR/explicit.yaml"
-python3 - "$RUNTIME_DIR/hostonly.yaml" "$RUNTIME_DIR/explicit.yaml" <<'PY'
+# The pairing is the point. An Ingress routes on a path but cannot strip one, so
+# the server has to expect the prefix; a chart that set one without the other
+# would produce an Ingress that looks right and a deployment that answers 404 to
+# every request.
+render > "$RUNTIME_DIR/ingress.yaml"
+python3 - "$RUNTIME_DIR/ingress.yaml" <<'PY'
 import sys, yaml
 
-def ingress(path):
-    with open(path) as fh:
-        docs = [d for d in yaml.safe_load_all(fh) if d]
-    found = [d for d in docs if d.get("kind") == "Ingress"]
-    if len(found) != 1:
-        print(f"{path}: expected one Ingress, found {len(found)}", file=sys.stderr)
-        sys.exit(1)
-    return found[0]
+with open(sys.argv[1]) as fh:
+    docs = [d for d in yaml.safe_load_all(fh) if d]
+ingresses = [d for d in docs if d.get("kind") == "Ingress"]
+if len(ingresses) != 1:
+    print(f"expected one Ingress, found {len(ingresses)}", file=sys.stderr)
+    sys.exit(1)
 
-rules = ingress(sys.argv[1])["spec"]["rules"]
+rules = ingresses[0]["spec"]["rules"]
 if len(rules) != 1:
     print(f"expected one rule, found {len(rules)}", file=sys.stderr)
     sys.exit(1)
-if rules[0]["host"] != "only.example.com":
-    print(f"host is {rules[0]['host']}, not the one that was set", file=sys.stderr)
+if rules[0]["host"] != "applab.example.com":
+    print(f"host is {rules[0]['host']}, not the default", file=sys.stderr)
     sys.exit(1)
 
 paths = rules[0]["http"]["paths"]
-if not paths:
-    print("a host set on its own produced no paths; the API server would reject this Ingress", file=sys.stderr)
+if len(paths) != 1:
+    print(f"expected one path, found {len(paths)}: {paths}", file=sys.stderr)
     sys.exit(1)
-if paths[0]["path"] != "/" or paths[0]["pathType"] != "Prefix":
-    print(f"the defaulted path is {paths[0]['path']}/{paths[0]['pathType']}, want / + Prefix", file=sys.stderr)
+p = paths[0]
+if p["path"] != "/applab" or p["pathType"] != "Prefix":
+    print(f"the path is {p['path']}/{p['pathType']}, want /applab + Prefix", file=sys.stderr)
     sys.exit(1)
-if paths[0]["backend"]["service"]["name"] != "applab":
-    print(f"the defaulted path points at {paths[0]['backend']['service']['name']}, not the release's Service", file=sys.stderr)
+if p["backend"]["service"]["name"] != "applab":
+    print(f"the path points at {p['backend']['service']['name']}, not the release's Service", file=sys.stderr)
+    sys.exit(1)
+if p["backend"]["service"]["port"]["number"] != 80:
+    print(f"the path points at port {p['backend']['service']['port']['number']}, not the Service's", file=sys.stderr)
     sys.exit(1)
 
-# The paths an explicit --set supplies still win over the default.
-explicit = ingress(sys.argv[2])["spec"]["rules"][0]["http"]["paths"][0]
-if explicit["path"] != "/admin" or explicit["pathType"] != "Exact":
-    print(f"an explicit path was overridden by the default: {explicit}", file=sys.stderr)
+# And the server is told, or the Ingress above serves nothing.
+configmaps = [d for d in docs if d.get("kind") == "ConfigMap"]
+if len(configmaps) != 1:
+    print(f"expected one ConfigMap, found {len(configmaps)}", file=sys.stderr)
+    sys.exit(1)
+seen = configmaps[0].get("data", {}).get("APPLAB_BASE_PATH")
+if seen != p["path"]:
+    print(f"APPLAB_BASE_PATH is {seen!r} but the Ingress path is {p['path']!r}; the server would expect a different prefix than the Ingress sends, and every request would 404", file=sys.stderr)
     sys.exit(1)
 PY
+
+# Setting the path moves both together.
+setpath="$(render --set "ingress.path=/platform")"
+grep -q 'path: "/platform"' <<<"$setpath" || fail "--set ingress.path=... does not set the Ingress path"
+grep -q 'APPLAB_BASE_PATH: "/platform"' <<<"$setpath" \
+  || fail "--set ingress.path=... does not reach the server's base_path"
+
+# "/" is the root, and the server must be told nothing rather than "/".
+rootpath="$(render --set "ingress.path=/")"
+grep -q 'APPLAB_BASE_PATH: ""' <<<"$rootpath" \
+  || fail "ingress.path=/ does not clear the server's base_path; the server would look for every route under //"
+
+# The host is one value, so `--set ingress.host=...` is the whole of it — the
+# spelling the README teaches, and the reason `hosts` stopped being a list.
+sethost="$(render --set "ingress.host=only.example.com")"
+grep -q 'host: "only.example.com"' <<<"$sethost" \
+  || fail "--set ingress.host=... does not set the Ingress host"
 
 # NOT NOTES.txt: `helm template` does not render it, and `helm install --dry-run`
 # needs a reachable cluster, so its contents cannot be checked here. Asserting on

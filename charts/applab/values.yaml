@@ -31,11 +31,15 @@ replicaCount: 1
 #
 # There are two tiers of key, and the difference is reach.
 #
-# The keys set here are *admin* keys. A key that authenticates can do anything
-# this installation can — including delete every app it manages — so treat each
-# as a credential that can destroy data. Give each operator their own so one can
-# be revoked without disturbing the others: removing it from the list and
-# upgrading is the whole revocation.
+# The key set here is an *admin* key. A key that authenticates can do anything
+# this installation can — including delete every app it manages — so treat it as
+# a credential that can destroy data, and give it to nobody you would not give
+# the installation to. One key is enough to install with.
+#
+# To give several people their own key — so one can be revoked without
+# disturbing the others — use `auth.existingSecret` below rather than a second
+# value here: the Secret it names carries the comma-separated list, and revoking
+# is removing an entry and upgrading.
 #
 # Every app additionally gets a key of its own, created by applab when the app
 # is created and kept in a Secret beside it. An app key reaches that app and
@@ -46,13 +50,14 @@ replicaCount: 1
 # ---------------------------------------------------------------------------
 auth:
   # Generate with: openssl rand -hex 32
-  keys: []
+  key: ""
 
   # Use an existing Secret instead of the one this chart creates. It must carry
   # an "APPLAB_KEYS" key whose value is the comma-separated list — the same key
   # this chart writes — and it must live in the release namespace. Prefer this
   # in a real deployment: it keeps keys out of the release's values, which are
-  # stored in plain text in the cluster and often in version control.
+  # stored in plain text in the cluster and often in version control. It is also
+  # how a deployment carries more than one key.
   existingSecret: ""
 
 # ---------------------------------------------------------------------------
@@ -274,11 +279,25 @@ ingress:
   className: ""
   annotations: {}
     # cert-manager.io/cluster-issuer: letsencrypt
-  hosts:
-    - host: applab.example.com
-      paths:
-        - path: /
-          pathType: Prefix
+
+  # The one hostname applab is reached at. One, not a list: applab is a single
+  # service, and every host it answered on would be the same service reached by
+  # another name — which is a redirect or a DNS alias, not a release setting.
+  host: applab.example.com
+
+  # The path applab is served under on that host.
+  #
+  # "/applab" by default, so a cluster that already serves something at "/" can
+  # host applab beside it without a second hostname or a certificate covering
+  # one. The server is told about it (`base_path`), so the console, the API and
+  # the git endpoints all move under it together — an Ingress routes on a path
+  # but cannot strip one, so the server has to expect the prefix rather than
+  # receive it stripped.
+  #
+  # "/" serves applab at the root of its host, which is what a dedicated
+  # hostname wants.
+  path: /applab
+
   tls: []
     # - secretName: applab-tls
     #   hosts:

@@ -18,6 +18,16 @@ data:
   APPLAB_PATH_PREFIX: {{ .Values.apps.pathPrefix | quote }}
   APPLAB_BASE_URL: {{ include "applab.internalURL" . | quote }}
 
+  # The path applab itself is served under, when it is not the root.
+  #
+  # Taken from the Ingress path, because that is what the server has to expect:
+  # an Ingress routes on a path and cannot strip one, so a request for
+  # /applab/api/v1/... arrives with the prefix intact and the server has to
+  # match it. Empty when there is no Ingress — the console is then on the Istio
+  # gateway at the root of apps.baseDomain, which is what console-virtualservice
+  # serves.
+  APPLAB_BASE_PATH: {{ if and .Values.ingress.enabled (ne .Values.ingress.path "/") }}{{ .Values.ingress.path | quote }}{{ else }}{{ "" | quote }}{{ end }}
+
   # Upload limits, so a client can size its parts instead of discovering them by
   # being rejected.
   #

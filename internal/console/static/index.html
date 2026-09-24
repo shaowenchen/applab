@@ -1612,11 +1612,23 @@ $("logs-toggle").onclick = () => {
 };
 $("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
 
-// On boot: use saved credentials if there are any, and default the URL to the
-// origin this page was served from — which is the deployment itself.
+// On boot: use saved credentials if there are any, and default the URL to
+// where this page was served from — which is the deployment itself.
+//
+// The path is included, not just the origin: applab can be served under a path
+// (ingress.path), and the console's own directory is exactly that path. Taking
+// the origin alone would drop the prefix, and every API call built from it
+// would then miss the server. The trailing slash is trimmed so the value matches
+// what someone would type and what connect() normalizes to.
 (async function boot() {
   const saved = loadCredentials();
-  $("signin-url").value = saved.url || window.location.origin;
+  // Guarded rather than assumed: a document can be created without a location
+  // (about:blank, some embedded webviews), and reading through it would throw
+  // before the sign-in form was ever usable. The origin alone is still the right
+  // default in that case — it is only wrong for a deployment under a path.
+  const here = (window.location.origin || "") +
+    (window.location.pathname || "").replace(/\/+$/, "");
+  $("signin-url").value = saved.url || here;
 
   if (saved.url && saved.key) {
     await connect(saved.url, saved.key);

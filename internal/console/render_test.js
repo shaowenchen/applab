@@ -87,7 +87,13 @@ const sandbox = {
       return el;
     },
   },
-  window: { location: { origin: "https://applab.example.com" } },
+  // A browser always has both of these. Modelled here rather than left as
+  // origin alone, because the console derives the address it offers from them —
+  // and a deployment served under a path (ingress.path, the default) would be
+  // offered the wrong one if only the origin were read.
+  window: {
+    location: { origin: "https://applab.example.com", pathname: "/applab/" },
+  },
   localStorage: {
     getItem: (k) => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => store.set(k, String(v)),
@@ -205,6 +211,19 @@ async function render(apps) {
     check("a deployment with no domain shows a dash", text.includes("—"), true);
     check("and never the string undefined", text.includes("undefined"), false);
   }
+
+  // The address the sign-in form offers.
+  //
+  // It has to carry the path the page was served from, not just its origin: a
+  // deployment under a path (ingress.path, which the chart defaults to /applab)
+  // is reached at https://host/applab, and every API call the console builds
+  // from a bare origin would miss the server. The stub's pathname is "/applab/",
+  // so the trailing slash being trimmed is part of what this checks.
+  check(
+    "the sign-in form offers the address the page was served from, trailing slash trimmed",
+    elements.get("signin-url").value,
+    "https://applab.example.com/applab"
+  );
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed`);

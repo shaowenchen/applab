@@ -15,9 +15,9 @@ helm repo update
 helm install applab applab/applab \
   --version 0.1.0-dev \
   --namespace ops-system --create-namespace \
-  --set auth.keys[0]="$(openssl rand -hex 32)" \
+  --set auth.key="$(openssl rand -hex 32)" \
   --set apps.baseDomain=apps.example.com \
-  --set ingress.hosts[0].host=applab.example.com \
+  --set ingress.host=applab.example.com \
   --set build.registry=registry.example.com/apps
 ```
 
@@ -232,8 +232,8 @@ does and why it defaults the way it does. The ones that matter most:
 
 | Value | Default | Note |
 |---|---|---|
-| `auth.keys` | `[]` | **Required.** Admin keys: `openssl rand -hex 32`, one per operator. App keys are created by applab, not here |
-| `auth.existingSecret` | `""` | Preferred over `auth.keys`: keeps keys out of the release |
+| `auth.key` | `""` | **Required.** The admin key: `openssl rand -hex 32`. One is enough; see [Keys](#keys) for more |
+| `auth.existingSecret` | `""` | Preferred over `auth.key`: keeps the key out of the release, and carries more than one |
 | `apps.baseDomain` | `""` | Domain apps are served under |
 | `apps.pathPrefix` | `""` | Serves every app under one path on that host; needs no wildcard certificate |
 | `deploy.gateway` | `istio-ingress/istio-ingress` | **Required with a base domain.** `<namespace>/<name>` |
@@ -244,17 +244,28 @@ does and why it defaults the way it does. The ones that matter most:
 | `build.pushSecret` | `""` | Registry credentials for the build Job to push with |
 | `deploy.imagePullSecret` | `""` | Registry credentials for the app to pull with |
 | `deploy.appResources` | 2 CPU / 2Gi | Applied to every app applab deploys |
-| `ingress.hosts` | `applab.example.com` | Change this |
+| `ingress.host` | `applab.example.com` | The host the console and API are reached at |
+| `ingress.path` | `/applab` | The path under it; the server is told the same one |
 | `persistence.size` | `50Gi` | Holds every app's source |
 
 ### Keys
 
 There are two tiers, and the difference is reach.
 
-**Admin keys** are what this chart configures, in `auth.keys`. A key that
-authenticates can also delete — every app this installation manages. Give each
-operator their own key so one can be revoked without disturbing the others;
-removing it from the list and upgrading is the whole revocation.
+**Admin keys** are what this chart configures. A key that authenticates can also
+delete — every app this installation manages — so give it to nobody you would not
+give the installation to.
+
+`auth.key` holds one. That is enough to install with, and one is the honest
+default: it is a single credential, and a second copy in the release's values is
+a second place to leak from rather than a second identity. To give several people
+their own key, so one can be revoked without disturbing the others, point
+`auth.existingSecret` at a Secret you manage, carrying an `APPLAB_KEYS` key whose
+value is the comma-separated list. Removing an entry from it and upgrading is the
+whole revocation.
+
+That is also why `auth.existingSecret` is worth using even with one key. Release
+values are stored in plain text in the cluster and are frequently committed.
 
 **App keys** are created by applab itself, one Secret per app, as apps are
 created. An app key reaches only its app: it can push, build, deploy, roll back
@@ -267,9 +278,6 @@ App keys live in the cluster, so nothing is cached and a rotation takes effect
 immediately — and a deployment whose API server is unreachable cannot
 authenticate at all, admin keys included. They need the `secrets` permission the
 Role already grants; nothing here has to be widened.
-
-`auth.existingSecret` is worth using. Release values are stored in plain text in
-the cluster and are frequently committed.
 
 ### App configuration
 
@@ -297,7 +305,7 @@ applab's.
 ## After installing
 
 ```bash
-# The key the chart generated, if you used auth.keys
+# The key the chart generated, if you used auth.key
 kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
 
 # The API contract — what to read before calling anything

@@ -1033,7 +1033,57 @@ func (s *Server) Handler() http.Handler {
 		}
 	}
 
-	return s.metricsMiddleware(recoverPanic(logRequests(mux)))
+	return s.metricsMiddleware(recoverPanic(logRequests(s.withBasePath(mux))))
+}
+
+// withBasePath mounts the whole route table under the configured path prefix.
+//
+// It exists because of how a Kubernetes Ingress works: an Ingress routes on a
+// path but cannot strip one, so an applab served at "/applab" receives requests
+// for "/applab/api/v1/...". Without this, every one of them would miss every
+// route and the Ingress would look correct while the console answered 404.
+//
+// The prefix is stripped before the mux sees the request, so nothing inside —
+// the route table, the handlers, the middleware — has to know it is mounted
+// anywhere but the root. That is the whole reason it is done here rather than by
+// registering every pattern twice.
+//
+// A request outside the prefix is refused rather than passed through. Passing it
+// through would let the mux match it against the root paths, so a deployment
+// served at /applab would answer on /api/v1/... as well — two addresses for one
+// service, which is what a prefix exists to avoid, and a way for this deployment
+// to shadow whatever else owns the root.
+func (s *Server) withBasePath(mux *http.ServeMux) http.Handler {
+	base := strings.TrimSuffix(strings.TrimSpace(s.cfg.BasePath), "/")
+	if base == "" {
+		return mux
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// The prefix itself, with or without a trailing slash, is the console's
+		// root: "/applab" is what a person types and what a link to the
+		// deployment produces, and it has to serve the same page as "/applab/".
+		if path == base || path == base+"/" {
+			r = r.Clone(r.Context())
+			r.URL.Path = "/"
+			mux.ServeHTTP(w, r)
+			return
+		}
+
+		if !strings.HasPrefix(path, base+"/") {
+			// Refused in the API's own shape, so a client parses one error
+			// format rather than two. A 404 rather than a 403: from outside,
+			// this path is simply not where the deployment is.
+			fail(w, r, NotFound("no route matching %s %s", r.Method, path))
+			return
+		}
+
+		r = r.Clone(r.Context())
+		r.URL.Path = strings.TrimPrefix(path, base)
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // statusRecorder captures the status code so the log line can report it.
@@ -1078,7 +1128,13 @@ func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Probes run every few seconds for the life of the process; logging
 		// them at all would be pure noise.
-		if r.URL.Path == "/health" {
+		//
+		// Matched as a suffix rather than on "/health" exactly, because this
+		// middleware sits outside the base path and so sees the path as the
+		// client sent it: a deployment served at "/applab" is probed at
+		// "/applab/health". Comparing to "/health" would silently start logging
+		// every probe, which is the noise this is here to avoid.
+		if path := r.URL.Path; path == "/health" || strings.HasSuffix(path, "/health") {
 			next.ServeHTTP(w, r)
 			return
 		}

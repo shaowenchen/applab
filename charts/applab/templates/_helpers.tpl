@@ -117,11 +117,13 @@ invented here would be one that does not resolve. Callers have to say something
 else in that case, which is the point.
 */}}
 {{- define "applab.consoleURL" -}}
-{{- if and .Values.ingress.enabled .Values.ingress.hosts -}}
+{{- if and .Values.ingress.enabled .Values.ingress.host -}}
+{{- $path := "" -}}
+{{- if ne .Values.ingress.path "/" -}}{{- $path = .Values.ingress.path -}}{{- end -}}
 {{- if .Values.ingress.tls -}}
-{{- printf "https://%s" (index .Values.ingress.hosts 0).host -}}
+{{- printf "https://%s%s" .Values.ingress.host $path -}}
 {{- else -}}
-{{- printf "http://%s" (index .Values.ingress.hosts 0).host -}}
+{{- printf "http://%s%s" .Values.ingress.host $path -}}
 {{- end -}}
 {{- else if and .Values.deploy.gateway .Values.apps.baseDomain -}}
 {{- printf "https://%s" .Values.apps.baseDomain -}}
@@ -133,8 +135,8 @@ Fail early on a configuration that would produce a broken deployment, rather
 than letting it fail at runtime where the cause is much harder to see.
 */}}
 {{- define "applab.validate" -}}
-{{- if and (not .Values.auth.existingSecret) (empty .Values.auth.keys) }}
-{{- fail "auth.keys is empty and auth.existingSecret is not set: set at least one API key (openssl rand -hex 32), or point auth.existingSecret at a Secret that holds one" }}
+{{- if and (not .Values.auth.existingSecret) (empty .Values.auth.key) }}
+{{- fail "auth.key is empty and auth.existingSecret is not set: set an API key (openssl rand -hex 32), or point auth.existingSecret at a Secret that holds one or more comma-separated" }}
 {{- end }}
 {{- if .Values.build.enabled }}
 {{- if empty .Values.build.registry }}

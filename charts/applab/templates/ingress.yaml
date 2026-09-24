@@ -30,41 +30,22 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
-    {{- range .Values.ingress.hosts }}
-    - host: {{ .host | quote }}
+    - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
           {{- /*
-          A host with no paths means the root, which is the only thing it can
-          reasonably mean: an Ingress rule with an empty path list is rejected by
-          the API server, and nothing else a caller could want is expressible by
-          a host on its own.
+          One path, from ingress.path. One and not a list: applab serves one
+          thing — the console, the API and git are one application with one
+          root — so there is nothing for a second path to route to.
 
-          It is defaulted rather than required because of how `--set` works on a
-          list. `--set ingress.hosts[0].host=example.com` reads like setting one
-          field but replaces the whole element, so the paths this chart's
-          values.yaml supplies under it disappear — and the caller, who asked for
-          a hostname, gets an API server error about a field they never
-          mentioned. Defaulting makes the obvious spelling do the obvious thing.
+          Prefix rather than Exact: the console loads assets and the API has
+          sub-paths, so everything under the path belongs to this rule.
           */}}
-          {{- if .paths }}
-          {{- range .paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType }}
-            backend:
-              service:
-                name: {{ include "applab.fullname" $ }}
-                port:
-                  number: {{ $.Values.service.port }}
-          {{- end }}
-          {{- else }}
-          - path: /
+          - path: {{ .Values.ingress.path | quote }}
             pathType: Prefix
             backend:
               service:
-                name: {{ include "applab.fullname" $ }}
+                name: {{ include "applab.fullname" . }}
                 port:
-                  number: {{ $.Values.service.port }}
-          {{- end }}
-    {{- end }}
+                  number: {{ .Values.service.port }}
 {{- end }}

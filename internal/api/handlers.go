@@ -122,6 +122,10 @@ func (s *Server) domainTemplate() string {
 // which is right behind an ingress and wrong the moment a proxy rewrites the
 // Host header — so the configured form is the safer deployment, and this
 // fallback exists so a development instance works with no configuration.
+//
+// The base path is part of the address, not something a caller appends: this is
+// what a client is told to build its links from, and a client that has to know
+// about a prefix it was never told would build every one of them wrong.
 func (s *Server) baseURL(r *http.Request) string {
 	if s.cfg.BaseURL != "" {
 		return s.cfg.BaseURL
@@ -130,7 +134,7 @@ func (s *Server) baseURL(r *http.Request) string {
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host
+	return scheme + "://" + r.Host + s.cfg.BasePath
 }
 
 // versionResponse is what GET /api/v1/version returns.
