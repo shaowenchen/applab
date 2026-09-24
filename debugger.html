@@ -206,6 +206,13 @@ see <a href="index.html">the overview</a> for how to install it, or drive the AP
 </tr>
 </tbody>
 </table>
+<p>Two Istio objects are involved here and only one comes from <code>istioctl</code>.
+<code>istioctl install --profile=default</code> creates the gateway <strong>Deployment</strong>, its
+Service and the RBAC, and stops there — a <code>Gateway</code> resource says which ports and
+hosts that proxy serves, so writing one is the operator's job. <code>hack/environment.sh</code>
+writes it, with the selector read from the deployment it has to bind to. Without
+it every VirtualService here names a gateway that does not exist: the API server
+accepts it, the chart renders it, and the proxy serves nothing.</p>
 <p>One hostname serves everything, and the Istio gateway is what serves it. An app
 is published under <code>/apps/&lt;app&gt;/</code>, and applab itself — the console at <code>/</code>, the
 API under <code>/api/v1/</code>, the git endpoints under <code>/git/</code> — is a route the chart
