@@ -117,6 +117,11 @@ must_fail "bad gateway"       --set "auth.keys[0]=k" --set "build.registry=r.exa
 # these two blank it explicitly to reach the guard.
 must_fail "blanked gateway"   --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway="
 must_fail "two replicas"      "${BASE[@]}" --set replicaCount=2
+# `--set ingress.hosts[0].host=...` replaces the whole list element, dropping the
+# paths under it — which the API server then rejects with a message about paths
+# rather than about the flag. Refused at render time, naming the flag.
+must_fail "a host with no paths" "${BASE[@]}" \
+  --set "ingress.hosts[0].host=applab.example.com"
 
 # Every manifest's top-level keys have to be ones Kubernetes knows. Text emitted
 # outside a YAML structure — a warning written as bare prose, say — becomes a
