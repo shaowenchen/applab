@@ -79,6 +79,22 @@ log()  { printf '\n\033[1;34m[applab-debugger]\033[0m %s\n' "$*"; }
 warn() { printf '\n\033[1;33m[applab-debugger]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\n\033[1;31m[applab-debugger]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# show runs a query and prints it indented under a label.
+#
+# Every step that installs something is followed by this, rather than everything
+# being dumped once at the end: when a component comes up wrong, the objects it
+# made are what says so, and having them next to the step that produced them is
+# what makes a log readable.
+#
+# A failure is printed rather than fatal. A query for something that is not there
+# yet is a fact about the install, and stopping on it would hide the component's
+# own output behind a shell error.
+show() {
+  local label="$1"; shift
+  printf '\n\033[1;34m[applab-debugger]\033[0m %s\n' "$label"
+  "$@" 2>&1 | sed 's/^/  /' || true
+}
+
 # A command that fails under `set -e` stops the script with no message at all,
 # which is the worst way for a long install to end: the log simply stops, and
 # where it stopped is the only clue. This says which command failed, on which
@@ -350,6 +366,8 @@ EOF
 
 kind create cluster --config "$RUNTIME_DIR/kind.yaml" --wait 120s
 
+show "the cluster" kubectl get nodes -o wide
+
 # The registry lives on the kind docker network with a stable alias, so it is
 # reachable by the name the images carry from both the nodes' containerd and any
 # pod in the cluster.
@@ -359,6 +377,11 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$APPLAB_REGISTRY_NAME" 2>/dev/nu
     --name "$APPLAB_REGISTRY_NAME" registry:2 >/dev/null
 fi
 docker network connect "kind" "$APPLAB_REGISTRY_NAME" 2>/dev/null || true
+
+# The registry is a container on this host, not an object in the cluster, so
+# there is nothing to ask Kubernetes about it — its state is docker's.
+show "the registry (a container on this host)" \
+  docker inspect --format '{{.State.Status}} {{.Config.Image}} {{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$APPLAB_REGISTRY_NAME"
 
 # An image built here goes straight into the nodes, so the cluster never has to
 # reach a registry for it. `kind load` copies the layers into each node's
@@ -395,6 +418,18 @@ istioctl install --set profile=default -y
 
 kubectl -n istio-system wait --for=condition=available --timeout=300s \
   deployment/istio-ingressgateway
+
+# What Istio installed. istiod is what programs every VirtualService in the
+# environment, so it is worth seeing alongside the gateway: a control plane that
+# is not running looks exactly like a VirtualService that does not route.
+#
+# No `Gateway` is listed, because there is none: that resource is for a user to
+# write, and `istioctl install --set profile=default` creates the Deployment, the
+# Service and the RBAC but not one. The chart's VirtualService attaches to the
+# gateway by the name `deploy.gateway` gives, which resolves whether or not a
+# Gateway object of that name exists.
+show "istio (the control plane and the gateway)" \
+  kubectl -n istio-system get deployment,service,pod
 
 # Expose the gateway's HTTP port on the node port kind already maps to the host.
 #
@@ -437,6 +472,9 @@ gateway_https_port=$(kubectl -n istio-system get svc istio-ingressgateway \
   || die "the gateway's status port is '${gateway_status_port}', expected 15021 — the port list was replaced rather than merged"
 [ "$gateway_https_port" = "443" ] \
   || die "the gateway's HTTPS port is '${gateway_https_port}', expected 443 — the port list was replaced rather than merged"
+
+show "the gateway's ports after the patch" \
+  kubectl -n istio-system get svc istio-ingressgateway -o wide
 
 # ── 4. applab ───────────────────────────────────────────────────────────────
 
@@ -505,6 +543,16 @@ kubectl -n "$APPLAB_NAMESPACE" rollout status deploy/applab --timeout=120s
 kubectl -n "$APPLAB_NAMESPACE" get virtualservice applab-console -o name >/dev/null 2>&1 \
   || die "the console has no VirtualService, so the gateway would answer 404 at \"/\": the chart rendered one only when ingress.enabled is false, and this install did not produce it"
 
+# Everything the release made, right after it made it. The VirtualServices are
+# listed with the rest rather than separately: one is the console's, from the
+# chart, and an app's appears here too the moment something is deployed — which
+# is exactly the object to look at when a deploy succeeds and nothing is
+# reachable.
+show "applab" \
+  kubectl -n "$APPLAB_NAMESPACE" get deployment,replicaset,pod,service,pvc,secret
+show "applab's routes (VirtualServices)" \
+  kubectl -n "$APPLAB_NAMESPACE" get virtualservices
+
 # ── 5. what came up, and whether it answers ─────────────────────────────────
 
 # Everything below reaches the gateway the way a browser does: over loopback on
@@ -541,18 +589,6 @@ if [ "$(gateway_code /health)" != "200" ]; then
   kubectl -n "$APPLAB_NAMESPACE" get virtualservices 2>/dev/null || true
   die "the gateway is not serving applab at /health"
 fi
-
-# What is actually running. Printed rather than assumed: when something is wrong
-# this is the first thing anyone asks for, and it is worth having in the log of a
-# run that succeeded too — it is the only record of what the environment was.
-log "the cluster, as it came up"
-kubectl get nodes -o wide
-kubectl -n istio-system get deployment,service
-kubectl -n "$APPLAB_NAMESPACE" get deployment,service,pod,secret,pvc
-# VirtualServices are Istio's rather than Kubernetes', so `get all` does not
-# include them — and they are the objects that decide whether anything is
-# reachable at all.
-kubectl -n "$APPLAB_NAMESPACE" get virtualservices
 
 # Every endpoint a person or a client uses, and the status each one answers.
 #

@@ -13,12 +13,31 @@
 # bumps a library version. Taking git from the same Alpine release as the runtime
 # gets a correct install in one step, and the image stays small because the
 # toolchain never reaches it.
-FROM golang:1.26-alpine AS builder
+#
+# The builder is pinned to $BUILDPLATFORM, and that is not a detail. Left
+# unpinned, a multi-arch build pulls an image per target architecture and runs
+# this whole stage — the module download and every compilation — under QEMU for
+# each one that is not the runner's, which is slow enough to look like a hang: a
+# Go build that takes twenty seconds natively takes many minutes emulated.
+# Pinned, the stage runs natively and Go cross-compiles, which it does at full
+# speed — CGO_ENABLED=0 below means there is no C toolchain to emulate, so the
+# target architecture changes only which object files the compiler emits.
+#
+# The runtime stage below is deliberately not pinned: it installs
+# target-architecture packages, so it has to run for the target. That is apk plus
+# a few file operations, which is cheap where compiling a module graph is not.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+# Supplied by BuildKit from the build's --platform list. Declared so that a
+# build without them (a plain `docker build`) still gets a working default
+# rather than an empty GOOS.
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+ARG TARGETOS=linux
+ARG TARGETARCH
 
 ARG VERSION=dev
 ARG COMMIT=unknown
-ARG TARGETOS=linux
-ARG TARGETARCH
 
 WORKDIR /src
 
