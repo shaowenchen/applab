@@ -13,12 +13,19 @@ helm repo add applab https://www.chenshaowen.com/applab
 helm repo update
 
 helm install applab applab/applab \
+  --version 0.1.0-dev \
   --namespace ops-system --create-namespace \
   --set auth.keys[0]="$(openssl rand -hex 32)" \
   --set apps.baseDomain=apps.example.com \
   --set ingress.hosts[0].host=applab.example.com \
   --set build.registry=registry.example.com/apps
 ```
+
+`--version` is not optional yet, and leaving it out fails with `chart "applab"
+matching  not found in applab index` — which reads like a typo or a stale index
+and is neither. See [Installing a development
+build](#installing-a-development-build) for why, and for what changes when a
+release is tagged.
 
 Then, from any project:
 
@@ -315,10 +322,26 @@ helm upgrade --install applab applab/applab \
   --version 0.1.0-dev
 ```
 
-Pin `--version` when you want the dev build. Without it, `helm install` takes the
-highest version in the repository, which is whatever release was tagged last —
-dev builds sort *below* releases, deliberately, so an install that does not ask
-for one never gets one.
+**`--version` is required, and this is why.** `0.1.0-dev` is a prerelease — a
+version with a hyphen and a suffix — and Helm leaves prereleases out of version
+resolution. It does not rank them below releases and fall back to one; it does
+not see them at all. So with only dev builds published, `helm install applab
+applab/applab` resolves no version and fails with:
+
+```
+Error: INSTALLATION FAILED: chart "applab" matching  not found in applab index.
+(try 'helm repo update'): no chart version found for applab-
+```
+
+The `helm repo update` in that message is a red herring: the index is fine, and
+running it changes nothing. The `matching` and `applab-` with nothing after them
+are the version constraint coming out empty, which is the tell.
+
+Once a release is tagged the picture changes, because a tagged version has no
+hyphen and is therefore visible. Then the plain form works and takes the highest
+release — `helm install applab applab/applab` — while `--version 0.1.0-dev`
+still asks for the dev build specifically. Until then, there is nothing to fall
+back to.
 
 Tagged releases (`v0.2.0` → chart `0.2.0`) are published alongside and never
 pruned. Only the `-dev` package is replaced, so a development build can never
@@ -327,8 +350,14 @@ remove a release.
 ## Upgrading
 
 ```bash
-helm upgrade applab applab/applab --namespace ops-system -f my-values.yaml
+helm upgrade applab applab/applab \
+  --namespace ops-system -f my-values.yaml \
+  --version 0.1.0-dev
 ```
+
+`--version` is needed here for the same reason it is on install, while only dev
+builds are published: Helm does not resolve a prerelease unless it is asked for
+by name. An upgrade without it fails the same way an install does.
 
 The database schema migrates on start. A newer applab refuses to run against an
 older one's schema rather than guessing, so roll the image back with the chart if
