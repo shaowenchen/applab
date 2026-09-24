@@ -212,18 +212,44 @@ async function render(apps) {
     check("and never the string undefined", text.includes("undefined"), false);
   }
 
-  // The address the sign-in form offers.
+  // The address the console talks to.
   //
   // It has to carry the path the page was served from, not just its origin: a
   // deployment under a path (ingress.path, which the chart defaults to /applab)
-  // is reached at https://host/applab, and every API call the console builds
-  // from a bare origin would miss the server. The stub's pathname is "/applab/",
-  // so the trailing slash being trimmed is part of what this checks.
+  // is reached at https://host/applab, and every API call built from a bare
+  // origin would miss the server. The stub's pathname is "/applab/", so the
+  // trailing slash being trimmed is part of what this checks.
+  //
+  // Asserted through the sign-in card's own text, which is where the address is
+  // now shown rather than typed. That keeps the check on the same derived value
+  // as before — boot() sets state.url from the page and renders it here — while
+  // the field it used to read no longer exists.
   check(
-    "the sign-in form offers the address the page was served from, trailing slash trimmed",
-    elements.get("signin-url").value,
+    "the console reports the address it was served from, trailing slash trimmed",
+    elements.get("signin-where").textContent,
     "https://applab.example.com/applab"
   );
+
+  // There must be no address input left to fill in: the key is the only thing
+  // anyone should have to bring.
+  check(
+    "the sign-in form asks for nothing but a key",
+    html.includes("signin-url"),
+    false
+  );
+
+  // And the key is the only field in it. Counted from the rendered form rather
+  // than asserted on the absence of one id, so a second field added under any
+  // name is caught: "type the URL and the key" is the shape this replaced.
+  {
+    const form = html.match(/<form id="signin-form"[\s\S]*?<\/form>/);
+    check("the sign-in form exists", form !== null, true);
+    if (form) {
+      const fields = form[0].match(/<input\b/g) || [];
+      check("and holds exactly one field", fields.length, 1);
+      check("which is the key", form[0].includes('id="signin-key"'), true);
+    }
+  }
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed`);

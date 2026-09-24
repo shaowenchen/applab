@@ -115,6 +115,45 @@
 
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
+  /* Sign in. One field, and the only screen that is not the console.
+     Deliberately in the normal flow rather than a fixed overlay: the error
+     banner above it is where a failed sign-in is reported, and an overlay would
+     cover the very message explaining why the form did not accept the key. The
+     header is hidden while this is up — it has no navigation, no endpoint and no
+     sign-out to offer yet — so the card is what is left on the page. */
+  .signin {
+    min-height: 70vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .signin-card {
+    width: 100%;
+    max-width: 380px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+  }
+  .signin-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .signin-mark {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-text);
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 16px;
+  }
+  .signin-head h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+  .signin-lead { margin: 0 0 16px; color: var(--text-muted); font-size: 14px; }
+  .signin-form { display: flex; flex-direction: column; gap: 8px; }
+  .signin-form input { width: 100%; padding: 9px 11px; }
+  .signin-form button { padding: 9px 12px; }
+  .signin-hint { margin: 14px 0 0; color: var(--text-muted); font-size: 12px; }
+  .signin-hint .mono { font-size: 11px; }
+
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th {
     text-align: left;
@@ -272,7 +311,7 @@
 </head>
 <body>
 
-<header>
+<header id="app-header" class="hidden">
   <h1>applab</h1>
   <!-- Which view is showing is navigation, not decoration: it is hidden until
        there is something to navigate, since the sign-in screen has no views. -->
@@ -292,14 +331,27 @@
   <!-- Sign-in. The key is the whole identity on the server, so this is not a
        login form in the usual sense: it stores the key in this browser and sends
        it to the API from then on. It is never sent to the console itself, which
-       is static and has nothing to authenticate against. -->
-  <section id="signin" class="card hidden">
-    <h2>Connect</h2>
-    <p>Enter the address of your applab deployment and an API key. Both are stored only in this browser.</p>
-    <div class="row">
-      <input id="signin-url" type="url" placeholder="https://applab.example.com" style="flex:2" autocomplete="off">
-      <input id="signin-key" type="password" placeholder="API key" style="flex:2" autocomplete="off">
-      <button id="signin-go" class="primary">Connect</button>
+       is static and has nothing to authenticate against.
+
+       There is no address field, because there is nothing to ask. The console is
+       served by the deployment it talks to, so the page's own address is the
+       answer — see baseURL(). Asking someone to type it back is an opportunity
+       for a typo and, worse, a value that can go stale: an address kept from a
+       previous visit would outlive a move to another domain and fail every sign
+       in after it. -->
+  <section id="signin" class="signin hidden">
+    <div class="signin-card">
+      <div class="signin-head">
+        <span class="signin-mark" aria-hidden="true">a</span>
+        <h2>applab</h2>
+      </div>
+      <p class="signin-lead">Enter an API key to continue.</p>
+      <form id="signin-form" class="signin-form" autocomplete="off">
+        <input id="signin-key" type="password" placeholder="API key" autocomplete="off"
+               spellcheck="false" aria-label="API key">
+        <button id="signin-go" class="primary" type="submit">Sign in</button>
+      </form>
+      <p class="signin-hint">Stored in this browser only, and sent to <span id="signin-where" class="mono"></span>.</p>
     </div>
   </section>
 
@@ -382,8 +434,23 @@
     <div class="card">
       <div class="row">
         <h2 style="flex:1;margin:0">Apps</h2>
-        <button id="refresh">Refresh</button>
+        <button id="apps-refresh">Refresh</button>
+        <button id="apps-new" class="primary">New app</button>
       </div>
+      <!-- Creating an app mints its key, which is the credential whoever deploys
+           it will use. It is shown here once the app exists rather than typed
+           into this form, because the API does not return it from a create — a
+           key field on the app response would reach every list and get, so it is
+           fetched from the app's own key route instead. -->
+      <div id="apps-new-form" class="row hidden" style="margin-top:12px">
+        <input id="apps-new-id" placeholder="app id, e.g. shop" size="24"
+               autocomplete="off" spellcheck="false">
+        <input id="apps-new-port" placeholder="port" size="6" value="8080"
+               autocomplete="off">
+        <button id="apps-new-create" class="primary">Create</button>
+        <button id="apps-new-cancel">Cancel</button>
+      </div>
+      <div id="apps-new-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
     <div class="card" style="padding:0">
       <table>
@@ -392,7 +459,7 @@
         </thead>
         <tbody id="apps"></tbody>
       </table>
-      <div id="apps-empty" class="empty hidden">No apps yet. Push one with <span class="mono">applab push &lt;app&gt;</span>.</div>
+      <div id="apps-empty" class="empty hidden">No apps yet. Push one with <span class="mono">applab push &lt;app&gt;</span>, or create one here.</div>
     </div>
   </section>
 
@@ -421,6 +488,23 @@
       <h2>State</h2>
       <dl id="app-state"></dl>
       <div id="app-problem" class="error hidden" style="margin-top:12px"></div>
+    </div>
+
+    <!-- The app's own key. This is the credential to hand whoever deploys the
+         app: it reaches this app and nothing else. It is not shown until asked
+         for — see showAppKey — because a credential that renders itself is one
+         that ends up in screenshots. -->
+    <div class="card">
+      <div class="row">
+        <h2 style="flex:1;margin:0">API key</h2>
+        <button id="app-key-show">Show key</button>
+      </div>
+      <p class="mono" id="app-key-value" style="margin:12px 0 0">Not shown.</p>
+      <p class="muted" style="font-size:13px;margin:8px 0 0">
+        Reaches <strong>this app only</strong> — it can push, build, deploy and
+        roll back, but cannot delete the app and cannot see any other. The same
+        key works with the API, the CLI and this console.
+      </p>
     </div>
 
     <div class="card">
@@ -507,15 +591,22 @@
 // ---------------------------------------------------------------------------
 // State
 //
-// Everything lives in localStorage rather than a cookie: the console is a static
+// The key lives in localStorage rather than a cookie: the console is a static
 // file with no server-side session, so there is nothing for a cookie to be set
 // by, and the key is sent to the API as a header on requests the page makes
 // itself.
+//
+// The deployment's address is *not* stored, because it is not knowledge the
+// console has to keep: it is served by the deployment it talks to, so the page's
+// own address is the answer — see baseURL(). Storing it was a way to go stale. An
+// address kept from an earlier visit outlives a move to another domain, and every
+// sign-in after it fails against a host that no longer serves this console, with
+// nothing on the page to suggest the saved address is the problem.
 // ---------------------------------------------------------------------------
-const STORE_URL = "applab.url";
 const STORE_KEY = "applab.key";
 
 const state = {
+  // Set once at boot from baseURL(); never typed, never loaded from storage.
   url: "",
   key: "",
   app: "",
@@ -530,6 +621,23 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+
+// baseURL is the deployment's address, taken from where this page was served.
+//
+// The path is included, not just the origin: applab can be served under a path
+// (ingress.path), and the console's own directory is exactly that path. Taking
+// the origin alone would drop the prefix and every API call built from it would
+// miss the server. The trailing slash is trimmed, so the result is the form
+// someone would type and what the server reports.
+//
+// Guarded rather than assumed: a document can be created without a location
+// (about:blank, some embedded webviews), and reading through it would throw
+// before the sign-in form was usable. The origin alone is the right fallback —
+// it is only wrong for a deployment under a path.
+function baseURL() {
+  return (window.location.origin || "") +
+    (window.location.pathname || "").replace(/\/+$/, "");
+}
 
 function show(el, visible) {
   el.classList.toggle("hidden", !visible);
@@ -712,6 +820,11 @@ async function showApps() {
   stopLogs();
   state.app = "";
   navTo("apps");
+  // Registering an app is an admin operation, so the control that reaches it is
+  // not offered to an app key. Nothing routes an app key here today — it opens
+  // its own app and has no nav — but the button is gated rather than left relying
+  // on that, so a view added later cannot expose it by accident.
+  show($("apps-new"), state.scope !== "app");
   await loadApps();
 }
 
@@ -957,6 +1070,76 @@ async function loadApps() {
   }
 }
 
+// createApp registers an app without uploading anything.
+//
+// The console could see and delete apps but not make one, so setting an app up
+// ahead of its first push meant leaving for the CLI. It is an admin operation —
+// POST /api/v1/apps takes the admin tier — so an app key never sees the button
+// that reaches here.
+//
+// The new app is opened once it exists, because creating one also mints its key
+// and the detail view is where that key is readable. Leaving whoever just created
+// it to go looking is how a key gets read from somewhere else, or not at all.
+async function createApp() {
+  const problem = $("apps-new-problem");
+  show(problem, false);
+
+  const id = $("apps-new-id").value.trim();
+  if (!id) {
+    problem.textContent = "An app needs an id.";
+    show(problem, true);
+    return;
+  }
+  const port = parseInt($("apps-new-port").value.trim(), 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    problem.textContent = "The port must be a number between 1 and 65535.";
+    show(problem, true);
+    return;
+  }
+
+  // Disabled for the round trip so a second click cannot create the app twice —
+  // the second would fail on the duplicate id, which is a confusing answer to a
+  // double click rather than a real problem.
+  $("apps-new-create").disabled = true;
+  try {
+    await api("/api/v1/apps", {
+      method: "POST",
+      body: JSON.stringify({ id: id, port: port }),
+    });
+  } catch (err) {
+    problem.textContent = "Could not create " + id + ": " + err.message;
+    show(problem, true);
+    return;
+  } finally {
+    $("apps-new-create").disabled = false;
+  }
+
+  $("apps-new-id").value = "";
+  show($("apps-new-form"), false);
+  await loadApps();
+  await openApp(id);
+}
+
+// showAppKey fetches the app's key and puts it on the page, on demand.
+//
+// Deliberately not loaded with the rest of the app view: the key is a credential,
+// and filling it in automatically would put it on screen in every screenshot and
+// every shared tab for a value most visits do not need. One click asks for it,
+// and it is the same call the CLI makes.
+async function showAppKey() {
+  const el = $("app-key-value");
+  el.textContent = "…";
+  try {
+    const key = await api("/api/v1/apps/" + state.app + "/key");
+    el.textContent = key.key;
+  } catch (err) {
+    // The common failure is a deployment with no cluster, where keys are kept
+    // and this endpoint answers 501. That is a fact about the deployment rather
+    // than a fault, and the API's own message says which it is.
+    el.textContent = err.message;
+  }
+}
+
 async function openApp(id) {
   // Where the app was opened from, so "← Back" returns there. An app is
   // reachable from the apps list and from a build row, and sending someone to
@@ -975,6 +1158,9 @@ async function openApp(id) {
   // Delete is an admin operation — the API refuses it for an app key — so the
   // button is not offered rather than shown as something that always fails.
   show($("app-delete"), state.scope !== "app");
+  // Cleared on every open, so a key shown for one app is never left on screen
+  // when another is opened. The button re-fetches, so nothing is lost by it.
+  $("app-key-value").textContent = "Not shown.";
   stopLogs();
 
   await Promise.all([loadAppState(), loadPods(), loadCommits(), loadAppConfig()]);
@@ -1426,34 +1612,27 @@ async function startLogs() {
 // Sign in
 // ---------------------------------------------------------------------------
 
-function saveCredentials(url, key) {
-  state.url = url.replace(/\/+$/, "");
+function saveCredentials(key) {
   state.key = key;
   try {
-    localStorage.setItem(STORE_URL, state.url);
     localStorage.setItem(STORE_KEY, state.key);
   } catch { /* storage can be unavailable; the session still works in memory */ }
 }
 
 function loadCredentials() {
   try {
-    return {
-      url: localStorage.getItem(STORE_URL) || "",
-      key: localStorage.getItem(STORE_KEY) || "",
-    };
+    return { key: localStorage.getItem(STORE_KEY) || "" };
   } catch {
     // A browser with site data blocked throws rather than returning null; the
     // console has to work anyway, just without remembering anything.
-    return { url: "", key: "" };
+    return { key: "" };
   }
 }
 
 function clearCredentials() {
   try {
-    localStorage.removeItem(STORE_URL);
     localStorage.removeItem(STORE_KEY);
   } catch { /* nothing to do */ }
-  state.url = "";
   state.key = "";
 }
 
@@ -1474,9 +1653,9 @@ function clearCredentials() {
 // is open, so a wrong key appeared to sign in successfully and only failed on
 // the first call that actually needed one. Signing in against a route that
 // requires a key is the only way the form can fail when it should.
-async function connect(url, key) {
+async function connect(key) {
   setError("");
-  saveCredentials(url, key);
+  saveCredentials(key);
 
   // A key that cannot even list its own app is not a usable credential at all,
   // whatever tier it claims.
@@ -1514,6 +1693,7 @@ async function connect(url, key) {
   state.app = state.scope === "app" ? apps[0].id : "";
 
   $("endpoint").textContent = state.url;
+  show($("app-header"), true);
   show($("signin"), false);
   show($("signout"), true);
 
@@ -1541,6 +1721,7 @@ function signOut() {
   state.scope = "admin";
   state.app = "";
   $("endpoint").textContent = "";
+  show($("app-header"), false);
   show($("signout"), false);
   show($("nav"), false);
   show($("app-key-note"), false);
@@ -1552,14 +1733,12 @@ function signOut() {
 // Wiring
 // ---------------------------------------------------------------------------
 
-$("signin-go").onclick = () => {
-  const url = $("signin-url").value.trim();
+$("signin-form").onsubmit = (e) => {
+  e.preventDefault();
   const key = $("signin-key").value.trim();
-  if (!url || !key) { setError("Both the URL and a key are required."); return; }
-  connect(url, key);
+  if (!key) { setError("An API key is required."); return; }
+  connect(key);
 };
-$("signin-key").onkeydown = (e) => { if (e.key === "Enter") $("signin-go").click(); };
-$("signin-url").onkeydown = (e) => { if (e.key === "Enter") $("signin-key").focus(); };
 
 $("signout").onclick = signOut;
 
@@ -1570,7 +1749,21 @@ $("overview-refresh").onclick = loadOverview;
 $("overview-see-builds").onclick = showBuilds;
 $("builds-refresh").onclick = loadBuilds;
 
-$("refresh").onclick = () => { loadApps(); };
+$("apps-refresh").onclick = () => { loadApps(); };
+$("apps-new").onclick = () => {
+  const form = $("apps-new-form");
+  show(form, form.classList.contains("hidden"));
+  show($("apps-new-problem"), false);
+  if (!form.classList.contains("hidden")) $("apps-new-id").focus();
+};
+$("apps-new-cancel").onclick = () => {
+  show($("apps-new-form"), false);
+  show($("apps-new-problem"), false);
+};
+$("apps-new-create").onclick = createApp;
+$("apps-new-id").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
+$("apps-new-port").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
+$("app-key-show").onclick = showAppKey;
 $("back").onclick = closeApp;
 $("app-restart").onclick = restart;
 $("app-stop").onclick = stop;
@@ -1612,31 +1805,22 @@ $("logs-toggle").onclick = () => {
 };
 $("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
 
-// On boot: use saved credentials if there are any, and default the URL to
-// where this page was served from — which is the deployment itself.
-//
-// The path is included, not just the origin: applab can be served under a path
-// (ingress.path), and the console's own directory is exactly that path. Taking
-// the origin alone would drop the prefix, and every API call built from it
-// would then miss the server. The trailing slash is trimmed so the value matches
-// what someone would type and what connect() normalizes to.
+// On boot: work out the deployment's address from this page, and use a saved key
+// if there is one.
 (async function boot() {
-  const saved = loadCredentials();
-  // Guarded rather than assumed: a document can be created without a location
-  // (about:blank, some embedded webviews), and reading through it would throw
-  // before the sign-in form was ever usable. The origin alone is still the right
-  // default in that case — it is only wrong for a deployment under a path.
-  const here = (window.location.origin || "") +
-    (window.location.pathname || "").replace(/\/+$/, "");
-  $("signin-url").value = saved.url || here;
+  state.url = baseURL();
+  // Shown in the sign-in card so it is visible which deployment a key is about to
+  // be sent to — the one thing the removed address field was genuinely telling
+  // anyone, now stated rather than asked for.
+  $("signin-where").textContent = state.url || "this deployment";
 
-  if (saved.url && saved.key) {
-    await connect(saved.url, saved.key);
+  const saved = loadCredentials();
+  if (saved.key) {
+    await connect(saved.key);
     return;
   }
 
-  // No saved credentials: show the form, but pre-fill and try the origin, since
-  // a console served by the deployment is usually talking to that deployment.
+  // No saved key: show the form and put the cursor in the one field there is.
   show($("signin"), true);
   $("signin-key").focus();
 })();
