@@ -1,21 +1,30 @@
 name: image
 
-# Publish the applab image. Only a tag publishes: a branch push is a candidate,
-# not a release.
+# Check the commit, then publish the image.
 #
-# This used to gate on the checks in ci.yml, and no longer does — the two are
-# separate workflows, and a job in one cannot depend on a job in the other. The
-# trade is deliberate: a red check no longer stops a release from being prepared.
-# The alternative, a reusable workflow called with `needs`, would restore the
-# gate at the cost of making this file unrunnable on its own.
+# The checks live here rather than in a workflow of their own because `image`
+# depends on them: a workflow cannot depend on a job in another file, so the gate
+# has to be inside one. A red check now stops a release image from being built,
+# which is the point.
+#
+# A branch push only runs the checks. Publishing is for a tag — a branch push is a
+# candidate, not a release.
 on:
   push:
+    branches: ["**"]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
+# Cancelled rather than queued: an earlier push's answer is irrelevant once a
+# newer one exists, and the checks now run on every push.
+#
+# A release is safe from that because the ref is part of the group — a tag push
+# is `refs/tags/v0.1.0` and a branch push is `refs/heads/master`, so they never
+# share a group and a branch push cannot cancel a publish in flight.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -24,12 +33,134 @@ env:
   IMAGE_NAME: applab
 
 jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # From go.mod rather than hardcoded: a toolchain mismatch between CI
+          # and the module is a failure that looks like a code problem.
+          go-version-file: go.mod
+          cache: true
+
+      # The release binary comes from the same script the developer runs, so
+      # there is one answer to "which helm is this checked with".
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # fmt-check, vet, llms-check and the test suite. llms-check is the one that
+      # matters most here: api/llms.txt is the contract clients are built from,
+      # and it is generated from the route table, so a route change that did not
+      # update it fails here instead of shipping a wrong contract.
+      - name: make check
+        run: make check
+
+      # Renders the chart and asserts what it has to contain. Skipped by the
+      # script itself if helm were missing, which is why helm is installed above.
+      - name: check the chart
+        run: ./hack/helm-check.sh
+
+      # The console is plain JavaScript inside an HTML file, so nothing else
+      # parses it — a syntax error would reach a browser before it reached CI.
+      - name: Console and router JavaScript parses
+        run: |
+          set -eux
+          python3 - <<'PY'
+          import re, subprocess, sys
+          html = open('internal/console/static/index.html').read()
+          m = re.search(r'<script>(.*?)</script>', html, re.S)
+          if not m:
+              print('no <script> block found in the console page', file=sys.stderr)
+              sys.exit(1)
+          open('/tmp/console-check.js', 'w').write(m.group(1))
+          subprocess.run(['node', '--check', '/tmp/console-check.js'], check=True)
+          subprocess.run(['node', '--check', 'hack/router.mjs'], check=True)
+          PY
+
+      # The router decides which half of the environment a request reaches. A
+      # bug there sends people to the wrong thing while everything looks fine,
+      # so the decision is tested directly rather than by driving traffic.
+      - name: Router routing table
+        run: node hack/router.test.mjs
+
+      # action.yml declares inputs and environment.sh reads them. A typo means an
+      # input that silently does nothing, which a run only reveals an hour later.
+      # Modelled on the equivalent check in debugger-deepseek-harness.
+      - name: The debugger action declares what the script reads
+        run: |
+          set -eux
+          python3 - <<'PY'
+          import re, sys, yaml
+
+          action = yaml.safe_load(open('debugger/action.yml'))
+          declared = set(action['inputs'])
+
+          steps = [s for s in action['runs']['steps']
+                   if 'environment.sh' in str(s.get('run', ''))]
+          if len(steps) != 1:
+              print(f'expected exactly one step running environment.sh, found {len(steps)}', file=sys.stderr)
+              sys.exit(1)
+
+          passed = set()
+          for value in steps[0].get('env', {}).values():
+              m = re.fullmatch(r'\$\{\{\s*inputs\.([a-z0-9_]+)\s*\}\}', str(value))
+              if m:
+                  passed.add(m.group(1))
+
+          problems = []
+          missing = declared - passed
+          if missing:
+              problems.append(f'inputs declared but never passed to the script: {sorted(missing)}')
+          # The other direction is not checked: APPLLAB_ROUTER_* and friends are
+          # passed as literals by the script itself, not as action inputs.
+
+          # Every input the script reads must be one the action can supply, or a
+          # user can set an input that reaches nothing — or the script reads a
+          # variable no caller can ever set.
+          script = open('hack/environment.sh').read()
+          read = set(re.findall(r': "\$\{(APPLAB_[A-Z_]+):=', script))
+          supplied = {f'APPLAB_{name.upper()}' for name in declared}
+          # Set from the workflow or the script's own context, not from an input.
+          #
+          # APPLAB_VERSION and APPLAB_BUILD_ROOTLESS are here because they used to
+          # be inputs and are deliberately no longer: the image tag is always the
+          # published `latest`, and builds are always rootless. That is a
+          # deliberate loss of a knob — a host that refuses unprivileged user
+          # namespaces can no longer be worked around from the launch form, and
+          # the way out is `build.rootless=false` on the chart, which the chart's
+          # README documents. Named here so the check keeps failing for a variable
+          # nobody meant to fix, rather than being relaxed for the two that were.
+          #
+          # APPLAB_LOCAL_IMAGE and APPLAB_IMAGE_PULL_POLICY are CI-only: the
+          # workflow builds an image and loads it into the nodes, and the action
+          # has no business offering that to someone launching an environment by
+          # hand. They are set there, not here.
+          internal = {'APPLAB_RUNTIME_DIR', 'APPLAB_NAMESPACE', 'APPLAB_PATH_PREFIX',
+                      'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME', 'APPLAB_REGISTRY_NAME',
+                      'APPLAB_REGISTRY_PORT', 'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
+                      'APPLAB_ROUTER_PORT', 'APPLAB_PUBLIC_HOST',
+                      'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS',
+                      'APPLAB_LOCAL_IMAGE', 'APPLAB_IMAGE_PULL_POLICY'}
+          unreachable = read - supplied - internal
+          if unreachable:
+              problems.append(f'environment.sh reads variables no input can set: {sorted(unreachable)}')
+
+          if problems:
+              print('\n'.join(problems), file=sys.stderr)
+              sys.exit(1)
+          print(f'{len(declared)} inputs declared, all forwarded; {len(read)} variables read, all settable')
+          PY
   image:
     name: image
     runs-on: ubuntu-latest
-    # Only a tag publishes. A branch push is a candidate, not a release — and
-    # the debugger job below builds its own image rather than depending on one
-    # being published, so nothing here is on the critical path for CI.
+    needs: test
+    # Only a tag publishes. A branch push reaches the checks above and stops
+    # there — a candidate, not a release.
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
