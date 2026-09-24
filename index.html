@@ -445,10 +445,8 @@ base domain — is evaluated only after every app has declined the request, and 
 apps match on <code>/&lt;pathPrefix&gt;/&lt;app&gt;/</code>, a prefix the console's own paths do not
 share. That ordering is defined, so nothing has to sit in front of the gateway to
 tell the two apart.</p>
-<p>The same environment runs as a check on every push, in the <code>image</code> workflow's
-<code>end-to-end</code> job, which pushes <a href="https://github.com/shaowenchen/applab/blob/master/hack/demo-app/Dockerfile"><code>hack/demo-app</code></a> through
-it — so &quot;an app can be uploaded, built, deployed and served&quot; is a check rather
-than a claim.</p>
+<p>CI checks the commit and builds the image on every change; the environment above
+is what a person starts when they want to push an app at something.</p>
 <h3>The documentation site</h3>
 <p><code>https://www.chenshaowen.com/applab</code> is both the Helm repository and these
 documents. The site is generated from this repository's own markdown — this file,
