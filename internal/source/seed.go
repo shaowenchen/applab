@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// seedFiles are the files applab puts into an app's source tree, so that an
+// seedFiles are the files AppLab puts into an app's source tree, so that an
 // agent handed an app's key has a way to drive its whole lifecycle without
 // being told anything else.
 //
@@ -29,12 +29,12 @@ var seedPaths = []string{"applab.sh", "AGENT.md"}
 // carrying the seeded files.
 const seedCommits = 1
 
-// SeededFileCount reports how many files applab adds to every app's source tree.
+// SeededFileCount reports how many files AppLab adds to every app's source tree.
 //
 // It is exported because a caller counting the files an upload produced has to
 // account for them: the count is the whole tree, and the seed is part of it. A
 // test asserting "the archive held two files" is asserting about the upload, not
-// about what applab adds, and hardcoding the difference in each of them is how
+// about what AppLab adds, and hardcoding the difference in each of them is how
 // those tests silently stop meaning anything the next time a file is seeded.
 func SeededFileCount() int { return len(seedPaths) }
 
@@ -73,7 +73,7 @@ func seedFor(appID string) []seedFile {
 			// Unreachable: the files are embedded at build time, so a missing
 			// one is a build failure rather than a runtime condition. Panicking
 			// keeps it from being silently skipped if that ever changes.
-			panic("applab: embedded seed file " + name + " is missing: " + err.Error())
+			panic("AppLab: embedded seed file " + name + " is missing: " + err.Error())
 		}
 		mode := int64(0o644)
 		if strings.HasSuffix(name, ".sh") {
@@ -94,7 +94,7 @@ func seedFor(appID string) []seedFile {
 // Replacing rather than skipping an existing one is deliberate. These files
 // describe the deployment's own API, so an app carrying a stale copy — from a
 // version before an endpoint changed — is an app whose documentation lies. The
-// copy in the tree is applab's to keep current, not the uploader's to preserve;
+// copy in the tree is AppLab's to keep current, not the uploader's to preserve;
 // the files say so at the top of each.
 func writeSeed(workTree, appID string) error {
 	for _, f := range seedFor(appID) {
@@ -105,7 +105,7 @@ func writeSeed(workTree, appID string) error {
 	return nil
 }
 
-// AgentFileName reports the files applab keeps in an app's source tree, and
+// AgentFileName reports the files AppLab keeps in an app's source tree, and
 // whether a name is one of them.
 //
 // A caller asks for one by name — the API serves them individually — so the
@@ -120,7 +120,7 @@ func AgentFile(appID, name string) (seedFile, bool) {
 	return seedFile{}, false
 }
 
-// AgentFileNames lists the files applab keeps in an app's source tree, in the
+// AgentFileNames lists the files AppLab keeps in an app's source tree, in the
 // order they appear in it.
 func AgentFileNames() []string {
 	out := make([]string, len(seedPaths))
@@ -149,7 +149,7 @@ func (s *Store) seedCommit(ctx context.Context, appID, repoPath string) error {
 		return err
 	}
 
-	const subject = "applab: how to work with this app"
+	const subject = "AppLab: how to work with this app"
 	if _, _, _, err := s.commitWorkTree(ctx, appID, repoPath, workTree, workDir, subject, ""); err != nil {
 		return err
 	}
@@ -164,7 +164,7 @@ func (s *Store) seedCommit(ctx context.Context, appID, repoPath string) error {
 //
 //   - A symlink would be followed by a plain write, putting the seed's content
 //     wherever it points. Removing it first is what keeps the write inside the
-//     tree, and it is also what we want: the file is applab's to replace.
+//     tree, and it is also what we want: the file is AppLab's to replace.
 //   - A directory makes the write fail with EISDIR, so it is removed too, for
 //     the same reason — the seed has to be present after every upload.
 //   - A regular file is simply overwritten.

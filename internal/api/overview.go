@@ -58,7 +58,7 @@ type buildsSummary struct {
 //
 // Configured and reachable are separate questions and are reported separately,
 // because the answers differ in what they mean. A deployment with no cluster is
-// a legitimate way to run applab — the API and the source half work — so it is
+// a legitimate way to run AppLab — the API and the source half work — so it is
 // not a failure. A deployment with a cluster it cannot reach is a failure, and
 // is the one an operator needs to see. Collapsing the two into one boolean
 // would make "not configured" look like "broken".

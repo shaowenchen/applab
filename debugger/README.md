@@ -1,10 +1,10 @@
-# applab debugger environment
+# AppLab debugger environment
 
-Start a complete applab platform on a GitHub runner — a Kubernetes cluster, a
-registry, an Istio gateway and applab itself — hand yourself a link, and push an
+Start a complete AppLab platform on a GitHub runner — a Kubernetes cluster, a
+registry, an Istio gateway and AppLab itself — hand yourself a link, and push an
 app. It is built, deployed and served before you open the console.
 
-The point is that applab needs real infrastructure before it can do anything: a
+The point is that AppLab needs real infrastructure before it can do anything: a
 cluster to deploy into, a registry to push to, and a gateway to publish through.
 This action assembles all of it on a throwaway kind cluster, so the first thing
 you have to do is not "install a cluster" but "push an app".
@@ -40,7 +40,7 @@ applab push myshop
 ```
 
 The app is served at `<the link>/apps/myshop/` and appears in the console. The
-`applab` CLI is the binary from [the applab repository](https://github.com/shaowenchen/applab);
+`applab` CLI is the binary from [the AppLab repository](https://github.com/shaowenchen/applab);
 see [the overview](../README.md) for how to install it, or drive the API directly —
 `GET /api/v1/describe` is the contract, and it needs no key.
 
@@ -49,7 +49,7 @@ see [the overview](../README.md) for how to install it, or drive the API directl
 | | What it is |
 |---|---|
 | **kind cluster** | A throwaway Kubernetes cluster, created for this run and deleted with it. |
-| **applab** | The published image, installed with this repository's [Helm chart](../charts/applab/README.md). |
+| **AppLab** | The published image, installed with this repository's [Helm chart](../charts/applab/README.md). |
 | **Istio** | The ingress gateway apps are published through. Install it yourself in a real deployment; here it is part of the environment. |
 | **registry:2** | Where built images are pushed, as `kind-registry:5000` — a cluster-local registry with no TLS and no credentials. |
 | **cloudflared** | A named tunnel, published at `domain`. Set `domain` to empty for a quick tunnel instead, or `tunnel: ngrok` to use ngrok. |
@@ -63,7 +63,7 @@ it every VirtualService here names a gateway that does not exist: the API server
 accepts it, the chart renders it, and the proxy serves nothing.
 
 One hostname serves everything, and the Istio gateway is what serves it. An app
-is published under `/apps/<app>/`, and applab itself — the console at `/`, the
+is published under `/apps/<app>/`, and AppLab itself — the console at `/`, the
 API under `/api/v1/`, the git endpoints under `/git/` — is a route the chart
 installs on the same gateway, at the root of the same host.
 
@@ -88,8 +88,8 @@ Only `api_key` and `cloudflare_token` are worth passing from a secret: the key i
 generated when left empty, so it needs no configuration unless you want a
 particular one, and the token is a credential and never a plain input.
 
-The applab image tag is not an input. It is the published `latest`, so the
-environment runs the newest applab — the same tag the release workflow publishes
+The AppLab image tag is not an input. It is the published `latest`, so the
+environment runs the newest AppLab — the same tag the release workflow publishes
 alongside the version tags, re-resolved on every start because the chart pulls
 with `imagePullPolicy: Always`.
 

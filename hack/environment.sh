@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Start a complete applab test environment on this machine and publish it.
+# Start a complete AppLab test environment on this machine and publish it.
 #
 # This is what the debugger/ action runs. It builds a throwaway Kubernetes
-# cluster, a registry, an Istio gateway and an applab installation — everything
+# cluster, a registry, an Istio gateway and an AppLab installation — everything
 # a single app needs before `applab push` can build, deploy and serve it. The
 # point is that none of it has to be assembled by hand first.
 #
 # What comes up:
 #
 #   kind cluster (ns ops-system)
-#     applab         the published image, installed with this repository's chart
+#     AppLab         the published image, installed with this repository's chart
 #     istio-ingress  the gateway everything is published through (NodePort 30080)
 #     registry:2     where built images are pushed (kind-registry:5000)
 #
@@ -19,7 +19,7 @@
 #
 # One gateway serves both halves, and that is the whole of the routing: the
 # console and the API at "/" (a VirtualService the chart installs), each app
-# under "/apps/<app>/" (a VirtualService applab writes at deploy time). Nothing
+# under "/apps/<app>/" (a VirtualService AppLab writes at deploy time). Nothing
 # sits in front of the gateway to tell the two apart, because the paths already
 # do: Istio sorts a virtual host's catch-all route to the end and keeps the rest
 # in order, and "/apps/<app>/" is not a prefix any of the console's own paths
@@ -27,7 +27,7 @@
 #
 # The order below is load-bearing and the reason it is a script rather than a
 # list of workflow steps. The hostname has to be settled first, because it
-# becomes apps.baseDomain and that cannot be set after applab is installed — but
+# becomes apps.baseDomain and that cannot be set after AppLab is installed — but
 # settling it is not the same as starting a tunnel, and the tunnel only has to be
 # started early when it is the one thing that knows the name. Otherwise it comes
 # up last, once there is something behind it to publish.
@@ -44,7 +44,7 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
 # The published `latest`, which is what the release workflow produces alongside
 # the version tags. A moving tag, deliberately: the point of this environment is
-# to run the newest applab, and a version read from the chart would pin it to a
+# to run the newest AppLab, and a version read from the chart would pin it to a
 # release that has to exist first — which is the failure that put this here, since
 # the chart's appVersion had never been published at all.
 #
@@ -61,7 +61,7 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 : "${APPLAB_CLUSTER_NAME:=applab-debugger}"
 : "${APPLAB_PATH_PREFIX:=/apps}"
 : "${APPLAB_IMAGE_REPOSITORY:=docker.io/shaowenchen/applab}"
-# How long applab's first rollout may take before the environment gives up. The
+# How long AppLab's first rollout may take before the environment gives up. The
 # script waits for the Deployment itself rather than letting helm block on it, so
 # the deadline is here and it is one number rather than two that can drift.
 #
@@ -83,9 +83,9 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 # action installs them into /usr/local/bin.
 export PATH="/usr/local/bin:$PATH"
 
-log()  { printf '\n\033[1;34m[applab-debugger]\033[0m %s\n' "$*"; }
-warn() { printf '\n\033[1;33m[applab-debugger]\033[0m %s\n' "$*" >&2; }
-die()  { printf '\n\033[1;31m[applab-debugger]\033[0m %s\n' "$*" >&2; exit 1; }
+log()  { printf '\n\033[1;34m[AppLab-debugger]\033[0m %s\n' "$*"; }
+warn() { printf '\n\033[1;33m[AppLab-debugger]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\n\033[1;31m[AppLab-debugger]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # show runs a query and prints it indented under a label.
 #
@@ -99,7 +99,7 @@ die()  { printf '\n\033[1;31m[applab-debugger]\033[0m %s\n' "$*" >&2; exit 1; }
 # own output behind a shell error.
 show() {
   local label="$1"; shift
-  printf '\n\033[1;34m[applab-debugger]\033[0m %s\n' "$label"
+  printf '\n\033[1;34m[AppLab-debugger]\033[0m %s\n' "$label"
   "$@" 2>&1 | sed 's/^/  /' || true
 }
 
@@ -110,7 +110,7 @@ show() {
 #
 # It is a diagnostic, not error handling — nothing is recovered from — so it
 # reports and lets the non-zero status stand.
-trap 'status=$?; printf "\n\033[1;31m[applab-debugger]\033[0m %s failed (exit %d)\n" "$BASH_COMMAND" "$status" >&2' ERR
+trap 'status=$?; printf "\n\033[1;31m[AppLab-debugger]\033[0m %s failed (exit %d)\n" "$BASH_COMMAND" "$status" >&2' ERR
 
 RUNTIME_DIR="${APPLAB_RUNTIME_DIR:-$PWD/.applab-debugger}"
 mkdir -p "$RUNTIME_DIR"
@@ -209,7 +209,7 @@ find_public_host() {
 
 # resolve_host settles on the hostname the environment is served under.
 #
-# It does not start anything. The hostname has to be known before applab is
+# It does not start anything. The hostname has to be known before AppLab is
 # installed, because it becomes apps.baseDomain — but knowing it is not the same
 # as publishing it, and for every case except a quick tunnel the name is settled
 # without a tunnel running at all. The agent is started later, by publish().
@@ -225,7 +225,7 @@ find_public_host() {
 # APPLAB_DOMAIN names the domain apps are served under. It is not tunnel
 # configuration — a named Cloudflare tunnel keeps its hostname in its ingress, and
 # the connector is never told it, and nothing has to be passed to cloudflared. It
-# is what applab needs: apps.baseDomain, which is both where the apps are served
+# is what AppLab needs: apps.baseDomain, which is both where the apps are served
 # and the host the console's own route matches.
 resolve_host() {
   # The one case with nothing to publish: the caller has a name, and there is no
@@ -267,7 +267,7 @@ resolve_host() {
 
   # A quick tunnel, or ngrok: the name is whatever the agent is given, and the
   # only way to learn it is to start the agent and ask. So this is the one path
-  # that has to run early — and it does, from here, before applab is installed.
+  # that has to run early — and it does, from here, before AppLab is installed.
   log "starting ${APPLAB_TUNNEL} to find out which hostname it will be given"
   open_tunnel
 
@@ -439,7 +439,7 @@ kubectl -n istio-system wait --for=condition=available --timeout=300s \
 # listener and the routes. A VirtualService referencing a Gateway that is not
 # there has nothing to be programmed into, so the proxy has no route for the host
 # and answers 404. The symptom is a request through the gateway that fails while
-# the applab pod behind it is healthy and serving.
+# the AppLab pod behind it is healthy and serving.
 #
 # The chart does not create this and should not: the gateway is cluster
 # infrastructure the installation attaches to, and `charts/applab/README.md` says
@@ -535,9 +535,9 @@ gateway_https_port=$(kubectl -n istio-system get svc istio-ingressgateway \
 show "the gateway's ports after the patch" \
   kubectl -n istio-system get svc istio-ingressgateway -o wide
 
-# ── 4. applab ───────────────────────────────────────────────────────────────
+# ── 4. AppLab ───────────────────────────────────────────────────────────────
 
-log "installing applab in namespace ${APPLAB_NAMESPACE}"
+log "installing AppLab in namespace ${APPLAB_NAMESPACE}"
 
 kubectl create namespace "$APPLAB_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
@@ -576,7 +576,7 @@ if ! helm install applab "$REPO_ROOT/charts/applab" \
   --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \
   --set "image.tag=${APPLAB_VERSION}"
 then
-  warn "applab could not be installed at all; the state it left behind follows"
+  warn "AppLab could not be installed at all; the state it left behind follows"
   kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service,pvc 2>&1 | sed 's/^/    /' || true
   helm -n "$APPLAB_NAMESPACE" status applab 2>&1 | sed 's/^/    /' || true
   die "helm rejected the release: the message above is helm's, the rest is the cluster's"
@@ -632,14 +632,14 @@ done
 
 if [ -z "$rolled_out" ]; then
   if [ -n "$crash_grabbed" ]; then
-    warn "applab cannot start — its container is not coming up, and waiting would not change that"
+    warn "AppLab cannot start — its container is not coming up, and waiting would not change that"
   else
-    warn "applab did not become ready within ${applab_wait_seconds}s; the state it is in follows"
+    warn "AppLab did not become ready within ${applab_wait_seconds}s; the state it is in follows"
   fi
   kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service,pvc 2>&1 | sed 's/^/    /' || true
   # The reason a container cannot start is in these, and they are the things a
   # person would otherwise have to guess at: an image that cannot be pulled, a
-  # volume that cannot be mounted, an applab that started and refused its own
+  # volume that cannot be mounted, an AppLab that started and refused its own
   # configuration. The log is what the process itself said before it died, which
   # is the one thing no amount of waiting produces.
   kubectl -n "$APPLAB_NAMESPACE" describe pods 2>&1 | tail -n 60 | sed 's/^/    /' || true
@@ -648,13 +648,13 @@ if [ -z "$rolled_out" ]; then
   # nothing yet — the reason is in the attempt that already died.
   kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --all-containers --previous --tail=100 2>&1 | sed 's/^/    /' || true
   if [ -n "$crash_grabbed" ]; then
-    die "applab exited on startup: its output is above. Nothing about waiting changes this"
+    die "AppLab exited on startup: its output is above. Nothing about waiting changes this"
   fi
-  die "applab never became ready — if this is a slow first pull, raise APPLAB_INSTALL_TIMEOUT_SECONDS"
+  die "AppLab never became ready — if this is a slow first pull, raise APPLAB_INSTALL_TIMEOUT_SECONDS"
 fi
 
 # Ready is what the Deployment reports. The console's route is a separate object
-# that applab only has if the chart rendered it, and without it the gateway
+# that AppLab only has if the chart rendered it, and without it the gateway
 # answers 404 at "/" — so it is checked here rather than discovered at a browser.
 kubectl -n "$APPLAB_NAMESPACE" get virtualservice applab-console -o name >/dev/null 2>&1 \
   || die "the console has no VirtualService, so the gateway would answer 404 at \"/\": the chart rendered one only when ingress.enabled is false, and this install did not produce it"
@@ -664,9 +664,9 @@ kubectl -n "$APPLAB_NAMESPACE" get virtualservice applab-console -o name >/dev/n
 # chart, and an app's appears here too the moment something is deployed — which
 # is exactly the object to look at when a deploy succeeds and nothing is
 # reachable.
-show "applab" \
+show "AppLab" \
   kubectl -n "$APPLAB_NAMESPACE" get deployment,replicaset,pod,service,pvc,secret
-show "applab's routes (VirtualServices)" \
+show "AppLab's routes (VirtualServices)" \
   kubectl -n "$APPLAB_NAMESPACE" get virtualservices
 
 # Ask Istio's own analyzer whether the objects above can actually be programmed.
@@ -693,8 +693,8 @@ show "applab's routes (VirtualServices)" \
 # would still catch a request that does not route, but it would catch it as a 404
 # with nothing said about why — which is the failure this whole check exists to
 # replace.
-# Every namespace, not just applab's. The reference this check exists for crosses
-# one — a VirtualService in the applab namespace naming a Gateway in
+# Every namespace, not just AppLab's. The reference this check exists for crosses
+# one — a VirtualService in the AppLab namespace naming a Gateway in
 # istio-system — and the analyzer resolves references cluster-wide, so scoping it
 # to one namespace risks missing the very case. The cost is that a problem
 # anywhere fails the environment, which is the right trade on a kind cluster this
@@ -733,7 +733,7 @@ gateway_code() {
 # The gateway is the only thing the tunnel points at, so it is what has to
 # answer: a ready Service behind an unprogrammed gateway is still an environment
 # nobody can open.
-log "waiting for the gateway to serve applab"
+log "waiting for the gateway to serve AppLab"
 for attempt in $(seq 1 90); do
   if [ "$(gateway_code /health)" = "200" ]; then break; fi
   if [ $((attempt % 15)) -eq 0 ]; then log "  still waiting... (attempt ${attempt})"; fi
@@ -743,7 +743,7 @@ if [ "$(gateway_code /health)" != "200" ]; then
   kubectl -n "$APPLAB_NAMESPACE" get pods
   kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --tail=50 2>/dev/null || true
   kubectl -n "$APPLAB_NAMESPACE" get virtualservices 2>/dev/null || true
-  die "the gateway is not serving applab at /health"
+  die "the gateway is not serving AppLab at /health"
 fi
 
 # Every endpoint a person or a client uses, and the status each one answers.
@@ -793,7 +793,7 @@ check_endpoint "/api/v1/describe (key)" /api/v1/describe -H "Authorization: Bear
 # on its own, and cannot be mistaken for the platform not having come up.
 #
 # The exception is a quick tunnel or ngrok, whose hostname had to be known before
-# applab was installed; resolve_host started that one already, and publish()
+# AppLab was installed; resolve_host started that one already, and publish()
 # notices and does nothing.
 publish
 

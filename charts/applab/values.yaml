@@ -1,6 +1,6 @@
 # Default values for applab.
 #
-# applab deploys applications to Kubernetes. It is given a URL and a key, and it
+# AppLab deploys applications to Kubernetes. It is given a URL and a key, and it
 # stores source, builds images and runs the result. Read the notes on `build` and
 # `apps.baseDomain` before deploying: both have prerequisites that are easier to
 # satisfy before the first install than after.
@@ -9,7 +9,7 @@
 nameOverride: ""
 fullnameOverride: ""
 
-# Namespace applab itself runs in. Defaults to the release namespace.
+# Namespace AppLab itself runs in. Defaults to the release namespace.
 namespaceOverride: ""
 
 image:
@@ -46,7 +46,7 @@ replicaCount: 1
 # value here: the Secret it names carries the comma-separated list, and revoking
 # is removing an entry and upgrading.
 #
-# Every app additionally gets a key of its own, created by applab when the app
+# Every app additionally gets a key of its own, created by AppLab when the app
 # is created and kept in a Secret beside it. An app key reaches that app and
 # nothing else: it can push, build, deploy and roll back, but cannot delete the
 # app. That is the credential to give whoever deploys an app, so they never hold
@@ -91,7 +91,7 @@ apps:
   # This is the right trade when the alternative is a wildcard certificate and
   # the wrong one when the apps are meant to be genuinely separate sites.
   #
-  # applab strips the prefix before the request reaches the app, so an app sees
+  # AppLab strips the prefix before the request reaches the app, so an app sees
   # the paths it would see at a root and needs no change to work here. It also
   # sets X-Forwarded-Prefix, which an app that honours it can use to build
   # correct absolute links.
@@ -108,19 +108,19 @@ apps:
   # namespace — using the same `secrets` permission the Role already grants for
   # app keys. Changes take effect on the next deploy.
 
-  # The public address of this applab installation, used by build jobs to fetch
+  # The public address of this AppLab installation, used by build jobs to fetch
   # source and reported to clients as api_base_url.
   #
   # Leave empty to use the in-cluster Service, which is correct when builds run
   # in the same cluster and the ingress is not reachable from inside it — the
-  # usual case. Set it when a build must reach applab through an external
+  # usual case. Set it when a build must reach AppLab through an external
   # address.
   baseURL: ""
 
 # ---------------------------------------------------------------------------
 # Build pipeline
 #
-# applab can run without this: source storage, the API and the console all work,
+# AppLab can run without this: source storage, the API and the console all work,
 # and apps can be deployed from images built elsewhere. With it, pushing source
 # builds an image in the cluster.
 #
@@ -156,7 +156,7 @@ build:
   cacheRepoPrefix: ""
 
   # The image providing buildctl and buildkitd. Pinned rather than "latest": a
-  # moving tag would change a build's behaviour without applab changing.
+  # moving tag would change a build's behaviour without AppLab changing.
   builderImage: "moby/buildkit:v0.19.0"
 
   # The init container's image. It needs a shell, curl and tar.
@@ -185,7 +185,7 @@ build:
 
   # A Secret holding registry credentials, copied into each app namespace so the
   # build job can push. It must be a docker-registry Secret, and it must already
-  # exist in applab's own namespace — for example created from a docker login.
+  # exist in AppLab's own namespace — for example created from a docker login.
   #
   # If it is named here and missing, a build fails before its Job is created
   # rather than starting and failing at the push minutes later.
@@ -216,7 +216,7 @@ build:
 # ---------------------------------------------------------------------------
 # Deploy
 #
-# How apps are published. applab attaches a VirtualService to an Istio gateway
+# How apps are published. AppLab attaches a VirtualService to an Istio gateway
 # rather than creating an Ingress, because the routing in front of these apps is
 # an Istio gateway and an Ingress would be ignored by it — the app would deploy,
 # report healthy, and be unreachable.
@@ -225,7 +225,7 @@ deploy:
   # The Istio gateway apps are published through, as "<namespace>/<name>".
   #
   # The gateway is cluster infrastructure that already exists: it holds the
-  # listeners and the certificate for the whole domain. applab attaches to it by
+  # listeners and the certificate for the whole domain. AppLab attaches to it by
   # name and never creates it. Required whenever apps.baseDomain is set, because
   # a VirtualService with no gateway is reachable only from inside the mesh.
   #
@@ -245,7 +245,7 @@ deploy:
   # need different credentials, and a registry that is open to pull but not to
   # push only needs the build one.
   #
-  # The Secret must already exist in applab's own namespace — for example created
+  # The Secret must already exist in AppLab's own namespace — for example created
   # from a docker login. It is referenced directly rather than copied, because
   # apps run in that same namespace.
   imagePullSecret: ""
@@ -255,7 +255,7 @@ deploy:
   annotations: {}
     # istio.io/foo: "bar"
 
-  # Per-app resource defaults, applied to every app applab deploys.
+  # Per-app resource defaults, applied to every app AppLab deploys.
   appResources:
     requests:
       cpu: 100m
@@ -265,18 +265,18 @@ deploy:
       memory: 2Gi
 
 # ---------------------------------------------------------------------------
-# How a person reaches applab itself
+# How a person reaches AppLab itself
 #
 # This is a standard Kubernetes Ingress for the console and the API — separate
 # from how apps are published, which goes through the Istio gateway above. If
-# your cluster has no ingress controller, set enabled to false and applab
+# your cluster has no ingress controller, set enabled to false and AppLab
 # publishes the console through the Istio gateway instead, on the same host the
 # apps share: there is one way in either way, and a gateway that is serving apps
 # already has a listener for that host.
 #
 # The gateway route is the fallback rather than the default because a base
 # domain and a gateway are what it needs, and an installation can reasonably
-# have neither. Disabling the Ingress without them leaves applab reachable from
+# have neither. Disabling the Ingress without them leaves AppLab reachable from
 # inside the cluster only, which the install notes say.
 # ---------------------------------------------------------------------------
 ingress:
@@ -285,21 +285,21 @@ ingress:
   annotations: {}
     # cert-manager.io/cluster-issuer: letsencrypt
 
-  # The one hostname applab is reached at. One, not a list: applab is a single
+  # The one hostname AppLab is reached at. One, not a list: AppLab is a single
   # service, and every host it answered on would be the same service reached by
   # another name — which is a redirect or a DNS alias, not a release setting.
   host: applab.example.com
 
-  # The path applab is served under on that host.
+  # The path AppLab is served under on that host.
   #
   # "/applab" by default, so a cluster that already serves something at "/" can
-  # host applab beside it without a second hostname or a certificate covering
+  # host AppLab beside it without a second hostname or a certificate covering
   # one. The server is told about it (`base_path`), so the console, the API and
   # the git endpoints all move under it together — an Ingress routes on a path
   # but cannot strip one, so the server has to expect the prefix rather than
   # receive it stripped.
   #
-  # "/" serves applab at the root of its host, which is what a dedicated
+  # "/" serves AppLab at the root of its host, which is what a dedicated
   # hostname wants.
   path: /applab
 
@@ -311,7 +311,7 @@ ingress:
 service:
   type: ClusterIP
   port: 80
-  # The port applab listens on. The chart sets APPLAB_LISTEN to this value, so
+  # The port AppLab listens on. The chart sets APPLAB_LISTEN to this value, so
   # the container port, the Service target and the Deployment's probes cannot
   # drift apart — changing it here moves all of them together.
   targetPort: 8080
@@ -340,7 +340,7 @@ persistence:
 logLevel: info
 
 # ---------------------------------------------------------------------------
-# Resources for applab itself
+# Resources for AppLab itself
 # ---------------------------------------------------------------------------
 resources:
   requests:
@@ -363,7 +363,7 @@ serviceAccount:
   annotations: {}
   name: ""
 
-# applab manages Deployments, Services, VirtualServices and Jobs in the one
+# AppLab manages Deployments, Services, VirtualServices and Jobs in the one
 # namespace it runs in, so a namespaced Role is enough — no ClusterRole, and no
 # permission anywhere else in the cluster. The rules are exactly what it uses;
 # see role.yaml for why each is there.

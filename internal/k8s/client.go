@@ -1,9 +1,9 @@
-// Package k8s builds the Kubernetes clients applab uses and owns the naming
+// Package k8s builds the Kubernetes clients AppLab uses and owns the naming
 // rules for the objects it creates.
 //
-// One rule governs everything here: applab only ever touches its own namespace.
+// One rule governs everything here: AppLab only ever touches its own namespace.
 // Every app it deploys lives there too, rather than in a namespace of its own,
-// which is what lets applab hold a namespaced Role instead of a ClusterRole — it
+// which is what lets AppLab hold a namespaced Role instead of a ClusterRole — it
 // has no permission anywhere else in the cluster.
 //
 // The consequence is that a namespace no longer separates one app's objects from
@@ -34,11 +34,11 @@ import (
 // LabelApp identifies the app an object belongs to.
 //
 // It is the only thing distinguishing one app's objects from another's in the
-// shared namespace, so every object applab creates carries it and every query
+// shared namespace, so every object AppLab creates carries it and every query
 // that could return another app's object filters by it.
 const LabelApp = "applab.io/app"
 
-// Client wraps the Kubernetes clientset with the few conveniences applab needs.
+// Client wraps the Kubernetes clientset with the few conveniences AppLab needs.
 type Client struct {
 	clientset kubernetes.Interface
 
@@ -46,7 +46,7 @@ type Client struct {
 	// how Istio's VirtualService is handled without depending on istio.io/api.
 	dynamic dynamic.Interface
 
-	// namespace is the one namespace applab uses for everything.
+	// namespace is the one namespace AppLab uses for everything.
 	namespace string
 }
 
@@ -56,14 +56,14 @@ type Options struct {
 	// first, falling back to the ambient kubeconfig.
 	Kubeconfig string
 
-	// Namespace is where applab runs and where it deploys every app.
+	// Namespace is where AppLab runs and where it deploys every app.
 	Namespace string
 }
 
 // New builds a client.
 //
 // Resolution order is in-cluster, then the explicit path, then the ambient
-// kubeconfig. In-cluster first because that is how applab actually runs; the
+// kubeconfig. In-cluster first because that is how AppLab actually runs; the
 // fallbacks exist so it can be developed and tested outside a cluster, which is
 // where most of its behaviour is checked.
 func New(opts Options) (*Client, error) {
@@ -114,7 +114,7 @@ func (c *Client) NewWithDynamic(dyn dynamic.Interface) *Client {
 
 // restConfig resolves a Kubernetes REST config.
 func restConfig(kubeconfig string) (*rest.Config, error) {
-	// In-cluster first: applab's normal habitat is a pod, and the ambient
+	// In-cluster first: AppLab's normal habitat is a pod, and the ambient
 	// kubeconfig on a developer's machine is often stale or points elsewhere.
 	if cfg, err := rest.InClusterConfig(); err == nil {
 		return cfg, nil
@@ -147,7 +147,7 @@ func (c *Client) Clientset() kubernetes.Interface { return c.clientset }
 // Dynamic exposes the client for resources outside client-go, such as Istio's.
 func (c *Client) Dynamic() dynamic.Interface { return c.dynamic }
 
-// Namespace returns the namespace an app's resources live in — the one applab
+// Namespace returns the namespace an app's resources live in — the one AppLab
 // itself runs in, since every app shares it.
 //
 // The app id does not affect the result. It is a parameter because the callers
@@ -157,20 +157,20 @@ func (c *Client) Namespace(appID string) string {
 	return c.namespace
 }
 
-// OwnsNamespace reports whether a namespace is the one applab uses.
+// OwnsNamespace reports whether a namespace is the one AppLab uses.
 //
-// It is the check that keeps applab from touching anything it did not create,
-// and it is deliberately strict: any other namespace is not applab's, whatever
+// It is the check that keeps AppLab from touching anything it did not create,
+// and it is deliberately strict: any other namespace is not AppLab's, whatever
 // it contains.
 //
 // An empty namespace is rejected explicitly. Kubernetes reads "" as the default
 // namespace, so treating it as a match would point every operation at
-// `default` — the opposite of confining applab to its own space.
+// `default` — the opposite of confining AppLab to its own space.
 func (c *Client) OwnsNamespace(namespace string) bool {
 	return namespace != "" && namespace == c.namespace
 }
 
-// DeleteAppObjects removes everything applab created for one app.
+// DeleteAppObjects removes everything AppLab created for one app.
 //
 // This is what deleting an app means now that apps share a namespace: there is
 // no namespace to drop, so the objects are found by label and removed
@@ -178,7 +178,7 @@ func (c *Client) OwnsNamespace(namespace string) bool {
 //
 // Every list is checked before anything is deleted. Deletion is irreversible and
 // the selector is the only thing standing between one app's objects and
-// another's — or between an app's objects and applab's own Deployment, which
+// another's — or between an app's objects and AppLab's own Deployment, which
 // carries no app label but does live in this namespace. A mislabeled or
 // over-broad selector deletes things nobody asked to delete, and a second read
 // is a cheap price for noticing that first.
@@ -278,7 +278,7 @@ func (c *Client) DeleteAppObjects(ctx context.Context, appID string) error {
 // Ready reports whether the cluster is reachable and this namespace is usable.
 //
 // It reads a namespaced resource rather than asking for the version, so it
-// exercises the same authorization path applab's real operations use. A
+// exercises the same authorization path AppLab's real operations use. A
 // permission problem — a Role missing a rule, a namespace that does not exist —
 // surfaces here rather than at the first deploy.
 func (c *Client) Ready(ctx context.Context) bool {

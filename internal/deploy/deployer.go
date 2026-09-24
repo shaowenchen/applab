@@ -44,7 +44,7 @@ type Config struct {
 
 	// Gateway is the Istio gateway apps are published through, as
 	// "<namespace>/<name>". The gateway is cluster infrastructure that already
-	// exists — applab attaches to it rather than creating it — so this has to
+	// exists — AppLab attaches to it rather than creating it — so this has to
 	// name one that is really there.
 	//
 	// TLS is not configured here. The certificate belongs to the gateway, which
@@ -54,7 +54,7 @@ type Config struct {
 
 	// ImagePullSecret names a Secret holding registry credentials for pulling
 	// the built image. It is in the same namespace as the Deployment, which is
-	// applab's own, so it is referenced directly rather than copied.
+	// AppLab's own, so it is referenced directly rather than copied.
 	ImagePullSecret string
 
 	// Secrets supplies an app's secret configuration at deploy time.
@@ -83,7 +83,7 @@ type Config struct {
 //
 // Contents is the only method, and it returns values — that is the point of the
 // interface. It is satisfied by internal/appconfig, and the deployer is the one
-// place in applab that holds a secret's value.
+// place in AppLab that holds a secret's value.
 type SecretReader interface {
 	Contents(ctx context.Context, appID string) (map[string]string, error)
 }
@@ -92,7 +92,7 @@ type SecretReader interface {
 //
 // Istio's types are not in client-go, and depending on istio.io/api to build one
 // struct would add a large module — and a version constraint against whatever
-// Istio the cluster runs — for a resource applab writes in a dozen lines. The
+// Istio the cluster runs — for a resource AppLab writes in a dozen lines. The
 // dynamic client needs only the group, version and kind.
 var virtualServiceGVR = schema.GroupVersionResource{
 	Group:    "networking.istio.io",
@@ -272,7 +272,7 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 				},
 				Spec: corev1.PodSpec{
 					// No API token. An app is arbitrary code from whoever pushed
-					// the source, and it runs in the same namespace as applab
+					// the source, and it runs in the same namespace as AppLab
 					// itself. Kubernetes mounts a service account token into every
 					// pod by default, and that token can read every Secret in the
 					// namespace — including the API keys that authenticate every
@@ -281,7 +281,7 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 					//
 					// This is the app-side half of the single-namespace trade: the
 					// namespace boundary that used to sit between an app and
-					// applab's own credentials is gone, so the token has to go with
+					// AppLab's own credentials is gone, so the token has to go with
 					// it.
 					AutomountServiceAccountToken: ptr(false),
 					Containers: []corev1.Container{{
@@ -328,7 +328,7 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 						},
 						ReadinessProbe: &corev1.Probe{
-							// A TCP probe rather than HTTP: applab does not know
+							// A TCP probe rather than HTTP: AppLab does not know
 							// what path an arbitrary app serves, and a GET to /
 							// would fail for an app whose root is not 200.
 							ProbeHandler: corev1.ProbeHandler{
@@ -381,7 +381,7 @@ func (d *Deployer) upsertDeployment(ctx context.Context, namespace, name string,
 		return fmt.Errorf("read deployment %s: %w", name, err)
 	}
 
-	// Only the fields applab owns are copied across. A blind assignment would
+	// Only the fields AppLab owns are copied across. A blind assignment would
 	// also carry over a resource version and a selector, both of which the API
 	// server rejects on update.
 	existing.Spec.Replicas = desired.Spec.Replicas
@@ -454,8 +454,8 @@ func (d *Deployer) applyService(ctx context.Context, app *model.App) error {
 //
 // The gateway is not created here. It is a shared piece of cluster
 // infrastructure — one per cluster or per team, with the certificate and the
-// listeners configured on it — so applab attaches to it by name. That also means
-// TLS is not applab's business: the certificate is on the gateway, and pointing
+// listeners configured on it — so AppLab attaches to it by name. That also means
+// TLS is not AppLab's business: the certificate is on the gateway, and pointing
 // a VirtualService at an HTTPS listener is all that is needed to be served over
 // it.
 func (d *Deployer) expose(ctx context.Context, app *model.App, addr model.Address) error {
@@ -560,17 +560,17 @@ func (d *Deployer) upsertVirtualService(ctx context.Context, namespace, name str
 		return fmt.Errorf("read virtualservice %s: %w", name, err)
 	}
 
-	// Only the fields applab owns are replaced, rather than the whole object.
+	// Only the fields AppLab owns are replaced, rather than the whole object.
 	// Istio's control plane writes status and defaults into the same resource, so
 	// a wholesale update would fight it.
 	existing.SetLabels(merge(existing.GetLabels(), desired.GetLabels()))
 
-	// Annotations are replaced rather than merged, so one applab stopped setting
-	// actually disappears. The VirtualService is applab's own object — nothing
+	// Annotations are replaced rather than merged, so one AppLab stopped setting
+	// actually disappears. The VirtualService is AppLab's own object — nothing
 	// else writes to it — so there is no one else's annotation to preserve.
 	existing.SetAnnotations(desired.GetAnnotations())
 
-	// The spec is owned entirely by applab, so it is replaced.
+	// The spec is owned entirely by AppLab, so it is replaced.
 	spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 	if err != nil || !found {
 		return fmt.Errorf("virtualservice %s has no spec to apply", name)
@@ -708,7 +708,7 @@ func (d *Deployer) Restart(ctx context.Context, app *model.App) error {
 
 // --- helpers ---------------------------------------------------------------
 
-// appEnv is the container's environment: the port applab derives, then the
+// appEnv is the container's environment: the port AppLab derives, then the
 // app's own variables.
 //
 // The order is fixed and the names are sorted, because the value of this
@@ -813,7 +813,7 @@ func merge(existing, desired map[string]string) map[string]string {
 
 // resourceQty parses a Kubernetes quantity, panicking on a malformed one.
 //
-// The values are applab's own constants, so a bad one is a programming error
+// The values are AppLab's own constants, so a bad one is a programming error
 // rather than a caller's mistake, and threading an error no caller could act on
 // through the resource builders would only add noise.
 func resourceQty(s string) resource.Quantity {

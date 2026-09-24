@@ -24,7 +24,7 @@ Then, from any project:
 
 {{/*
 Whether the apps have hostnames depends on apps.baseDomain, not on whether
-applab itself has an Ingress: the two are separate settings, and an install can
+AppLab itself has an Ingress: the two are separate settings, and an install can
 serve the console plainly while still giving apps hostnames, or the reverse.
 */}}
 {{ if .Values.apps.baseDomain -}}
@@ -54,7 +54,7 @@ is the fallback, at the cost of running builds privileged.
 Images are pushed to: {{ .Values.build.registry }}
 
 {{ else -}}
-The build pipeline is disabled, so applab stores source and deploys, but cannot
+The build pipeline is disabled, so AppLab stores source and deploys, but cannot
 build an image from it. `applab push` will say so. To enable it, set
 build.enabled=true and build.registry.
 

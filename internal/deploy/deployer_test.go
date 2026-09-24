@@ -347,7 +347,7 @@ func TestAppDomainOverride(t *testing.T) {
 }
 
 // TestEveryAppAttachesToTheSameGateway asserts the gateway is shared
-// infrastructure rather than something applab creates per app.
+// infrastructure rather than something AppLab creates per app.
 //
 // A gateway carries the listeners and the certificate for the whole domain, so
 // one per app would mean one certificate per app and a port bind conflict on the
@@ -374,7 +374,7 @@ func TestEveryAppAttachesToTheSameGateway(t *testing.T) {
 		}
 	}
 
-	// And applab creates no gateway of its own.
+	// And AppLab creates no gateway of its own.
 	list, err := d.dynamic.Resource(schema.GroupVersionResource{
 		Group: "networking.istio.io", Version: "v1", Resource: "gateways",
 	}).Namespace("ops-system").List(ctx, metav1.ListOptions{})
@@ -387,7 +387,7 @@ func TestEveryAppAttachesToTheSameGateway(t *testing.T) {
 }
 
 // TestVirtualServiceAnnotationsAreReplaced asserts a removed annotation actually
-// disappears. Merging would leave a setting applab stopped applying in place
+// disappears. Merging would leave a setting AppLab stopped applying in place
 // forever.
 func TestVirtualServiceAnnotationsAreReplaced(t *testing.T) {
 	cfg := testConfig()
@@ -405,7 +405,7 @@ func TestVirtualServiceAnnotationsAreReplaced(t *testing.T) {
 		t.Fatalf("annotation = %q, want the configured value", got)
 	}
 
-	// Change applab's config and reapply.
+	// Change AppLab's config and reapply.
 	cfg.Annotations = map[string]string{"istio.io/foo": "50m"}
 	d = NewWithDynamic(d.client, d.dynamic, cfg)
 	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
@@ -449,7 +449,7 @@ func TestVirtualServiceAnnotationsCanBeRemoved(t *testing.T) {
 // namespace that token can read every Secret — including the API keys that
 // authenticate every other app and the registry credentials. An app is arbitrary
 // code from whoever pushed the source, and since apps share a namespace with
-// applab there is no longer a boundary doing this job.
+// AppLab there is no longer a boundary doing this job.
 func TestAppPodsGetNoAPIToken(t *testing.T) {
 	d, _ := newTestDeployer(t, testConfig())
 
@@ -887,7 +887,7 @@ func TestPathPrefixDoesNotMatchANeighbouringApp(t *testing.T) {
 		}
 	}
 
-	// And the prefix applab actually builds is the one that survives that.
+	// And the prefix AppLab actually builds is the one that survives that.
 	addr := model.Address{Host: "www.example.com", Path: "/apps/shop"}
 	if got := addr.RoutePath(); got != "/apps/shop/" {
 		t.Errorf("RoutePath = %q, want a trailing slash", got)

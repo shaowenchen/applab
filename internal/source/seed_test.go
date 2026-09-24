@@ -87,7 +87,7 @@ func TestTheSeedFilesSurviveAnUpload(t *testing.T) {
 //
 // The seeded files describe the deployment's own API, so a stale copy carried in
 // someone's source tree is one that tells an agent about endpoints that may no
-// longer exist. The copy in the tree is applab's.
+// longer exist. The copy in the tree is AppLab's.
 func TestTheSeedIsRefreshedOnEveryUpload(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

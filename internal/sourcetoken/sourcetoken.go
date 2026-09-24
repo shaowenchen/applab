@@ -1,7 +1,7 @@
 // Package sourcetoken issues short-lived, single-use credentials that let a
 // build Job fetch exactly one commit's source.
 //
-// The alternative would be to give a build Job applab's own API key, since a
+// The alternative would be to give a build Job AppLab's own API key, since a
 // Job fetching its source is just another API client. That is what must not
 // happen: an API key is the whole identity and can delete every app this
 // installation manages. A build runs in the app's own namespace, where anyone who
@@ -53,7 +53,7 @@ type Grant struct {
 // Grants are held in memory rather than in the database. They are ephemeral by
 // design — a token that outlives the process that issued it has outlived its
 // purpose — and losing them on restart costs at most one retried build, since
-// applab reconciles unfinished builds at startup and can issue a fresh token.
+// AppLab reconciles unfinished builds at startup and can issue a fresh token.
 type Issuer struct {
 	mu     sync.Mutex
 	grants map[string]Grant // keyed by the token's digest, never by the token
@@ -114,7 +114,7 @@ func (i *Issuer) Issue(appID, commitSHA string) (Token, error) {
 // Consumption is the point: a source fetch is not repeatable, so a token that
 // has been used cannot be replayed by anyone who saw it in a log or a pod spec.
 // The cost is that a build whose init container restarts needs a fresh token,
-// which is why the fetch step is written to be retried by applab rather than by
+// which is why the fetch step is written to be retried by AppLab rather than by
 // Kubernetes.
 func (i *Issuer) Redeem(value string) (Grant, error) {
 	if value == "" {

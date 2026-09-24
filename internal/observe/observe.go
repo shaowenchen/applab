@@ -1,13 +1,13 @@
 // Package observe reports what is actually running.
 //
-// This is the half of applab that answers "why is it not working". Every other
-// package describes what applab tried to do; these read the cluster directly,
+// This is the half of AppLab that answers "why is it not working". Every other
+// package describes what AppLab tried to do; these read the cluster directly,
 // because a pod's log and a Kubernetes event are the things that say what
 // happened rather than what was intended.
 //
 // Everything here is read-only and scoped to an app's namespace, which is
 // derived from the deployment's prefix — so a call cannot reach a workload
-// applab did not create.
+// AppLab did not create.
 package observe
 
 import (
@@ -241,7 +241,7 @@ func (o *Observer) Events(ctx context.Context, namespace, appID string, limit in
 		e := &events.Items[i]
 
 		// An event about something in this namespace that this app did not
-		// create — another app's pod, applab's own Deployment — is not this
+		// create — another app's pod, AppLab's own Deployment — is not this
 		// app's to report.
 		if _, mine := names[e.InvolvedObject.Name]; !mine {
 			continue
@@ -562,7 +562,7 @@ func readCapped(r io.Reader, max int64) (string, error) {
 	}
 
 	if int64(len(data)) > max {
-		return string(data[:max]) + fmt.Sprintf("\n[applab] log truncated at %d bytes; use ?tail= to read the most recent lines instead\n", max), nil
+		return string(data[:max]) + fmt.Sprintf("\n[AppLab] log truncated at %d bytes; use ?tail= to read the most recent lines instead\n", max), nil
 	}
 	return string(data), nil
 }

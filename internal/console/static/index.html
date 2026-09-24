@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>applab · deploy an application by uploading its source</title>
+<title>AppLab · deploy an application by uploading its source</title>
 <!-- What this deployment is, for anything that reads the console page without
      rendering it: a link preview, a crawler, an agent handed the address. The
      chart sets the meta tag too, but a deployment reached directly at the pod
      never passes through that Ingress. -->
-<meta name="description" content="applab builds and deploys an application to Kubernetes from a source upload — no Dockerfile, no CI and no registry on your side. Sign in with an API key.">
+<meta name="description" content="AppLab builds and deploys an application to Kubernetes from a source upload — no Dockerfile, no CI and no registry on your side. Sign in with an API key.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
 <style>
   /* The palette. Light is the base definition and dark is a redefinition of the
@@ -313,7 +313,7 @@
     padding: 28px;
   }
   /* The card opens on its one sentence. It carries no mark or product name of
-     its own: the header above it already says "applab", and repeating it here
+     its own: the header above it already says "AppLab", and repeating it here
      only makes the screen look like two things stacked rather than one. */
   .signin-lead { margin: 0 0 16px; color: var(--text); font-size: 15px; }
   .signin-form { display: flex; flex-direction: column; gap: 8px; }
@@ -493,7 +493,7 @@
      in place is what stops them moving: a control that jumps to a different
      corner once you sign in reads as two different controls. -->
 <header id="app-header">
-  <h1>applab</h1>
+  <h1>AppLab</h1>
   <!-- Which view is showing is navigation, not decoration: it is hidden until
        there is something to navigate, since the sign-in screen has no views. -->
   <nav id="nav" class="hidden">
@@ -881,7 +881,7 @@ const $ = (id) => document.getElementById(id);
 
 // baseURL is the deployment's address, taken from where this page was served.
 //
-// The path is included, not just the origin: applab can be served under a path
+// The path is included, not just the origin: AppLab can be served under a path
 // (ingress.path), and the console's own directory is exactly that path. Taking
 // the origin alone would drop the prefix and every API call built from it would
 // miss the server. The trailing slash is trimmed, so the result is the form
@@ -974,8 +974,8 @@ const ZH = {
   "Not configured": "未配置",
   "Reachable": "可访问",
   "Unreachable": "不可访问",
-  "No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run applab.":
-    "启动时没有附加集群客户端。API 和源码存储可用，但构建与部署不可用。这是运行 applab 的一种合理方式。",
+  "No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run AppLab.":
+    "启动时没有附加集群客户端。API 和源码存储可用，但构建与部署不可用。这是运行 AppLab 的一种合理方式。",
   "This deployment can reach the Kubernetes API, so builds and deploys will run here.":
     "此部署可以访问 Kubernetes API，构建和部署会在这里运行。",
   "A cluster client is configured but the API server is not answering. Builds and deploys will fail until this recovers.":
@@ -1479,7 +1479,7 @@ async function api(path, options = {}) {
     },
   });
 
-  // A failure that is not JSON means something in front of applab answered —
+  // A failure that is not JSON means something in front of AppLab answered —
   // an ingress body limit, or a proxy with no route. Reported as text, because
   // "unexpected token < in JSON" would hide the actual cause.
   const text = await response.text();
@@ -1500,7 +1500,7 @@ async function api(path, options = {}) {
 // Presentation
 // ---------------------------------------------------------------------------
 
-// statusClass maps an app's status onto a colour. The statuses are applab's own
+// statusClass maps an app's status onto a colour. The statuses are AppLab's own
 // summary; "running" means the last rollout completed, not that the app is
 // healthy now — which is what the live state below it is for.
 function statusClass(status) {
@@ -1738,7 +1738,7 @@ async function loadOverview() {
     (builds.failed ?? 0) > 0 ? "attention" : ""
   ));
 
-  // The deployment panel: what this applab is, which otherwise means running
+  // The deployment panel: what this AppLab is, which otherwise means running
   // `applab config`.
   const d = data.deployment || {};
   const dl = $("overview-deployment");
@@ -1795,7 +1795,7 @@ async function loadOverview() {
   if (!cluster.configured) {
     wrap.className = "state";
     wrap.appendChild(stateLabel(t("Not configured")));
-    detail.textContent = t("No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run applab.");
+    detail.textContent = t("No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run AppLab.");
   } else if (cluster.reachable) {
     wrap.className = "state ok";
     wrap.appendChild(stateLabel(t("Reachable")));
@@ -2255,7 +2255,7 @@ async function loadAppState() {
   if (status.deployed && status.deployed.status_reason) add(t("reason"), status.deployed.status_reason);
 
   // The live state is shown separately from the record, because the difference
-  // between them is the useful information: applab can believe a rollout
+  // between them is the useful information: AppLab can believe a rollout
   // succeeded while the pods have since stopped.
   if (status.live) {
     if (!status.live.deployed) {

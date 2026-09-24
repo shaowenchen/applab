@@ -34,7 +34,7 @@ Plain variables are not sensitive. They are stored with the app, returned by the
 API, and visible to anyone who can read the app's Deployment.
 
 Secrets are not. They are kept in a Kubernetes Secret, never appear in the
-Deployment, and no endpoint will ever return their values — applab can tell you
+Deployment, and no endpoint will ever return their values — AppLab can tell you
 which secrets an app has, never what they are. If you lose one, set it again.
 
 Changes take effect on the next deploy, not immediately: configuration travels
@@ -116,7 +116,7 @@ Service targets. Change that with 'applab config' instead.`,
 				return err
 			}
 
-			fmt.Fprintf(os.Stderr, "applab: set %s; takes effect on the next deploy\n", plural(len(env), "variable"))
+			fmt.Fprintf(os.Stderr, "AppLab: set %s; takes effect on the next deploy\n", plural(len(env), "variable"))
 			printConfig(os.Stdout, appID, config)
 			return nil
 		},
@@ -139,7 +139,7 @@ func envUnsetCommand(urlFlag, keyFlag *string) *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(os.Stderr, "applab: removed %s; takes effect on the next deploy\n", args[1])
+			fmt.Fprintf(os.Stderr, "AppLab: removed %s; takes effect on the next deploy\n", args[1])
 			printConfig(os.Stdout, args[0], config)
 			return nil
 		},
@@ -181,7 +181,7 @@ Changes take effect on the next deploy.`,
 				return err
 			}
 
-			fmt.Fprintf(os.Stderr, "applab: set %s; takes effect on the next deploy\n", plural(len(secrets), "secret"))
+			fmt.Fprintf(os.Stderr, "AppLab: set %s; takes effect on the next deploy\n", plural(len(secrets), "secret"))
 			printConfig(os.Stdout, appID, config)
 			return nil
 		},
@@ -204,7 +204,7 @@ func envSecretUnsetCommand(urlFlag, keyFlag *string) *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(os.Stderr, "applab: removed %s; takes effect on the next deploy\n", args[1])
+			fmt.Fprintf(os.Stderr, "AppLab: removed %s; takes effect on the next deploy\n", args[1])
 			printConfig(os.Stdout, args[0], config)
 			return nil
 		},

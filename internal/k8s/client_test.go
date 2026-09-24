@@ -59,7 +59,7 @@ func deploymentFor(appID, ns, name string) *appsv1.Deployment {
 	}
 }
 
-// The namespace is the one applab runs in, whatever app is named. This is what
+// The namespace is the one AppLab runs in, whatever app is named. This is what
 // replaced "one namespace per app".
 func TestNamespaceIgnoresTheAppID(t *testing.T) {
 	c, _ := testClient(t)
@@ -106,7 +106,7 @@ func TestOwnsNamespaceWithNoNamespaceConfigured(t *testing.T) {
 
 // The most important test here: deleting an app must remove that app's objects
 // and nothing else. Every app shares one namespace, so the label is the only
-// thing separating them — and applab's own Deployment sits in the same namespace
+// thing separating them — and AppLab's own Deployment sits in the same namespace
 // with no app label at all.
 func TestDeleteAppObjectsRemovesOnlyThatApp(t *testing.T) {
 	ctx := context.Background()
@@ -122,7 +122,7 @@ func TestDeleteAppObjectsRemovesOnlyThatApp(t *testing.T) {
 		deploymentFor("blog", testNS, "app-blog"),
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app-blog", Namespace: testNS, Labels: appLabelsFor("blog")}},
 
-		// applab itself: same namespace, no app label.
+		// AppLab itself: same namespace, no app label.
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "applab", Namespace: testNS}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "applab", Namespace: testNS}},
 	)

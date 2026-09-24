@@ -6,11 +6,11 @@ import (
 	"github.com/shaowenchen/applab/internal/source"
 )
 
-// handleAgentFile serves one of the files applab keeps in an app's source tree.
+// handleAgentFile serves one of the files AppLab keeps in an app's source tree.
 //
 // It exists so those files can update themselves. They are committed into every
 // repository, which means the copy someone has is as old as their last upload —
-// and applab's own API changes between releases, so a stale script can call an
+// and AppLab's own API changes between releases, so a stale script can call an
 // endpoint that no longer exists or miss one that does.
 //
 // Serving them from the running server is what makes that recoverable: the
@@ -29,7 +29,7 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 
 	file, ok := source.AgentFile(appID, name)
 	if !ok {
-		fail(w, r, NotFound("no such applab file %q; this deployment serves %v", name, source.AgentFileNames()))
+		fail(w, r, NotFound("no such AppLab file %q; this deployment serves %v", name, source.AgentFileNames()))
 		return
 	}
 

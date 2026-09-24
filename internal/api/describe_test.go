@@ -36,7 +36,8 @@ func TestDescribeOrientsAnAgent(t *testing.T) {
 	// A one-line answer to "what is this", so an agent can report it without
 	// assembling a sentence from six fields.
 	summary, _ := body["summary"].(string)
-	for _, want := range []string{"applab", "namespace", "app"} {
+	// The product's own name, spelled the way the product spells it.
+	for _, want := range []string{"AppLab", "namespace", "app"} {
 		if !strings.Contains(summary, want) {
 			t.Errorf("summary %q does not mention %q", summary, want)
 		}

@@ -100,7 +100,7 @@ func TestMigrationUpgradesAVersionOneDatabase(t *testing.T) {
 
 // TestRefusesADatabaseFromANewerBuild asserts a rollback fails loudly.
 //
-// Running an older applab against a newer schema could corrupt data this version
+// Running an older AppLab against a newer schema could corrupt data this version
 // does not know about, so it refuses rather than guessing.
 func TestRefusesADatabaseFromANewerBuild(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "future.db")

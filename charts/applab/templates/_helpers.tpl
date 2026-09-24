@@ -51,7 +51,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-The namespace applab runs in.
+The namespace AppLab runs in.
 */}}
 {{- define "applab.namespace" -}}
 {{- default .Release.Namespace .Values.namespaceOverride }}
@@ -96,7 +96,7 @@ reachable from inside the cluster, which it often is not.
 {{- end }}
 
 {{/*
-The URL a person reaches applab itself at.
+The URL a person reaches AppLab itself at.
 
 Two ways in, and which one applies follows from the same settings that decide
 how apps are published:

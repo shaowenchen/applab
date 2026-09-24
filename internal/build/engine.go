@@ -5,7 +5,7 @@
 // That choice is the whole design: there is no build service to operate, no
 // daemon to keep warm or scale, and a build's resources are released the moment
 // it ends. Build capacity scales with the cluster rather than with a
-// configuration applab has to manage.
+// configuration AppLab has to manage.
 //
 // The Job has two containers, and the split is what keeps source out of the
 // builder:
@@ -14,7 +14,7 @@
 //	main  build          runs buildkitd rootless and builds inside that tree
 //
 // The fetch step uses a single-use token (see internal/sourcetoken) rather than
-// applab's own API key, so a build holds no credential that reaches beyond the
+// AppLab's own API key, so a build holds no credential that reaches beyond the
 // one commit it was started for.
 package build
 
@@ -78,7 +78,7 @@ type Config struct {
 	// the escape hatch for a cluster that does not have it.
 	Rootless bool
 
-	// AppLabURL is the base URL of the applab API, which the init container
+	// AppLabURL is the base URL of the AppLab API, which the init container
 	// fetches source from.
 	AppLabURL string
 
@@ -166,7 +166,7 @@ func (e *Engine) ImageFor(appID, commitSHA string) string {
 //
 // With nothing or one segment after the host, the app becomes the next segment
 // and gets a repository of its own. That is what a cluster-local registry wants,
-// and it is what every deployment actually running applab uses, so it is
+// and it is what every deployment actually running AppLab uses, so it is
 // preserved exactly. With two or more segments the path is already as deep as a
 // Docker Hub repository may be, so the app moves into the tag instead — the only
 // remaining place to put it.
@@ -771,7 +771,7 @@ func ptr[T any](v T) *T { return &v }
 
 // resourcePtr parses a Kubernetes quantity, panicking on a malformed one.
 //
-// A panic is right here: every value it is given comes from applab's own
+// A panic is right here: every value it is given comes from AppLab's own
 // configuration, checked at boot, so a bad one is a programming error rather
 // than a caller's mistake. The alternative — returning an error — would thread a
 // failure through the Job spec builder that no caller could act on.

@@ -139,7 +139,7 @@ echo "  ok: /health and /metrics answer on the pod's port, prefix or not"
 
 # ── It reports itself able to serve git ─────────────────────────────────────
 #
-# A missing git-http-backend does not get this far: applab resolves it at boot
+# A missing git-http-backend does not get this far: AppLab resolves it at boot
 # and exits when it cannot, which the wait above catches with the log. This check
 # is the other half of the same fact, stated directly rather than inferred from a
 # process that stayed up — the capability flag is what the server believes about

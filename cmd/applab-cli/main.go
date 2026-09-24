@@ -1,4 +1,4 @@
-// Command applab-cli drives an applab deployment from a terminal.
+// Command applab-cli drives an AppLab deployment from a terminal.
 //
 // The commands are shaped around what someone actually does, not around the API:
 //
@@ -44,7 +44,7 @@ func main() {
 		if errors.As(err, &silent) {
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "applab: %v\n", err)
+		fmt.Fprintf(os.Stderr, "AppLab: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -64,7 +64,7 @@ func rootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "applab",
 		Short: "Deploy an application to Kubernetes by uploading its source",
-		Long: `applab deploys an application to Kubernetes by uploading its source.
+		Long: `AppLab deploys an application to Kubernetes by uploading its source.
 
 The address and key come from APPLAB_URL and APPLAB_KEY, or from --url and --key.
 Point them at a deployment and these commands are everything needed to ship:
@@ -85,7 +85,7 @@ with "applab keys <app>".`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 
-		// A bare `applab` prints help rather than doing something surprising.
+		// A bare `AppLab` prints help rather than doing something surprising.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},

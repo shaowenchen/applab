@@ -1,7 +1,7 @@
 #!/bin/sh
 # The full lifecycle of this app, from a shell, with nothing but curl.
 #
-# This file is written by applab on every upload — edit it and your changes are
+# This file is written by AppLab on every upload — edit it and your changes are
 # gone with the next push. It is the same on every app; what changes is the
 # APP below.
 #
@@ -157,7 +157,7 @@ Environment:
 EOF
 }
 
-# push packages this directory the way applab expects.
+# push packages this directory the way AppLab expects.
 #
 # The exclusions are the ones that would make an upload slower and a build no
 # more correct: build output, dependencies and the git directory itself. A
@@ -201,7 +201,7 @@ upload() {
 # self-update replaces this script and AGENT.md with the deployment's current
 # copies.
 #
-# applab's API changes between releases, and these files are written into the
+# AppLab's API changes between releases, and these files are written into the
 # repository on every upload — so a checkout that has not been pushed in a while
 # carries a script that may call an endpoint that no longer exists. Fetching the
 # current version from the running server is what makes that recoverable without

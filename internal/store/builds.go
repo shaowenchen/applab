@@ -155,7 +155,7 @@ func (s *Store) SetBuildImage(ctx context.Context, id, image string) error {
 }
 
 // ListUnfinishedBuilds returns builds that were still pending or running the
-// last time applab looked.
+// last time AppLab looked.
 //
 // It exists for recovery at startup: if the process restarts while a build is
 // in flight, nothing is left to notice the Job finished, so those builds are

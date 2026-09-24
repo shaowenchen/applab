@@ -104,7 +104,7 @@ func TestPushOverHTTP(t *testing.T) {
 	runGit(t, workDir, "commit", "-m", "pushed directly")
 	runGit(t, workDir, "push", "origin", "main")
 
-	// The push must be visible in the repository applab reads.
+	// The push must be visible in the repository AppLab reads.
 	head, err := store.HeadCommit(ctx, "shop")
 	if err != nil {
 		t.Fatalf("HeadCommit: %v", err)

@@ -11,7 +11,7 @@ import (
 // handleHealth reports liveness.
 //
 // It deliberately does not check the database or the cluster. A liveness probe
-// restarts the process when it fails, and restarting applab cannot fix an
+// restarts the process when it fails, and restarting AppLab cannot fix an
 // unreachable API server or a locked database file — it would only turn a
 // degraded control plane into a crash loop, taking down the builds it was
 // partway through. Readiness is where dependency checks belong.
@@ -87,7 +87,7 @@ func (s *Server) configResponse(r *http.Request) configResponse {
 		MaxChunkBytes:   s.cfg.MaxChunkBytes,
 		Capabilities: map[string]bool{
 			// Reported so a client can tell before it tries. A deployment with
-			// no registry or no cluster is a legitimate way to run applab — the
+			// no registry or no cluster is a legitimate way to run AppLab — the
 			// API and the source half still work — and a caller that assumed
 			// otherwise would get a confusing 500 instead of a clear 501.
 			"build":  s.build != nil && s.build.Ready(),

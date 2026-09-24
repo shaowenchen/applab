@@ -209,7 +209,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	// The app count is stated only to a caller that was shown the list: "with 0
 	// apps" is a different claim from "you have not been shown the apps", and an
 	// agent reading the first would conclude the platform is empty.
-	summary := "applab " + cfg.Version
+	summary := "AppLab " + cfg.Version
 	if !anonymous {
 		summary += " in namespace " + cfg.Namespace
 	}

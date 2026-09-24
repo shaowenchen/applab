@@ -13,7 +13,7 @@ import (
 // It uses `git archive`, which is the right tool for two reasons: it produces a
 // reproducible archive from a commit rather than from the working directory, so
 // the same commit always yields the same bytes; and it needs no checkout, so a
-// build can fetch its source without applab materialising a second copy.
+// build can fetch its source without AppLab materialising a second copy.
 //
 // sha must be a full commit id. It reaches git as an argument, so it is validated
 // first — a revision string from a request could otherwise be a flag.

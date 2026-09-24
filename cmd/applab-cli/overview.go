@@ -71,7 +71,7 @@ to do — the same summary the console opens on.`,
 			})
 
 			// The cluster is reported as three distinct states rather than two:
-			// a deployment with no cluster is a legitimate way to run applab,
+			// a deployment with no cluster is a legitimate way to run AppLab,
 			// and calling it unreachable would read as a fault.
 			switch {
 			case !o.Cluster.Configured:

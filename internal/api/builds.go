@@ -124,7 +124,7 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, commitSHA strin
 	}
 
 	// No provisioning step: the namespace already exists, because it is the one
-	// applab runs in, and the registry credentials a Job pushes with are already
+	// AppLab runs in, and the registry credentials a Job pushes with are already
 	// there for the same reason.
 
 	build := &model.Build{
@@ -240,7 +240,7 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 		// Headers are already sent, so the only honest signal left is a marker in
 		// the body. It is written in a form a reader will notice rather than as a
 		// bare error code.
-		_, _ = fmt.Fprintf(w, "\n[applab] log stream ended: %v\n", err)
+		_, _ = fmt.Fprintf(w, "\n[AppLab] log stream ended: %v\n", err)
 		flusher.Flush()
 	}
 }
@@ -301,7 +301,7 @@ func (s *Server) streamBuildLog(ctx context.Context, w http.ResponseWriter, flus
 		case <-ctx.Done():
 			return nil
 		case <-overall.C:
-			_, _ = fmt.Fprintf(w, "\n[applab] stopped following after 45m; the build may still be running\n")
+			_, _ = fmt.Fprintf(w, "\n[AppLab] stopped following after 45m; the build may still be running\n")
 			flusher.Flush()
 			return nil
 		case <-ticker.C:
@@ -324,9 +324,9 @@ func (s *Server) streamBuildLog(ctx context.Context, w http.ResponseWriter, flus
 			if logs, logErr := s.buildLogs(ctx, app.Namespace, build.JobName, 0); logErr == nil && len(logs) > seen {
 				_, _ = w.Write([]byte(logs[seen:]))
 			}
-			_, _ = fmt.Fprintf(w, "\n[applab] build %s\n", status)
+			_, _ = fmt.Fprintf(w, "\n[AppLab] build %s\n", status)
 			if reason != "" {
-				_, _ = fmt.Fprintf(w, "[applab] %s\n", reason)
+				_, _ = fmt.Fprintf(w, "[AppLab] %s\n", reason)
 			}
 			flusher.Flush()
 			return nil
@@ -334,12 +334,12 @@ func (s *Server) streamBuildLog(ctx context.Context, w http.ResponseWriter, flus
 	}
 }
 
-// writeRecordedLog emits what applab recorded about a build whose Job is gone.
+// writeRecordedLog emits what AppLab recorded about a build whose Job is gone.
 func (s *Server) writeRecordedLog(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, build *model.Build) error {
-	_, _ = fmt.Fprintf(w, "[applab] no live build job for this build\n")
-	_, _ = fmt.Fprintf(w, "[applab] status: %s\n", build.Status)
+	_, _ = fmt.Fprintf(w, "[AppLab] no live build job for this build\n")
+	_, _ = fmt.Fprintf(w, "[AppLab] status: %s\n", build.Status)
 	if build.Reason != "" {
-		_, _ = fmt.Fprintf(w, "[applab] reason: %s\n", build.Reason)
+		_, _ = fmt.Fprintf(w, "[AppLab] reason: %s\n", build.Reason)
 	}
 	flusher.Flush()
 	return nil
@@ -416,7 +416,7 @@ func (s *Server) loadBuild(r *http.Request) (*model.Build, *apiError) {
 
 // setAppStatus records an app's status, logging rather than failing on error.
 //
-// A status write is derived information: failing an operation because applab
+// A status write is derived information: failing an operation because AppLab
 // could not record how it went would be worse than the stale status.
 func (s *Server) setAppStatus(ctx context.Context, appID string, status model.AppStatus, reason string) {
 	if err := s.store.SetAppStatus(ctx, appID, status, reason); err != nil {

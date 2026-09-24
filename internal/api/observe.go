@@ -108,7 +108,7 @@ func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request) {
 	if err := s.streamPodLogs(r.Context(), app.Namespace, app.ID, opts, w, flusher.Flush); err != nil {
 		// The status line is already sent, so the marker in the body is the only
 		// honest signal left.
-		_, _ = fmt.Fprintf(w, "\n[applab] log stream ended: %v\n", err)
+		_, _ = fmt.Fprintf(w, "\n[AppLab] log stream ended: %v\n", err)
 		flusher.Flush()
 	}
 }
@@ -279,7 +279,7 @@ func observeError(err error, appID string) *apiError {
 // boundedIntQuery reads a query parameter and caps it.
 //
 // The cap is applied rather than reported: a caller wanting more than the
-// maximum is asking for something applab will not serve either way, and an error
+// maximum is asking for something AppLab will not serve either way, and an error
 // would only make them retry with the same value.
 func boundedIntQuery(r *http.Request, name string, def, max int) (int, *apiError) {
 	value, apiErr := intQuery(r, name, def)

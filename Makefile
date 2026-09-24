@@ -1,4 +1,4 @@
-# applab — a platform for deploying an application by uploading its source.
+# AppLab — a platform for deploying an application by uploading its source.
 
 BINARY      := applab
 CLI_BINARY  := applab-cli

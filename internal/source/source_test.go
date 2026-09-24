@@ -111,7 +111,7 @@ func TestIngestCreatesCommitAndIsClonable(t *testing.T) {
 	if result.SHA == "" {
 		t.Fatal("Ingest produced no commit")
 	}
-	// The count is the upload plus the files applab seeds into every tree — see
+	// The count is the upload plus the files AppLab seeds into every tree — see
 	// seed.go. Asserted against len(seeded) rather than a rewritten literal so
 	// adding a seeded file does not require editing every count in this file.
 	if result.Files != 3+len(seeded) {
@@ -211,7 +211,7 @@ func TestIngestKeepsWrapperWhenItIsNotAlone(t *testing.T) {
 }
 
 // TestIngestRejectsTraversal is the security test that matters most: an archive
-// must not be able to write outside the directory applab gave it.
+// must not be able to write outside the directory AppLab gave it.
 func TestIngestRejectsTraversal(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -258,7 +258,7 @@ func TestIngestRejectsSymlinkTraversal(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// A directory outside applab's storage, standing in for somewhere sensitive.
+	// A directory outside AppLab's storage, standing in for somewhere sensitive.
 	outside := t.TempDir()
 	canary := filepath.Join(outside, "canary.txt")
 	if err := os.WriteFile(canary, []byte("original\n"), 0o600); err != nil {
@@ -308,7 +308,7 @@ func TestIngestGzipTransparently(t *testing.T) {
 }
 
 // TestIngestSkipsGitDirectory asserts a .git directory in the archive is not
-// stored: it is meaningless inside applab's own repository and can be large.
+// stored: it is meaningless inside AppLab's own repository and can be large.
 func TestIngestSkipsGitDirectory(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -543,7 +543,7 @@ func TestIngestExecutableBitIsPreserved(t *testing.T) {
 }
 
 // TestIngestStripsDangerousModes asserts setuid and setgid bits are not
-// reproduced from the archive into applab's storage.
+// reproduced from the archive into AppLab's storage.
 func TestIngestStripsDangerousModes(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

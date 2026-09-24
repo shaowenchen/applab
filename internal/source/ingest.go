@@ -26,7 +26,7 @@ type IngestLimits struct {
 var DefaultIngestLimits = IngestLimits{
 	// Generous for a source tree, but bounded: a tarball can claim to hold
 	// terabytes while a few megabytes arrive, and without a ceiling that
-	// expansion happens on applab's disk rather than the uploader's.
+	// expansion happens on AppLab's disk rather than the uploader's.
 	MaxBytes: 512 << 20,
 	MaxFiles: 100_000,
 }
@@ -194,7 +194,7 @@ func extractArchive(body io.Reader, dest string, limits IngestLimits) (extractSt
 			continue
 		}
 
-		// applab stores the source in its own git repository, so an archive's
+		// AppLab stores the source in its own git repository, so an archive's
 		// own .git directory is both meaningless and potentially large. Skipping
 		// it also removes a directory a caller cannot see is being ignored.
 		if isGitMetadata(name) {
@@ -356,13 +356,13 @@ func writeArchiveFile(root *os.Root, name string, r io.Reader, header *tar.Heade
 	// The mode is taken from the archive but stripped of anything that would
 	// make the file setuid or world-writable. A source tree needs the executable
 	// bit and not much else, and preserving the rest would faithfully reproduce
-	// a hostile archive's permissions into applab's storage.
+	// a hostile archive's permissions into AppLab's storage.
 	mode := os.FileMode(header.Mode).Perm()
 	if mode == 0 {
 		mode = 0o644
 	}
 	mode &^= os.ModeSetuid | os.ModeSetgid | os.ModeSticky
-	mode |= 0o600 // applab's own read/write, regardless of what was claimed
+	mode |= 0o600 // AppLab's own read/write, regardless of what was claimed
 
 	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {

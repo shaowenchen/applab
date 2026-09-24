@@ -1,4 +1,4 @@
-// Package source stores each app's source in a git repository that applab hosts.
+// Package source stores each app's source in a git repository that AppLab hosts.
 //
 // The repository is the record. An upload arrives as a tarball because that is
 // what any caller can produce — an agent, a container with no git credential, a
@@ -35,7 +35,7 @@ import (
 type Store struct {
 	// dataDir is the configured data directory. Every path this package builds
 	// is derived from it and validated to stay inside it, so an app id can never
-	// address a directory outside applab's own storage.
+	// address a directory outside AppLab's own storage.
 	dataDir string
 
 	// gitBin is the resolved path to the git executable, found once at
@@ -43,7 +43,7 @@ type Store struct {
 	// confusing failure on the first upload.
 	gitBin string
 
-	// author is the identity recorded on commits applab creates. It is a
+	// author is the identity recorded on commits AppLab creates. It is a
 	// deliberate constant rather than the uploading caller's name: the caller
 	// may be anyone, and attributing a commit to a name they supplied would let
 	// a key holder forge attribution to a person who never made the change.
@@ -202,7 +202,7 @@ func (s *Store) Remove(ctx context.Context, appID string) error {
 
 // Log returns an app's commits, newest first, read from the repository itself.
 //
-// This reads git rather than applab's own commit table on purpose: the
+// This reads git rather than AppLab's own commit table on purpose: the
 // repository is the record, and a database row could have been written for a
 // commit that was later removed, or missed for one that was pushed directly
 // over git. What git says is what is actually there.
@@ -365,7 +365,7 @@ func (s *Store) run(ctx context.Context, dir string, args ...string) ([]byte, er
 
 // redactArgs keeps error messages from carrying credentials.
 //
-// No argument applab passes currently contains a secret, but git URLs can carry
+// No argument AppLab passes currently contains a secret, but git URLs can carry
 // one, and an error message is exactly where a token ends up in a log line. The
 // scrub is here so that stays true if a future call passes a URL.
 func redactArgs(args []string) []string {

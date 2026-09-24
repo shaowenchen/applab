@@ -1,6 +1,6 @@
 // Package appkey issues and resolves the per-app API keys.
 //
-// applab has two tiers of credential. An admin key is configured at boot (the
+// AppLab has two tiers of credential. An admin key is configured at boot (the
 // APPLAB_KEYS environment variable) and may do anything. An app key belongs to
 // one app, is created with it, and reaches only that app — see internal/api for
 // where the line is drawn.
@@ -44,7 +44,7 @@ var ErrNoKey = errors.New("no app key")
 
 const (
 	// labelApp identifies the app a key belongs to. It is the same label every
-	// other object applab creates carries, which is what makes deleting an app
+	// other object AppLab creates carries, which is what makes deleting an app
 	// remove its key with no extra code: k8s.Client.DeleteAppObjects lists
 	// Secrets by this selector.
 	labelApp = k8s.LabelApp
@@ -80,7 +80,7 @@ type Store struct {
 // New creates a Store.
 //
 // A nil client is not an error here: a deployment without a cluster is a
-// legitimate way to run applab, and the caller decides whether to attach a store
+// legitimate way to run AppLab, and the caller decides whether to attach a store
 // at all. Methods on a Store built around a nil client are not called — the API
 // layer reports the capability as unavailable instead.
 func New(client kubernetes.Interface, namespace string) *Store {
@@ -171,7 +171,7 @@ func (s *Store) Get(ctx context.Context, appID string) (string, error) {
 // being rotated away from has not been rotated.
 //
 // It also creates the key when there is none, so an app whose key was lost — or
-// one created while applab had no cluster — can be brought back with the same
+// one created while AppLab had no cluster — can be brought back with the same
 // operation rather than an error telling the caller to create it first.
 func (s *Store) Rotate(ctx context.Context, appID string) (string, error) {
 	if appID == "" {

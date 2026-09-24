@@ -76,7 +76,7 @@ func newDeployServerWithSource(t *testing.T) (*api.Server, *fake.Clientset, *sto
 	return srv, client, st
 }
 
-// fakeDynamic returns a dynamic client over the resources applab publishes with,
+// fakeDynamic returns a dynamic client over the resources AppLab publishes with,
 // so the deploy path can run without a cluster.
 //
 // The list kinds are given explicitly: the fake derives them from the kind by
@@ -191,7 +191,7 @@ func TestDeployCreatesResources(t *testing.T) {
 	if _, err := client.AppsV1().Deployments("ops-system").Get(context.Background(), "app-shop", metav1.GetOptions{}); err != nil {
 		t.Errorf("no deployment was created: %v", err)
 	}
-	// And applab's record must say what is deployed.
+	// And AppLab's record must say what is deployed.
 	updated, _ := st.GetApp(context.Background(), "shop")
 	if updated.CommitSHA != commit {
 		t.Errorf("recorded commit = %q, want %q", updated.CommitSHA, commit)
@@ -312,12 +312,12 @@ func TestRestartOfUndeployedAppFails(t *testing.T) {
 	}
 }
 
-// TestStatusSeparatesRecordFromCluster asserts status reports applab's record
+// TestStatusSeparatesRecordFromCluster asserts status reports AppLab's record
 // and the cluster's view as distinct fields.
 //
 // They are deliberately not reconciled into one value: the difference is the
-// useful information, since an app applab thinks is running but whose pods are
-// unhealthy is something applab did not cause and could not see otherwise.
+// useful information, since an app AppLab thinks is running but whose pods are
+// unhealthy is something AppLab did not cause and could not see otherwise.
 func TestStatusSeparatesRecordFromCluster(t *testing.T) {
 	srv, _, _ := newDeployServer(t)
 	h := srv.Handler()
@@ -432,7 +432,7 @@ func recordBuild(t *testing.T, st *store.Store, appID, commit, image string) {
 // now that every app shares one namespace: there is no namespace to drop, so the
 // server has to find the app's objects by label and remove them.
 //
-// The other half of the assertion is the one that matters. applab's own
+// The other half of the assertion is the one that matters. AppLab's own
 // Deployment lives in the same namespace with no app label at all, so a delete
 // that is too broad takes the platform down with the app.
 func TestDeletingAnAppRemovesItsClusterObjects(t *testing.T) {
@@ -446,7 +446,7 @@ func TestDeletingAnAppRemovesItsClusterObjects(t *testing.T) {
 		t.Fatalf("deploy: %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	// A second app, deployed into the same namespace, plus applab itself.
+	// A second app, deployed into the same namespace, plus AppLab itself.
 	otherCommit := setupAppWithCommit(t, srv, h, "blog")
 	recordBuild(t, st, "blog", otherCommit, "registry.example.com/apps/blog:"+otherCommit[:12])
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/blog/deploy", map[string]any{}); rec.Code != http.StatusOK {
@@ -569,7 +569,7 @@ func TestDeploymentHasNoStaleObjectsAfterRedeploy(t *testing.T) {
 }
 
 // TestStatusReportsLiveClusterState asserts the live numbers come from the
-// Deployment rather than from applab's own record.
+// Deployment rather than from AppLab's own record.
 func TestStatusReportsLiveClusterState(t *testing.T) {
 	srv, client, st := newDeployServer(t)
 	h := srv.Handler()
@@ -614,7 +614,7 @@ func TestStatusReportsLiveClusterState(t *testing.T) {
 	if result.Live.CurrentImage == "" {
 		t.Error("the current image was not reported")
 	}
-	// A completed rollout must move applab's own record to running, so the two
+	// A completed rollout must move AppLab's own record to running, so the two
 	// converge rather than drifting.
 	if result.Status != "running" {
 		t.Errorf("status = %q, want running once the cluster reports the app available", result.Status)

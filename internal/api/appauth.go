@@ -181,7 +181,7 @@ func (s *Server) appListAuth(next http.Handler, refuse func(http.ResponseWriter)
 //
 // A store that cannot reach the cluster is reported as nil rather than being
 // passed on: without a cluster there is nothing to resolve a key against, and
-// the admin tier keeps working — which is the whole point of applab being
+// the admin tier keeps working — which is the whole point of AppLab being
 // runnable with no cluster at all.
 func (s *Server) appKeyResolver() auth.AppKeyResolver {
 	if s.appKeys == nil || !s.appKeys.Ready() {

@@ -1,4 +1,4 @@
-// Package api serves applab's HTTP interface.
+// Package api serves AppLab's HTTP interface.
 //
 // The API is the product: the console and the CLI are both just clients of it,
 // and the contract an agent reads is GET /api/v1/describe. Every route is declared in one

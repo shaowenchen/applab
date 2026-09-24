@@ -5,7 +5,7 @@
 # carries no libc dependency of its own.
 #
 # The runtime base is Alpine rather than distroless, and that is a deliberate
-# trade. applab shells out to `git` for everything that touches a repository, and
+# trade. AppLab shells out to `git` for everything that touches a repository, and
 # `git` is the one dependency that cannot be compiled in. A distroless base would
 # mean copying git and each of its shared libraries by hand out of a musl-based
 # build stage — musl binaries do not run against glibc, so the libraries have to
@@ -66,13 +66,13 @@ RUN go build -trimpath \
 # ---------------------------------------------------------------------------
 FROM alpine:3.21
 
-# git is not optional: applab creates a repository per app, builds commits from
+# git is not optional: AppLab creates a repository per app, builds commits from
 # uploaded archives, and serves clones and pushes through git's own http-backend.
 # ca-certificates is for TLS to a registry. tini is the entrypoint, below.
 #
 # git-daemon is a separate package on Alpine, and it is the one that carries
 # `git-http-backend` — Alpine splits git's binaries across subpackages rather
-# than installing them with the main one. Without it applab exits at boot with
+# than installing them with the main one. Without it AppLab exits at boot with
 # "git-http-backend not found; it ships with git", which is true of git as a
 # whole and false of this package. It is the one dependency here that nothing
 # else pulls in, so it is the one that gets left out.
@@ -82,7 +82,7 @@ FROM alpine:3.21
 RUN apk add --no-cache git git-daemon ca-certificates tini \
  && rm -rf /var/cache/apk/*
 
-# The distroless images set this; Alpine does not, and applab resolves the data
+# The distroless images set this; Alpine does not, and AppLab resolves the data
 # directory and git's config relative to it.
 ENV HOME=/home/applab
 
@@ -105,7 +105,7 @@ USER applab
 
 EXPOSE 8080
 
-# tini reaps zombies and forwards signals. Without it the applab process is PID 1,
+# tini reaps zombies and forwards signals. Without it the AppLab process is PID 1,
 # and the kernel ignores a signal like SIGTERM when no handler is installed — so a
 # pod termination would wait out the grace period instead of draining, taking
 # in-flight uploads with it.

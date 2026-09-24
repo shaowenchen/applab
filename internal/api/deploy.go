@@ -64,7 +64,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Deploying means the image needs a build and the resources need creating,
-	// in that order. The namespace is not among them: every app shares applab's
+	// in that order. The namespace is not among them: every app shares AppLab's
 	// own, which exists by definition.
 	//
 	// A successful build of this commit, if one exists, supplies the image.
@@ -138,7 +138,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 // deployCommit applies an app's resources for a known image.
 //
 // The app record is updated only after the resources are applied. Writing the
-// record first would make applab claim a deploy that failed, and the record is
+// record first would make AppLab claim a deploy that failed, and the record is
 // what a caller reads to decide whether anything happened.
 func (s *Server) deployCommit(ctx context.Context, app *model.App, commitSHA, image string) (model.Address, *apiError) {
 	// The image and commit go into the object the deployer builds, so a rollout
@@ -306,10 +306,10 @@ type appStatusResponse struct {
 	AppID  string `json:"app_id"`
 	Status string `json:"status"`
 
-	// Deployed is what applab recorded; Live is what the cluster shows. They are
+	// Deployed is what AppLab recorded; Live is what the cluster shows. They are
 	// reported together rather than reconciled, because the difference is the
 	// useful information: a running app whose cluster state is unhealthy is a
-	// failure applab did not cause and cannot see through its own record.
+	// failure AppLab did not cause and cannot see through its own record.
 	Deployed *deploymentRecord `json:"deployed,omitempty"`
 	Live     *liveState        `json:"live,omitempty"`
 
@@ -338,7 +338,7 @@ type liveState struct {
 	Message         string `json:"message,omitempty"`
 }
 
-// handleAppStatus reports an app's live state alongside applab's record.
+// handleAppStatus reports an app's live state alongside AppLab's record.
 func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 	app, apiErr := s.loadApp(r)
 	if apiErr != nil {
@@ -369,7 +369,7 @@ func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 	if s.deployer != nil && s.deployer.Ready() {
 		live, err := s.appLiveStatus(r.Context(), app)
 		if err != nil {
-			// Not fatal: applab's own record is still an answer, and a cluster
+			// Not fatal: AppLab's own record is still an answer, and a cluster
 			// read failing is exactly when a caller wants to see it.
 			slog.DebugContext(r.Context(), "could not read live app status", "app", app.ID, "error", err)
 		} else {
@@ -382,7 +382,7 @@ func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 				Message:         live.Message,
 			}
 
-			// Keep applab's own status honest: a rollout that has completed is
+			// Keep AppLab's own status honest: a rollout that has completed is
 			// "running", and one that cannot progress is "failed". This is where
 			// the record converges on the cluster rather than drifting from it.
 			if live.Found {

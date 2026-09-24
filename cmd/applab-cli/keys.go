@@ -62,7 +62,7 @@ The previous key stops working immediately — there is no grace period, because
 rotation is usually performed because a key leaked, and a key that still works
 after being rotated away from has not been rotated.
 
-Anything using the old key must be updated. Reads and writes to the applab API
+Anything using the old key must be updated. Reads and writes to the AppLab API
 are the obvious ones: a CI job holding the key, and any developer who copied it
 into a shell profile.`,
 		Args: cobra.ExactArgs(1),
@@ -82,7 +82,7 @@ into a shell profile.`,
 			// the old one:
 			//
 			//   export APPLAB_KEY="$(applab keys rotate shop)"
-			fmt.Fprintf(os.Stderr, "applab: the previous key for %s no longer works; anything using it must be updated\n", args[0])
+			fmt.Fprintf(os.Stderr, "AppLab: the previous key for %s no longer works; anything using it must be updated\n", args[0])
 			fmt.Println(key.Key)
 			return nil
 		},

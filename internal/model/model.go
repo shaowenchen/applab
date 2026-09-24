@@ -1,4 +1,4 @@
-// Package model holds applab's domain types and the rules that give them
+// Package model holds AppLab's domain types and the rules that give them
 // meaning, independent of how they are stored or served.
 package model
 
@@ -23,10 +23,10 @@ const PortEnv = "PORT"
 
 // AppStatus is where an app is in its lifecycle.
 //
-// The status is derived rather than authoritative: it is applab's summary of
+// The status is derived rather than authoritative: it is AppLab's summary of
 // what it last tried to do and how that went, and the cluster remains the
 // source of truth for whether the app is actually up. A status that disagrees
-// with the cluster means applab's last operation failed, not that the app is
+// with the cluster means AppLab's last operation failed, not that the app is
 // healthy.
 type AppStatus string
 
@@ -107,7 +107,7 @@ type App struct {
 
 	// Namespace is where this app's resources live. It is derived from the
 	// deployment's prefix and the app id, and carried on the app so that every
-	// object applab creates for it is named consistently without each call site
+	// object AppLab creates for it is named consistently without each call site
 	// recomputing — and possibly recomputing differently.
 	Namespace string
 
@@ -195,7 +195,7 @@ func ValidateAppID(id string) error {
 // Namespace returns the namespace an app's resources live in: the deployment's
 // own.
 //
-// Every app shares it, which is a deliberate trade. It gives applab a namespaced
+// Every app shares it, which is a deliberate trade. It gives AppLab a namespaced
 // Role instead of a ClusterRole — it holds no permission anywhere else in the
 // cluster — and it costs the isolation separate namespaces would provide. What
 // keeps one app's objects apart from another's is a label (`applab.io/app`),

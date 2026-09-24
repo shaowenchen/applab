@@ -4,8 +4,8 @@ description: Deploy an application to Kubernetes by uploading its source
 
 type: application
 
-# The chart version tracks the chart's own shape; appVersion tracks applab.
-# They move independently: a values change is a chart bump, a new applab release
+# The chart version tracks the chart's own shape; appVersion tracks AppLab.
+# They move independently: a values change is a chart bump, a new AppLab release
 # is an appVersion bump.
 version: 0.1.0
 appVersion: "0.1.0"

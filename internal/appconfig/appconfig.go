@@ -36,7 +36,7 @@ import (
 
 const (
 	// labelApp identifies the app a Secret belongs to. It is the same label
-	// every other object applab creates carries, which is what makes deleting
+	// every other object AppLab creates carries, which is what makes deleting
 	// an app remove its configuration with no extra code: k8s.Client.DeleteAppObjects
 	// lists Secrets by this selector.
 	labelApp = k8s.LabelApp
@@ -65,7 +65,7 @@ type Store struct {
 // New creates a Store.
 //
 // A nil client is not an error here: a deployment without a cluster is a
-// legitimate way to run applab, and the caller decides whether to attach a store
+// legitimate way to run AppLab, and the caller decides whether to attach a store
 // at all. Methods on a Store built around a nil client are not called — the API
 // layer reports the capability as unavailable instead.
 func New(client kubernetes.Interface, namespace string) *Store {
@@ -84,7 +84,7 @@ func Name(appID string) string { return namePrefix + appID }
 // through the env list, secrets through envFrom — so one rule covers both.
 func ValidateName(name string) error {
 	if name == Reserved {
-		return fmt.Errorf("%s is set by applab from the app's port setting and cannot be configured here", Reserved)
+		return fmt.Errorf("%s is set by AppLab from the app's port setting and cannot be configured here", Reserved)
 	}
 	if errs := validation.IsEnvVarName(name); len(errs) > 0 {
 		return fmt.Errorf("%q is not a valid environment variable name: %s", name, errs[0])

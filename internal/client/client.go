@@ -1,4 +1,4 @@
-// Package client talks to an applab deployment.
+// Package client talks to an AppLab deployment.
 //
 // It is the same code path the CLI uses, kept separate so the API surface is
 // exercised through exactly one implementation. The alternative — a CLI that
@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-// Client is a handle to one applab deployment.
+// Client is a handle to one AppLab deployment.
 type Client struct {
 	baseURL string
 	key     string
@@ -171,7 +171,7 @@ func decodeError(resp *http.Response) error {
 	return &APIError{
 		Status:  resp.StatusCode,
 		Message: fmt.Sprintf("%s: %s", resp.Status, excerpt),
-		// A 5xx from something other than applab is usually a proxy having a bad
+		// A 5xx from something other than AppLab is usually a proxy having a bad
 		// moment, which is worth retrying; a 4xx is not.
 		Retryable: resp.StatusCode >= 500,
 	}
@@ -252,7 +252,7 @@ type OverviewBuilds struct {
 // OverviewCluster reports whether the cluster half is usable.
 //
 // Configured and Reachable are separate because the answers differ: a deployment
-// with no cluster is a legitimate way to run applab, while one whose cluster it
+// with no cluster is a legitimate way to run AppLab, while one whose cluster it
 // cannot reach is broken. Reporting a single boolean would make the first look
 // like the second.
 type OverviewCluster struct {
@@ -781,7 +781,7 @@ func (c *Client) Restart(ctx context.Context, appID string) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/apps/"+appID+"/restart", nil, "", nil)
 }
 
-// Status is an app's live state alongside applab's record.
+// Status is an app's live state alongside AppLab's record.
 type Status struct {
 	AppID  string `json:"app_id"`
 	Status string `json:"status"`

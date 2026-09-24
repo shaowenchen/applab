@@ -1,4 +1,4 @@
-# applab
+# AppLab
 
 Deploy an application to Kubernetes by uploading its source. You get back a URL.
 
@@ -124,7 +124,7 @@ The tarball is how the bytes travel. The commit is what is recorded.
 
 ### A build is a Job, not a daemon
 
-Each build runs as a one-shot Kubernetes Job: applab operates no build service,
+Each build runs as a one-shot Kubernetes Job: AppLab operates no build service,
 and a build's resources are released the moment it ends. The Job has two
 containers — an init container that downloads one commit's source, and a builder
 that runs BuildKit rootless over it — and **the builder never sees a credential**.
@@ -149,10 +149,10 @@ build failure is never reported as a deploy failure.
 
 ### One namespace, for everything
 
-Every app runs in the same namespace as applab itself (default `ops-system`).
+Every app runs in the same namespace as AppLab itself (default `ops-system`).
 The trade is deliberate, and both halves of it matter.
 
-**What it buys:** applab needs a namespaced `Role` and nothing else. It holds no
+**What it buys:** AppLab needs a namespaced `Role` and nothing else. It holds no
 permission anywhere else in the cluster, so the reach of a bug in it, or of a
 compromise, is the apps it manages rather than every workload you run. The chart
 renders a Role and a RoleBinding; there is no ClusterRole to audit.
@@ -164,13 +164,13 @@ memory limits on each app's container are the only bound, which is why
 `deploy.appResources` exists and why its limits are not generous.
 
 Objects are told apart by the `applab.io/app` label they carry. Deleting an app
-removes its objects and leaves everything else alone, including applab's own
+removes its objects and leaves everything else alone, including AppLab's own
 Deployment, which shares the namespace and carries no app label.
 
 **Neither an app's pods nor a build's are given a Kubernetes API token**
 (`automountServiceAccountToken: false`). A token can read every Secret in its
 namespace, which here means the API keys and the registry credentials, and an
-app is arbitrary code from whoever pushed the source. Nothing applab runs needs
+app is arbitrary code from whoever pushed the source. Nothing AppLab runs needs
 to reach the API server: a build fetches its source over HTTP with a single-use
 token, and an app just serves traffic.
 
@@ -179,7 +179,7 @@ token, and an app just serves traffic.
 Apps are published through an **Istio gateway** as `VirtualService` resources.
 
 The gateway is cluster infrastructure that already exists, holding the listeners
-and the certificate for the whole domain. applab attaches to it by name
+and the certificate for the whole domain. AppLab attaches to it by name
 (`deploy.gateway`, default `istio-ingress/istio-ingress`) and never creates or
 modifies it. TLS is therefore not per-app configuration: an app is served over
 HTTPS when the gateway has an HTTPS listener.
@@ -195,7 +195,7 @@ wildcard DNS record and a wildcard certificate.
 `apps.example.com/apps/shop`. One ordinary certificate covers any number of
 apps, and nothing has to be reissued as the deployment grows.
 
-applab strips the prefix before the request reaches the app, so an app sees the
+AppLab strips the prefix before the request reaches the app, so an app sees the
 paths it would see at a root and needs no change to work under one; it also sets
 `X-Forwarded-Prefix`, which an app that honours it can use to build correct
 absolute links. The cost is a shared origin: browser connection limits and
@@ -213,9 +213,9 @@ Two failure modes are designed around rather than left to be discovered:
   between two VirtualServices on one host is undefined, which app won would not
   even be consistent. `/apps/shop/` cannot match `/apps/shop-2/`.
 
-### applab's record versus the cluster
+### AppLab's record versus the cluster
 
-applab records what it last did. **The cluster is the source of truth for what is
+AppLab records what it last did. **The cluster is the source of truth for what is
 running.** When the two disagree, believe the cluster — `/apps/{app}/status`
 reports both side by side rather than picking one.
 
@@ -233,7 +233,7 @@ explains the failure among them is the difference between a useful answer and a
 list to dig through.
 
 `/metrics` publishes the platform's own counters (requests, builds, deploys,
-auth refusals) so a scraper can watch applab itself. It needs no key — a scraper
+auth refusals) so a scraper can watch AppLab itself. It needs no key — a scraper
 holds one awkwardly and these numbers describe the platform rather than any app —
 so restrict the path at the network edge where that matters.
 
@@ -310,7 +310,7 @@ still get wrong:
 The build and deploy halves need real infrastructure, so they are exercised on
 one that is built for the purpose and thrown away: [`debugger`](debugger) is a
 GitHub Action that creates a `kind` cluster, a registry and an Istio gateway,
-installs applab from this repository's own chart, and publishes the result
+installs AppLab from this repository's own chart, and publishes the result
 through a tunnel. It is started by hand — it holds a runner for the whole
 session, which is not something to spend on every push. Open the run's summary
 for a link, and `applab push` works against it.
@@ -430,7 +430,7 @@ lost, set it again — recovery is the same operation.
 
 ## Keys
 
-Two tiers, for the two kinds of person who use applab: whoever operates the
+Two tiers, for the two kinds of person who use AppLab: whoever operates the
 platform, and whoever deploys one app.
 
 | | Admin key | App key |
@@ -464,7 +464,7 @@ leave different things behind.
 `APPLAB_DATA_DIR` — `./data` in the quick start — is everything else: the
 database, and a git repository per app. That directory is the only copy of every
 app's source, so deleting it is the point of no return for all of them. Anything
-already deployed to a cluster keeps running, because applab put it there and does
+already deployed to a cluster keeps running, because AppLab put it there and does
 not own it.
 
 **A chart install** is one command:
@@ -475,7 +475,7 @@ helm uninstall applab --namespace ops-system
 
 and the surprise is what it leaves. **The apps are not removed** — they are
 Deployments, Services and VirtualServices carrying `applab.io/app` rather than
-helm's release labels, so an uninstall stops applab and leaves every app it
+helm's release labels, so an uninstall stops AppLab and leaves every app it
 deployed running. That is usually what you want and occasionally a surprise. The
 PersistentVolumeClaim is not removed either, and it holds every app's source.
 

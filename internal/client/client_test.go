@@ -446,7 +446,7 @@ func TestArchiveDirEntryOrderIsStable(t *testing.T) {
 }
 
 // TestArchiveDirHonoursCustomSkip asserts an extra skip name is applied, which is
-// what lets a project exclude something applab does not know about.
+// what lets a project exclude something AppLab does not know about.
 func TestArchiveDirHonoursCustomSkip(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "keep.go"), "keep\n")

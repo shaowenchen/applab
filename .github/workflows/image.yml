@@ -233,7 +233,7 @@ jobs:
       #
       # Two destinations, one build. An image goes to Docker Hub and to ACR,
       # because a cluster that cannot reach the first can usually reach the
-      # second — and an installation that has to build applab itself to run it is
+      # second — and an installation that has to build AppLab itself to run it is
       # not an installation anybody completes.
       #
       # ACR's repository lives under a namespace, `opshub/<name>`, while Docker
@@ -282,7 +282,7 @@ jobs:
           # ACR rejects Buildx's provenance and SBOM attestations, failing the
           # push with an empty OCI manifest class rather than anything that names
           # the cause. Off for both, since this is one build pushed twice — and
-          # neither applab's Dockerfile nor its consumers use them.
+          # neither AppLab's Dockerfile nor its consumers use them.
           provenance: false
           sbom: false
           build-args: |

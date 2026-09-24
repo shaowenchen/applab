@@ -185,9 +185,9 @@ func statusCommand(urlFlag, keyFlag *string) *cobra.Command {
 				}
 			}
 
-			// The live view is reported separately from applab's record rather
+			// The live view is reported separately from AppLab's record rather
 			// than merged with it: when the two disagree, the difference is the
-			// information — applab thought the rollout succeeded and something
+			// information — AppLab thought the rollout succeeded and something
 			// has happened since.
 			if status.Live != nil {
 				if !status.Live.Deployed {
@@ -250,7 +250,7 @@ image is deployed as-is; --build starts a build for one that does not.`,
 			// A deploy that started a build returns the build rather than a URL,
 			// because the build has to finish before there is anything to serve.
 			if result.Build != nil {
-				fmt.Fprintf(os.Stderr, "applab: building %s\n", shortSHA(result.Commit))
+				fmt.Fprintf(os.Stderr, "AppLab: building %s\n", shortSHA(result.Commit))
 				if watch {
 					if err := watchBuild(cmd.Context(), c, appID, result.Build.ID); err != nil {
 						return err
@@ -263,7 +263,7 @@ image is deployed as-is; --build starts a build for one that does not.`,
 
 			if watch {
 				if err := watchDeploy(cmd.Context(), c, appID); err != nil {
-					fmt.Fprintf(os.Stderr, "applab: %v\n", err)
+					fmt.Fprintf(os.Stderr, "AppLab: %v\n", err)
 				}
 			}
 			printDeployed(result)
@@ -285,7 +285,7 @@ func deployAfterBuild(cmd *cobra.Command, c *client.Client, appID, commit string
 	}
 	if watch {
 		if err := watchDeploy(cmd.Context(), c, appID); err != nil {
-			fmt.Fprintf(os.Stderr, "applab: %v\n", err)
+			fmt.Fprintf(os.Stderr, "AppLab: %v\n", err)
 		}
 	}
 	printDeployed(result)
@@ -334,7 +334,7 @@ deployed before.`,
 			}
 
 			if err := watchDeploy(cmd.Context(), c, appID); err != nil {
-				fmt.Fprintf(os.Stderr, "applab: %v\n", err)
+				fmt.Fprintf(os.Stderr, "AppLab: %v\n", err)
 			}
 			fmt.Printf("rolled back to %s\n", shortSHA(result.Commit))
 			if result.URL != "" {

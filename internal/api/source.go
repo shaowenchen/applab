@@ -123,7 +123,7 @@ type uploadResponse struct {
 	CommitSHA string `json:"commit_sha"`
 
 	// Message is the commit's subject — the message the caller gave, or the one
-	// applab generated. It is returned because a generated one is otherwise
+	// AppLab generated. It is returned because a generated one is otherwise
 	// invisible until the commit is read back.
 	Message string `json:"message"`
 
@@ -132,11 +132,11 @@ type uploadResponse struct {
 
 	// StrippedRoot names a single wrapping directory that was removed. Reported
 	// because it changes where the Dockerfile ends up, and a caller that did not
-	// expect it should be able to see that applab did it deliberately.
+	// expect it should be able to see that AppLab did it deliberately.
 	StrippedRoot string `json:"stripped_root,omitempty"`
 }
 
-// recordCommit writes the commit into applab's own history.
+// recordCommit writes the commit into AppLab's own history.
 //
 // A failure here is logged rather than returned: the commit is in the
 // repository, which is the record of truth, and failing the upload would tell
@@ -159,7 +159,7 @@ func (s *Server) recordCommit(r *http.Request, app *model.App, result *source.In
 // ingestError maps an ingest failure onto an HTTP error.
 //
 // The distinction that matters is whose fault it is: a malformed or hostile
-// archive is the caller's (400), while a failure to write to applab's storage is
+// archive is the caller's (400), while a failure to write to AppLab's storage is
 // ours (500) and worth retrying.
 func ingestError(err error) *apiError {
 	switch {
@@ -180,11 +180,11 @@ func ingestError(err error) *apiError {
 }
 
 // isArchiveProblem reports whether an error describes a bad archive rather than
-// an applab failure.
+// an AppLab failure.
 //
 // The source package reports these as plain errors, so the classification is by
 // message. It is confined here so a change in wording has one place to fix, and
-// the default is to treat an unrecognised error as applab's fault — which errs
+// the default is to treat an unrecognised error as AppLab's fault — which errs
 // toward telling the caller to retry rather than blaming them for something they
 // cannot fix.
 func isArchiveProblem(err error) bool {
@@ -208,7 +208,7 @@ func isArchiveProblem(err error) bool {
 
 // handleListCommits returns an app's commit history.
 //
-// The order comes from git, not from applab's own table. Git's history is a
+// The order comes from git, not from AppLab's own table. Git's history is a
 // parent chain, so it is ordered by construction; a timestamp is not — two
 // uploads within the same second share a stored timestamp, and ordering by it
 // would list them arbitrarily. The database row is still consulted, but only for

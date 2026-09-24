@@ -25,7 +25,7 @@ const defaultAppPort int32 = 8080
 // appResponse is an app as the API presents it.
 //
 // It is a separate type from the model on purpose: the wire format is a
-// contract that must stay stable, and letting it be the struct applab happens to
+// contract that must stay stable, and letting it be the struct AppLab happens to
 // use internally would make every refactor a breaking API change.
 type appResponse struct {
 	ID   string `json:"id"`
@@ -346,7 +346,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	//
 	// This used to delete the app's namespace. It removes the app's own objects
 	// now, because every app shares one namespace: a namespace delete here would
-	// take applab itself and every other app with it.
+	// take AppLab itself and every other app with it.
 	if s.appObjectsDeleter != nil {
 		if err := s.appObjectsDeleter(r.Context(), app.ID); err != nil {
 			fail(w, r, Errorf(http.StatusInternalServerError, "delete the cluster objects for app %q", app.ID).Wrap(err))
@@ -443,7 +443,7 @@ func (s *Server) loadAppByID(ctx context.Context, id string) (*model.App, error)
 
 // namespaceFor returns the namespace an app's resources live in.
 //
-// Every app shares applab's own namespace, which is what lets applab hold a
+// Every app shares AppLab's own namespace, which is what lets AppLab hold a
 // namespaced Role rather than a ClusterRole. Objects are told apart by their
 // applab.io/app label, not by a namespace boundary.
 func (s *Server) namespaceFor(appID string) string {
@@ -483,7 +483,7 @@ func validateAppSettings(app *model.App) *apiError {
 // decodeJSON reads a JSON request body into v.
 //
 // Unknown fields are rejected rather than ignored: a caller that misspells
-// "replicas" would otherwise get a 200 and no change, which looks like applab
+// "replicas" would otherwise get a 200 and no change, which looks like AppLab
 // silently failing to apply what it was asked.
 func decodeJSON(r *http.Request, v any) *apiError {
 	defer r.Body.Close()

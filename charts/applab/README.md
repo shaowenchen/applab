@@ -1,4 +1,4 @@
-# applab
+# AppLab
 
 Deploy an application to Kubernetes by uploading its source.
 
@@ -58,7 +58,7 @@ Either way the tag names the commit, which is what lets a rollback reuse an imag
 rather than rebuild it.
 
 If the registry needs credentials, create a `docker-registry` Secret **in the
-namespace applab runs in** and name it:
+namespace AppLab runs in** and name it:
 
 ```bash
 kubectl -n ops-system create secret docker-registry regcred \
@@ -107,7 +107,7 @@ it.
 
 The reason to want this is the certificate. One host needs one ordinary
 certificate, not a wildcard, and nothing has to be reissued as apps are added.
-applab strips the prefix before the request reaches the app, so an app sees the
+AppLab strips the prefix before the request reaches the app, so an app sees the
 paths it would see at a root and needs no change to work under one; it also sets
 `X-Forwarded-Prefix` for an app that builds absolute links. The cost is a shared
 origin — browser connection limits and cookies are shared between apps, and two
@@ -128,7 +128,7 @@ to say so:
 --set deploy.gateway=istio-system/istio-ingressgateway
 ```
 
-applab attaches a `VirtualService` to that gateway and never creates or modifies
+AppLab attaches a `VirtualService` to that gateway and never creates or modifies
 it — the gateway is infrastructure you own.
 
 Setting `apps.baseDomain` without a gateway is refused at render time: it would
@@ -172,7 +172,7 @@ containers then run privileged. It works everywhere, and it means a build — wh
 is arbitrary code from whoever pushed the source — has the run of the node. Prefer
 fixing the node setting.
 
-**Or** set `build.enabled=false` and run applab without the build pipeline. Source
+**Or** set `build.enabled=false` and run AppLab without the build pipeline. Source
 storage, the API and the console all still work, and you can deploy images built
 elsewhere. `applab push` will say clearly that this deployment cannot build.
 
@@ -184,7 +184,7 @@ elsewhere. `applab push` will say clearly that this deployment cannot build.
 | PersistentVolumeClaim | the database and every app's git repository |
 | Secret | the API keys |
 | ConfigMap | everything else |
-| Role, RoleBinding | applab keeps everything in one namespace, and this is all it needs |
+| Role, RoleBinding | AppLab keeps everything in one namespace, and this is all it needs |
 | Ingress | how a person reaches the console and the API |
 | ServiceMonitor | optional, for `/metrics` |
 
@@ -192,7 +192,7 @@ elsewhere. `applab push` will say clearly that this deployment cannot build.
 
 `replicaCount` must be 1, and the chart refuses anything else.
 
-applab keeps its state in SQLite on a ReadWriteOnce volume. SQLite cannot be
+AppLab keeps its state in SQLite on a ReadWriteOnce volume. SQLite cannot be
 shared between processes over a network filesystem — two pods writing one file
 across it corrupts the file — so a second replica would not merely be wasteful,
 it would be unsafe. Scaling out means moving to a database built for it; until
@@ -202,15 +202,15 @@ The volume is the only copy of every app's source. **Back it up.**
 
 ### The Role
 
-applab runs in one namespace and deploys every app into it too, so a namespaced
+AppLab runs in one namespace and deploys every app into it too, so a namespaced
 `Role` and `RoleBinding` are enough — one namespace, one binding, no cluster-wide
 grant.
 
 A platform like this is usually bound to a `ClusterRole`, or worse to
-`cluster-admin`, because it manages resources across namespaces. applab does not,
+`cluster-admin`, because it manages resources across namespaces. AppLab does not,
 so the reach of a bug in it is the apps it manages.
 
-The rules in `role.yaml` are exactly what applab uses, each with a comment saying
+The rules in `role.yaml` are exactly what AppLab uses, each with a comment saying
 why. Nothing is granted for future convenience. In particular there is no
 permission on `namespaces` at all, and none to write pods.
 
@@ -222,7 +222,7 @@ container are the only bound — which is why `deploy.appResources` exists.
 One thing the chart cannot do for you: **an app's pods and a build's are given no
 Kubernetes API token** (`automountServiceAccountToken: false`). A token reads
 every Secret in its namespace, so an app holding one could reach the API keys and
-the registry credentials. applab sets this itself, so there is nothing to
+the registry credentials. AppLab sets this itself, so there is nothing to
 configure — but an app deployed into this namespace by hand needs the same.
 
 ## Values
@@ -237,13 +237,13 @@ does and why it defaults the way it does. The ones that matter most:
 | `apps.baseDomain` | `""` | Domain apps are served under |
 | `apps.pathPrefix` | `""` | Serves every app under one path on that host; needs no wildcard certificate |
 | `deploy.gateway` | `istio-ingress/istio-ingress` | **Required with a base domain.** `<namespace>/<name>` |
-| `build.enabled` | `true` | `false` runs applab without building |
+| `build.enabled` | `true` | `false` runs AppLab without building |
 | `build.registry` | `""` | Required when `build.enabled` |
 | `build.rootless` | `true` | See the prerequisites above |
 | `build.cacheRepoPrefix` | `""` | Registry-side layer cache; a Job has no persistent disk |
 | `build.pushSecret` | `""` | Registry credentials for the build Job to push with |
 | `deploy.imagePullSecret` | `""` | Registry credentials for the app to pull with |
-| `deploy.appResources` | 2 CPU / 2Gi | Applied to every app applab deploys |
+| `deploy.appResources` | 2 CPU / 2Gi | Applied to every app AppLab deploys |
 | `ingress.host` | `applab.example.com` | The host the console and API are reached at |
 | `ingress.path` | `/applab` | The path under it; the server is told the same one |
 | `persistence.size` | `50Gi` | Holds every app's source |
@@ -267,7 +267,7 @@ whole revocation.
 That is also why `auth.existingSecret` is worth using even with one key. Release
 values are stored in plain text in the cluster and are frequently committed.
 
-**App keys** are created by applab itself, one Secret per app, as apps are
+**App keys** are created by AppLab itself, one Secret per app, as apps are
 created. An app key reaches only its app: it can push, build, deploy, roll back
 and read logs, but cannot delete the app and cannot see any other app. That is
 the credential to hand to whoever deploys an app, so they never hold one that can
@@ -284,11 +284,11 @@ Role already grants; nothing here has to be widened.
 An app's configuration is split by sensitivity, and only one half is yours to
 configure here.
 
-**Environment variables** — `LOG_LEVEL`, `FEATURE_X` — are stored in applab's
+**Environment variables** — `LOG_LEVEL`, `FEATURE_X` — are stored in AppLab's
 database and are visible in an app's Deployment to anyone who can read it. They
 need no setting.
 
-**Secrets** — passwords, tokens, connection strings — are created by applab, one
+**Secrets** — passwords, tokens, connection strings — are created by AppLab, one
 Secret per app named `applab-env-<app>`, as they are set. They are never written
 into the Deployment: it references the Secret through `envFrom` and the kubelet
 substitutes the values inside the container. No endpoint returns a value, so a
@@ -300,7 +300,7 @@ and **take effect on the next deploy**. Nothing to configure in the chart.
 
 Worth knowing: secrets reach the cluster as API traffic and are stored in `etcd`
 like any Kubernetes Secret. Encryption at rest is the cluster's job, not
-applab's.
+AppLab's.
 
 ## After installing
 
@@ -323,7 +323,7 @@ version — so the chart's default `image.tag` is the image it needs, and an
 install with nothing overridden runs the build that chart was packaged from.
 
 `appVersion` is the commit the chart was built from, which is what
-`app.kubernetes.io/version` carries on every object applab creates, so a release
+`app.kubernetes.io/version` carries on every object AppLab creates, so a release
 that is installed is traceable back to its code. It is deliberately **not** the
 image tag: it names a commit, and no image is published under a bare commit.
 
@@ -373,7 +373,7 @@ helm upgrade applab applab/applab \
 builds are published: Helm does not resolve a prerelease unless it is asked for
 by name. An upgrade without it fails the same way an install does.
 
-The database schema migrates on start. A newer applab refuses to run against an
+The database schema migrates on start. A newer AppLab refuses to run against an
 older one's schema rather than guessing, so roll the image back with the chart if
 an upgrade needs reverting.
 
@@ -386,7 +386,7 @@ helm uninstall applab --namespace ops-system
 **The apps are not removed.** They are Deployments, Services and
 VirtualServices in the release namespace, and the release does not own them —
 they carry `applab.io/app`, not helm's release labels. So an uninstall stops
-applab and leaves every app it deployed running, which is usually what you want
+AppLab and leaves every app it deployed running, which is usually what you want
 and occasionally a surprise.
 
 The PersistentVolumeClaim is not removed either, and it holds the only copy of
@@ -401,5 +401,5 @@ kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/ap
 kubectl -n ops-system delete pvc applab                           # and the source with it
 ```
 
-The namespace itself is yours rather than applab's — it is where applab was
-installed, and it may hold other things. applab never deletes it.
+The namespace itself is yours rather than AppLab's — it is where AppLab was
+installed, and it may hold other things. AppLab never deletes it.

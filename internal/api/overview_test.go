@@ -188,7 +188,7 @@ func TestOverviewCarriesRecentBuildsAcrossApps(t *testing.T) {
 // answered separately.
 //
 // "Not configured" and "configured but unreachable" are different situations —
-// a deployment with no cluster is a legitimate way to run applab — and
+// a deployment with no cluster is a legitimate way to run AppLab — and
 // collapsing them would make a working deployment look broken.
 func TestOverviewReportsClusterState(t *testing.T) {
 	t.Run("no cluster attached", func(t *testing.T) {

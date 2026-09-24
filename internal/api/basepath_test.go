@@ -165,7 +165,7 @@ func TestBasePathReachesTheAPIBaseURL(t *testing.T) {
 
 // TestNoBasePathIsTheRoot asserts the default is unchanged.
 //
-// Every existing deployment reaches applab at its own hostname, and a prefix
+// Every existing deployment reaches AppLab at its own hostname, and a prefix
 // that leaked into that case would break all of them at once.
 func TestNoBasePathIsTheRoot(t *testing.T) {
 	srv, _ := newTestServer(t)

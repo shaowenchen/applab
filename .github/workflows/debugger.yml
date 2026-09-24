@@ -1,4 +1,4 @@
-# Start a complete applab test environment by hand and get a link.
+# Start a complete AppLab test environment by hand and get a link.
 #   gh workflow run debugger.yml
 #
 # The run's Summary carries the console link and the API key. Push an app with

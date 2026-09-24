@@ -20,7 +20,7 @@ import (
 // matter here:
 //
 //   - There is no working tree. The repository is bare, and plumbing can build
-//     an object graph from arbitrary files without one, so applab never has to
+//     an object graph from arbitrary files without one, so AppLab never has to
 //     materialise a second copy of the source.
 //   - It is safe under concurrency. Each ingest uses its own index file, and the
 //     only shared mutation is the final update-ref, which git performs as a
@@ -106,7 +106,7 @@ func (s *Store) commitWorkTree(
 	sha = strings.TrimSpace(string(commitOut))
 
 	// Update the branch. --create-reflog is not needed on a bare repo created by
-	// applab, but the ref is set unconditionally to main so that an upload always
+	// AppLab, but the ref is set unconditionally to main so that an upload always
 	// lands on the branch a clone will check out.
 	if _, err := s.run(ctx, repoPath, "update-ref", "refs/heads/main", sha, parent); err != nil {
 		// A concurrent upload moved the branch between reading the parent and
@@ -153,7 +153,7 @@ func (s *Store) headWithEnv(ctx context.Context, repoPath string, env []string) 
 // entries a default add would skip — a .gitignore that excludes something the
 // caller still wants stored, or a build output directory that is committed
 // deliberately. The archive is an explicit statement of what the caller wants,
-// so applab stores what arrived rather than re-deciding on their behalf.
+// so AppLab stores what arrived rather than re-deciding on their behalf.
 func (s *Store) stageDirectory(ctx context.Context, repoPath, workTree string, env []string) error {
 	absWorkTree, err := filepath.Abs(workTree)
 	if err != nil {
@@ -221,7 +221,7 @@ func (s *Store) runWithEnv(ctx context.Context, repoPath string, env []string, a
 
 // gitEnv is the environment every git invocation runs with.
 //
-// Scrubbing the global and system config is what makes applab's behaviour
+// Scrubbing the global and system config is what makes AppLab's behaviour
 // independent of the machine it runs on: a host with a global gitignore, a
 // commit hook, or a template directory would otherwise change what gets
 // committed. The prompt and pager settings matter because a server has no

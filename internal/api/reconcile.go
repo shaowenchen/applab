@@ -10,7 +10,7 @@ import (
 // ReconcileBuilds brings builds left in a non-terminal state by a restart up to
 // date with the cluster.
 //
-// applab has no controller watching Jobs: a build's outcome is recorded when
+// AppLab has no controller watching Jobs: a build's outcome is recorded when
 // something asks. If the process restarts while a build is running, nothing is
 // left to notice that it finished, and the build would read as "running"
 // forever — so a caller polling it would wait indefinitely for a Job that ended
@@ -71,7 +71,7 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 			slog.InfoContext(ctx, "reconciled a build", "build", b.ID, "status", status)
 
 		case status == "":
-			// The Job is gone entirely — its TTL elapsed while applab was down.
+			// The Job is gone entirely — its TTL elapsed while AppLab was down.
 			// The outcome is unknowable, and claiming success would let a caller
 			// deploy an image that may never have been pushed.
 			s.setBuildStatus(ctx, b.ID, model.BuildStatusFailed,

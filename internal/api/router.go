@@ -61,7 +61,7 @@ type Server struct {
 	// sourceArchiveSize reports the archive's byte length.
 	sourceArchiveSize func(ctx context.Context, appID, sha string) (int64, error)
 
-	// appObjectsDeleter removes everything applab created for one app.
+	// appObjectsDeleter removes everything AppLab created for one app.
 	//
 	// Deleting an app used to mean deleting its namespace. Every app shares one
 	// namespace now, so its objects are found by label and removed instead —
@@ -195,7 +195,7 @@ func (s *Server) WithSourceTokens(issuer *sourcetoken.Issuer) *Server {
 	return s
 }
 
-// WithAppObjectsDeleter attaches the teardown that removes everything applab
+// WithAppObjectsDeleter attaches the teardown that removes everything AppLab
 // created for an app, used when deleting it.
 func (s *Server) WithAppObjectsDeleter(fn func(ctx context.Context, appID string) error) *Server {
 	s.appObjectsDeleter = fn
@@ -330,7 +330,7 @@ func (s *Server) WithAppKeys(store appKeyService) *Server { s.appKeys = store; r
 //
 // Note what is missing: there is no method returning a secret's value. The
 // deployer reads values, through its own narrower interface, and it is the only
-// thing in applab that does — which is what makes "no route returns a secret" a
+// thing in AppLab that does — which is what makes "no route returns a secret" a
 // property of the code rather than a rule someone has to remember.
 type appConfigService interface {
 	// Ready reports whether the store can reach a cluster.
@@ -387,7 +387,7 @@ func (s *Server) WithMetrics(m *Metrics) *Server {
 	s.metrics = m
 
 	// These are sampled at scrape time: they are whatever is in the database,
-	// which changes without applab doing anything in particular.
+	// which changes without AppLab doing anything in particular.
 	m.RegisterGauge("applab_apps", "Apps known to this installation.", func() float64 {
 		apps, err := s.store.ListApps(context.Background())
 		if err != nil {
@@ -697,7 +697,7 @@ func (s *Server) routes() []route {
 			Handler: s.handleRotateAppKey,
 		},
 
-		// -- The files applab keeps in an app's tree ----------------------
+		// -- The files AppLab keeps in an app's tree ----------------------
 		{
 			// What the seeded files are, served from the running server so a copy
 			// in a repository can update itself — see handleAgentFile.
@@ -1132,7 +1132,7 @@ func (s *Server) Handler() http.Handler {
 // withBasePath mounts the whole route table under the configured path prefix.
 //
 // It exists because of how a Kubernetes Ingress works: an Ingress routes on a
-// path but cannot strip one, so an applab served at "/applab" receives requests
+// path but cannot strip one, so an AppLab served at "/applab" receives requests
 // for "/applab/api/v1/...". Without this, every one of them would miss every
 // route and the Ingress would look correct while the console answered 404.
 //

@@ -1,9 +1,9 @@
-// Package store persists applab's state in SQLite.
+// Package store persists AppLab's state in SQLite.
 //
-// The database holds only applab's own view of the world — which apps exist,
+// The database holds only AppLab's own view of the world — which apps exist,
 // what was uploaded, what was built and deployed. It is deliberately not a
 // mirror of the cluster: the cluster stays the source of truth for what is
-// actually running, and a row here records the last thing applab attempted.
+// actually running, and a row here records the last thing AppLab attempted.
 //
 // SQLite is chosen because it needs no server to operate and the whole control
 // plane is a single replica. That single-replica assumption is load-bearing:
@@ -33,7 +33,7 @@ type Store struct {
 // The connection pool is capped at a single connection. SQLite allows one
 // writer at a time, and with a larger pool two connections can deadlock
 // upgrading from a read to a write lock — a failure that surfaces as random
-// SQLITE_BUSY errors under load and is miserable to debug. applab's queries are
+// SQLITE_BUSY errors under load and is miserable to debug. AppLab's queries are
 // short, so serialising them costs nothing that matters and removes the whole
 // class of flakiness.
 //
@@ -164,7 +164,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if version > len(migrations) {
-		// A newer applab wrote this file. Continuing could corrupt data in ways
+		// A newer AppLab wrote this file. Continuing could corrupt data in ways
 		// this version does not know about, so refuse rather than guess.
 		return fmt.Errorf("database schema version %d is newer than this build understands (%d); upgrade applab", version, len(migrations))
 	}

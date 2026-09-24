@@ -1,4 +1,4 @@
-// Package gitx serves applab's repositories over the git smart HTTP protocol.
+// Package gitx serves AppLab's repositories over the git smart HTTP protocol.
 //
 // It runs git's own `git http-backend` as a CGI program and translates between
 // it and net/http, rather than reimplementing the protocol. The protocol is
@@ -41,7 +41,7 @@ type Transport struct {
 	backend string
 
 	// serviceUser is the name git records as the pusher for reflog entries.
-	// applab has no per-user identities, so it is a constant.
+	// AppLab has no per-user identities, so it is a constant.
 	serviceUser string
 
 	// authorize decides whether a request may reach one repository, given the
@@ -192,14 +192,14 @@ func (t *Transport) cgiEnv(r *http.Request, projectPath, query, gitProtocol stri
 		"SERVER_SOFTWARE=applab",
 
 		// Export every repository under the root without requiring a
-		// git-daemon-export-ok file in each. Access is granted by applab's own
+		// git-daemon-export-ok file in each. Access is granted by AppLab's own
 		// authentication, which has already run by the time this is called, so
 		// the file-based check would be a second, weaker gate that has to be
 		// remembered on every repository creation.
 		"GIT_HTTP_EXPORT_ALL=1",
 
 		// git only enables receive-pack (push) for an authenticated caller, and
-		// the only signal it has for that is a non-empty REMOTE_USER. applab
+		// the only signal it has for that is a non-empty REMOTE_USER. AppLab
 		// authenticates with a key before reaching here, so the caller is
 		// authenticated by construction and this states the fact.
 		"REMOTE_USER=" + t.serviceUser,
@@ -210,7 +210,7 @@ func (t *Transport) cgiEnv(r *http.Request, projectPath, query, gitProtocol stri
 		"GIT_PROTOCOL=" + gitProtocol,
 
 		// The backend must not try to read the operator's git configuration, or
-		// it would behave differently depending on where applab happens to run.
+		// it would behave differently depending on where AppLab happens to run.
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
@@ -346,7 +346,7 @@ func (t *Transport) resolvePath(urlPath string) (projectPath, repoName string, o
 		return "", "", false
 	}
 	// The repository name is an app id, so it is constrained exactly as one is.
-	// This is what keeps a request from naming a directory applab did not create.
+	// This is what keeps a request from naming a directory AppLab did not create.
 	if !validRepoName(name) {
 		return "", "", false
 	}

@@ -370,7 +370,7 @@ func TestConfigReportsDeploymentShape(t *testing.T) {
 		t.Errorf("base_domain = %v, want the configured value", cfg["base_domain"])
 	}
 	// The namespace is reported because it is no longer derivable: every app
-	// lives in the one applab runs in, so "where are my app's objects" has one
+	// lives in the one AppLab runs in, so "where are my app's objects" has one
 	// answer rather than one per app.
 	if cfg["namespace"] == nil || cfg["namespace"] == "" {
 		t.Error("namespace is not reported; a client cannot say where an app's objects live")

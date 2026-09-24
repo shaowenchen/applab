@@ -1,13 +1,13 @@
 # Working on `{{APP}}`
 
-This file is written by applab every time source is uploaded to the app
+This file is written by AppLab every time source is uploaded to the app
 `{{APP}}`. Editing it here changes nothing: the next push overwrites it. It
 describes how to drive this app's whole lifecycle, and it is the same file in
 every app — what differs is the app's id and its key.
 
 ## What this app is
 
-An applab app is one source repository, one image, one Deployment and one
+An AppLab app is one source repository, one image, one Deployment and one
 address. This repository **is** the app's source: uploading to it is how code
 gets in, and what is committed is what can be deployed.
 
@@ -20,7 +20,7 @@ The app is served at a URL the deployment knows. Ask for it:
     export APPLAB_URL="<the deployment, e.g. https://applab.example.com>"
     export APPLAB_KEY="<the app's key>"
 
-`APPLAB_URL` is the base address of the applab that manages this app — the same
+`APPLAB_URL` is the base address of the AppLab that manages this app — the same
 address its console is served at. `GET $APPLAB_URL/api/v1/describe` needs no key
 and reports it, along with every endpoint that exists.
 
@@ -78,7 +78,7 @@ does not, which is why it takes the id as an argument and makes you type it.
 
 **Keep it current.** Both files are written into this repository every time
 source is uploaded, so a checkout that has not been pushed in a while carries a
-copy from whenever it last was — and applab's API changes between releases. If a
+copy from whenever it last was — and AppLab's API changes between releases. If a
 command here fails in a way that suggests the deployment has moved on, refresh
 them from the running server:
 
@@ -115,7 +115,7 @@ no-op — it returns the existing commit rather than adding an empty one.
       -d '{"commit_sha":"<sha>"}'
 
 A build runs as a Job in the cluster and returns immediately. The image is built
-from the `Dockerfile` in the source — the one requirement applab puts on a
+from the `Dockerfile` in the source — the one requirement AppLab puts on a
 project.
 
 **Deploy it** — names a commit and returns the address it is served at.
@@ -134,7 +134,7 @@ earlier commit is a rollback.
     curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/status"  -H "Authorization: Bearer $APPLAB_KEY"
     curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/logs?follow=false&tail=500" -H "Authorization: Bearer $APPLAB_KEY"
 
-`status` reports what applab recorded *and* what the cluster shows, separately
+`status` reports what AppLab recorded *and* what the cluster shows, separately
 and deliberately unreconciled: when the two disagree, the cluster is right.
 
 `GET /api/v1/apps/{{APP}}/diagnose` answers "why is it not working" in one call —
@@ -164,7 +164,7 @@ configured port.
 failure is never reported as a deploy failure, and so a rollback cannot fail for
 a reason the original build did not.
 
-**The seeded files are applab's, not yours.** `applab.sh` and `AGENT.md` are
+**The seeded files are AppLab's, not yours.** `applab.sh` and `AGENT.md` are
 written on every upload, so an edit to either is gone with the next push. The
 current versions are servable too — `GET $APPLAB_URL/api/v1/apps/{{APP}}/agent/files`
 lists them and each has its own URL — which is what `./applab.sh self-update`

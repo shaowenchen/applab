@@ -95,18 +95,18 @@ func DefaultSite(root, repoURL, branch string) Site {
 		Root:       root,
 		RepoURL:    strings.TrimSuffix(repoURL, "/"),
 		RepoBranch: branch,
-		Title:      "applab",
+		Title:      "AppLab",
 		Pages: []Page{
 			{
 				Source: "README.md",
 				Output: "index.html",
-				Title:  "applab: deploy an application by uploading its source",
+				Title:  "AppLab: deploy an application by uploading its source",
 				Nav:    "Overview",
 			},
 			{
 				Source: "charts/applab/README.md",
 				Output: "chart.html",
-				Title:  "Installing the applab chart",
+				Title:  "Installing the AppLab chart",
 				Nav:    "Installing",
 			},
 			{

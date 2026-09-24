@@ -181,7 +181,7 @@ if render 2>/dev/null | grep -q 'WARNING: build.rootless is false'; then
   fail "the privileged-build warning appears with build.rootless=true"
 fi
 
-# RBAC is a Role, not a ClusterRole: applab keeps everything in one namespace,
+# RBAC is a Role, not a ClusterRole: AppLab keeps everything in one namespace,
 # so it has no business holding any permission outside it. A ClusterRole
 # reappearing here would silently undo the point of that.
 if grep -q 'kind: ClusterRole' <<<"$out"; then
@@ -194,7 +194,7 @@ if grep -q 'resources: \["namespaces"\]' <<<"$out"; then
 fi
 
 # Publishing apps is Istio's job here: the cluster routes through a gateway, and
-# an Ingress applab created would be ignored by it.
+# an Ingress AppLab created would be ignored by it.
 grep -q 'APPLAB_DEPLOY_GATEWAY: "ops-system/gateway"' <<<"$out" \
   || fail "deploy.gateway does not reach the server; apps would have no route"
 
@@ -215,7 +215,7 @@ if grep -q 'APPLAB_NAMESPACE_PREFIX' <<<"$out"; then
   fail "APPLAB_NAMESPACE_PREFIX is still set; the per-app namespace model is gone"
 fi
 
-# applab's own image is pulled always: a re-pushed tag must not be served from a
+# AppLab's own image is pulled always: a re-pushed tag must not be served from a
 # node's cache.
 grep -q 'imagePullPolicy: Always' <<<"$out" || fail "applab's own image is not pulled always"
 
@@ -307,7 +307,7 @@ if [ "$(console_vs)" = "found" ]; then
 fi
 
 # Without one it is rendered, and on the host the apps share and through the
-# same gateway, so a request for "/" reaches applab rather than the gateway's
+# same gateway, so a request for "/" reaches AppLab rather than the gateway's
 # own 404 handler.
 if [ "$(console_vs --set ingress.enabled=false)" != "found" ]; then
   fail "the console is unreachable without an Ingress: no VirtualService is rendered for it"

@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-// TestTheAgentFilesAreServable asserts the files applab writes into an app's
+// TestTheAgentFilesAreServable asserts the files AppLab writes into an app's
 // tree can be fetched back from the running server.
 //
 // That is what lets a copy in a repository update itself: the seeded files are
 // committed on every upload, so a checkout carries whatever version was current
-// the last time it was pushed, and applab's API changes between releases. Serving
+// the last time it was pushed, and AppLab's API changes between releases. Serving
 // them from the deployment is the difference between a stale script and one that
 // can be refreshed.
 func TestTheAgentFilesAreServable(t *testing.T) {

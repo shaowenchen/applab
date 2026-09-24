@@ -143,7 +143,7 @@ img { max-width: 100%; height: auto; }
 <body>
 <div class="layout">
   <nav>
-    <div class="brand"><a href="index.html">applab</a></div>
+    <div class="brand"><a href="index.html">AppLab</a></div>
     <ul>
       {{- range .Pages }}
       <li><a href="{{ .Output }}"{{ if eq .Nav $.Nav }} aria-current="page"{{ end }}>{{ .Nav }}</a></li>

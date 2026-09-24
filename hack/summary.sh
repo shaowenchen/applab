@@ -13,7 +13,7 @@ key="${APPLAB_API_KEY_SHOWN:-}"
 prefix="${APPLAB_PATH_PREFIX_SHOWN:-/apps}"
 
 {
-  echo "## applab is ready"
+  echo "## AppLab is ready"
   echo
   if [ -n "$url" ]; then
     echo "**Open the console:** <${url}>"
@@ -34,7 +34,7 @@ prefix="${APPLAB_PATH_PREFIX_SHOWN:-/apps}"
     echo "| Apps | \`${url}${prefix}/<app>/\` |"
   fi
   if [ -n "${APPLAB_VERSION_SHOWN:-}" ]; then
-    echo "| applab | \`${APPLAB_VERSION_SHOWN}\` |"
+    echo "| AppLab | \`${APPLAB_VERSION_SHOWN}\` |"
   fi
   if [ -n "${APPLAB_NAMESPACE_SHOWN:-}" ]; then
     echo "| Namespace | \`${APPLAB_NAMESPACE_SHOWN}\` |"
@@ -64,10 +64,10 @@ prefix="${APPLAB_PATH_PREFIX_SHOWN:-/apps}"
 # A notice in the run's timeline, so the link is visible without opening the
 # summary — the same courtesy the tunnel agents' own output would have given.
 if [ -n "$url" ]; then
-  echo "::notice title=applab is ready::${url}"
+  echo "::notice title=AppLab is ready::${url}"
 fi
 if [ -n "$key" ]; then
   # Deliberately NOT ::add-mask::. The key is the deliverable, and masking it
   # would hide it from the very summary that exists to show it.
-  echo "::notice title=applab API key::${key}"
+  echo "::notice title=AppLab API key::${key}"
 fi

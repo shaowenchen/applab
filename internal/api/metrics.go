@@ -20,7 +20,7 @@ import (
 // the format is stable and small; a dependency would add more to the module
 // graph than it removes from this file.
 //
-// What is exposed deliberately stops short of per-app series: an applab that
+// What is exposed deliberately stops short of per-app series: an AppLab that
 // manages hundreds of apps would otherwise publish hundreds of series that
 // nothing scrapes by name, and the per-app answers are available from the API.
 // These are the numbers that describe the platform itself — is it handling
@@ -57,7 +57,7 @@ func NewMetrics() *Metrics {
 
 // RegisterGauge attaches a value sampled when the endpoint is scraped.
 //
-// A function rather than a value because these change without applab doing
+// A function rather than a value because these change without AppLab doing
 // anything — the number of apps is whatever is in the database — and a counter
 // that has to be remembered to be updated is a counter that goes stale.
 func (m *Metrics) RegisterGauge(name, help string, fn func() float64) {

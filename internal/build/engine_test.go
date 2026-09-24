@@ -58,7 +58,7 @@ func TestStartCreatesJobAndSecret(t *testing.T) {
 	app := testApp()
 
 	// The namespace has to exist before a Job can be created in it; in the real
-	// flow applab creates it, so the fake must have it too.
+	// flow AppLab creates it, so the fake must have it too.
 	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: app.Namespace},
 	}, metav1.CreateOptions{}); err != nil {
@@ -103,7 +103,7 @@ func TestStartCreatesJobAndSecret(t *testing.T) {
 	}
 
 	// The build container must NOT: it runs arbitrary code from the uploaded
-	// Dockerfile, so giving it the token would hand it applab's source access.
+	// Dockerfile, so giving it the token would hand it AppLab's source access.
 	builder := findContainer(t, job, "build")
 	if mountsSecretFor(builder, "token") {
 		t.Error("the build container mounts the source token; a build must not hold a credential it can exfiltrate")
@@ -115,7 +115,7 @@ func TestStartCreatesJobAndSecret(t *testing.T) {
 func TestJobSecurityContext(t *testing.T) {
 	t.Run("the build pod is given no API token", func(t *testing.T) {
 		// Kubernetes mounts a service account token into every pod by default,
-		// and in applab's namespace that token can read every Secret — including
+		// and in AppLab's namespace that token can read every Secret — including
 		// the API keys and the registry credentials sitting beside it. A build
 		// runs arbitrary code from the uploaded Dockerfile, so the default is
 		// exactly the wrong answer here.
@@ -264,7 +264,7 @@ func TestImageRef(t *testing.T) {
 	}{
 		// One segment of path: the app becomes the next one and gets a
 		// repository of its own. This is the shape every deployment running
-		// applab uses today, so it must not move.
+		// AppLab uses today, so it must not move.
 		{"cluster registry with a prefix", "registry.example.com/apps", "shop", "registry.example.com/apps/shop", ""},
 		{"kind registry", "kind-registry:5000", "demo", "kind-registry:5000/demo", ""},
 		{"docker hub account", "shaowenchen", "demo", "shaowenchen/demo", ""},
@@ -439,7 +439,7 @@ func TestStatusReadsJobConditions(t *testing.T) {
 // TestStatusOfMissingJobIsNotAFailure asserts a Job that has been garbage
 // collected is reported as absent rather than failed. Claiming failure would be
 // wrong and alarming: the build may have succeeded, and its outcome is recorded
-// in applab's own table.
+// in AppLab's own table.
 func TestStatusOfMissingJobIsNotAFailure(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	engine := New(client, testConfig())

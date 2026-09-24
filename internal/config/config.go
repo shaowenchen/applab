@@ -1,4 +1,4 @@
-// Package config loads applab's runtime configuration.
+// Package config loads AppLab's runtime configuration.
 //
 // Precedence, lowest to highest: built-in defaults, an optional YAML file named
 // by APPLAB_CONFIG, then environment variables. Environment last is deliberate —
@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the whole of applab's runtime configuration.
+// Config is the whole of AppLab's runtime configuration.
 type Config struct {
 	// Listen is the address the HTTP server binds, e.g. ":8080".
 	Listen string `yaml:"listen"`
@@ -36,7 +36,7 @@ type Config struct {
 	// BasePath is the path prefix this service is served under, e.g. "/applab".
 	//
 	// It exists because of how a Kubernetes Ingress works: an Ingress routes on a
-	// path but cannot strip one, so an applab served at "/applab" receives
+	// path but cannot strip one, so an AppLab served at "/applab" receives
 	// requests for "/applab/api/v1/...". Without this the server would match
 	// none of them and answer 404 to every request while the Ingress looked
 	// correct.
@@ -60,10 +60,10 @@ type Config struct {
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
 
-	// Namespace is the namespace applab runs in, and the only one whose
+	// Namespace is the namespace AppLab runs in, and the only one whose
 	// resources it creates or touches. Every app is deployed into it too.
 	//
-	// One namespace rather than one per app is what lets applab hold a
+	// One namespace rather than one per app is what lets AppLab hold a
 	// namespaced Role instead of a ClusterRole: it has no permission anywhere
 	// else in the cluster. The cost is that apps are not isolated from each
 	// other by a namespace boundary, so objects are told apart by their
@@ -72,14 +72,14 @@ type Config struct {
 
 	// Kubeconfig is an explicit kubeconfig path. Empty means use in-cluster
 	// config, falling back to the ambient kubeconfig (which is what makes
-	// `applab` runnable outside a cluster during development).
+	// `AppLab` runnable outside a cluster during development).
 	Kubeconfig string `yaml:"kubeconfig"`
 
 	// BaseDomain is the domain apps are exposed under. With no PathPrefix an
 	// app with id "shop" is served at "shop.<BaseDomain>"; with one, every app
 	// shares this host and is told apart by path instead. Empty means apps get
 	// no hostname and are only reachable inside the cluster — a legitimate way
-	// to run applab while its ingress is being decided.
+	// to run AppLab while its ingress is being decided.
 	BaseDomain string `yaml:"base_domain"`
 
 	// PathPrefix puts every app under one path on one host, so an app with id
@@ -88,7 +88,7 @@ type Config struct {
 	//
 	// This is the alternative to a wildcard DNS entry and a wildcard
 	// certificate. Serve one host and one certificate, and let the path say
-	// which app is meant. applab strips the prefix before the request reaches
+	// which app is meant. AppLab strips the prefix before the request reaches
 	// the app, so an app sees the paths it would see if it were at the root.
 	//
 	// Must begin with "/" and must not end with one; empty means per-app
@@ -113,7 +113,7 @@ type Config struct {
 
 	// Build configures the image build pipeline. It is a struct rather than
 	// loose fields because the whole group is either configured or absent:
-	// applab runs without any of it (the API and source halves still work) and
+	// AppLab runs without any of it (the API and source halves still work) and
 	// reports the build capability as unavailable.
 	Build Build `yaml:"build"`
 }
@@ -121,7 +121,7 @@ type Config struct {
 // Deploy configures how apps are exposed in the cluster.
 type Deploy struct {
 	// Gateway is the Istio gateway apps are published through, as
-	// "<namespace>/<name>". applab attaches VirtualServices to it; it does not
+	// "<namespace>/<name>". AppLab attaches VirtualServices to it; it does not
 	// create it, because a gateway is shared cluster infrastructure with the
 	// listeners and the certificate for the whole domain already on it.
 	//
@@ -129,9 +129,9 @@ type Deploy struct {
 	// when the gateway has an HTTPS listener, without any per-app setting.
 	Gateway string `yaml:"gateway"`
 
-	// ImagePullSecret names a Secret, in applab's own namespace, holding
+	// ImagePullSecret names a Secret, in AppLab's own namespace, holding
 	// registry credentials for pulling the built image. It is referenced
-	// directly: apps run in the same namespace as applab, so there is no
+	// directly: apps run in the same namespace as AppLab, so there is no
 	// boundary for the credential to cross.
 	ImagePullSecret string `yaml:"image_pull_secret"`
 
@@ -139,12 +139,12 @@ type Deploy struct {
 	// that vary by cluster.
 	Annotations map[string]string `yaml:"annotations"`
 
-	// AppResources are the requests and limits applied to every app applab
+	// AppResources are the requests and limits applied to every app AppLab
 	// deploys.
 	//
 	// They are the deployment's defaults rather than each app's own: an uploaded
 	// app cannot be trusted to declare sane limits for itself, and one with no
-	// limits at all can take its node down. An operator running applab for
+	// limits at all can take its node down. An operator running AppLab for
 	// several teams sets these per installation.
 	AppCPURequest    string `yaml:"app_cpu_request"`
 	AppMemoryRequest string `yaml:"app_memory_request"`
@@ -259,7 +259,7 @@ func Default() Config {
 
 		Build: Build{
 			// Pinned rather than "latest": a moving tag would make a build's
-			// behaviour change without anything in applab changing, which is
+			// behaviour change without anything in AppLab changing, which is
 			// exactly the kind of surprise a build system must not have.
 			BuilderImage:  "moby/buildkit:v0.19.0",
 			FetcherImage:  "alpine:3.21",
@@ -465,7 +465,7 @@ func (c *Config) finalize() error {
 	}
 
 	if c.Namespace == "" {
-		return fmt.Errorf("namespace must not be empty: applab would address the default namespace by accident, which the API server accepts silently")
+		return fmt.Errorf("namespace must not be empty: AppLab would address the default namespace by accident, which the API server accepts silently")
 	}
 	if c.DataDir == "" {
 		return fmt.Errorf("data_dir must not be empty")
@@ -541,7 +541,7 @@ func (c *Config) finalize() error {
 	}
 
 	// The base path is normalized the same way, and for the same reason:
-	// "/applab/" and "applab" are both what someone would write meaning the same
+	// "/applab/" and "AppLab" are both what someone would write meaning the same
 	// thing. What is refused is a value that cannot be a path.
 	//
 	// "/" normalizes to empty rather than being kept, because empty is what the

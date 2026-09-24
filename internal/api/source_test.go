@@ -124,7 +124,7 @@ func TestUploadSourceRawBody(t *testing.T) {
 	if result.Message != "hello" {
 		t.Errorf("message = %q, want %q", result.Message, "hello")
 	}
-	// The upload's two files, plus the ones applab seeds into every tree.
+	// The upload's two files, plus the ones AppLab seeds into every tree.
 	if result.Files != 2+source.SeededFileCount() {
 		t.Errorf("files = %d, want %d", result.Files, 2+source.SeededFileCount())
 	}

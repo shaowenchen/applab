@@ -88,7 +88,7 @@ func runPush(ctx context.Context, c *client.Client, opts *pushOptions) error {
 			return err
 		}
 		opts.app = inferred
-		fmt.Fprintf(os.Stderr, "applab: using app %q from the directory name\n", opts.app)
+		fmt.Fprintf(os.Stderr, "AppLab: using app %q from the directory name\n", opts.app)
 	}
 
 	if err := validateAppIDLocally(opts.app); err != nil {
@@ -99,7 +99,7 @@ func runPush(ctx context.Context, c *client.Client, opts *pushOptions) error {
 	// confusing authentication failure.
 	cfg, err := c.Config(ctx)
 	if err != nil {
-		return fmt.Errorf("cannot reach the applab deployment: %w", err)
+		return fmt.Errorf("cannot reach the AppLab deployment: %w", err)
 	}
 
 	// The app has to exist before its source can be uploaded to it. Creating it
@@ -126,7 +126,7 @@ func runPush(ctx context.Context, c *client.Client, opts *pushOptions) error {
 		if err != nil {
 			return fmt.Errorf("create app %q: %w", opts.app, err)
 		}
-		fmt.Fprintf(os.Stderr, "applab: created app %q\n", app.ID)
+		fmt.Fprintf(os.Stderr, "AppLab: created app %q\n", app.ID)
 	} else if err := applySettingsIfChanged(ctx, c, app, opts); err != nil {
 		return err
 	}
@@ -227,7 +227,7 @@ func uploadDirectory(ctx context.Context, c *client.Client, opts *pushOptions, c
 		archiveErr <- err
 	}()
 
-	fmt.Fprintf(os.Stderr, "applab: uploading %s\n", dir)
+	fmt.Fprintf(os.Stderr, "AppLab: uploading %s\n", dir)
 
 	result, err := c.UploadSource(ctx, opts.app, pr, true, opts.message)
 	if err != nil {
@@ -242,13 +242,13 @@ func uploadDirectory(ctx context.Context, c *client.Client, opts *pushOptions, c
 	}
 
 	if result.StrippedRoot != "" {
-		fmt.Fprintf(os.Stderr, "applab: stripped the wrapping directory %q\n", result.StrippedRoot)
+		fmt.Fprintf(os.Stderr, "AppLab: stripped the wrapping directory %q\n", result.StrippedRoot)
 	}
 	if result.Files == 0 {
 		return fmt.Errorf("no files were uploaded; check --skip and --dir")
 	}
 
-	fmt.Fprintf(os.Stderr, "applab: committed %s (%d files, %s)\n",
+	fmt.Fprintf(os.Stderr, "AppLab: committed %s (%d files, %s)\n",
 		shortSHA(result.CommitSHA), result.Files, humanBytes(result.Bytes))
 
 	// Recorded so shipCommit does not have to look it up.
@@ -264,7 +264,7 @@ func uploadDirectory(ctx context.Context, c *client.Client, opts *pushOptions, c
 func shipCommit(ctx context.Context, c *client.Client, opts *pushOptions) error {
 	commitSHA := opts.message // set by uploadDirectory
 
-	fmt.Fprintf(os.Stderr, "applab: building %s\n", shortSHA(commitSHA))
+	fmt.Fprintf(os.Stderr, "AppLab: building %s\n", shortSHA(commitSHA))
 
 	build, err := c.StartBuild(ctx, opts.app, commitSHA)
 	if err != nil {
@@ -276,7 +276,7 @@ func shipCommit(ctx context.Context, c *client.Client, opts *pushOptions) error 
 			return err
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "applab: build %s started; follow it with: applab builds %s --logs\n", build.ID, opts.app)
+		fmt.Fprintf(os.Stderr, "AppLab: build %s started; follow it with: applab builds %s --logs\n", build.ID, opts.app)
 		return nil
 	}
 
@@ -290,7 +290,7 @@ func shipCommit(ctx context.Context, c *client.Client, opts *pushOptions) error 
 			// A rollout that did not complete is not a failed push — the deploy
 			// was issued. It is reported so the caller knows to look, and the
 			// exit code stays zero because nothing about their push was wrong.
-			fmt.Fprintf(os.Stderr, "applab: %v\n", err)
+			fmt.Fprintf(os.Stderr, "AppLab: %v\n", err)
 		}
 	}
 
@@ -324,7 +324,7 @@ func watchBuild(ctx context.Context, c *client.Client, appID, buildID string) er
 
 	switch build.Status {
 	case "succeeded":
-		fmt.Fprintf(os.Stderr, "applab: build succeeded\n")
+		fmt.Fprintf(os.Stderr, "AppLab: build succeeded\n")
 		return nil
 	case "failed":
 		return fmt.Errorf("build failed: %s", build.Reason)
@@ -332,7 +332,7 @@ func watchBuild(ctx context.Context, c *client.Client, appID, buildID string) er
 		// The stream ended without the build reaching a terminal state — the
 		// connection dropped, or the process was interrupted. Not a failure of
 		// the build, so it is reported without claiming one.
-		fmt.Fprintf(os.Stderr, "applab: build is still %s; check it with: applab builds %s\n", build.Status, appID)
+		fmt.Fprintf(os.Stderr, "AppLab: build is still %s; check it with: applab builds %s\n", build.Status, appID)
 		return nil
 	}
 }
@@ -355,7 +355,7 @@ func watchDeploy(ctx context.Context, c *client.Client, appID string) error {
 			// Progress is printed only when it changes, so a slow rollout does
 			// not fill the terminal with the same line.
 			if status.Live.ReadyReplicas != lastReady {
-				fmt.Fprintf(os.Stderr, "applab: %d/%d replicas ready\n",
+				fmt.Fprintf(os.Stderr, "AppLab: %d/%d replicas ready\n",
 					status.Live.ReadyReplicas, status.Live.DesiredReplicas)
 				lastReady = status.Live.ReadyReplicas
 			}

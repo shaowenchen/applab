@@ -1,4 +1,4 @@
-// Command applab runs the control plane.
+// Command AppLab runs the control plane.
 package main
 
 import (
@@ -35,7 +35,7 @@ func main() {
 		// Reported on stderr rather than through slog: this runs before logging
 		// is configured, and a failure to start should read as plain prose, not
 		// as a structured line that looks like every other log entry.
-		fmt.Fprintf(os.Stderr, "applab: %v\n", err)
+		fmt.Fprintf(os.Stderr, "AppLab: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -54,7 +54,7 @@ func handleFlags(args []string) (done bool, err error) {
 			fmt.Fprint(os.Stdout, usage)
 			return true, nil
 		case "--version", "-v":
-			fmt.Fprintf(os.Stdout, "applab %s (%s, built %s)\n",
+			fmt.Fprintf(os.Stdout, "AppLab %s (%s, built %s)\n",
 				buildinfo.Version, buildinfo.Commit, buildinfo.BuildTime)
 			return true, nil
 		default:
@@ -64,7 +64,7 @@ func handleFlags(args []string) (done bool, err error) {
 	return false, nil
 }
 
-const usage = `Run the applab control plane.
+const usage = `Run the AppLab control plane.
 
 Configuration comes from the environment, not from arguments. The ones that
 matter most:
@@ -165,7 +165,7 @@ func run() error {
 	}
 
 	// The cluster half is optional. A deployment with no cluster is a legitimate
-	// way to run applab — the API and the source half still work — and it is how
+	// way to run AppLab — the API and the source half still work — and it is how
 	// this binary is developed. Configuration problems are reported and the
 	// deployment continues without the capability rather than refusing to start,
 	// since the source half is independently useful.
@@ -188,7 +188,7 @@ func run() error {
 		// Per-app API keys live in Secrets, so they come with the cluster the
 		// same way builds and deploys do. Without one the deployment keeps
 		// working on the admin tier alone — which is the documented way to run
-		// applab with no cluster at all.
+		// AppLab with no cluster at all.
 		srv.WithAppKeys(appkey.New(client.Clientset(), cfg.Namespace))
 
 		// An app's secrets live in a Secret beside it, so they need a cluster

@@ -1,7 +1,7 @@
-name: 'Run applab (debugger environment)'
+name: 'Run AppLab (debugger environment)'
 description: >-
-  Start a complete applab environment on the runner — a kind cluster, a
-  registry, an Istio gateway and applab itself — and publish it through a
+  Start a complete AppLab environment on the runner — a kind cluster, a
+  registry, an Istio gateway and AppLab itself — and publish it through a
   tunnel. Push an app and it is built, deployed and served.
 author: 'shaowenchen'
 
