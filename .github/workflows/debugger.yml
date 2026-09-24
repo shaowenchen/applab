@@ -32,7 +32,7 @@ on:
           - 'cloudflare'
           - 'ngrok'
       domain:
-        description: 'Domain the apps are served under (empty = the tunnel''s own)'
+        description: 'Domain'
         type: string
         default: ''
 
