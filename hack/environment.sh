@@ -299,12 +299,17 @@ kubectl -n istio-system wait --for=condition=available --timeout=300s \
 
 # Expose the gateway's HTTP port on the node port kind already maps to the host.
 #
-# A merge patch on a Service's port list merges by the `port` key, so this
-# updates the entry for port 80 wherever it sits rather than replacing the list.
 # The Service is a LoadBalancer by default, which never gets an address on kind,
 # so it has to become a NodePort for anything outside the cluster to reach it.
+#
+# `--type=strategic` is required, not stylistic. The gateway's port list carries
+# `patchMergeKey: port`, which is a *strategic* merge instruction — a plain JSON
+# merge patch (`--type=merge`) ignores it and replaces the whole list. That would
+# delete the status port (15021) and HTTPS (443) along with their names, leaving a
+# gateway that cannot report its own health and drops TLS. It would also survive
+# the check below, since port 80's nodePort is correct either way.
 log "exposing the gateway on node port ${APPLAB_GATEWAY_NODEPORT}"
-kubectl -n istio-system patch svc istio-ingressgateway --type=merge -p "$(cat <<EOF
+kubectl -n istio-system patch svc istio-ingressgateway --type=strategic -p "$(cat <<EOF
 spec:
   type: NodePort
   ports:
@@ -320,6 +325,19 @@ gateway_nodeport=$(kubectl -n istio-system get svc istio-ingressgateway \
   -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
 [ "$gateway_nodeport" = "$APPLAB_GATEWAY_NODEPORT" ] \
   || die "the gateway's HTTP port is on node port '${gateway_nodeport}', expected ${APPLAB_GATEWAY_NODEPORT}"
+
+# And confirm the other ports survived. The check above passes even when the
+# patch replaced the whole list, because port 80 is the one it looks at — so the
+# two ports that would be lost silently are asserted separately. 15021 is the
+# gateway's own health endpoint and 443 is what serves TLS through it.
+gateway_status_port=$(kubectl -n istio-system get svc istio-ingressgateway \
+  -o jsonpath='{.spec.ports[?(@.name=="status-port")].port}')
+gateway_https_port=$(kubectl -n istio-system get svc istio-ingressgateway \
+  -o jsonpath='{.spec.ports[?(@.name=="https")].port}')
+[ "$gateway_status_port" = "15021" ] \
+  || die "the gateway's status port is '${gateway_status_port}', expected 15021 — the port list was replaced rather than merged"
+[ "$gateway_https_port" = "443" ] \
+  || die "the gateway's HTTPS port is '${gateway_https_port}', expected 443 — the port list was replaced rather than merged"
 
 # ── 4. applab ───────────────────────────────────────────────────────────────
 
