@@ -436,13 +436,14 @@ installs applab from this repository's own chart, and publishes the result
 through a tunnel. Open the run's summary for a link, and <code>applab push</code> works
 against it.</p>
 <pre><code>hack/environment.sh   the whole environment, in order
-hack/router.mjs       one hostname, split between applab and the apps
 </code></pre>
-<p>The router exists because an app and applab itself cannot both be routed by
-Istio on one host: each app is its own <code>VirtualService</code>, and the order between
-two of them matching one host is undefined. A small proxy in front is
-deterministic where that is not, and its routing decision is unit-tested —
-<code>node hack/router.test.mjs</code>, which CI runs.</p>
+<p>One address serves everything, and the gateway is what serves it. Istio routes
+one virtual host's catch-all route last while leaving the rest in order
+(<code>route.SortVHostRoutes</code>), so the console — a catch-all the chart installs on the
+base domain — is evaluated only after every app has declined the request, and the
+apps match on <code>/&lt;pathPrefix&gt;/&lt;app&gt;/</code>, a prefix the console's own paths do not
+share. That ordering is defined, so nothing has to sit in front of the gateway to
+tell the two apart.</p>
 <p>CI runs the same environment and pushes <a href="https://github.com/shaowenchen/applab/blob/master/hack/demo-app/Dockerfile"><code>hack/demo-app</code></a> through
 it, so &quot;an app can be uploaded, built, deployed and served&quot; is a check rather
 than a claim.</p>

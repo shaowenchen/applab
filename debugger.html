@@ -206,9 +206,15 @@ see <a href="index.html">the overview</a> for how to install it, or drive the AP
 </tr>
 </tbody>
 </table>
-<p>One hostname serves everything. Requests under <code>/apps/&lt;app&gt;/</code> reach the app,
-published through the Istio gateway; everything else reaches applab — the
-console at <code>/</code>, the API under <code>/api/v1/</code>, and the git endpoints under <code>/git/</code>.</p>
+<p>One hostname serves everything, and the Istio gateway is what serves it. An app
+is published under <code>/apps/&lt;app&gt;/</code>, and applab itself — the console at <code>/</code>, the
+API under <code>/api/v1/</code>, the git endpoints under <code>/git/</code> — is a route the chart
+installs on the same gateway, at the root of the same host.</p>
+<p>There is nothing in front of the gateway to tell the two apart, because the paths
+already do. Istio sorts a virtual host's catch-all route to the end while leaving
+the rest in order, so the console — which matches everything — is evaluated only
+after every app has declined the request, and an app's route is under a prefix
+none of the console's own paths share.</p>
 <h2>Inputs</h2>
 <table>
 <thead>
@@ -269,9 +275,9 @@ apps should be served under, and a run without <code>domain</code> stops with:</
 </code></pre>
 <p>This is app configuration, not tunnel configuration. Nothing is passed to
 <code>cloudflared</code> — a named tunnel already knows its ingress, because you configured
-it. What needs the value is applab: it becomes <code>apps.baseDomain</code>, and the host the
-router hands to Istio so a <code>VirtualService</code> matches. That is why the input is
-named for the domain rather than for the tunnel.</p>
+it. What needs the value is applab: it becomes <code>apps.baseDomain</code>, which is both
+the host the apps are served under and the host the console's own route matches.
+That is why the input is named for the domain rather than for the tunnel.</p>
 <p>One thing this does <strong>not</strong> do: create the ingress. Point the hostname at the
 tunnel in the Cloudflare dashboard first, or the address will resolve to a tunnel
 that routes nothing. Nothing here can make or check that.</p>
@@ -315,10 +321,6 @@ are ordinary scripts, and they are documented where they are:</p>
 <tr>
 <td><a href="https://github.com/shaowenchen/applab/blob/master/hack/environment.sh">hack/environment.sh</a></td>
 <td>The whole environment, in order. Set <code>APPLAB_PUBLIC_HOST</code> to skip the tunnel and use a hostname you already have, or <code>APPLAB_DOMAIN</code> to name the domain a named tunnel serves apps under.</td>
-</tr>
-<tr>
-<td><a href="https://github.com/shaowenchen/applab/blob/master/hack/router.mjs">hack/router.mjs</a></td>
-<td>Splits one hostname between applab and the apps it publishes.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/shaowenchen/applab/blob/master/hack/summary.sh">hack/summary.sh</a></td>
