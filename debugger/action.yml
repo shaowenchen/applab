@@ -32,12 +32,12 @@ inputs:
       random trycloudflare.com hostname with no account behind it.
     required: false
     default: ''
-  public_host:
+  domain:
     description: >-
-      The hostname a named Cloudflare tunnel is published at, without a scheme.
-      Required with a named tunnel: Cloudflare keeps the ingress and the hostname
-      in the dashboard and never tells the connector its own name. Set the
-      ingress to point at the tunnel first; nothing here can create it.
+      The domain apps are served under, without a scheme. Not tunnel
+      configuration: a named Cloudflare tunnel keeps its hostname in its ingress
+      and cannot report it, and this is what applab and the router need. Point
+      the ingress at the tunnel first; nothing here can create it.
     required: false
     default: ''
   ngrok_token:
@@ -54,7 +54,7 @@ runs:
         APPLAB_TUNNEL: ${{ inputs.tunnel }}
         NGROK_TOKEN: ${{ inputs.ngrok_token }}
         CLOUDFLARE_TOKEN: ${{ inputs.cloudflare_token }}
-        PUBLIC_HOST: ${{ inputs.public_host }}
+        DOMAIN: ${{ inputs.domain }}
       run: |
         set -euo pipefail
         case "$APPLAB_TUNNEL" in
@@ -67,17 +67,17 @@ runs:
           echo "::error::tunnel is 'ngrok' but ngrok_token is empty; ngrok needs an authtoken"
           exit 1
         fi
-        # A hostname belongs to a tunnel whose ingress was arranged in advance,
-        # which only a named Cloudflare tunnel has. Checked here rather than in
-        # the script so a run that cannot work fails in seconds instead of after
-        # a three-minute wait for a hostname that was never coming.
-        if [ -n "$PUBLIC_HOST" ]; then
+        # A domain can only be named for a tunnel whose ingress was arranged in
+        # advance, which only a named Cloudflare tunnel has. Checked here rather
+        # than in the script so a run that cannot work fails in seconds instead
+        # of after a three-minute wait for a hostname that was never coming.
+        if [ -n "$DOMAIN" ]; then
           if [ "$APPLAB_TUNNEL" != "cloudflare" ]; then
-            echo "::error::public_host is only for a named Cloudflare tunnel, not '$APPLAB_TUNNEL'"
+            echo "::error::domain is only for a named Cloudflare tunnel, not '$APPLAB_TUNNEL'"
             exit 1
           fi
           if [ -z "$CLOUDFLARE_TOKEN" ]; then
-            echo "::error::public_host needs cloudflare_token: a quick tunnel is assigned a random hostname and cannot be given one"
+            echo "::error::domain needs cloudflare_token: a quick tunnel is assigned a random hostname by Cloudflare, so apps could not be served under the one given"
             exit 1
           fi
         fi
@@ -154,7 +154,7 @@ runs:
         APPLAB_API_KEY: ${{ inputs.api_key }}
         APPLAB_SESSION_HOURS: ${{ inputs.session_hours }}
         APPLAB_TUNNEL: ${{ inputs.tunnel }}
-        APPLAB_TUNNEL_HOST: ${{ inputs.public_host }}
+        APPLAB_DOMAIN: ${{ inputs.domain }}
         CLOUDFLARE_TOKEN: ${{ inputs.cloudflare_token }}
         NGROK_TOKEN: ${{ inputs.ngrok_token }}
         APPLAB_RUNTIME_DIR: ${{ github.workspace }}/.applab-debugger

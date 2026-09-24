@@ -162,7 +162,8 @@ find_public_host() {
   return 1
 }
 
-# resolve_tunnel settles on a public hostname, from a tunnel or from the caller.
+# resolve_tunnel settles on the domain the environment is served under, from a
+# tunnel or from the caller.
 #
 # APPLAB_PUBLIC_HOST skips the tunnel entirely and uses the given hostname. It
 # exists for CI, which must not depend on a public tunnel being granted: a quick
@@ -171,10 +172,12 @@ find_public_host() {
 # router over loopback; the tunnel itself is exercised by the debugger workflow,
 # where a flaky link is a person's problem to re-run rather than a red build.
 #
-# APPLAB_TUNNEL_HOST names the hostname of a tunnel that *is* started, which is
-# the other half of the same problem. A named Cloudflare tunnel keeps its ingress
-# and its hostname in the dashboard, and the connector is never told either — so
-# a hostname that cannot be discovered has to be supplied.
+# APPLAB_DOMAIN names the domain apps are served under, for a tunnel that *is*
+# started. It is not tunnel configuration — a named Cloudflare tunnel keeps its
+# hostname in its ingress, and the connector is never told it, and nothing has to
+# be passed to cloudflared. It is what applab needs: apps.baseDomain, and the
+# host the router hands to Istio so a VirtualService matches. A named tunnel
+# cannot report it, so it has to be supplied.
 resolve_tunnel() {
   if [ -n "${APPLAB_PUBLIC_HOST:-}" ]; then
     TUNNEL_HOST="$APPLAB_PUBLIC_HOST"
@@ -184,19 +187,20 @@ resolve_tunnel() {
     return 0
   fi
 
-  # A hostname can only be chosen for a tunnel whose ingress was configured in
-  # advance. A quick tunnel is handed a random name by Cloudflare and cannot be
-  # given one, and the ngrok path here does not pass the --domain flag a reserved
-  # domain needs — so both are refused rather than silently ignored, which would
-  # publish a link that is not the one that was asked for.
-  if [ -n "${APPLAB_TUNNEL_HOST:-}" ]; then
+  # A domain can only be named for a tunnel whose ingress was configured in
+  # advance, which a quick tunnel's is not: Cloudflare assigns it a random name
+  # and it cannot be given another, so a domain chosen here would not resolve.
+  # The ngrok path does not pass the flag a reserved domain needs either. Both
+  # are refused rather than silently ignored, which would publish a link to a
+  # domain that serves nothing.
+  if [ -n "${APPLAB_DOMAIN:-}" ]; then
     case "$APPLAB_TUNNEL" in
       cloudflare)
         [ -n "$CLOUDFLARE_TOKEN" ] \
-          || die "APPLAB_TUNNEL_HOST needs CLOUDFLARE_TOKEN: only a named tunnel has an ingress to point a hostname at, and a quick tunnel is assigned a random one"
+          || die "APPLAB_DOMAIN needs CLOUDFLARE_TOKEN: a quick tunnel is assigned a random hostname by Cloudflare, so apps could not be served under the one given here"
         ;;
       *)
-        die "APPLAB_TUNNEL_HOST is only supported with a named Cloudflare tunnel, not '${APPLAB_TUNNEL}'"
+        die "APPLAB_DOMAIN is only supported with a named Cloudflare tunnel, not '${APPLAB_TUNNEL}'"
         ;;
     esac
   fi
@@ -206,25 +210,25 @@ resolve_tunnel() {
   # Taken as given rather than discovered, because a named tunnel's hostname is
   # not discoverable — see above. The tunnel's ingress has to already point here;
   # nothing in this script can create or check it.
-  if [ -n "${APPLAB_TUNNEL_HOST:-}" ]; then
-    TUNNEL_HOST="$APPLAB_TUNNEL_HOST"
+  if [ -n "${APPLAB_DOMAIN:-}" ]; then
+    TUNNEL_HOST="$APPLAB_DOMAIN"
     public_url="https://${TUNNEL_HOST}"
     printf '%s\n' "$public_url" > "$PUBLIC_URL_FILE"
-    log "the environment will be published at ${public_url}"
-    log "  (a named tunnel: its ingress is configured in Cloudflare, not here)"
+    log "apps will be served under ${TUNNEL_HOST}"
+    log "  (the tunnel's ingress is configured in Cloudflare, not here)"
     return 0
   fi
 
   log "waiting for the tunnel to report its public hostname"
   local found
   if ! found=$(find_public_host); then
-    # Reached only by a named tunnel with no hostname given: nothing else can
+    # Reached only by a named tunnel with no domain given: nothing else can
     # fail to report one. Say what to do about it, because the symptom is
     # otherwise an environment that looks fine and a link that never appears.
     if [ -n "$CLOUDFLARE_TOKEN" ]; then
       warn "this is a named tunnel: Cloudflare does not tell the connector its own"
-      warn "hostname, so it cannot be discovered here. Supply it instead:"
-      warn "  APPLAB_TUNNEL_HOST=<your hostname> ... hack/environment.sh"
+      warn "hostname, so it cannot be discovered here. Name the domain instead:"
+      warn "  APPLAB_DOMAIN=<your domain> ... hack/environment.sh"
     fi
     die "the tunnel never reported a public hostname; see ${TUNNEL_LOG}"
   fi

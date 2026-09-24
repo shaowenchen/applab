@@ -66,7 +66,7 @@ console at `/`, the API under `/api/v1/`, and the git endpoints under `/git/`.
 | `session_hours` | `4` | How long the environment may run. `0` means no self-imposed limit, bounded by the job's timeout. |
 | `tunnel` | `cloudflare` | `cloudflare` (no account needed) or `ngrok`. |
 | `cloudflare_token` | — | Token of a named Cloudflare tunnel; empty starts a quick tunnel. |
-| `public_host` | — | The hostname a named tunnel is published at. Required with one, and explained below. |
+| `domain` | — | The domain apps are served under. Needed with a named tunnel, and explained below. |
 | `ngrok_token` | — | ngrok authtoken; required when `tunnel` is `ngrok`. |
 
 Only `api_key` is worth passing from a secret: it is generated when left empty,
@@ -77,42 +77,51 @@ from the checkout — so the environment always runs the version the chart besid
 it installs, and there is no way to ask for a pair that was never tested
 together.
 
-### A named tunnel needs its hostname given to it
+### A named tunnel needs the domain named
 
 With `cloudflare_token` set, the environment runs a **named** tunnel — the one
 whose hostname and ingress live in your Cloudflare dashboard. Cloudflare never
 tells the connector its own name, so the environment cannot discover the address
-it is being served at, and a run without `public_host` stops with:
+apps should be served under, and a run without `domain` stops with:
 
 ```
 this is a named tunnel: Cloudflare does not tell the connector its own hostname
 ```
 
-Pass the hostname and it is used as given:
+Pass the domain and it is used as given:
 
 ```
-public_host: applab.example.com
+domain: applab.example.com
 ```
 
-Two things this does **not** do. It does not create the ingress — point the
-hostname at the tunnel in the Cloudflare dashboard first, or the address will
-resolve to a tunnel that routes nothing. And it cannot be used with a quick
-tunnel or with ngrok: a quick tunnel is assigned a random hostname by Cloudflare,
-and the ngrok path here does not pass the flag a reserved domain needs. Both
-combinations are refused when the run starts, rather than after a wait for a
-hostname that was never coming.
+This is app configuration, not tunnel configuration. Nothing is passed to
+`cloudflared` — a named tunnel already knows its ingress, because you configured
+it. What needs the value is applab: it becomes `apps.baseDomain`, and the host the
+router hands to Istio so a `VirtualService` matches. That is why the input is
+named for the domain rather than for the tunnel.
+
+One thing this does **not** do: create the ingress. Point the hostname at the
+tunnel in the Cloudflare dashboard first, or the address will resolve to a tunnel
+that routes nothing. Nothing here can make or check that.
+
+Nor can it be used with a quick tunnel or with ngrok. A quick tunnel is assigned
+a random hostname by Cloudflare and cannot be given another, so apps could not be
+served under the domain you named; the ngrok path here does not pass the flag a
+reserved domain needs. Both combinations are refused when the run starts, rather
+than after a wait for a hostname that was never coming.
 
 Leaving `cloudflare_token` empty is the simpler path, and the default: a quick
 tunnel is assigned a random `trycloudflare.com` hostname, needs no account, and
-the link appears in the summary.
+that hostname is both where the console lives and the domain apps are served
+under. The link appears in the summary.
 
 ## The two things most likely to go wrong
 
-**A named Cloudflare tunnel cannot publish its own link.** Cloudflare never tells
-the connector its hostname, so the environment cannot discover the address it was
-given — and without one it stops rather than publishing nothing. Pass
-`public_host` (see above) with the hostname the tunnel is configured for, or
-leave `cloudflare_token` empty and use a quick tunnel, whose hostname it is told.
+**A named Cloudflare tunnel cannot report its own hostname.** Cloudflare never
+tells the connector its name, so the environment cannot discover the domain to
+serve apps under — and without one it stops rather than publishing nothing. Pass
+`domain` (see above), or leave `cloudflare_token` empty and use a quick tunnel,
+whose hostname it *is* told.
 
 **A quick tunnel is for trying things.** It carries no SLA and its hostname is
 minted per connection, so a restart gives a different link. That is exactly right
@@ -132,7 +141,7 @@ are ordinary scripts, and they are documented where they are:
 | Path | What it does |
 |---|---|
 | [debugger/action.yml](action.yml) | The composite action: installs kind, kubectl, istioctl, helm and a tunnel agent, then runs the script. |
-| [hack/environment.sh](../hack/environment.sh) | The whole environment, in order. Set `APPLAB_PUBLIC_HOST` to skip the tunnel and use a hostname you already have. |
+| [hack/environment.sh](../hack/environment.sh) | The whole environment, in order. Set `APPLAB_PUBLIC_HOST` to skip the tunnel and use a hostname you already have, or `APPLAB_DOMAIN` to name the domain a named tunnel serves apps under. |
 | [hack/router.mjs](../hack/router.mjs) | Splits one hostname between applab and the apps it publishes. |
 | [hack/summary.sh](../hack/summary.sh) | Publishes the link and the key to the job summary. |
 | [hack/demo-app/Dockerfile](../hack/demo-app/Dockerfile) | A minimal app, used by CI to prove push, build, deploy and serve work. |
