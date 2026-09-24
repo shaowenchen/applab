@@ -128,11 +128,17 @@ jobs:
           # the way out is `build.rootless=false` on the chart, which the chart's
           # README documents. Named here so the check keeps failing for a variable
           # nobody meant to fix, rather than being relaxed for the two that were.
+          #
+          # APPLAB_LOCAL_IMAGE and APPLAB_IMAGE_PULL_POLICY are CI-only: the
+          # workflow builds an image and loads it into the nodes, and the action
+          # has no business offering that to someone launching an environment by
+          # hand. They are set there, not here.
           internal = {'APPLAB_RUNTIME_DIR', 'APPLAB_NAMESPACE', 'APPLAB_PATH_PREFIX',
                       'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME', 'APPLAB_REGISTRY_NAME',
                       'APPLAB_REGISTRY_PORT', 'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
                       'APPLAB_ROUTER_PORT', 'APPLAB_PUBLIC_HOST',
-                      'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS'}
+                      'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS',
+                      'APPLAB_LOCAL_IMAGE', 'APPLAB_IMAGE_PULL_POLICY'}
           unreachable = read - supplied - internal
           if unreachable:
               problems.append(f'environment.sh reads variables no input can set: {sorted(unreachable)}')
@@ -147,7 +153,9 @@ jobs:
     name: image
     runs-on: ubuntu-latest
     needs: test
-    # Only a tag publishes. A branch push is a candidate, not a release.
+    # Only a tag publishes. A branch push is a candidate, not a release — and
+    # the debugger job below builds its own image rather than depending on one
+    # being published, so nothing here is on the critical path for CI.
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
@@ -240,7 +248,61 @@ jobs:
       # `helm repo add applab https://<owner>.github.io/applab` work.
       contents: write
     steps:
+      # Full history, not the default single commit: the step below diffs this
+      # push against the one before it, and a shallow clone has nothing to diff
+      # against — the comparison would fail rather than say "nothing changed".
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The chart is republished only when something it is built from changed.
+      # A chart release is a package other people install; republishing an
+      # identical one on every commit to the Go code buries the versions that
+      # differ under a listing of versions that do not.
+      #
+      # A tag always publishes. It names a release, and a release with no
+      # installable chart is a release with no way to install it.
+      - name: Did the chart or its documentation change?
+        id: changed
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "a tag: publishing regardless"
+            exit 0
+          fi
+
+          before="${{ github.event.before }}"
+          # A first push to a branch, or one that rewrote history, has no parent
+          # to compare with. Publishing is the safe answer: the cost is one
+          # redundant package, the alternative is a chart that never ships
+          # because the diff could not be taken.
+          if [ -z "$before" ] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "no usable previous commit to compare with; publishing"
+            exit 0
+          fi
+
+          # Everything either the packaged chart or the generated documentation
+          # is built from. They share this job because both write to gh-pages, so
+          # a change to either one has to republish both.
+          changed=$(git diff --name-only "$before" HEAD -- \
+            charts/applab \
+            README.md \
+            debugger/README.md \
+            internal/docs \
+            cmd/gendocs \
+            hack/package-chart.sh)
+
+          if [ -n "$changed" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "changed:"
+            printf '%s\n' "$changed" | sed 's/^/  /'
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "nothing the chart or its documentation is built from changed"
+          fi
 
       # The chart version is fixed — Chart.yaml's version plus "-dev" — rather
       # than derived from the commit, so repeated installs take the newest build
@@ -248,6 +310,7 @@ jobs:
       # reaches the cluster: it is stamped into appVersion, which is the chart
       # label on every object applab creates.
       - name: Derive the version
+        if: steps.changed.outputs.publish == 'true'
         id: version
         run: |
           chart_version="$(grep '^version:' charts/applab/Chart.yaml | awk '{print $2}')"
@@ -275,6 +338,7 @@ jobs:
       # exit code 128 and a message about authentication that points at
       # everything except the actual cause.
       - name: Prepare the chart repository
+        if: steps.changed.outputs.publish == 'true'
         run: |
           git fetch origin gh-pages --depth=1 || true
 
@@ -293,6 +357,7 @@ jobs:
           fi
 
       - name: Install helm
+        if: steps.changed.outputs.publish == 'true'
         uses: azure/setup-helm@v4
         with:
           version: v3.16.4
@@ -304,11 +369,13 @@ jobs:
       # still publish, leaving a commit that looks like a successful release with
       # no documentation in it.
       - uses: actions/setup-go@v5
+        if: steps.changed.outputs.publish == 'true'
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Package and index
+        if: steps.changed.outputs.publish == 'true'
         run: |
           ./hack/package-chart.sh \
             "${{ steps.version.outputs.version }}" \
@@ -325,6 +392,7 @@ jobs:
       # to gh-pages, and one writer is the whole reason the index is rebuilt from
       # the directory's contents instead of merged.
       - name: Render the documentation
+        if: steps.changed.outputs.publish == 'true'
         run: |
           go run ./cmd/gendocs \
             -dest pages \
@@ -332,6 +400,7 @@ jobs:
             -branch "${{ github.event.repository.default_branch }}"
 
       - name: Publish
+        if: steps.changed.outputs.publish == 'true'
         run: |
           cd pages
           git config user.name "$GITHUB_ACTOR"
@@ -372,6 +441,26 @@ jobs:
         with:
           version: v3.16.4
 
+      # Built here, from this commit, and loaded straight into the kind nodes.
+      #
+      # Not pulled. The job's whole purpose is to exercise the code under test,
+      # and an image from a registry is whatever was published last — a different
+      # commit, or nothing at all, which is how this job came to fail on an image
+      # that had never been built: it asked for a tag no release had produced.
+      # Building here also removes the dependency on the image job, which only
+      # runs for a tag and so could never have supplied a branch push.
+      - name: Build the applab image
+        run: |
+          set -eux
+          # The same Dockerfile a release uses, so what is tested and what is
+          # published are the same image rather than two that look alike.
+          docker build \
+            --build-arg VERSION="${GITHUB_REF_NAME}" \
+            --build-arg COMMIT="${GITHUB_SHA}" \
+            --tag applab:ci \
+            .
+          docker image inspect applab:ci --format '{{.Id}} {{.Size}} bytes'
+
       - name: Install kind
         run: |
           set -eux
@@ -404,6 +493,10 @@ jobs:
         env:
           APPLAB_PUBLIC_HOST: debugger.ci.invalid
           APPLAB_SESSION_HOURS: '0'
+          # The image built above, which the script loads into the nodes and
+          # points the chart at. Without it the script pulls `latest`, which is
+          # not what this job is here to test.
+          APPLAB_LOCAL_IMAGE: applab:ci
           APPLAB_RUNTIME_DIR: ${{ github.workspace }}/.applab-debugger
         run: nohup ./hack/environment.sh > /tmp/environment.log 2>&1 &
 
