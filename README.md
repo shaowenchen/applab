@@ -16,15 +16,31 @@ upload source ──▶ build image ──▶ deploy ──▶ https://shop.apps
 
 ## Quick start
 
+AppLab keeps everything in a bucket — every app, every repository, every key — so
+one is needed before it will start. For a local run, MinIO is the shortest path:
+
 ```bash
 make build          # builds bin/applab and bin/applab-cli
 
+docker run -d -p 9000:9000   -e MINIO_ROOT_USER=applab -e MINIO_ROOT_PASSWORD=devdevdev   minio/minio server /data
+# then create the bucket "applab", with the mc client or http://localhost:9001
+
 export APPLAB_KEY="$(openssl rand -hex 32)"
-export APPLAB_DATA_DIR=./data
+export APPLAB_OBJECT_STORE_ENDPOINT=http://localhost:9000
+export APPLAB_OBJECT_STORE_BUCKET=applab
+export APPLAB_OBJECT_STORE_ACCESS_KEY=applab
+export APPLAB_OBJECT_STORE_SECRET_KEY=devdevdev
+export APPLAB_OBJECT_STORE_PATH_STYLE=true
+export APPLAB_OBJECT_STORE_INSECURE=true
 export APPLAB_BASE_DOMAIN=apps.example.com
 
 ./bin/applab
 ```
+
+There is no directory fallback: a deployment with no bucket refuses to start
+rather than writing to local disk, because that is a failure that looks like it
+worked until the filesystem it chose is gone. `APPLAB_DATA_DIR` still exists, but
+it is only scratch space for `git`, which needs a real filesystem.
 
 Then, from the project you want to deploy:
 

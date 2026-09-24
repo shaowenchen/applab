@@ -52,12 +52,14 @@ type Config struct {
 	// anything. Empty is refused at boot rather than served as "open".
 	Keys []string `yaml:"keys"`
 
-	// DataDir is scratch space, and only that. It used to hold everything this
-	// service persists — the database and one bare git repository per app — and
-	// now holds neither: both live in the object store, and this is the local
-	// directory a repository is materialised into while git is running against
-	// it. It needs no volume and survives no restart; an empty directory on the
-	// node is enough.
+	// DataDir is scratch space, and only that. It holds a repository while git
+	// is running against it, and the parts of an upload that is still arriving.
+	// Nothing durable is written here, so it needs no volume and survives no
+	// restart: an empty directory on the node is enough.
+	//
+	// It is not where anything is kept. Every app, repository and key lives in
+	// the object store; this is the working directory for the operations that
+	// need a real filesystem, of which git is the only one.
 	DataDir string `yaml:"data_dir"`
 
 	// Object storage is where everything this service persists now lives: the
@@ -127,9 +129,11 @@ type Config struct {
 
 // ObjectStoreConfig points AppLab at the bucket it keeps everything in.
 //
-// It is a bucket rather than a directory on purpose: the point of moving here
-// was that a replica holds nothing, so a node can be replaced without anything
-// being lost and more than one replica can serve at once.
+// A bucket is the only supported backing, in every deployment including a
+// developer's: the point of the design is that a replica holds nothing, so a
+// node can be replaced without anything being lost and more than one replica can
+// serve at once — and a directory fallback quietly undid that in whichever
+// deployment had a typo in its configuration.
 //
 // The credential is passed explicitly rather than read from the environment the
 // way an AWS SDK would. AppLab has one credential, it comes from a Secret, and
@@ -140,8 +144,10 @@ type ObjectStoreConfig struct {
 	// AWS, or a self-hosted service's own address.
 	Endpoint string `yaml:"endpoint"`
 
-	// Bucket is the bucket AppLab keeps everything in. It is created if missing
-	// only when CreateBucket is set; otherwise it must exist.
+	// Bucket is the bucket AppLab keeps everything in. It must already exist:
+	// a bucket's name, region and lifecycle policy belong to whoever runs the
+	// platform, and a service that created one on its own would create it
+	// wherever it happened to be configured to.
 	Bucket string `yaml:"bucket"`
 
 	// Region is the bucket's region. Defaults to us-east-1.
@@ -167,6 +173,11 @@ type ObjectStoreConfig struct {
 }
 
 // Configured reports whether object storage has been pointed somewhere.
+//
+// Both are required, and a Config that fails this one is refused at boot. The
+// check lives here rather than at the call sites so that "is this configured"
+// has one answer: an endpoint with no bucket and a bucket with no endpoint are
+// both nothing.
 func (c ObjectStoreConfig) Configured() bool {
 	return c.Endpoint != "" && c.Bucket != ""
 }
@@ -527,6 +538,15 @@ func (c *Config) finalize() error {
 	if c.Namespace == "" {
 		return fmt.Errorf("namespace must not be empty: AppLab would address the default namespace by accident, which the API server accepts silently")
 	}
+
+	// Everything AppLab persists lives in a bucket, so a deployment without one
+	// has nowhere to put an app. Refused at boot rather than at the first write,
+	// and refused here rather than in OpenObjectStore so that every caller of
+	// Load gets the same answer — including one that never opens a store.
+	if !c.ObjectStore.Configured() {
+		return fmt.Errorf("no object storage configured: set object_store.endpoint and object_store.bucket (APPLAB_OBJECT_STORE_ENDPOINT and APPLAB_OBJECT_STORE_BUCKET). AppLab keeps every app, its source and its history in a bucket; there is no directory fallback")
+	}
+
 	if c.DataDir == "" {
 		return fmt.Errorf("data_dir must not be empty")
 	}
@@ -679,15 +699,19 @@ func dedupe(in []string) []string {
 
 // OpenObjectStore opens the object store this deployment is configured with.
 //
-// A deployment with nothing configured gets a directory, which is what makes
-// `go run ./cmd/applab` work with no bucket and no credential. That is a
-// deliberate convenience and not a fallback that could happen in a cluster: a
-// chart that fails to pass its object store settings gets a directory on the
-// pod's own disk, which is empty on every restart — and the startup log says
-// which backend is in use so that is visible rather than mysterious.
+// There is no directory fallback. There used to be one, so that `go run
+// ./cmd/applab` worked with nothing configured — and it was a trap: a deployment
+// that failed to pass its object store settings did not fail, it wrote to a
+// directory on the pod's own disk and lost everything on the next restart, with
+// nothing in the log to say so. A missing bucket is now a boot error naming the
+// setting, which is the only outcome that cannot be mistaken for working.
+//
+// Tests and the local development loop point at a directory deliberately,
+// through the objectstore package's own Local backend, rather than by leaving
+// this unconfigured.
 func (c *Config) OpenObjectStore() (objectstore.Store, error) {
 	if !c.ObjectStore.Configured() {
-		return objectstore.NewLocal(filepath.Join(c.DataDir, "objects"))
+		return nil, fmt.Errorf("no object storage configured: set object_store.endpoint and object_store.bucket (APPLAB_OBJECT_STORE_ENDPOINT and APPLAB_OBJECT_STORE_BUCKET); AppLab keeps every app, repository and key in a bucket and has nowhere else to put them")
 	}
 
 	scheme := "https"

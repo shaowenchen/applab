@@ -60,6 +60,7 @@ func TestKeyEnvironmentForms(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+			setObjectStore(t)
 
 			cfg, err := Load()
 			if err != nil {
@@ -84,6 +85,7 @@ func TestDefaultsAreInternallyConsistent(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("APPLAB_KEY", "k")
 	t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+	setObjectStore(t)
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("the default configuration fails validation: %v", err)
@@ -128,6 +130,7 @@ func TestUploadLimitValidation(t *testing.T) {
 			clearEnv(t)
 			t.Setenv("APPLAB_KEY", "k")
 			t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+			setObjectStore(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -163,6 +166,7 @@ func TestBaseDomainRejectsURLs(t *testing.T) {
 			clearEnv(t)
 			t.Setenv("APPLAB_KEY", "k")
 			t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+			setObjectStore(t)
 			t.Setenv("APPLAB_BASE_DOMAIN", tc.in)
 			// A base domain needs a gateway to serve it; without one the apps
 			// would get hostnames nothing answers on. Set one so these cases
@@ -197,6 +201,9 @@ listen: ":9999"
 base_domain: "from-file.example.com"
 deploy:
   gateway: "ops-system/from-file"
+object_store:
+  endpoint: "https://s3.from-file.example.com"
+  bucket: "from-file"
 keys:
   - file-key
 `
@@ -214,6 +221,9 @@ keys:
 	}
 	if cfg.Listen != ":9999" {
 		t.Errorf("Listen = %q, want \":9999\" from the file", cfg.Listen)
+	}
+	if cfg.ObjectStore.Bucket != "from-file" {
+		t.Errorf("object store bucket = %q, want the one in the file; a deployment that configures itself entirely from a file has to be able to name its bucket there", cfg.ObjectStore.Bucket)
 	}
 	if cfg.BaseDomain != "from-file.example.com" {
 		t.Errorf("BaseDomain = %q, want the file's value", cfg.BaseDomain)
@@ -241,6 +251,7 @@ func TestMissingConfigFileIsAnError(t *testing.T) {
 	t.Setenv("APPLAB_CONFIG", filepath.Join(t.TempDir(), "does-not-exist.yaml"))
 	t.Setenv("APPLAB_KEY", "k")
 	t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+	setObjectStore(t)
 
 	if _, err := Load(); err == nil {
 		t.Error("a missing config file was silently ignored")
@@ -254,6 +265,7 @@ func TestDataDirIsMadeAbsolute(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("APPLAB_KEY", "k")
 	t.Setenv("APPLAB_DATA_DIR", "./relative-data")
+	setObjectStore(t)
 
 	cfg, err := Load()
 	if err != nil {
@@ -262,8 +274,54 @@ func TestDataDirIsMadeAbsolute(t *testing.T) {
 	if !filepath.IsAbs(cfg.DataDir) {
 		t.Errorf("DataDir = %q, want an absolute path", cfg.DataDir)
 	}
-	if cfg.ObjectStore.Configured() {
-		t.Errorf("object storage is configured with nothing set: %+v", cfg.ObjectStore)
+	if !cfg.ObjectStore.Configured() {
+		t.Errorf("object storage is not configured after being pointed at one: %+v", cfg.ObjectStore)
+	}
+}
+
+// TestNoObjectStoreIsRefused asserts the requirement is enforced at boot.
+//
+// It is the one setting with no default and no fallback, because the fallback
+// this replaced was invisible: a deployment that omitted it wrote to a directory
+// on the pod's own disk and lost every app on the next restart, having logged
+// nothing wrong. The check is here rather than in the chart alone for the same
+// reason — the chart is one way to deploy this, and the requirement belongs to
+// the program.
+func TestNoObjectStoreIsRefused(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("APPLAB_KEY", "k")
+	t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load accepted a configuration with no object storage")
+	}
+	if !strings.Contains(err.Error(), "object_store.endpoint") {
+		t.Errorf("the refusal does not name the setting to fix: %v", err)
+	}
+}
+
+// TestObjectStoreNeedsBothSettings asserts half a bucket is not half a bucket.
+//
+// An endpoint with no bucket name and a bucket name with no endpoint are both
+// nothing, and a check that accepted either would let the deployment start and
+// fail at the first write instead.
+func TestObjectStoreNeedsBothSettings(t *testing.T) {
+	for _, tc := range []struct{ name, endpoint, bucket string }{
+		{"endpoint only", "https://s3.example.com", ""},
+		{"bucket only", "", "applab"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("APPLAB_KEY", "k")
+			t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+			t.Setenv("APPLAB_OBJECT_STORE_ENDPOINT", tc.endpoint)
+			t.Setenv("APPLAB_OBJECT_STORE_BUCKET", tc.bucket)
+
+			if _, err := Load(); err == nil {
+				t.Errorf("Load accepted %s by itself", tc.name)
+			}
+		})
 	}
 }
 
@@ -273,11 +331,25 @@ func TestLogLevelValidation(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("APPLAB_KEY", "k")
 	t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+	setObjectStore(t)
 	t.Setenv("APPLAB_LOG_LEVEL", "verbose")
 
 	if _, err := Load(); err == nil {
 		t.Error("an invalid log level was accepted")
 	}
+}
+
+// setObjectStore points the configuration at a bucket, which every successful
+// Load now requires.
+//
+// It is a helper rather than a line in each case because the bucket is a
+// precondition of *every* valid configuration, not the thing most of these tests
+// are about: a test that failed because it forgot one would be testing the
+// requirement rather than its own subject.
+func setObjectStore(t *testing.T) {
+	t.Helper()
+	t.Setenv("APPLAB_OBJECT_STORE_ENDPOINT", "https://s3.example.com")
+	t.Setenv("APPLAB_OBJECT_STORE_BUCKET", "applab")
 }
 
 // clearEnv removes every APPLAB_ variable so a case is not influenced by the
@@ -320,6 +392,7 @@ func TestPathPrefixNormalization(t *testing.T) {
 			clearEnv(t)
 			t.Setenv("APPLAB_KEY", "k")
 			t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+			setObjectStore(t)
 			t.Setenv("APPLAB_BASE_DOMAIN", "www.example.com")
 			t.Setenv("APPLAB_DEPLOY_GATEWAY", "istio-ingress/istio-ingress")
 			t.Setenv("APPLAB_PATH_PREFIX", tc.in)
@@ -347,6 +420,7 @@ func TestPathPrefixNeedsABaseDomain(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("APPLAB_KEY", "k")
 	t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+	setObjectStore(t)
 	t.Setenv("APPLAB_PATH_PREFIX", "/apps")
 
 	if _, err := Load(); err == nil {
@@ -360,6 +434,7 @@ func TestGatewayHasADefault(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("APPLAB_KEY", "k")
 	t.Setenv("APPLAB_DATA_DIR", t.TempDir())
+	setObjectStore(t)
 	t.Setenv("APPLAB_BASE_DOMAIN", "apps.example.com")
 
 	cfg, err := Load()

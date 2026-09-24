@@ -68,8 +68,14 @@ matter most:
 
   APPLAB_KEY              An API key. Required; without one applab refuses to
                           start rather than serving the API openly.
-  APPLAB_DATA_DIR         Where the database and the apps' source live.
-                          Default ./data.
+  APPLAB_OBJECT_STORE_ENDPOINT, APPLAB_OBJECT_STORE_BUCKET
+                          The bucket AppLab keeps everything in. Both are
+                          required: every app, repository and key lives there,
+                          and there is no local fallback.
+  APPLAB_OBJECT_STORE_ACCESS_KEY, APPLAB_OBJECT_STORE_SECRET_KEY
+                          The bucket's credential.
+  APPLAB_DATA_DIR         Scratch space for git, which needs a real filesystem.
+                          Default ./data. Nothing durable is written there.
   APPLAB_BASE_DOMAIN      Domain apps are exposed under, so an app with id
                           "shop" is served at shop.<domain>.
   APPLAB_BUILD_REGISTRY   Where built images are pushed. Setting this, with the
@@ -100,9 +106,30 @@ func run() error {
 	slog.Info("starting applab",
 		"version", buildinfo.Version,
 		"commit", buildinfo.Commit,
-		"listen", cfg.Listen,
+		"listen", cfg.Listen)
+
+	// Everything AppLab persists lives in object storage: the apps, their
+	// history and their source repositories. A replica therefore holds nothing,
+	// and can be replaced at any moment.
+	//
+	// Opened before the scratch directory is created, and before the logger has
+	// anything else to say, because it is the one dependency with no default: a
+	// deployment that cannot reach its bucket has nowhere to put an app, and
+	// saying so first is the difference between a clear boot failure and a
+	// service that comes up and fails every request.
+	objects, err := cfg.OpenObjectStore()
+	if err != nil {
+		return err
+	}
+	slog.Info("object storage",
+		"backend", objects.String(),
 		"data_dir", cfg.DataDir)
 
+	// Scratch space for the operations that need a real filesystem, of which
+	// git is the only one. Nothing durable goes here, so this is created rather
+	// than mounted — and created after the bucket is known to work, so a
+	// misconfigured deployment does not leave a directory behind on its way to
+	// failing.
 	if err := cfg.EnsureDataDir(); err != nil {
 		return err
 	}
@@ -112,15 +139,6 @@ func run() error {
 	// slow disk, a hung database — is still handled.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	// Everything AppLab persists lives in object storage: the apps, their
-	// history and their source repositories. A replica therefore holds nothing,
-	// and can be replaced at any moment.
-	objects, err := cfg.OpenObjectStore()
-	if err != nil {
-		return err
-	}
-	slog.Info("object storage", "backend", objects.String())
 
 	st, err := store.Open(ctx, objects)
 	if err != nil {
