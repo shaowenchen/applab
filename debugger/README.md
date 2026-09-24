@@ -62,24 +62,21 @@ console at `/`, the API under `/api/v1/`, and the git endpoints under `/git/`.
 
 | Input | Default | Description |
 |---|---|---|
-| `version` | the chart's `appVersion` | applab image tag. |
 | `api_key` | generated | API key. Printed in the summary either way, because it is the deliverable. |
 | `session_hours` | `4` | How long the environment may run. `0` means no self-imposed limit, bounded by the job's timeout. |
 | `tunnel` | `cloudflare` | `cloudflare` (no account needed) or `ngrok`. |
 | `cloudflare_token` | — | Token of a named Cloudflare tunnel; empty starts a quick tunnel. |
 | `ngrok_token` | — | ngrok authtoken; required when `tunnel` is `ngrok`. |
-| `build_rootless` | `true` | Run BuildKit unprivileged. Set false only if builds fail with a user-namespace error. |
 
 Only `api_key` is worth passing from a secret: it is generated when left empty,
 so the common case needs no configuration at all.
 
-## The three things most likely to go wrong
+The applab image tag is not an input. It is the chart's own `appVersion`, read
+from the checkout — so the environment always runs the version the chart beside
+it installs, and there is no way to ask for a pair that was never tested
+together.
 
-**Rootless builds need unprivileged user namespaces.** This is the one part of
-the environment the host can refuse, and the chart's installation notes describe
-the prerequisites in full. If a build fails with a namespace or `unshare` error,
-set `build_rootless: false` — which works, and makes every build a container
-breakout away from the node, which is why it is not the default.
+## The two things most likely to go wrong
 
 **A named Cloudflare tunnel cannot publish its own link.** Cloudflare never tells
 the connector its hostname, so the environment cannot discover the address it was

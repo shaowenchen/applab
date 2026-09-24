@@ -10,12 +10,6 @@ branding:
   color: 'orange'
 
 inputs:
-  version:
-    description: >-
-      applab image tag to run. Defaults to the chart's appVersion, which is the
-      version this action is checked against.
-    required: false
-    default: ''
   api_key:
     description: >-
       API key for this environment. Generated when empty, and printed in the
@@ -42,13 +36,6 @@ inputs:
     description: 'ngrok authtoken. Required when tunnel is ngrok.'
     required: false
     default: ''
-  build_rootless:
-    description: >-
-      Run BuildKit as an unprivileged user. Recommended, and the default. Set
-      false only if builds fail with a user-namespace error — which makes every
-      build a container breakout away from the node.
-    required: false
-    default: 'true'
 
 runs:
   using: 'composite'
@@ -137,11 +124,12 @@ runs:
     - name: Start the environment
       shell: bash
       env:
-        APPLAB_VERSION: ${{ inputs.version }}
+        # APPLAB_VERSION and APPLAB_BUILD_ROOTLESS are deliberately not set here.
+        # The script then falls through to its own defaults: the chart's
+        # appVersion, and a rootless build.
         APPLAB_API_KEY: ${{ inputs.api_key }}
         APPLAB_SESSION_HOURS: ${{ inputs.session_hours }}
         APPLAB_TUNNEL: ${{ inputs.tunnel }}
-        APPLAB_BUILD_ROOTLESS: ${{ inputs.build_rootless }}
         CLOUDFLARE_TOKEN: ${{ inputs.cloudflare_token }}
         NGROK_TOKEN: ${{ inputs.ngrok_token }}
         APPLAB_RUNTIME_DIR: ${{ github.workspace }}/.applab-debugger

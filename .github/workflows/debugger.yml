@@ -31,20 +31,6 @@ on:
         options:
           - 'cloudflare'
           - 'ngrok'
-      version:
-        description: 'applab image tag (empty = the chart''s appVersion)'
-        type: string
-        default: ''
-      build_rootless:
-        description: 'Rootless builds'
-        type: choice
-        # Rootless is the recommended mode and the chart's default. It is offered
-        # as an input because it is the one thing in this environment most likely
-        # to be refused by a host that forbids unprivileged user namespaces.
-        default: 'true'
-        options:
-          - 'true'
-          - 'false'
 
 permissions:
   contents: read
@@ -76,12 +62,10 @@ jobs:
       # the router and the orchestration script are all this commit's.
       - uses: ./debugger
         with:
-          # A blank field falls through to the chart's own appVersion, which is
-          # what the action's validation and the chart are checked against.
-          version: ${{ inputs.version }}
+          # session_hours and tunnel are the two choices worth offering at launch.
+          # The rest are fixed by the action, or by the script's own defaults.
           session_hours: ${{ inputs.session_hours == 'unlimited' && '0' || inputs.session_hours }}
           tunnel: ${{ inputs.tunnel }}
-          build_rootless: ${{ inputs.build_rootless }}
           # Secrets, not inputs: a workflow input is plain text any reader of the
           # run can see, and these are credentials.
           cloudflare_token: ${{ secrets.CLOUDFLARE_TOKEN }}
