@@ -450,6 +450,49 @@ func TestAppKeyCannotBeUsedAsAnAdminKeyOnTheGitTransport(t *testing.T) {
 	}
 }
 
+// TestTheGitTransportChallengesWithBasic is the test whose absence let a broken
+// clone ship.
+//
+// A key in a clone URL is sent as a Basic credential, and git holds it back
+// until the server challenges for it — RFC 7617, and libcurl behind git
+// implements it strictly. A `Bearer` challenge leaves git with no way to present
+// what it already has, so it fails without ever sending a credential, and the
+// user sees "Authentication failed" for a key that works everywhere else.
+//
+// The API routes are unaffected and must stay on the Bearer challenge: nothing
+// there is driven by libcurl's credential handling, and a Basic challenge would
+// invite a browser's credential prompt over an API endpoint.
+func TestTheGitTransportChallengesWithBasic(t *testing.T) {
+	srv, _ := newTieredServer(t)
+
+	// Git has to be attached, or the mount is absent and every /git/ request is
+	// the console's 404 rather than the transport's 401 — which would make this
+	// pass against a deployment that serves no repositories at all. The handler
+	// itself is never reached: the middleware refuses first, and that is what is
+	// being checked.
+	srv.WithGit(http.NotFoundHandler())
+	h := srv.Handler()
+
+	// No credential: the refusal itself is what is under test.
+	rec := doRequestNoKey(t, h, http.MethodGet, "/git/shop.git/info/refs?service=git-upload-pack")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("an unauthenticated git request got %d, want 401 (body: %s)", rec.Code, rec.Body.String())
+	}
+	challenge := rec.Header().Get("WWW-Authenticate")
+	if !strings.HasPrefix(strings.ToLower(challenge), "basic") {
+		t.Errorf("the git transport challenged with %q, so a clone URL's credential is never sent; git needs a Basic challenge", challenge)
+	}
+
+	// And the API keeps the scheme that matches how it is actually called.
+	rec = doRequestNoKey(t, h, http.MethodGet, "/api/v1/apps")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("an unauthenticated API request got %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(strings.ToLower(got), "bearer") {
+		t.Errorf("the API challenged with %q, want Bearer", got)
+	}
+}
+
 // TestTheConsoleCanDiscoverItsOwnApp covers the reason the app list is readable
 // by an app key: a console signing in with one has to learn what to show.
 func TestTheConsoleCanDiscoverItsOwnApp(t *testing.T) {

@@ -1072,7 +1072,7 @@ func (s *Server) Handler() http.Handler {
 	// middleware alone would refuse every app key outright, which is what made
 	// git admin-only before.
 	if s.git != nil {
-		mux.Handle("/git/", http.StripPrefix("/git", s.appListAuthMiddleware(s.git)))
+		mux.Handle("/git/", http.StripPrefix("/git", s.appListAuthForGit(s.git)))
 	}
 
 	// A request matching no route should read as "no such endpoint" rather than

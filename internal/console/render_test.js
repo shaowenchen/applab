@@ -154,6 +154,7 @@ const sandbox = {
     // the JS-produced strings, which are what the rendering checks assert on,
     // go through t() directly and are covered.
     querySelectorAll: () => [],
+    createRange: () => ({ selectNodeContents() {} }),
   },
   // A browser always has both of these. Modelled here rather than left as
   // origin alone, because the console derives the address it offers from them —
@@ -161,6 +162,9 @@ const sandbox = {
   // offered the wrong one if only the origin were read.
   window: {
     location: { origin: "https://applab.example.com", pathname: "/applab/" },
+    // The clipboard fallback selects the value in the document, so the selection
+    // API has to exist for that path to run at all.
+    getSelection: () => ({ removeAllRanges() {}, addRange(r) { this._range = r; } }),
   },
   localStorage: {
     getItem: (k) => (store.has(k) ? store.get(k) : null),
@@ -170,6 +174,11 @@ const sandbox = {
   // The script fetches on boot; a rejection is caught and shown, which is fine
   // here — nothing under test depends on it.
   fetch: () => Promise.reject(new Error("no network in tests")),
+  // The console reads navigator for the language default and for the clipboard.
+  // Modelled rather than left absent: a missing navigator is a real case the
+  // script guards, but it is not the case these checks are about, and without it
+  // the copy path would silently take the fallback branch every time.
+  navigator: { language: "en", clipboard: null },
   setTimeout,
   clearTimeout,
   Promise,
@@ -456,9 +465,10 @@ async function render(apps) {
       "nothing broken", "failed or build-failed", "{name} on", "{name} off",
       "running", "failed", "build-failed", "building", "deploying", "created",
       "succeeded", "pending", "ready", "not ready", "deployed", "no image",
-      // Reached as t(shown ? "Hide" : "Show"), which the static scan cannot read
-      // — the argument is an expression. Exercised by the eye checks above.
-      "Show", "Hide",
+      // Reached as t(shown ? "Hide" : "Show") and t(copied ? "Copied" : "Copy"),
+      // which the static scan cannot read — the argument is an expression.
+      // Exercised by the eye checks above.
+      "Show", "Hide", "Copy", "Copied",
     ]);
     const unreferenced = Object.keys(zh).filter((k) => !wanted.has(k) && !viaVariable.has(k));
     check(

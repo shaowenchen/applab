@@ -19,12 +19,6 @@ import (
 // rotated between the two calls. One resolution, one answer.
 type identityKey struct{}
 
-// identityFrom returns the identity the app-auth middleware established.
-//
-// A request that reached a handler without passing through that middleware
-// reports the admin identity: every route that reads this is one an app key
-// could only reach through the middleware, and the zero value is the admin tier
-// — so the fallback is the reading that matches the routes' own declarations.
 // identityFrom reports who the request is.
 //
 // A request that never passed a middleware — one on a route that needs no key —
@@ -152,6 +146,22 @@ func (s *Server) identifyOnlyMiddleware(next http.Handler) http.Handler {
 // is one whose handler is responsible for scoping, which should be visible in
 // the route table rather than inferred.
 func (s *Server) appListAuthMiddleware(next http.Handler) http.Handler {
+	return s.appListAuth(next, unauthorized)
+}
+
+// appListAuthForGit is the same middleware with one difference: how it refuses.
+//
+// The git transport has to challenge with Basic or a clone cannot authenticate
+// at all — see unauthorizedGit, which is the whole explanation. Everything else
+// about the check is identical, so it is one implementation parameterized on the
+// refusal rather than two that could drift apart.
+func (s *Server) appListAuthForGit(next http.Handler) http.Handler {
+	return s.appListAuth(next, unauthorizedGit)
+}
+
+// appListAuth establishes who the caller is, refusing an unauthenticated request
+// through the given writer.
+func (s *Server) appListAuth(next http.Handler, refuse func(http.ResponseWriter)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, err := s.auth.Identify(r.Context(), r, s.appKeyResolver())
 		if err != nil {
@@ -160,7 +170,7 @@ func (s *Server) appListAuthMiddleware(next http.Handler) http.Handler {
 					"the app key store is unavailable, so credentials cannot be checked").Wrap(err))
 				return
 			}
-			unauthorized(w)
+			refuse(w)
 			return
 		}
 		next.ServeHTTP(w, withIdentity(r, identity))
@@ -215,4 +225,27 @@ func (s *Server) AuthorizeGitRepo(r *http.Request, appID string) bool {
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="applab"`)
 	http.Error(w, "unauthorized: present an API key as \"Authorization: Bearer <key>\"", http.StatusUnauthorized)
+}
+
+// unauthorizedGit is the same refusal for the git transport, and it differs in
+// exactly one way: the challenge is Basic.
+//
+// That is not cosmetic, it is the whole reason a clone works or does not.
+// RFC 7617 makes libcurl — which is what git uses for http — hold a username and
+// password back until the server challenges for them with `Basic`; a `Bearer`
+// challenge leaves it with no way to present what it already has, so it fails
+// without ever sending a credential. Since a key in a clone URL is sent as Basic
+// and nothing else, a git client never gets as far as the check.
+//
+// Verified against git 2.37: with the Bearer challenge the first request carries
+// no Authorization header at all and the clone dies at "Authentication failed";
+// with this one it retries with the Basic credential and succeeds.
+//
+// Only the git mount uses this. Everywhere else the API is driven by a caller
+// that reads the 401 and sets a header itself, so the Bearer challenge is the
+// accurate one and pointing it at Basic would invite a browser's credential
+// prompt over an API route.
+func unauthorizedGit(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="applab"`)
+	http.Error(w, "unauthorized: present an API key as the password of a Basic credential, or as \"Authorization: Bearer <key>\"", http.StatusUnauthorized)
 }
