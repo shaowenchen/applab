@@ -383,3 +383,88 @@ func TestGatewayHasADefault(t *testing.T) {
 		t.Errorf("Gateway = %q, want the configured one", cfg.Deploy.Gateway)
 	}
 }
+
+// TestEnsureDataDirCreatesWithoutTightening is the regression test for a
+// container that would not start.
+//
+// The chart mounts the data volume with fsGroup 1000 and runs the process as
+// uid 1000 with every capability dropped, which makes the mount point owned by
+// root: the process can write inside it and cannot chmod it. EnsureDataDir used
+// to chmod it to 0700 unconditionally, so the process died at boot with "chmod
+// /data: operation not permitted" against a volume it could otherwise use
+// perfectly well.
+//
+// The contract pinned here is the one that holds under any uid: a directory that
+// already exists keeps the mode it has. That is what the old code broke, and it
+// is observable without being root — a directory the test owns is exactly the
+// case where the old chmod succeeded, so this fails on the old code and passes
+// on the new.
+func TestEnsureDataDirCreatesWithoutTightening(t *testing.T) {
+	dir := t.TempDir()
+
+	// A mode the mounting side chose, which is not the one the code used to
+	// force. Stands in for the chart's mount point.
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatalf("set up the directory mode: %v", err)
+	}
+
+	cfg := &Config{DataDir: dir}
+	if err := cfg.EnsureDataDir(); err != nil {
+		t.Fatalf("EnsureDataDir on an existing directory: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o750 {
+		t.Errorf("mode = %o after EnsureDataDir, want the 750 it was given; "+
+			"the mode of a mounted volume is the mounting side's to set, and a "+
+			"process that does not own it cannot change it at all", got)
+	}
+
+	// One it creates is still closed to other users on the host, which is why
+	// the mode was there in the first place.
+	fresh := filepath.Join(dir, "fresh")
+	cfg = &Config{DataDir: fresh}
+	if err := cfg.EnsureDataDir(); err != nil {
+		t.Fatalf("EnsureDataDir on a missing directory: %v", err)
+	}
+	info, err = os.Stat(fresh)
+	if err != nil {
+		t.Fatalf("EnsureDataDir did not create %s: %v", fresh, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", fresh)
+	}
+	if got := info.Mode().Perm(); got&0o077 != 0 {
+		t.Errorf("a created data directory is %o, want nothing for group or other; "+
+			"it holds every app's source", got)
+	}
+
+	// Intermediate directories are created too, since the path may not exist.
+	nested := filepath.Join(dir, "a", "b", "c")
+	if err := (&Config{DataDir: nested}).EnsureDataDir(); err != nil {
+		t.Fatalf("EnsureDataDir on a nested missing path: %v", err)
+	}
+	if info, err := os.Stat(nested); err != nil || !info.IsDir() {
+		t.Errorf("nested path %s was not created as a directory (%v)", nested, err)
+	}
+}
+
+// TestEnsureDataDirRejectsAFile pins the failure an operator would otherwise
+// meet as a confusing MkdirAll error minutes later.
+func TestEnsureDataDirRejectsAFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("set up: %v", err)
+	}
+
+	err := (&Config{DataDir: path}).EnsureDataDir()
+	if err == nil {
+		t.Fatal("EnsureDataDir accepted a path that is a file")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("the error should say the path is a file, got: %v", err)
+	}
+}

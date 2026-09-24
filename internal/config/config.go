@@ -579,14 +579,35 @@ func (c *Config) finalize() error {
 // EnsureDataDir creates the data directory if it is missing. Kept out of Load
 // so that loading configuration has no side effects — a caller that only wants
 // to inspect the config should not create directories.
+//
+// A directory holding every app's source is not something other users on the
+// host have any business reading, so one this creates is created 0700. It does
+// not *chmod* one that already exists, and that distinction is the whole fix for
+// a container that would not start.
+//
+// The chart mounts the data volume with fsGroup 1000 and runs the process as
+// uid 1000 with every capability dropped, so the mount point is owned by root:
+// the process can write inside it and cannot change its mode, needing to be the
+// owner or to hold CAP_FOWNER. EnsureDataDir used to chmod unconditionally, so
+// the process died at boot with "chmod /data: operation not permitted" against a
+// volume it could otherwise use perfectly well.
+//
+// An existing directory's mode belongs to whoever mounted it. It is not a
+// relaxation to leave it alone: chmod only ever succeeded where the process
+// already owned the directory, which is exactly the case where MkdirAll's own
+// permission argument — applied below — had already decided it.
 func (c *Config) EnsureDataDir() error {
-	if err := os.MkdirAll(c.DataDir, 0o755); err != nil {
-		return fmt.Errorf("create data_dir %s: %w", c.DataDir, err)
+	if info, err := os.Stat(c.DataDir); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("data_dir %s exists and is not a directory", c.DataDir)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat data_dir %s: %w", c.DataDir, err)
 	}
-	// A directory holding every app's source is not something other users on the
-	// host have any business reading.
-	if err := os.Chmod(c.DataDir, 0o700); err != nil {
-		return fmt.Errorf("chmod data_dir %s: %w", c.DataDir, err)
+
+	if err := os.MkdirAll(c.DataDir, 0o700); err != nil {
+		return fmt.Errorf("create data_dir %s: %w", c.DataDir, err)
 	}
 	return nil
 }
