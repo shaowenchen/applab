@@ -119,10 +119,20 @@ jobs:
           read = set(re.findall(r': "\$\{(APPLAB_[A-Z_]+):=', script))
           supplied = {f'APPLAB_{name.upper()}' for name in declared}
           # Set from the workflow or the script's own context, not from an input.
+          #
+          # APPLAB_VERSION and APPLAB_BUILD_ROOTLESS are here because they used to
+          # be inputs and are deliberately no longer: the image tag is always the
+          # published `latest`, and builds are always rootless. That is a
+          # deliberate loss of a knob — a host that refuses unprivileged user
+          # namespaces can no longer be worked around from the launch form, and
+          # the way out is `build.rootless=false` on the chart, which the chart's
+          # README documents. Named here so the check keeps failing for a variable
+          # nobody meant to fix, rather than being relaxed for the two that were.
           internal = {'APPLAB_RUNTIME_DIR', 'APPLAB_NAMESPACE', 'APPLAB_PATH_PREFIX',
                       'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME', 'APPLAB_REGISTRY_NAME',
                       'APPLAB_REGISTRY_PORT', 'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
-                      'APPLAB_ROUTER_PORT', 'APPLAB_PUBLIC_HOST'}
+                      'APPLAB_ROUTER_PORT', 'APPLAB_PUBLIC_HOST',
+                      'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS'}
           unreachable = read - supplied - internal
           if unreachable:
               problems.append(f'environment.sh reads variables no input can set: {sorted(unreachable)}')
