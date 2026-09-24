@@ -100,6 +100,14 @@ docker-build:
 docker-push:
 	docker push $(IMAGE):$(TAG)
 
+# Start the image and ask it to work. Skips without docker.
+#
+# Separate from `check` because it needs a container runtime, which the Go checks
+# deliberately do not. CI runs it on every change — see image.yml.
+.PHONY: image-smoke
+image-smoke:
+	./hack/image-smoke.sh $(IMAGE):$(TAG)
+
 # Render the chart at the values an install would use. Needs helm, which is not
 # required to build or test the Go code — only to check the chart's templates.
 .PHONY: helm-template
