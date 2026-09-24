@@ -136,26 +136,6 @@ than letting it fail at runtime where the cause is much harder to see.
 {{- if and (not .Values.auth.existingSecret) (empty .Values.auth.keys) }}
 {{- fail "auth.keys is empty and auth.existingSecret is not set: set at least one API key (openssl rand -hex 32), or point auth.existingSecret at a Secret that holds one" }}
 {{- end }}
-{{/*
-An Ingress host with no paths is rejected by the API server with a message about
-a different field, so it is caught here where the cause can be named.
-
-The usual way to reach it is `--set ingress.hosts[0].host=...`, which reads like
-setting one field and is not: Helm replaces the whole element, so the `paths`
-that values.yaml supplies under it disappear. The install then fails with
-
-    Ingress.extensions "applab" is invalid: spec.rules[0].http.paths: Required value
-
-which names paths, not the flag that dropped them. Refused here with the flag and
-the way to write it instead.
-*/}}
-{{- if .Values.ingress.enabled }}
-{{- range $i, $host := .Values.ingress.hosts }}
-{{- if not $host.paths }}
-{{- fail (printf "ingress.hosts[%d] (%s) has no paths, so the Ingress would be rejected by the API server: --set on a list element replaces the whole element, so `--set ingress.hosts[0].host=...` drops the paths values.yaml supplies under it. Pass the host as `--set ingress.hosts[0].host=... --set ingress.hosts[0].paths[0].path=/ --set ingress.hosts[0].paths[0].pathType=Prefix`, or use -f with a values file where the list can be written out" $i $host.host) }}
-{{- end }}
-{{- end }}
-{{- end }}
 {{- if .Values.build.enabled }}
 {{- if empty .Values.build.registry }}
 {{- fail "build.enabled is true but build.registry is empty: builds need a registry to push to. Set build.registry, or set build.enabled=false to run applab without the build pipeline" }}

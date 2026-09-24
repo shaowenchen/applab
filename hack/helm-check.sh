@@ -117,11 +117,6 @@ must_fail "bad gateway"       --set "auth.keys[0]=k" --set "build.registry=r.exa
 # these two blank it explicitly to reach the guard.
 must_fail "blanked gateway"   --set "auth.keys[0]=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway="
 must_fail "two replicas"      "${BASE[@]}" --set replicaCount=2
-# `--set ingress.hosts[0].host=...` replaces the whole list element, dropping the
-# paths under it — which the API server then rejects with a message about paths
-# rather than about the flag. Refused at render time, naming the flag.
-must_fail "a host with no paths" "${BASE[@]}" \
-  --set "ingress.hosts[0].host=applab.example.com"
 
 # Every manifest's top-level keys have to be ones Kubernetes knows. Text emitted
 # outside a YAML structure — a warning written as bare prose, say — becomes a
@@ -313,6 +308,60 @@ grep -q 'kind: Deployment' <<<"$internal" \
 if console_vs --set ingress.enabled=false --set apps.baseDomain= | grep -q found; then
   fail "the console VirtualService is rendered with no base domain, so it would have no host to match"
 fi
+
+# A host set on its own gets the root path.
+#
+# `--set ingress.hosts[0].host=example.com` reads like setting one field and is
+# not: --set replaces the whole list element, so the paths values.yaml puts under
+# it are gone. That spelling is what the README's quick start teaches, so the
+# chart has to make it work — an Ingress rule with no paths is rejected by the API
+# server, and the caller who asked for a hostname would get an error naming a
+# field they never mentioned.
+#
+# Asserted as the object it produces rather than as "it rendered": rendering
+# succeeded before this was defaulted too, with `paths: null` in it.
+render --set "ingress.hosts[0].host=only.example.com" > "$RUNTIME_DIR/hostonly.yaml"
+render \
+  --set "ingress.hosts[0].host=h.example.com" \
+  --set "ingress.hosts[0].paths[0].path=/admin" \
+  --set "ingress.hosts[0].paths[0].pathType=Exact" > "$RUNTIME_DIR/explicit.yaml"
+python3 - "$RUNTIME_DIR/hostonly.yaml" "$RUNTIME_DIR/explicit.yaml" <<'PY'
+import sys, yaml
+
+def ingress(path):
+    with open(path) as fh:
+        docs = [d for d in yaml.safe_load_all(fh) if d]
+    found = [d for d in docs if d.get("kind") == "Ingress"]
+    if len(found) != 1:
+        print(f"{path}: expected one Ingress, found {len(found)}", file=sys.stderr)
+        sys.exit(1)
+    return found[0]
+
+rules = ingress(sys.argv[1])["spec"]["rules"]
+if len(rules) != 1:
+    print(f"expected one rule, found {len(rules)}", file=sys.stderr)
+    sys.exit(1)
+if rules[0]["host"] != "only.example.com":
+    print(f"host is {rules[0]['host']}, not the one that was set", file=sys.stderr)
+    sys.exit(1)
+
+paths = rules[0]["http"]["paths"]
+if not paths:
+    print("a host set on its own produced no paths; the API server would reject this Ingress", file=sys.stderr)
+    sys.exit(1)
+if paths[0]["path"] != "/" or paths[0]["pathType"] != "Prefix":
+    print(f"the defaulted path is {paths[0]['path']}/{paths[0]['pathType']}, want / + Prefix", file=sys.stderr)
+    sys.exit(1)
+if paths[0]["backend"]["service"]["name"] != "applab":
+    print(f"the defaulted path points at {paths[0]['backend']['service']['name']}, not the release's Service", file=sys.stderr)
+    sys.exit(1)
+
+# The paths an explicit --set supplies still win over the default.
+explicit = ingress(sys.argv[2])["spec"]["rules"][0]["http"]["paths"][0]
+if explicit["path"] != "/admin" or explicit["pathType"] != "Exact":
+    print(f"an explicit path was overridden by the default: {explicit}", file=sys.stderr)
+    sys.exit(1)
+PY
 
 # NOT NOTES.txt: `helm template` does not render it, and `helm install --dry-run`
 # needs a reachable cluster, so its contents cannot be checked here. Asserting on
