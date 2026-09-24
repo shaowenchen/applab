@@ -54,6 +54,14 @@ see [the overview](../README.md) for how to install it, or drive the API directl
 | **registry:2** | Where built images are pushed, as `kind-registry:5000` — a cluster-local registry with no TLS and no credentials. |
 | **cloudflared** | A named tunnel, published at `domain`. Set `domain` to empty for a quick tunnel instead, or `tunnel: ngrok` to use ngrok. |
 
+Two Istio objects are involved here and only one comes from `istioctl`.
+`istioctl install --profile=default` creates the gateway **Deployment**, its
+Service and the RBAC, and stops there — a `Gateway` resource says which ports and
+hosts that proxy serves, so writing one is the operator's job. `hack/environment.sh`
+writes it, with the selector read from the deployment it has to bind to. Without
+it every VirtualService here names a gateway that does not exist: the API server
+accepts it, the chart renders it, and the proxy serves nothing.
+
 One hostname serves everything, and the Istio gateway is what serves it. An app
 is published under `/apps/<app>/`, and applab itself — the console at `/`, the
 API under `/api/v1/`, the git endpoints under `/git/` — is a route the chart

@@ -427,17 +427,68 @@ istioctl install --set profile=default -y
 kubectl -n istio-system wait --for=condition=available --timeout=300s \
   deployment/istio-ingressgateway
 
-# What Istio installed. istiod is what programs every VirtualService in the
-# environment, so it is worth seeing alongside the gateway: a control plane that
-# is not running looks exactly like a VirtualService that does not route.
+# The `Gateway` resource, which istioctl deliberately does not install.
 #
-# No `Gateway` is listed, because there is none: that resource is for a user to
-# write, and `istioctl install --set profile=default` creates the Deployment, the
-# Service and the RBAC but not one. The chart's VirtualService attaches to the
-# gateway by the name `deploy.gateway` gives, which resolves whether or not a
-# Gateway object of that name exists.
-show "istio (the control plane and the gateway)" \
-  kubectl -n istio-system get deployment,service,pod
+# `istioctl install` produces the Deployment, the Service and the RBAC, and
+# stops: a Gateway resource is the user's to write, because it is what says which
+# ports and hosts this proxy serves. Without one, every VirtualService in this
+# environment names a gateway that does not exist.
+#
+# That is not a formality. A Gateway's `selector` is the only thing binding a
+# route to the ingress proxy's pods — it is how istiod knows which Envoy gets the
+# listener and the routes. A VirtualService referencing a Gateway that is not
+# there has nothing to be programmed into, so the proxy has no route for the host
+# and answers 404. The symptom is a request through the gateway that fails while
+# the applab pod behind it is healthy and serving.
+#
+# The chart does not create this and should not: the gateway is cluster
+# infrastructure the installation attaches to, and `charts/applab/README.md` says
+# so. This environment assembles that infrastructure, so it belongs here.
+#
+# The selector is read from the deployment rather than written as the customary
+# `istio: ingressgateway`, because it has to match whatever Istio actually
+# installed and that is the definition of the match. The jsonpath returns a JSON
+# object, which is also valid YAML flow-mapping syntax, so it interpolates
+# straight into the manifest below.
+gateway_selector=$(kubectl -n istio-system get deployment istio-ingressgateway \
+  -o jsonpath='{.spec.selector.matchLabels}')
+[ -n "$gateway_selector" ] \
+  || die "the ingress gateway deployment has no selector, so a Gateway resource cannot be bound to it"
+
+log "creating the Gateway resource istioctl does not install"
+
+# Port 80 and every host, because that is what this environment serves: the
+# tunnel terminates TLS at Cloudflare and forwards plain HTTP to the node port, so
+# the gateway side is HTTP only. The host list is `*` rather than the tunnel's
+# hostname because a quick tunnel's hostname is not known until the agent reports
+# it, and the VirtualServices that name specific hosts match against a `*` server
+# either way.
+kubectl apply -f - <<EOF
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: istio-ingressgateway
+  namespace: istio-system
+spec:
+  selector: ${gateway_selector}
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*"
+EOF
+
+# What Istio installed, and what was added to it. istiod is what programs every
+# VirtualService in the environment, so it is worth seeing alongside the gateway:
+# a control plane that is not running looks exactly like a VirtualService that
+# does not route.
+#
+# The Gateway is listed because it is the thing this script had to add — see
+# above. A VirtualService is inert without it.
+show "istio (the control plane, the gateway deployment and the Gateway)" \
+  kubectl -n istio-system get deployment,service,gateway.networking.istio.io
 
 # Expose the gateway's HTTP port on the node port kind already maps to the host.
 #
@@ -617,6 +668,46 @@ show "applab" \
   kubectl -n "$APPLAB_NAMESPACE" get deployment,replicaset,pod,service,pvc,secret
 show "applab's routes (VirtualServices)" \
   kubectl -n "$APPLAB_NAMESPACE" get virtualservices
+
+# Ask Istio's own analyzer whether the objects above can actually be programmed.
+#
+# This is the check whose absence let a whole class of failure through: a
+# VirtualService naming a Gateway resource that does not exist is accepted by the
+# API server, renders fine, passes every chart check, and then serves nothing —
+# the objects all look correct and the proxy has no route. `istioctl analyze`
+# reports exactly that by name, so the failure arrives as a sentence about the
+# dangling reference rather than as a 404 minutes later.
+#
+# It runs before the requests below rather than after, because it answers a
+# different question: those ask whether the environment serves, this asks whether
+# the configuration is one that could ever serve. A configuration Istio cannot
+# program is a bug whether or not the poll happens to pass.
+#
+# The exit status is what decides, plus the summary line Istio prints when it
+# finds anything ("Analyzers found issues when analyzing namespace: ..."). Not the
+# severity words in the body: the analyzer IDs and the tool's own verdict are the
+# stable parts, and I have not confirmed which severities map to a non-zero exit,
+# so the summary is matched as well rather than trusting the status alone.
+#
+# Both are checked because a missed issue here is silent: the poll further down
+# would still catch a request that does not route, but it would catch it as a 404
+# with nothing said about why — which is the failure this whole check exists to
+# replace.
+# Every namespace, not just applab's. The reference this check exists for crosses
+# one — a VirtualService in the applab namespace naming a Gateway in
+# istio-system — and the analyzer resolves references cluster-wide, so scoping it
+# to one namespace risks missing the very case. The cost is that a problem
+# anywhere fails the environment, which is the right trade on a kind cluster this
+# script created moments ago and has nothing else in.
+analyze_exit=0
+analyze_output=$(istioctl analyze --all-namespaces 2>&1) || analyze_exit=$?
+
+if [ "$analyze_exit" -ne 0 ] || printf '%s' "$analyze_output" | grep -q 'Analyzers found issues'; then
+  printf '%s\n' "$analyze_output" | sed 's/^/    /' >&2
+  die "istioctl analyze reports a configuration Istio cannot program; the detail above names what is wrong"
+fi
+show "istioctl analyze (the configuration is programmable)" \
+  printf '%s\n' "$analyze_output"
 
 # ── 5. what came up, and whether it answers ─────────────────────────────────
 
