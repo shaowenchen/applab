@@ -45,6 +45,19 @@ func doRequest(t *testing.T, h http.Handler, method, path string, body any) *htt
 	return rec
 }
 
+// doRequestNoKey issues a request with no Authorization header, for asserting
+// that a route is protected. It is separate from doRequest rather than a flag on
+// it so that "this request deliberately carries no credential" is visible at the
+// call site.
+func doRequestNoKey(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, bytes.NewReader(nil))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
 // decodeData unwraps the {"data": ...} envelope.
 func decodeData(t *testing.T, rec *httptest.ResponseRecorder, into any) {
 	t.Helper()

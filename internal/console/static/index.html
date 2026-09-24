@@ -178,12 +178,109 @@
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
   dt { color: var(--text-muted); }
   dd { margin: 0; font-family: var(--mono); font-size: 13px; word-break: break-all; }
+
+  /* Header navigation. The console has four views now, so which one is showing
+     has to be visible at a glance rather than inferred from the page content. */
+  nav { display: flex; gap: 2px; }
+  nav button {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-muted);
+  }
+  nav button:hover { color: var(--text); border-color: transparent; background: var(--bg-sunken); }
+  nav button[aria-current="page"] {
+    color: var(--text);
+    background: var(--bg-sunken);
+    font-weight: 600;
+  }
+
+  /* The KPI row. A handful of headline numbers is a stat tile, not a chart: the
+     number is the thing being read, and a bar of length one would add nothing
+     to it. Each tile is label-above-value, the convention reading order for a
+     number nobody scans as prose. */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .tile {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .tile .label {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+  }
+  .tile .value {
+    /* Proportional figures, not tabular: these are standalone display numbers,
+       and tabular-nums would give every digit the width of a zero, which reads
+       loose at this size. Columns of numbers use .mono instead. */
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+  .tile .note { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  /* A tile that is reporting a problem is tinted, but the number and its label
+     still carry the meaning — the tint is a second cue, never the only one. */
+  .tile.attention { border-color: var(--bad); }
+  .tile.attention .value { color: var(--bad); }
+  .tile.ok .value { color: var(--ok); }
+
+  /* Capability chips: a named switch, on or off. The word is the signal; the
+     colour only reinforces it. */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-sunken);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .chip.on { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
+  .chip.off { opacity: 0.65; }
+
+  /* A one-line state indicator used for the cluster. The dot is decorative; the
+     sentence beside it is what says which state this is. */
+  .state { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
+  .state .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-muted); flex: none;
+    position: relative; top: -1px;
+  }
+  .state.ok .dot { background: var(--ok); }
+  .state.bad .dot { background: var(--bad); }
+  .state.warn .dot { background: var(--warn); }
+  .state .detail { color: var(--text-muted); font-size: 13px; }
+
+  /* Two panels side by side on a wide screen, stacked on a narrow one. */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
+
+  .grid-2 { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>applab</h1>
+  <!-- Which view is showing is navigation, not decoration: it is hidden until
+       there is something to navigate, since the sign-in screen has no views. -->
+  <nav id="nav" class="hidden">
+    <button id="nav-overview">Overview</button>
+    <button id="nav-apps">Apps</button>
+    <button id="nav-builds">Builds</button>
+  </nav>
   <span class="endpoint" id="endpoint"></span>
   <span class="spacer"></span>
   <button id="signout" class="hidden">Sign out</button>
@@ -206,6 +303,81 @@
     </div>
   </section>
 
+  <!-- Overview. The default view, because "is this platform healthy" is the
+       question someone opening the console has. Every number here comes from
+       GET /api/v1/overview, which counts server-side rather than making the
+       browser list every app and tally. -->
+  <section id="overview-view" class="hidden">
+    <div class="card">
+      <div class="row">
+        <h2 style="flex:1;margin:0">Overview</h2>
+        <button id="overview-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <!-- The KPI row. A handful of headline numbers is a stat tile, not a chart:
+         each is a single value to read, and a bar of length one beside it would
+         add nothing. -->
+    <div class="tiles" id="overview-tiles"></div>
+
+    <div class="split">
+      <div class="card">
+        <h2>Deployment</h2>
+        <dl class="grid-2" id="overview-deployment"></dl>
+        <div style="margin-top:12px">
+          <div class="muted" style="font-size:12px;margin-bottom:6px">Capabilities</div>
+          <div class="chips" id="overview-caps"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Cluster</h2>
+        <!-- This gets its own panel because it is the answer to "why can I not
+             deploy anything", which is otherwise only discoverable from a
+             failure. The sentence carries the state; the dot only colours it. -->
+        <div id="overview-cluster"></div>
+      </div>
+    </div>
+
+    <div class="card" style="padding:0">
+      <div class="row" style="padding:16px">
+        <h2 style="flex:1;margin:0">Recent builds</h2>
+        <button id="overview-see-builds">All builds</button>
+      </div>
+      <table>
+        <thead>
+          <tr><th>App</th><th>Build</th><th>Commit</th><th>Status</th><th>Age</th></tr>
+        </thead>
+        <tbody id="overview-builds"></tbody>
+      </table>
+      <div id="overview-builds-empty" class="empty hidden">
+        No builds yet. Push an app with <span class="mono">applab push &lt;app&gt;</span>.
+      </div>
+    </div>
+  </section>
+
+  <!-- Builds. The platform-wide list, which no per-app view can give: it is
+       what answers "is anything failing anywhere" without visiting each app. -->
+  <section id="builds-view" class="hidden">
+    <div class="card">
+      <div class="row">
+        <h2 style="flex:1;margin:0">Builds</h2>
+        <button id="builds-refresh">Refresh</button>
+      </div>
+    </div>
+    <div class="card" style="padding:0">
+      <table>
+        <thead>
+          <tr><th>App</th><th>Build</th><th>Commit</th><th>Status</th><th>Age</th><th>Image</th></tr>
+        </thead>
+        <tbody id="builds"></tbody>
+      </table>
+      <div id="builds-empty" class="empty hidden">
+        No builds yet. Push an app with <span class="mono">applab push &lt;app&gt;</span>.
+      </div>
+    </div>
+  </section>
+
   <section id="apps-view" class="hidden">
     <div class="card">
       <div class="row">
@@ -225,6 +397,16 @@
   </section>
 
   <section id="app-view" class="hidden">
+    <!-- Shown only to an app key, so the page explains why it looks different
+         from what an admin sees rather than leaving it a mystery. -->
+    <div id="app-key-note" class="card hidden">
+      <p style="margin:0">
+        Signed in with this app's own key. It reaches <strong>this app only</strong> —
+        it can push, build, deploy and roll back, but cannot delete the app and
+        cannot see any other.
+      </p>
+    </div>
+
     <div class="card">
       <div class="row">
         <button id="back">← Apps</button>
@@ -292,6 +474,12 @@ const state = {
   url: "",
   key: "",
   app: "",
+  // "admin" or "app", learned from the API at sign-in. It decides which views
+  // are reachable: an app key has one app and no platform to look at.
+  scope: "admin",
+  // Which view is showing, so openApp can return to where it was called from.
+  view: "overview",
+  cameFrom: "apps",
   logAbort: null,
   logFollowing: false,
 };
@@ -369,6 +557,31 @@ function pill(status) {
   return el;
 }
 
+// buildStatusClass maps a *build's* status onto a colour.
+//
+// It is separate from statusClass rather than shared, because the two
+// vocabularies overlap on words that mean different things. "running" for an app
+// means a rollout completed — good, green. For a build it means the Job is still
+// going — in progress, blue. Sharing one mapping made a successful build render
+// grey and an in-flight one render green, which is worse than no colour at all:
+// it reads as finished at exactly the moment it is not.
+function buildStatusClass(status) {
+  switch (status) {
+    case "succeeded": return "ok";
+    case "failed": return "bad";
+    case "running":
+    case "pending": return "busy";
+    default: return "neutral";
+  }
+}
+
+function buildPill(status) {
+  const el = document.createElement("span");
+  el.className = "pill " + buildStatusClass(status);
+  el.textContent = status || "unknown";
+  return el;
+}
+
 function shortSHA(sha) {
   return sha ? sha.slice(0, 10) : "—";
 }
@@ -384,9 +597,262 @@ function ago(iso) {
   return Math.floor(seconds / 86400) + "d ago";
 }
 
+// tile builds one statistic. The label names it, the value is the number, and
+// the optional note explains it — which is what keeps a bare figure from being
+// ambiguous.
+function tile(label, value, note, kind) {
+  const el = document.createElement("div");
+  el.className = "tile" + (kind ? " " + kind : "");
+
+  const l = document.createElement("div");
+  l.className = "label";
+  l.textContent = label;
+
+  const v = document.createElement("div");
+  v.className = "value";
+  v.textContent = value;
+
+  el.append(l, v);
+  if (note) {
+    const n = document.createElement("div");
+    n.className = "note";
+    n.textContent = note;
+    el.appendChild(n);
+  }
+  return el;
+}
+
 // ---------------------------------------------------------------------------
 // Views
 // ---------------------------------------------------------------------------
+
+// navTo switches between the four views. It is the one place that decides which
+// sections are visible, so a view added later cannot be reachable from one path
+// and not another.
+function navTo(name) {
+  // The detail view is not a nav destination, so the remembered view stays on
+  // whatever was showing underneath it.
+  if (name !== "app") state.view = name;
+
+  for (const view of ["overview", "apps", "builds", "app"]) {
+    show($(view + "-view"), view === name);
+  }
+  for (const item of ["overview", "apps", "builds"]) {
+    const button = $("nav-" + item);
+    // aria-current is what a screen reader reads; the styling follows from it
+    // rather than being set separately, so the two cannot disagree.
+    if (item === name) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  // An app key has exactly one destination, so there is nothing to navigate
+  // between — the nav is hidden rather than shown with a single entry.
+  show($("nav"), name !== "app" && state.scope !== "app");
+}
+
+async function showOverview() {
+  stopLogs();
+  state.app = "";
+  navTo("overview");
+  await loadOverview();
+}
+
+async function showBuilds() {
+  stopLogs();
+  state.app = "";
+  navTo("builds");
+  await loadBuilds();
+}
+
+async function showApps() {
+  stopLogs();
+  state.app = "";
+  navTo("apps");
+  await loadApps();
+}
+
+// buildRows renders build records as table rows.
+//
+// It is shared by the overview panel and the builds view so the two cannot
+// describe the same build differently — and because a build row is reached from
+// both, "which app was this" has to link the same way in each.
+function buildRows(builds, withImage) {
+  const rows = [];
+
+  for (const build of builds) {
+    const tr = document.createElement("tr");
+
+    const app = document.createElement("td");
+    app.className = "app-id";
+    app.textContent = build.app_id;
+    app.onclick = () => openApp(build.app_id);
+    tr.appendChild(app);
+
+    const id = document.createElement("td");
+    id.className = "mono";
+    id.textContent = shortSHA(build.id);
+    tr.appendChild(id);
+
+    const commit = document.createElement("td");
+    commit.className = "mono";
+    commit.textContent = shortSHA(build.commit_sha);
+    tr.appendChild(commit);
+
+    const status = document.createElement("td");
+    // A build's statuses are its own vocabulary, so they use the build mapping —
+    // "running" here means the Job is still going, not that something is healthy.
+    status.appendChild(buildPill(build.status));
+    tr.appendChild(status);
+
+    const when = document.createElement("td");
+    when.className = "muted";
+    when.textContent = ago(build.created_at);
+    tr.appendChild(when);
+
+    if (withImage) {
+      const image = document.createElement("td");
+      image.className = "mono";
+      image.textContent = build.image || "—";
+      tr.appendChild(image);
+    }
+
+    // A failed build's reason is the useful part and has nowhere else to appear
+    // in this table; the title attribute keeps the row one line.
+    if (build.reason) tr.title = build.reason;
+
+    rows.push(tr);
+  }
+
+  return rows;
+}
+
+// loadOverview renders the platform at a glance.
+//
+// One request fills the whole view — the tiles, the deployment panel, the
+// cluster state and the recent-builds table all come from the same
+// /api/v1/overview response, so asking twice would be the same answer at twice
+// the cost.
+async function loadOverview() {
+  setError("");
+
+  let data;
+  try {
+    data = await api("/api/v1/overview");
+  } catch (err) {
+    setError("Could not read the overview: " + err.message);
+    return;
+  }
+
+  const apps = data.apps || {};
+  const builds = data.builds || {};
+
+  // The KPI row. "Needs attention" is the tile a person acts on, so it gets the
+  // tint and the actionable note; the rest stay neutral, because a dashboard
+  // where everything is coloured is a dashboard where nothing stands out.
+  const tiles = $("overview-tiles");
+  tiles.replaceChildren();
+
+  tiles.appendChild(tile("Apps", apps.total ?? 0, (apps.running ?? 0) + " running"));
+  tiles.appendChild(tile(
+    "Needs attention",
+    apps.needs_attention ?? 0,
+    (apps.needs_attention ?? 0) > 0 ? "failed or build-failed" : "nothing broken",
+    (apps.needs_attention ?? 0) > 0 ? "attention" : "ok"
+  ));
+  tiles.appendChild(tile("In progress", (apps.building ?? 0) + (apps.deploying ?? 0), "building or deploying"));
+  tiles.appendChild(tile(
+    "Builds",
+    builds.total ?? 0,
+    (builds.failed ?? 0) > 0 ? (builds.failed + " failed") : (builds.succeeded ?? 0) + " succeeded",
+    (builds.failed ?? 0) > 0 ? "attention" : ""
+  ));
+
+  // The deployment panel: what this applab is, which otherwise means running
+  // `applab config`.
+  const d = data.deployment || {};
+  const dl = $("overview-deployment");
+  dl.replaceChildren();
+
+  const add = (term, value) => {
+    if (value === undefined || value === null || value === "") return;
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    dl.append(dt, dd);
+  };
+
+  add("version", d.version);
+  add("api", d.api_version);
+  add("namespace", d.namespace);
+  add("apps at", d.domain_template);
+
+  const caps = $("overview-caps");
+  caps.replaceChildren();
+  for (const name of ["source", "git", "build", "deploy"]) {
+    const on = !!(d.capabilities || {})[name];
+    const chip = document.createElement("span");
+    chip.className = "chip " + (on ? "on" : "off");
+    // The word is the signal; "on"/"off" is what carries it, not the colour.
+    chip.textContent = name + (on ? " on" : " off");
+    caps.appendChild(chip);
+  }
+
+  // The cluster: three distinct states, because "not configured" and
+  // "unreachable" mean different things and only one of them is a fault.
+  const cluster = data.cluster || {};
+  const box = $("overview-cluster");
+  box.replaceChildren();
+
+  const wrap = document.createElement("div");
+  const detail = document.createElement("div");
+  detail.className = "detail";
+  detail.style.marginTop = "8px";
+
+  if (!cluster.configured) {
+    wrap.className = "state";
+    wrap.innerHTML = '<span class="dot"></span><span>Not configured</span>';
+    detail.textContent = "No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run applab.";
+  } else if (cluster.reachable) {
+    wrap.className = "state ok";
+    wrap.innerHTML = '<span class="dot"></span><span>Reachable</span>';
+    detail.textContent = "This deployment can reach the Kubernetes API, so builds and deploys will run here.";
+  } else {
+    wrap.className = "state bad";
+    wrap.innerHTML = '<span class="dot"></span><span>Unreachable</span>';
+    detail.textContent = "A cluster client is configured but the API server is not answering. Builds and deploys will fail until this recovers.";
+  }
+
+  box.append(wrap, detail);
+
+  const recent = builds.recent || [];
+  const body = $("overview-builds");
+  body.replaceChildren();
+  show($("overview-builds-empty"), recent.length === 0);
+  for (const row of buildRows(recent, false)) body.appendChild(row);
+}
+
+// loadBuilds renders the platform-wide build list.
+async function loadBuilds() {
+  setError("");
+
+  let data;
+  try {
+    data = await api("/api/v1/overview");
+  } catch (err) {
+    setError("Could not read builds: " + err.message);
+    return;
+  }
+
+  // The API carries a bounded list of the most recent builds — the same rows
+  // the overview panel shows. A per-app history is on the app's own page.
+  const builds = (data.builds && data.builds.recent) || [];
+
+  const body = $("builds");
+  body.replaceChildren();
+  show($("builds-empty"), builds.length === 0);
+  for (const row of buildRows(builds, true)) body.appendChild(row);
+}
+
 
 async function loadApps() {
   setError("");
@@ -447,10 +913,23 @@ async function loadApps() {
 }
 
 async function openApp(id) {
+  // Where the app was opened from, so "← Back" returns there. An app is
+  // reachable from the apps list and from a build row, and sending someone to
+  // the apps list after they clicked a build would lose their place.
+  state.cameFrom = state.view || "apps";
+
   state.app = id;
-  show($("apps-view"), false);
-  show($("app-view"), true);
+  navTo("app");
+  // The button says where it goes, which depends on where the app was opened
+  // from — an app reached from a build row should not claim to return to Apps.
+  // An app key has no parent view, so it gets no way back.
+  const label = { apps: "Apps", builds: "Builds", overview: "Overview" }[state.cameFrom];
+  $("back").textContent = "← " + (label || "Apps");
+  show($("back"), state.scope !== "app");
   $("app-title").textContent = id;
+  // Delete is an admin operation — the API refuses it for an app key — so the
+  // button is not offered rather than shown as something that always fails.
+  show($("app-delete"), state.scope !== "app");
   stopLogs();
 
   await Promise.all([loadAppState(), loadPods(), loadCommits()]);
@@ -460,9 +939,12 @@ async function openApp(id) {
 function closeApp() {
   stopLogs();
   state.app = "";
-  show($("app-view"), false);
-  show($("apps-view"), true);
-  loadApps();
+
+  // Re-loaded rather than merely re-shown: actions taken in the detail view
+  // (a rollback, a stop, a restart) change what the list should say.
+  if (state.cameFrom === "builds") showBuilds();
+  else if (state.cameFrom === "overview") showOverview();
+  else showApps();
 }
 
 async function loadAppState() {
@@ -790,32 +1272,94 @@ function clearCredentials() {
   state.key = "";
 }
 
+// connect signs in and establishes which scope the key has.
+//
+// The scope is asked for rather than inferred. The console tries an admin-only
+// route first: /api/v1/overview is refused to an app key, so a success means
+// the admin tier and a refusal means it is not. Then it lists apps, which an
+// app key answers with exactly its own.
+//
+// Guessing the scope from the *size* of the app list would be wrong, and
+// silently so: a platform with one app and an admin key would look identical to
+// an app key, and the operator would get a console with no overview, no app list
+// and no delete button. The tiers are distinguished by what the API allows, so
+// that is what this asks.
+//
+// This also replaces a check against /api/v1/config, which was a bug: that route
+// is open, so a wrong key appeared to sign in successfully and only failed on
+// the first call that actually needed one. Signing in against a route that
+// requires a key is the only way the form can fail when it should.
 async function connect(url, key) {
   setError("");
   saveCredentials(url, key);
 
+  // A key that cannot even list its own app is not a usable credential at all,
+  // whatever tier it claims.
+  let apps;
   try {
-    await api("/api/v1/config");
+    apps = await api("/api/v1/apps");
   } catch (err) {
+    // The credentials are dropped on a failure: keeping a key that did not work
+    // would make the next page load retry it and show the same error, with the
+    // form hidden behind a session that was never established.
+    clearCredentials();
     setError("Could not connect: " + err.message);
     return false;
   }
 
+  // The admin tier is the one that can read the platform overview.
+  let isAdmin = false;
+  try {
+    await api("/api/v1/overview");
+    isAdmin = true;
+  } catch {
+    // Refused, which is what an app key gets. Not an error to report: it is the
+    // answer to the question being asked.
+  }
+
+  if (!isAdmin && apps.length === 0) {
+    // An app key always resolves to exactly one app, so an empty list with no
+    // admin rights means the key authenticates to nothing worth showing.
+    clearCredentials();
+    setError("Could not connect: this key does not reach any app.");
+    return false;
+  }
+
+  state.scope = isAdmin ? "admin" : "app";
+  state.app = state.scope === "app" ? apps[0].id : "";
+
   $("endpoint").textContent = state.url;
   show($("signin"), false);
   show($("signout"), true);
-  show($("apps-view"), true);
-  await loadApps();
+
+  if (state.scope === "app") {
+    // An app key has one app to show, so the console opens on it directly —
+    // there is no list to choose from and no overview to show, and a nav with
+    // one destination is noise. It is also why no admin-only view is reachable
+    // from here: they are simply not rendered.
+    show($("app-key-note"), true);
+    await openApp(state.app);
+    return true;
+  }
+
+  show($("app-key-note"), false);
+  // The overview is the landing view for an admin: "is this platform healthy" is
+  // the question someone opening a console has, and it is the one screen that
+  // answers it without a further click.
+  await showOverview();
   return true;
 }
 
 function signOut() {
   stopLogs();
   clearCredentials();
+  state.scope = "admin";
+  state.app = "";
   $("endpoint").textContent = "";
   show($("signout"), false);
-  show($("apps-view"), false);
-  show($("app-view"), false);
+  show($("nav"), false);
+  show($("app-key-note"), false);
+  for (const view of ["overview", "apps", "builds", "app"]) show($(view + "-view"), false);
   show($("signin"), true);
 }
 
@@ -833,6 +1377,14 @@ $("signin-key").onkeydown = (e) => { if (e.key === "Enter") $("signin-go").click
 $("signin-url").onkeydown = (e) => { if (e.key === "Enter") $("signin-key").focus(); };
 
 $("signout").onclick = signOut;
+
+$("nav-overview").onclick = showOverview;
+$("nav-apps").onclick = showApps;
+$("nav-builds").onclick = showBuilds;
+$("overview-refresh").onclick = loadOverview;
+$("overview-see-builds").onclick = showBuilds;
+$("builds-refresh").onclick = loadBuilds;
+
 $("refresh").onclick = () => { loadApps(); };
 $("back").onclick = closeApp;
 $("app-restart").onclick = restart;

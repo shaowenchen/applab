@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shaowenchen/applab/internal/api"
+	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/buildinfo"
@@ -142,7 +143,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv.WithGit(gitTransport)
+
+	// Which repository a credential may reach is decided by the API layer, which
+	// owns the two tiers — see Server.AuthorizeGitRepo.
+	//
+	// The hook is a closure over srv rather than a check made here, because the
+	// per-app key store is attached further down (it comes with the cluster,
+	// which is optional). A closure reads srv's fields when the request arrives,
+	// so it sees whatever was attached by then, and a deployment with no cluster
+	// simply has no app keys to resolve against.
+	srv.WithGit(gitTransport.Authorize(srv.AuthorizeGitRepo))
 
 	// The console is a client of the same public API, so it holds no privileges
 	// and adds no endpoints — it is a page, and everything it does is a call a
@@ -173,6 +183,12 @@ func run() error {
 		// there is no namespace to drop.
 		srv.WithAppObjectsDeleter(client.DeleteAppObjects)
 		srv.WithClusterStatus(client.Ready)
+
+		// Per-app API keys live in Secrets, so they come with the cluster the
+		// same way builds and deploys do. Without one the deployment keeps
+		// working on the admin tier alone — which is the documented way to run
+		// applab with no cluster at all.
+		srv.WithAppKeys(appkey.New(client.Clientset(), cfg.Namespace))
 
 		if cfg.Build.Enabled() {
 			engine := build.New(client.Clientset(), build.Config{

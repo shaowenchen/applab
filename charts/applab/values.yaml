@@ -29,12 +29,20 @@ replicaCount: 1
 # ---------------------------------------------------------------------------
 # Authentication
 #
-# There is no user store: an API key *is* the identity, and a key that
-# authenticates can do anything this installation can — including delete every
-# app it manages. Treat each key as a credential that can destroy data.
+# There are two tiers of key, and the difference is reach.
 #
-# Give each caller its own key so one can be revoked without disturbing the
-# others: removing it from the list and upgrading is the whole revocation.
+# The keys set here are *admin* keys. A key that authenticates can do anything
+# this installation can — including delete every app it manages — so treat each
+# as a credential that can destroy data. Give each operator their own so one can
+# be revoked without disturbing the others: removing it from the list and
+# upgrading is the whole revocation.
+#
+# Every app additionally gets a key of its own, created by applab when the app
+# is created and kept in a Secret beside it. An app key reaches that app and
+# nothing else: it can push, build, deploy and roll back, but cannot delete the
+# app. That is the credential to give whoever deploys an app, so they never hold
+# one that can destroy the installation. Nothing here configures them — see the
+# README's "Keys" section.
 # ---------------------------------------------------------------------------
 auth:
   # Generate with: openssl rand -hex 32
@@ -132,13 +140,17 @@ build:
   # and a build runs code from whoever pushed the source.
   rootless: true
 
-  # Load the *pushed* image into the cluster's container runtime from the build
-  # job, when the cluster runs its own registry and the runtime cannot pull it.
+  # Let BuildKit talk to a registry over plain HTTP, and skip TLS verification.
   #
-  # Only needed for a registry that is not resolvable or not trusted from the
-  # node. It requires mounting the runtime's socket into the build job, which
-  # grants that job control of the node's container runtime — so it is off by
-  # default and should stay off unless there is no alternative.
+  # This is BuildKit's own `registry.insecure=true` option on the build, and it
+  # exists for a cluster-local registry: one served over HTTP, or with a
+  # self-signed certificate no node trusts. Those are exactly the registries a
+  # test environment uses, and the ones a public one never is.
+  #
+  # Off by default because it disables the verification that makes a push
+  # trustworthy — the image that arrives can no longer be proven to be the image
+  # that was pushed. Turn it on deliberately, knowing which registry it applies
+  # to.
   insecureRegistry: false
 
   # A Secret holding registry credentials, copied into each app namespace so the

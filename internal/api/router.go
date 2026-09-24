@@ -87,6 +87,11 @@ type Server struct {
 	// clusterReady reports whether the cluster is reachable.
 	clusterReady func(ctx context.Context) bool
 
+	// appKeys resolves an app key to its app. Nil means this deployment has no
+	// app keys — which is the case without a cluster, since they live in
+	// Secrets — and then only the admin tier exists.
+	appKeys appKeyService
+
 	// deployer is the deploy half of the pipeline. Nil means this deployment
 	// cannot deploy.
 	deployer Deployer
@@ -283,6 +288,40 @@ func (s *Server) restartDeployment(ctx context.Context, app *model.App) error {
 // WithDeployer attaches the deploy half of the pipeline.
 func (s *Server) WithDeployer(d Deployer) *Server { s.deployer = d; return s }
 
+// appKeyService is the per-app key store, as this layer needs it.
+//
+// It is an interface rather than the concrete appkey.Store for the same reason
+// the build and deploy halves are: a deployment without app-key support — one
+// with no cluster to keep the Secrets in — leaves it nil, and the affected
+// routes report "not available" rather than failing at call time.
+type appKeyService interface {
+	// Ready reports whether the store can reach a cluster.
+	Ready() bool
+
+	// Create mints a key for an app that has none.
+	Create(ctx context.Context, appID string) (string, error)
+
+	// Get returns an app's key.
+	Get(ctx context.Context, appID string) (string, error)
+
+	// Rotate replaces an app's key, invalidating the previous one at once.
+	Rotate(ctx context.Context, appID string) (string, error)
+
+	// Remove deletes an app's key.
+	Remove(ctx context.Context, appID string) error
+
+	// ResolveAppKey reports which app a presented key belongs to. It is the
+	// method the auth tier calls, so the interface satisfies auth.AppKeyResolver
+	// without either package importing the other.
+	ResolveAppKey(ctx context.Context, presented string) (string, bool, error)
+}
+
+// WithAppKeys attaches the per-app key store.
+//
+// Attached only when a cluster is reachable: keys live in Secrets, so a
+// deployment without one keeps working on the admin tier alone.
+func (s *Server) WithAppKeys(store appKeyService) *Server { s.appKeys = store; return s }
+
 // Observer reads an app's runtime state.
 type Observer interface {
 	// Ready reports whether the observer can reach the cluster.
@@ -386,6 +425,33 @@ type route struct {
 	// discover what this service is before it can authenticate to it.
 	Auth bool
 
+	// AppAuth additionally accepts an app key scoped to the {app} in the path.
+	// Routes that set it also set Auth, so the admin tier is always accepted and
+	// PatternRequiresAuth keeps its meaning unchanged.
+	//
+	// It is what lets someone deploy their own app without holding a credential
+	// that can delete every app this installation manages. A route that sets it
+	// must name {app} in its pattern: there has to be something to scope to, and
+	// the middleware treats a missing {app} as a routing mistake rather than
+	// letting the request through unscoped. A route serving a *collection*
+	// instead sets AppListScope.
+	AppAuth bool
+
+	// AppListScope accepts an app key on a route that addresses no single app,
+	// leaving the handler to narrow what it returns. It is separate from AppAuth
+	// rather than folded into it because the two need opposite things: AppAuth
+	// requires an {app} and refuses without one, while this one is only ever set
+	// on routes that have none — and a flag whose meaning depended on whether the
+	// pattern happened to contain {app} would be a rule nobody could check by
+	// reading the table.
+	AppListScope bool
+
+	// AppAdminOnly marks a route that an app key may authenticate against but
+	// must be refused. Deleting an app is the case: an app key may push, build,
+	// deploy and roll back its app — all of which change what runs — but
+	// destroying the app and its history is the operator's to do.
+	AppAdminOnly bool
+
 	// TokenAuth requires a single-use source token instead of an API key.
 	//
 	// It exists for the one route a build Job calls. A build runs in the app's
@@ -439,6 +505,18 @@ func (s *Server) routes() []route {
 			Handler: s.handleVersion,
 		},
 		{
+			// The one call that answers "what is the state of this platform":
+			// counts by status, the most recent builds across every app, whether
+			// the cluster is reachable, and this deployment's self-description.
+			// A client can assemble the numbers from the endpoints below by
+			// listing everything and tallying, which is the work this does once,
+			// where the database can count instead of transfer.
+			Pattern: "GET /api/v1/overview",
+			Auth:    true,
+			Doc:     "The platform at a glance: app counts by status, build counts and the most recent builds across every app, whether the cluster is configured and reachable, and this deployment's self-description. Counts exclude deleted apps.",
+			Handler: s.handleOverview,
+		},
+		{
 			// Unauthenticated for the same reason as /api/v1/config: this file
 			// is how a caller learns the key is needed and how to present it.
 			Pattern: "GET /llms.txt",
@@ -450,8 +528,12 @@ func (s *Server) routes() []route {
 		{
 			Pattern: "GET /api/v1/apps",
 			Auth:    true,
-			Doc:     "List apps. `?include_deleted=true` also returns apps that were deleted but whose id is still reserved.",
-			Handler: s.handleListApps,
+			// Reachable by both tiers, because the console needs a way to learn
+			// which app an app key belongs to before it can ask for that app.
+			// The handler filters the result set to the caller's own app.
+			AppListScope: true,
+			Doc:          "List apps. `?include_deleted=true` also returns apps that were deleted but whose id is still reserved.",
+			Handler:      s.handleListApps,
 		},
 		{
 			Pattern: "POST /api/v1/apps",
@@ -462,38 +544,67 @@ func (s *Server) routes() []route {
 		{
 			Pattern: "GET /api/v1/apps/{app}",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "One app.",
 			Handler: s.handleGetApp,
 		},
 		{
 			Pattern: "PATCH /api/v1/apps/{app}",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Change an app's settings: `{name?, port?, replicas?, dockerfile?, domain?}`. Fields omitted are left alone.",
 			Handler: s.handleUpdateApp,
 		},
 		{
 			Pattern: "DELETE /api/v1/apps/{app}",
 			Auth:    true,
-			Doc:     "Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository.",
-			Handler: s.handleDeleteApp,
+			// Reachable by both tiers so an app key gets a clear 403 naming the
+			// rule, rather than a 404 that would read as "this app does not
+			// exist" to the one person who knows it does.
+			AppAuth:      true,
+			AppAdminOnly: true,
+			Doc:          "Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository. Requires an admin key: an app key may manage its app but not destroy it.",
+			Handler:      s.handleDeleteApp,
+		},
+
+		// -- App keys -----------------------------------------------------
+		{
+			// An app key may read its own key, and an admin key may read any
+			// app's: the middleware scopes by the {app} in the path, so a key
+			// for another app gets a 404 rather than this app's credential.
+			Pattern: "GET /api/v1/apps/{app}/key",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "The app's API key, in full. Works with the app's own key or an admin key. This key may be used for the API, the CLI and the console, and reaches only this app. 501 if this deployment has no cluster, where keys are kept.",
+			Handler: s.handleGetAppKey,
+		},
+		{
+			Pattern: "POST /api/v1/apps/{app}/key/rotate",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "Replace the app's API key, invalidating the previous one immediately. Also creates one for an app that has none, so a lost key is recovered here. Returns the new key.",
+			Handler: s.handleRotateAppKey,
 		},
 
 		// -- Source -------------------------------------------------------
 		{
 			Pattern: "POST /api/v1/apps/{app}/source",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Upload source as a tar or tar.gz and commit it. This is the main way to push code. Send the archive as the raw request body (`--data-binary @-`), or as `multipart/form-data` with a `file` field. `?message=` sets the commit message; `?parent=<sha>` commits onto a chosen commit instead of the current tip. A single wrapping directory is stripped, so `tar czf - myproject` lands with its contents at the root.",
 			Handler: s.handleUploadSource,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/commits",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "An app's commit history, newest first, with the current tip. `?limit=` (default 50).",
 			Handler: s.handleListCommits,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/commits/{sha}",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "One commit. `{sha}` may be an abbreviated id.",
 			Handler: s.handleGetCommit,
 		},
@@ -502,18 +613,21 @@ func (s *Server) routes() []route {
 		{
 			Pattern: "POST /api/v1/apps/{app}/source/uploads",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Begin a chunked upload for source too large for one request. Body: `{total, chunk_size, message?}`. Returns an `upload_id`.",
 			Handler: s.handleChunkedUploadStart,
 		},
 		{
 			Pattern: "PUT /api/v1/apps/{app}/source/uploads/{upload}/parts/{index}",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Send one part. Body is the raw bytes. `{index}` is 1-based. Parts may be sent in any order and retried.",
 			Handler: s.handleChunkedUploadPart,
 		},
 		{
 			Pattern: "POST /api/v1/apps/{app}/source/uploads/{upload}/complete",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Assemble every part and commit the result. Fails if any part is missing.",
 			Handler: s.handleChunkedUploadComplete,
 		},
@@ -522,24 +636,28 @@ func (s *Server) routes() []route {
 		{
 			Pattern: "POST /api/v1/apps/{app}/builds",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Build an image from a commit. Body `{commit_sha?}` — omit it to build the current tip. Returns immediately; the build runs as a Job in the cluster. Returns 501 if this deployment cannot build.",
 			Handler: s.handleStartBuild,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/builds",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "An app's builds, newest first. `?limit=` (default 20).",
 			Handler: s.handleListBuilds,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/builds/{build}",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "One build. Its status is read from the cluster, so it reflects the Job rather than what applab last recorded.",
 			Handler: s.handleGetBuild,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/builds/{build}/logs",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "The build's log, as `text/plain`. Follows the build while it runs and ends when it finishes; works unchanged for a build that has already finished. `?follow=false` returns what exists so far and stops.",
 			Handler: s.handleBuildLogs,
 		},
@@ -548,30 +666,35 @@ func (s *Server) routes() []route {
 		{
 			Pattern: "POST /api/v1/apps/{app}/deploy",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Deploy a commit and return the URL it is served at. Body `{commit_sha?, build?}` — omit `commit_sha` to deploy the current tip. If that commit has a successful build its image is reused; if it has none, the call fails with 409 and names the fix unless `build:true` was passed, in which case a build is started and the response is a 202 with the build. Returns 501 if this deployment cannot deploy.",
 			Handler: s.handleDeploy,
 		},
 		{
 			Pattern: "POST /api/v1/apps/{app}/rollback",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Deploy an earlier commit. Body `{commit_sha}` (required). Reuses that commit's existing image and never builds, so a rollback stays fast and cannot fail for a reason the original build did not.",
 			Handler: s.handleRollback,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/status",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "An app's live state in the cluster alongside what applab recorded. The two are reported separately and deliberately not reconciled: when they disagree, the cluster is right.",
 			Handler: s.handleAppStatus,
 		},
 		{
 			Pattern: "POST /api/v1/apps/{app}/restart",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Roll the running pods, keeping the same image. For picking up a changed ConfigMap or recovering pods that are wedged.",
 			Handler: s.handleRestart,
 		},
 		{
 			Pattern: "POST /api/v1/apps/{app}/stop",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Stop the app by removing its Deployment, Service and Ingress. The source and history are kept, so starting again is a deploy rather than a re-upload.",
 			Handler: s.handleStop,
 		},
@@ -580,24 +703,28 @@ func (s *Server) routes() []route {
 		{
 			Pattern: "GET /api/v1/apps/{app}/pods",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "The app's pods, newest first, with per-container state. A pod that is not Running carries the reason — `CrashLoopBackOff`, `ImagePullBackOff` — and a crash loop's cause is reported from the *previous* container, since the current one is only restarting. `?limit=` (default 100, max 1000).",
 			Handler: s.handleListPods,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/logs",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "A pod's log as `text/plain`. Follows the pod by default; `?follow=false` returns what exists and closes. `?pod=` and `?container=` narrow it (default: the newest pod and the app container). `?previous=true` reads the previous container instance — where a crash loop's reason is written. `?tail=` (default 500, max 10000), `?since=` a duration such as `5m`.",
 			Handler: s.handlePodLogs,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/events",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Recent Kubernetes events for the app, warnings first, with a `warnings` count. This is what explains a pod that never started: a failed scheduling, an image pull that was refused, a probe that killed the container. `?limit=` (default 50).",
 			Handler: s.handleListEvents,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/diagnose",
 			Auth:    true,
+			AppAuth: true,
 			Doc:     "Why the app is not working, in one call: pods, events and the relevant log, ordered so the most likely cause comes first. Use this before reading the other four endpoints.",
 			Handler: s.handleDiagnose,
 		},
@@ -666,6 +793,38 @@ func (s *Server) PatternRequiresAuth(pattern string) bool {
 	return true
 }
 
+// PatternAcceptsAppKey reports whether the route matching pattern admits the
+// app-key tier.
+//
+// It exists for the same reason PatternRequiresAuth does: a test that asserts
+// which routes are app-scoped should read the table's own declaration rather
+// than a list maintained beside it, where a new route could be added to one and
+// forgotten in the other.
+func (s *Server) PatternAcceptsAppKey(pattern string) bool {
+	for _, r := range s.routes() {
+		if r.Pattern == pattern {
+			return r.AppAuth || r.AppListScope
+		}
+	}
+	return false
+}
+
+// PatternIsAppListScoped reports whether the route matching pattern is a
+// collection an app key may read, with the handler narrowing the result.
+//
+// It is separate from PatternAcceptsAppKey because the two answer different
+// questions — "may an app key reach this" and "is there an {app} to scope it
+// against" — and a test that conflated them could not tell a route with the
+// wrong flag from one with the wrong pattern.
+func (s *Server) PatternIsAppListScoped(pattern string) bool {
+	for _, r := range s.routes() {
+		if r.Pattern == pattern {
+			return r.AppListScope
+		}
+	}
+	return false
+}
+
 // countAuthRejections records a 401 as an auth rejection.
 func (s *Server) countAuthRejections(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -720,6 +879,15 @@ func (s *Server) Handler() http.Handler {
 	for _, r := range s.routes() {
 		var h http.Handler = r.Handler
 		switch {
+		case r.AppAuth:
+			// Two tiers, so the route is wrapped by the one middleware that
+			// knows the difference rather than by the admin check alone.
+			h = s.countAuthRejections(s.appAuthMiddleware(h, r.AppAdminOnly))
+		case r.AppListScope:
+			// Both tiers too, but there is no {app} to compare against — the
+			// middleware only establishes the identity and the handler narrows
+			// what it returns.
+			h = s.countAuthRejections(s.appListAuthMiddleware(h))
 		case r.Auth:
 			// Wrapped so a refusal is counted: a steady rate of rejections is the
 			// one signal that distinguishes probing from a misconfigured client.
@@ -737,16 +905,23 @@ func (s *Server) Handler() http.Handler {
 	}
 
 	// The git endpoints carry binary pack data, not JSON, so they are mounted
-	// ahead of the fallback below — and behind the same key check as everything
-	// else, since a repository is not public.
+	// ahead of the fallback below — and behind a key check, since a repository is
+	// not public.
 	//
 	// A single pattern covers every git request for every repository: the
 	// transport reads the whole path and works out which repository and which
 	// sub-operation (info/refs, git-upload-pack, git-receive-pack) it names.
 	// Declaring them individually would mean enumerating a protocol surface that
 	// git is free to extend.
+	//
+	// Both tiers authenticate here, and *which repository* each may reach is
+	// decided inside the transport, by the Authorize hook. It has to be that way
+	// round: this mount has no {app} for a middleware to scope against, so the
+	// only place the repository name exists is in the handler. The admin
+	// middleware alone would refuse every app key outright, which is what made
+	// git admin-only before.
 	if s.git != nil {
-		mux.Handle("/git/", http.StripPrefix("/git", s.auth.Middleware(s.git)))
+		mux.Handle("/git/", http.StripPrefix("/git", s.appListAuthMiddleware(s.git)))
 	}
 
 	// A request matching no route should read as "no such endpoint" rather than

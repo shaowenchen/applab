@@ -215,7 +215,7 @@ does and why it defaults the way it does. The ones that matter most:
 
 | Value | Default | Note |
 |---|---|---|
-| `auth.keys` | `[]` | **Required.** `openssl rand -hex 32`, one per caller |
+| `auth.keys` | `[]` | **Required.** Admin keys: `openssl rand -hex 32`, one per operator. App keys are created by applab, not here |
 | `auth.existingSecret` | `""` | Preferred over `auth.keys`: keeps keys out of the release |
 | `apps.baseDomain` | `""` | Domain apps are served under |
 | `apps.pathPrefix` | `""` | Serves every app under one path on that host; needs no wildcard certificate |
@@ -232,10 +232,24 @@ does and why it defaults the way it does. The ones that matter most:
 
 ### Keys
 
-An API key is the whole identity: there is no user store. **A key that
-authenticates can also delete** — every app this installation manages. Give each
-caller its own key so one can be revoked without disturbing the others; removing
-it from the list and upgrading is the whole revocation.
+There are two tiers, and the difference is reach.
+
+**Admin keys** are what this chart configures, in `auth.keys`. A key that
+authenticates can also delete — every app this installation manages. Give each
+operator their own key so one can be revoked without disturbing the others;
+removing it from the list and upgrading is the whole revocation.
+
+**App keys** are created by applab itself, one Secret per app, as apps are
+created. An app key reaches only its app: it can push, build, deploy, roll back
+and read logs, but cannot delete the app and cannot see any other app. That is
+the credential to hand to whoever deploys an app, so they never hold one that can
+destroy the installation. Read or rotate one with `applab keys <app>` (or
+`GET /api/v1/apps/<app>/key`).
+
+App keys live in the cluster, so nothing is cached and a rotation takes effect
+immediately — and a deployment whose API server is unreachable cannot
+authenticate at all, admin keys included. They need the `secrets` permission the
+Role already grants; nothing here has to be widened.
 
 `auth.existingSecret` is worth using. Release values are stored in plain text in
 the cluster and are frequently committed.

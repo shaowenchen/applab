@@ -1,0 +1,88 @@
+# Start a complete applab test environment by hand and get a link.
+#   gh workflow run debugger.yml
+#
+# The run's Summary carries the console link and the API key. Push an app with
+# the printed recipe and it is built, deployed and served — the whole platform,
+# on a throwaway cluster, torn down when the run ends.
+name: debugger
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_hours:
+        description: 'Duration(hours)'
+        type: choice
+        # Drives both the environment's own deadline and this job's timeout, so
+        # the two cannot drift apart. `unlimited` is passed on as 0, which the
+        # script reads as "no self-imposed limit"; the job still ends at the
+        # runner's ceiling, since nothing here can outlive a GitHub-hosted job.
+        default: '4'
+        options:
+          - '1'
+          - '2'
+          - '4'
+          - 'unlimited'
+      tunnel:
+        description: 'Tunnel'
+        type: choice
+        # Cloudflare by default: a quick tunnel needs no account and no secret,
+        # so a run works out of the box.
+        default: 'cloudflare'
+        options:
+          - 'cloudflare'
+          - 'ngrok'
+      version:
+        description: 'applab image tag (empty = the chart''s appVersion)'
+        type: string
+        default: ''
+      build_rootless:
+        description: 'Rootless builds'
+        type: choice
+        # Rootless is the recommended mode and the chart's default. It is offered
+        # as an input because it is the one thing in this environment most likely
+        # to be refused by a host that forbids unprivileged user namespaces.
+        default: 'true'
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: read
+
+concurrency:
+  # The port-forward, the router and the kind cluster all claim fixed names and
+  # ports on the runner, so only one environment runs per repository.
+  group: applab-debugger-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  debugger:
+    runs-on: ubuntu-latest
+    # A little longer than the environment's own deadline, so the script's
+    # cleanup runs rather than the job being killed at the ceiling. The margin
+    # covers boot: the kind cluster plus Istio is about ten minutes on a cold
+    # runner, and the build of the first app adds a couple more.
+    #
+    # Written as a literal comparison chain rather than
+    # `unlimited && 360 || fromJSON(session_hours) * 60 + 30`: `fromJSON('unlimited')`
+    # is not valid JSON, so if the evaluator reached it the whole workflow would
+    # fail to start. Every operand here is a literal, so nothing is evaluated
+    # speculatively.
+    timeout-minutes: ${{ inputs.session_hours == 'unlimited' && 360 || inputs.session_hours == '4' && 280 || inputs.session_hours == '2' && 160 || 100 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The action is called from the working copy (`uses: ./`), so the chart,
+      # the router and the orchestration script are all this commit's.
+      - uses: ./debugger
+        with:
+          # A blank field falls through to the chart's own appVersion, which is
+          # what the action's validation and the chart are checked against.
+          version: ${{ inputs.version }}
+          session_hours: ${{ inputs.session_hours == 'unlimited' && '0' || inputs.session_hours }}
+          tunnel: ${{ inputs.tunnel }}
+          build_rootless: ${{ inputs.build_rootless }}
+          # Secrets, not inputs: a workflow input is plain text any reader of the
+          # run can see, and these are credentials.
+          cloudflare_token: ${{ secrets.CLOUDFLARE_TOKEN }}
+          ngrok_token: ${{ secrets.NGROK_TOKEN }}

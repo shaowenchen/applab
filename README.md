@@ -25,6 +25,9 @@ upload source ──▶ build image ──▶ deploy ──▶ https://shop.apps
 | P4 | Observability: pods, events, logs, metrics | done |
 | P5 | Console and CLI | done |
 | P6 | Helm chart | done — see [`charts/applab`](charts/applab) |
+| P7 | Dashboard: platform overview, cross-app builds | done |
+| P8 | Debugger environment: a whole platform on a runner | done — see [`debugger`](debugger) |
+| P9 | Two-tier keys: one admin key, one per app | done — see [Keys](#keys) |
 
 The chart is verified by `make helm-check`, which renders it and asserts the
 things that were wrong: that every setting the server reads reaches it, that
@@ -59,18 +62,29 @@ URL. Build output and version-control directories are left out automatically.
 Everything else answers a question:
 
 ```bash
+applab overview           # the whole platform at a glance
 applab list               # what exists
 applab status myshop      # what is running, and where
 applab logs myshop -f     # watch it
+applab pods myshop        # the pods, and why one is not ready
+applab events myshop      # Kubernetes events, warnings first
 applab diagnose myshop    # why it is not working
+applab build myshop       # build a commit without deploying it
+applab update myshop --replicas 3
 applab rollback myshop    # go back to an earlier upload
 ```
 
-### The console
+### The dashboard
 
-The same deployment serves a web console at its root. It is a client of the same
-public API — every request it makes is one you could make with `curl` — so it has
-no privileged position and no separate backend. Sign in with the deployment's
+The same deployment serves a web dashboard at its root, opening on a platform
+overview: how many apps are running, how many need attention, how many builds
+have failed, whether the cluster is reachable, and the most recent builds across
+every app. From there, **Apps** lists everything and **Builds** is the
+platform-wide build history.
+
+It is a client of the same public API — every request it makes is one you could
+make with `curl`, and the overview is `GET /api/v1/overview` — so it has no
+privileged position and no separate backend. Sign in with the deployment's
 address and a key; both are kept in your browser.
 
 ## Or by hand
@@ -268,6 +282,30 @@ code, only to check the chart. It renders the chart and asserts what the
 rendering has to contain — a chart whose templates are wrong still renders, so
 "it rendered" is not evidence of anything.
 
+### A whole platform on a runner
+
+The build and deploy halves need real infrastructure, so they are exercised on
+one that is built for the purpose and thrown away: [`debugger`](debugger) is a
+GitHub Action that creates a `kind` cluster, a registry and an Istio gateway,
+installs applab from this repository's own chart, and publishes the result
+through a tunnel. Open the run's summary for a link, and `applab push` works
+against it.
+
+```
+hack/environment.sh   the whole environment, in order
+hack/router.mjs       one hostname, split between applab and the apps
+```
+
+The router exists because an app and applab itself cannot both be routed by
+Istio on one host: each app is its own `VirtualService`, and the order between
+two of them matching one host is undefined. A small proxy in front is
+deterministic where that is not, and its routing decision is unit-tested —
+`node hack/router.test.mjs`, which CI runs.
+
+CI runs the same environment and pushes [`hack/demo-app`](hack/demo-app/Dockerfile) through
+it, so "an app can be uploaded, built, deployed and served" is a check rather
+than a claim.
+
 ### The documentation site
 
 `https://www.chenshaowen.com/applab` is both the Helm repository and these
@@ -296,15 +334,53 @@ openly.
 
 ## Security notes
 
-- **A key is the whole identity, and there is one tier.** A key that
-  authenticates can also delete. Treat it as a credential that can destroy data.
+- **There are two tiers of key.** An **admin key** — what `APPLAB_KEYS` holds —
+  can do everything, including delete. Treat it as a credential that can destroy
+  data. An **app key** belongs to one app and reaches only that app: it can push,
+  build, deploy, roll back and read logs, but it cannot delete the app and cannot
+  see any other. Hand the admin key to operators and an app key to whoever
+  deploys that app. See [Keys](#keys).
 - **Keys are read only from the `Authorization` header** — never a query
   parameter or a form field, both of which are logged and leaked by default.
 - **Uploaded archives are untrusted input.** Extraction refuses absolute paths and
   `..` components, and writes through an `os.Root` so a symlink cannot be used to
   escape the destination even though the path string looks clean.
 - **Repositories are never public.** Every git request carries a key, like every
-  other request.
+  other request, and an app key reaches only its own repository — a repository is
+  where the secrets in a project live.
+- **App keys are kept in the cluster**, one Secret per app, and nothing is
+  cached. Two consequences worth knowing: rotating a key takes effect
+  immediately, and **if the API server is unreachable then nothing can
+  authenticate, the admin key included.** A deployment with no cluster at all
+  has no app keys and works on the admin tier alone; set `APPLAB_KEY` and manage
+  apps with it.
+
+## Keys
+
+Two tiers, for the two kinds of person who use applab: whoever operates the
+platform, and whoever deploys one app.
+
+| | Admin key | App key |
+|---|---|---|
+| Where it comes from | `APPLAB_KEYS`, or `auth.keys` in the chart | Created with the app, in a Secret |
+| Reaches | Everything | One app |
+| Delete that app | Yes | No |
+| Clone its repository | Any | Its own |
+| Rotate | Restart with a new value | `applab keys rotate <app>`, live |
+
+```bash
+applab keys myshop              # read the app's key
+applab keys rotate myshop       # replace it; the old one stops working at once
+```
+
+An app key is minted when the app is created, so it always exists. Its value can
+be read back at any time rather than shown once — deliberately, since a key
+nobody can recover is one that has to be rotated the moment it is mislaid.
+
+The same key works everywhere: `Authorization: Bearer <key>` on the API, the
+`APPLAB_KEY` environment variable for the CLI, and the sign-in form on the
+console. The console reads the tier from the API and shows an app key its own
+app only, with no overview, no app list and no delete button.
 
 ## License
 

@@ -3,8 +3,11 @@
 // The commands are shaped around what someone actually does, not around the API:
 //
 //	applab push      upload the current directory, build it, deploy it
+//	applab overview  the whole platform at a glance
+//	applab keys      show an app's own key
 //	applab logs      watch an app
 //	applab status    is it up, and where
+//	applab diagnose  why it is not working
 //	applab rollback  go back to an earlier upload
 //
 // `push` is the one that matters. Everything else exists so that a person can
@@ -66,9 +69,17 @@ The address and key come from APPLAB_URL and APPLAB_KEY, or from --url and --key
 Point them at a deployment and these commands are everything needed to ship:
 
     applab push              upload, build and deploy the current directory
+    applab overview          the whole platform at a glance
     applab status            what is running, and where
     applab logs --follow     watch it
-    applab rollback          go back to the previous upload`,
+    applab diagnose          why it is not working
+    applab rollback          go back to the previous upload
+
+There are two kinds of key, and which one is in APPLAB_KEY decides what these
+commands reach. An admin key sees and does everything. An app key belongs to one
+app and reaches only that app — it can push, build, deploy, roll back and read
+logs, but cannot delete the app and cannot see any other. Read an app's own key
+with "applab keys <app>".`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 
@@ -94,15 +105,21 @@ Point them at a deployment and these commands are everything needed to ship:
 	root.AddCommand(
 		versionCommand(),
 		configCommand(&urlFlag, &keyFlag),
+		overviewCommand(&urlFlag, &keyFlag),
+		keysCommand(&urlFlag, &keyFlag),
 		createCommand(&urlFlag, &keyFlag),
 		listCommand(&urlFlag, &keyFlag),
 		statusCommand(&urlFlag, &keyFlag),
 		pushCommand(&urlFlag, &keyFlag),
 		deployCommand(&urlFlag, &keyFlag),
+		buildCommand(&urlFlag, &keyFlag),
 		rollbackCommand(&urlFlag, &keyFlag),
 		logsCommand(&urlFlag, &keyFlag),
 		buildsCommand(&urlFlag, &keyFlag),
 		commitsCommand(&urlFlag, &keyFlag),
+		podsCommand(&urlFlag, &keyFlag),
+		eventsCommand(&urlFlag, &keyFlag),
+		updateCommand(&urlFlag, &keyFlag),
 		restartCommand(&urlFlag, &keyFlag),
 		stopCommand(&urlFlag, &keyFlag),
 		deleteCommand(&urlFlag, &keyFlag),

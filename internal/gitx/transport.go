@@ -43,6 +43,32 @@ type Transport struct {
 	// serviceUser is the name git records as the pusher for reflog entries.
 	// applab has no per-user identities, so it is a constant.
 	serviceUser string
+
+	// authorize decides whether a request may reach one repository, given the
+	// app id the repository belongs to.
+	//
+	// It runs here rather than in the mux because this handler is mounted as a
+	// single prefix covering every repository: the Go pattern that routes it has
+	// no {app} placeholder for a middleware to read, and enumerating git's
+	// protocol surface as separate patterns would be a list to fall out of date.
+	// The app id is available at exactly this point, so this is where the
+	// decision belongs.
+	//
+	// Nil means this transport does not authorize on its own, which is correct
+	// for a caller that has already done so — the API's own key middleware, and
+	// the tests that drive the transport directly.
+	authorize func(r *http.Request, appID string) bool
+}
+
+// Authorize attaches the per-repository authorization check.
+//
+// It is called once the repository name is known and before git is invoked, so a
+// refusal never starts a git process. A hook rather than a concrete dependency
+// keeps this package from importing the auth and appkey halves it would
+// otherwise need to make the decision.
+func (t *Transport) Authorize(fn func(r *http.Request, appID string) bool) *Transport {
+	t.authorize = fn
+	return t
 }
 
 // New creates a Transport.
@@ -88,13 +114,24 @@ func resolveBackend(gitBin string) (string, error) {
 //
 // The caller is responsible for having authenticated the request: this handler
 // serves whatever repository the path names, so it must not be reachable
-// without a valid key.
+// without a valid key. When an Authorize hook is attached it additionally
+// enforces *which* repository a credential reaches, because authentication alone
+// would let any key read any app's source.
 func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	projectPath, ok := t.resolvePath(r.URL.Path)
+	projectPath, repoName, ok := t.resolvePath(r.URL.Path)
 	if !ok {
 		// The path failed validation. The response is deliberately the same
 		// 404 a nonexistent repository gives, so a caller probing for a way out
 		// of the repository root learns nothing from the difference.
+		http.Error(w, "repository not found", http.StatusNotFound)
+		return
+	}
+
+	// Before git is started, and with the same 404 an unknown repository gives:
+	// a distinguishable "forbidden" would confirm that the named app exists,
+	// which turns this endpoint into a way to enumerate every app for anyone
+	// holding one app's key.
+	if t.authorize != nil && !t.authorize(r, repoName) {
 		http.Error(w, "repository not found", http.StatusNotFound)
 		return
 	}
@@ -261,15 +298,21 @@ func (f *flushWriter) Write(b []byte) (int, error) {
 }
 
 // resolvePath validates a request path and turns it into the PATH_INFO the
-// backend expects.
+// backend expects, along with the repository name.
 //
 // The path is caller-controlled, so this is the boundary where a traversal would
 // happen. It refuses rather than sanitises: a request whose path leaves the
 // repository root is not a request for a file inside it under another name, and
 // silently rewriting it would serve a repository the caller did not name.
-func (t *Transport) resolvePath(urlPath string) (string, bool) {
+//
+// The repository name is returned as well as the PATH_INFO because the name *is*
+// the app id — repositories are named "<app>.git" — and authorization is per
+// app. Deriving it twice, once here and once by the caller, would be two
+// implementations of the same rule, and the one that mattered would be the
+// caller's.
+func (t *Transport) resolvePath(urlPath string) (projectPath, repoName string, ok bool) {
 	if urlPath == "" {
-		return "", false
+		return "", "", false
 	}
 
 	// Work on the cleaned path so "//" and "." segments cannot hide a traversal
@@ -282,12 +325,12 @@ func (t *Transport) resolvePath(urlPath string) (string, bool) {
 	// An encoded NUL or a backslash has no legitimate place in a repository URL
 	// and exists only to confuse a later consumer of the string.
 	if strings.ContainsAny(cleaned, "\x00\\") {
-		return "", false
+		return "", "", false
 	}
 
 	for _, segment := range strings.Split(cleaned, "/") {
 		if segment == ".." {
-			return "", false
+			return "", "", false
 		}
 	}
 
@@ -296,19 +339,19 @@ func (t *Transport) resolvePath(urlPath string) (string, bool) {
 	// matches the URL a caller is given.
 	segments := strings.Split(strings.TrimPrefix(cleaned, "/"), "/")
 	if len(segments) == 0 || !strings.HasSuffix(segments[0], ".git") {
-		return "", false
+		return "", "", false
 	}
-	repoName := strings.TrimSuffix(segments[0], ".git")
-	if repoName == "" {
-		return "", false
+	name := strings.TrimSuffix(segments[0], ".git")
+	if name == "" {
+		return "", "", false
 	}
 	// The repository name is an app id, so it is constrained exactly as one is.
 	// This is what keeps a request from naming a directory applab did not create.
-	if !validRepoName(repoName) {
-		return "", false
+	if !validRepoName(name) {
+		return "", "", false
 	}
 
-	return cleaned, true
+	return cleaned, name, true
 }
 
 // validRepoName reports whether name could be an app id. It mirrors the model's

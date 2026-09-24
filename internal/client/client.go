@@ -210,6 +210,99 @@ func (c *Client) Config(ctx context.Context) (*Config, error) {
 	return &out, nil
 }
 
+// Overview is the platform at a glance.
+//
+// It is one call rather than a list-then-tally on the client, because the
+// counting belongs where the database can do it and because "how many apps are
+// failing" should not change meaning as the deployment grows.
+type Overview struct {
+	Apps    OverviewApps    `json:"apps"`
+	Builds  OverviewBuilds  `json:"builds"`
+	Cluster OverviewCluster `json:"cluster"`
+
+	// Deployment is the same self-description Config returns.
+	Deployment Config `json:"deployment"`
+}
+
+// OverviewApps counts apps by status. Deleted apps are not counted.
+type OverviewApps struct {
+	Total       int `json:"total"`
+	Created     int `json:"created"`
+	Building    int `json:"building"`
+	Deploying   int `json:"deploying"`
+	Running     int `json:"running"`
+	Failed      int `json:"failed"`
+	BuildFailed int `json:"build_failed"`
+
+	// NeedsAttention is Failed plus BuildFailed: the apps that are not running
+	// because something went wrong, as opposed to those simply in progress.
+	NeedsAttention int `json:"needs_attention"`
+}
+
+// OverviewBuilds counts builds and carries the most recent ones.
+type OverviewBuilds struct {
+	Total     int     `json:"total"`
+	Pending   int     `json:"pending"`
+	Running   int     `json:"running"`
+	Succeeded int     `json:"succeeded"`
+	Failed    int     `json:"failed"`
+	Recent    []Build `json:"recent"`
+}
+
+// OverviewCluster reports whether the cluster half is usable.
+//
+// Configured and Reachable are separate because the answers differ: a deployment
+// with no cluster is a legitimate way to run applab, while one whose cluster it
+// cannot reach is broken. Reporting a single boolean would make the first look
+// like the second.
+type OverviewCluster struct {
+	Configured bool `json:"configured"`
+	Reachable  bool `json:"reachable"`
+}
+
+// Overview reads the platform's state at a glance.
+func (c *Client) Overview(ctx context.Context) (*Overview, error) {
+	var out Overview
+	if err := c.do(ctx, http.MethodGet, "/api/v1/overview", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AppKey is an app's own API key.
+//
+// It is the second tier of credential: it reaches this app and nothing else, so
+// it is what to hand to whoever deploys the app rather than the admin key, which
+// can delete every app the installation manages.
+type AppKey struct {
+	AppID string `json:"app_id"`
+	Key   string `json:"key"`
+}
+
+// GetAppKey reads an app's key.
+//
+// It works with either credential: an admin key may read any app's, and an app
+// key may read its own.
+func (c *Client) GetAppKey(ctx context.Context, appID string) (*AppKey, error) {
+	var out AppKey
+	if err := c.do(ctx, http.MethodGet, "/api/v1/apps/"+appID+"/key", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RotateAppKey replaces an app's key, invalidating the previous one at once.
+//
+// It also creates a key for an app that has none, so this is the way to recover
+// one that was lost rather than a separate operation.
+func (c *Client) RotateAppKey(ctx context.Context, appID string) (*AppKey, error) {
+	var out AppKey
+	if err := c.do(ctx, http.MethodPost, "/api/v1/apps/"+appID+"/key/rotate", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // App is an app as the API presents it.
 type App struct {
 	ID   string `json:"id"`
@@ -761,10 +854,16 @@ type EventList struct {
 	Warnings int     `json:"warnings"`
 }
 
-// Events lists an app's events.
-func (c *Client) Events(ctx context.Context, appID string) (*EventList, error) {
+// Events lists an app's events, warnings first. A limit of zero uses the
+// server's default.
+func (c *Client) Events(ctx context.Context, appID string, limit int) (*EventList, error) {
+	path := "/api/v1/apps/" + appID + "/events"
+	if limit > 0 {
+		path += fmt.Sprintf("?limit=%d", limit)
+	}
+
 	var out EventList
-	if err := c.do(ctx, http.MethodGet, "/api/v1/apps/"+appID+"/events", nil, "", &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, "", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

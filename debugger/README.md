@@ -1,0 +1,114 @@
+# applab debugger environment
+
+Start a complete applab platform on a GitHub runner — a Kubernetes cluster, a
+registry, an Istio gateway and applab itself — hand yourself a link, and push an
+app. It is built, deployed and served before you open the console.
+
+The point is that applab needs real infrastructure before it can do anything: a
+cluster to deploy into, a registry to push to, and a gateway to publish through.
+This action assembles all of it on a throwaway kind cluster, so the first thing
+you have to do is not "install a cluster" but "push an app".
+
+## Using it from another repository
+
+```yaml
+name: applab
+on:
+  workflow_dispatch:
+
+jobs:
+  applab:
+    runs-on: ubuntu-latest
+    # A little longer than the environment's own lifetime, so it stops itself
+    # and shuts down cleanly rather than being killed at the runner's ceiling.
+    timeout-minutes: 280
+    steps:
+      - uses: shaowenchen/applab/debugger@master
+        with:
+          session_hours: '4'
+```
+
+That is the whole workflow. Open the run's **Summary** for the console link and
+the API key, then push something at it:
+
+```bash
+export APPLAB_URL='https://<the link>'
+export APPLAB_KEY='<the key>'
+
+cd any-project-with-a-Dockerfile
+applab push myshop
+```
+
+The app is served at `<the link>/apps/myshop/` and appears in the console. The
+`applab` CLI is the binary from [the applab repository](https://github.com/shaowenchen/applab);
+see [the overview](../README.md) for how to install it, or drive the API directly —
+[the API reference](../api/llms.txt) is the contract.
+
+## What it starts
+
+| | What it is |
+|---|---|
+| **kind cluster** | A throwaway Kubernetes cluster, created for this run and deleted with it. |
+| **applab** | The published image, installed with this repository's [Helm chart](../charts/applab/README.md). |
+| **Istio** | The ingress gateway apps are published through. Install it yourself in a real deployment; here it is part of the environment. |
+| **registry:2** | Where built images are pushed, as `kind-registry:5000` — a cluster-local registry with no TLS and no credentials. |
+| **cloudflared** | A quick tunnel, so the environment is reachable from anywhere. Set `tunnel: ngrok` to use ngrok instead. |
+
+One hostname serves everything. Requests under `/apps/<app>/` reach the app,
+published through the Istio gateway; everything else reaches applab — the
+console at `/`, the API under `/api/v1/`, and the git endpoints under `/git/`.
+
+## Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `version` | the chart's `appVersion` | applab image tag. |
+| `api_key` | generated | API key. Printed in the summary either way, because it is the deliverable. |
+| `session_hours` | `4` | How long the environment may run. `0` means no self-imposed limit, bounded by the job's timeout. |
+| `tunnel` | `cloudflare` | `cloudflare` (no account needed) or `ngrok`. |
+| `cloudflare_token` | — | Token of a named Cloudflare tunnel; empty starts a quick tunnel. |
+| `ngrok_token` | — | ngrok authtoken; required when `tunnel` is `ngrok`. |
+| `build_rootless` | `true` | Run BuildKit unprivileged. Set false only if builds fail with a user-namespace error. |
+
+Only `api_key` is worth passing from a secret: it is generated when left empty,
+so the common case needs no configuration at all.
+
+## The three things most likely to go wrong
+
+**Rootless builds need unprivileged user namespaces.** This is the one part of
+the environment the host can refuse, and the chart's installation notes describe
+the prerequisites in full. If a build fails with a namespace or `unshare` error,
+set `build_rootless: false` — which works, and makes every build a container
+breakout away from the node, which is why it is not the default.
+
+**A named Cloudflare tunnel cannot publish its own link.** Cloudflare never tells
+the connector its hostname, so the environment cannot discover the address it was
+given. Use a quick tunnel (the default) if you want the link in the summary, or
+configure the hostname in the dashboard and read it from there.
+
+**A quick tunnel is for trying things.** It carries no SLA and its hostname is
+minted per connection, so a restart gives a different link. That is exactly right
+for a session you open now and discard, and wrong for anything you keep.
+
+## What it costs
+
+Roughly ten minutes to come up — most of it Istio — and about two more for the
+first app's build. Everything is deleted when the run ends: the cluster, the
+images, the app's source. Nothing survives, which is the point.
+
+## Implementing it yourself
+
+Nothing here is specific to GitHub Actions except the workflow file. The pieces
+are ordinary scripts, and they are documented where they are:
+
+| Path | What it does |
+|---|---|
+| [debugger/action.yml](action.yml) | The composite action: installs kind, kubectl, istioctl, helm and a tunnel agent, then runs the script. |
+| [hack/environment.sh](../hack/environment.sh) | The whole environment, in order. Set `APPLAB_PUBLIC_HOST` to skip the tunnel and use a hostname you already have. |
+| [hack/router.mjs](../hack/router.mjs) | Splits one hostname between applab and the apps it publishes. |
+| [hack/summary.sh](../hack/summary.sh) | Publishes the link and the key to the job summary. |
+| [hack/demo-app/Dockerfile](../hack/demo-app/Dockerfile) | A minimal app, used by CI to prove push, build, deploy and serve work. |
+
+## License
+
+See [LICENSE](../LICENSE).

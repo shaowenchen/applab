@@ -170,6 +170,38 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// An app key is minted with the app, for the same reason the repository is:
+	// an app without one is a half-created app, and the failure belongs to the
+	// caller that caused it rather than surfacing later from a deploy that
+	// cannot authenticate. A deployment with no cluster has no key store and
+	// skips this — its apps are managed with the admin key, as before.
+	//
+	// The key is deliberately NOT returned here. It would mean putting a
+	// credential on the app response shape, which every list, get and patch
+	// shares — and a field that must be filled in only on one path is one that
+	// eventually gets filled in on another. A caller that wants the new key
+	// reads it from GET /apps/{app}/key, which is one call and cannot leak into
+	// a response that was not meant to carry it.
+	if s.appKeys != nil && s.appKeys.Ready() {
+		if _, err := s.appKeys.Create(r.Context(), app.ID); err != nil {
+			// Rolled back like the repository above: an app whose key could not
+			// be created would authenticate with nothing, and the caller has no
+			// way to tell that from a key they typed wrong.
+			if delErr := s.store.DeleteApp(r.Context(), app.ID); delErr != nil {
+				slog.ErrorContext(r.Context(), "failed to roll back app after key failure",
+					"app", app.ID, "error", delErr)
+			}
+			if s.sourceRemover != nil {
+				if rmErr := s.sourceRemover(r.Context(), app.ID); rmErr != nil {
+					slog.ErrorContext(r.Context(), "failed to remove source repository after key failure",
+						"app", app.ID, "error", rmErr)
+				}
+			}
+			fail(w, r, Errorf(http.StatusInternalServerError, "create an API key for app %q", app.ID).Wrap(err))
+			return
+		}
+	}
+
 	if s.metrics != nil {
 		s.metrics.ObserveAppCreated()
 	}
@@ -197,9 +229,24 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An app key sees exactly one app: its own.
+	//
+	// This route carries no {app} for the middleware to compare against, so the
+	// narrowing happens here. It is the one collection an app key can read, and
+	// it exists so the console can learn which app a key belongs to before it
+	// can ask for that app — without it, an app key would sign in to a page that
+	// had no way to find out what to show.
+	//
+	// The filter is applied to the caller's identity rather than to the query
+	// string, so no request parameter can widen it.
+	identity := identityFrom(r.Context())
+
 	includeDeleted := r.URL.Query().Get("include_deleted") == "true"
 	out := make([]appResponse, 0, len(apps))
 	for _, a := range apps {
+		if !identity.Admin() && a.ID != identity.App {
+			continue
+		}
 		if a.Status == model.AppStatusDeleted && !includeDeleted {
 			continue
 		}
@@ -302,6 +349,23 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 			// Failing here would leave a record of an app that no longer exists;
 			// the removal is logged and the record is deleted anyway.
 			slog.ErrorContext(r.Context(), "failed to remove source repository; deleting app record anyway",
+				"app", app.ID, "error", err)
+		}
+	}
+
+	// The key is removed here rather than left to the cluster teardown above.
+	// That teardown deletes Secrets labeled with the app, which already covers a
+	// key created by this installation — but it runs before this point and only
+	// when a cluster is reachable, so an app deleted while the cluster is down
+	// would keep a working credential behind. Deleting the record without
+	// deleting the key is the one outcome that leaves a live credential for an
+	// app that no longer exists.
+	if s.appKeys != nil && s.appKeys.Ready() {
+		if err := s.appKeys.Remove(r.Context(), app.ID); err != nil {
+			// Logged, not fatal: the app record is going regardless, and a
+			// leftover Secret is worth a warning rather than a failed delete
+			// that leaves the caller unable to remove the app at all.
+			slog.ErrorContext(r.Context(), "failed to remove app key; deleting app record anyway",
 				"app", app.ID, "error", err)
 		}
 	}

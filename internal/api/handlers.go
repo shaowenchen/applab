@@ -64,7 +64,17 @@ type configResponse struct {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	respond(w, http.StatusOK, configResponse{
+	respond(w, http.StatusOK, s.configResponse(r))
+}
+
+// configResponse builds this deployment's self-description.
+//
+// It is a method rather than inline in the handler because more than one
+// endpoint reports it: /api/v1/config is the endpoint for it, and /api/v1/overview
+// carries it so a dashboard needs one call rather than two. Building it in one
+// place is what keeps those two from describing the same deployment differently.
+func (s *Server) configResponse(r *http.Request) configResponse {
+	return configResponse{
 		APIVersion:      APIVersion,
 		Version:         buildinfo.Version,
 		APIBaseURL:      s.baseURL(r),
@@ -85,7 +95,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"source": s.initSource != nil,
 			"git":    s.git != nil,
 		},
-	})
+	}
 }
 
 // domainTemplate shows how an app id becomes an address, so a client does not

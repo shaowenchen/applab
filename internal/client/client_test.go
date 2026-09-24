@@ -568,3 +568,91 @@ func asAPIError(err error, target **APIError) bool {
 	}
 	return false
 }
+
+// TestGetAppKeyReadsTheEnvelope covers the key endpoint's shape.
+//
+// The key is returned in full under "data", and this asserts the client passes
+// it through unchanged: a client that trimmed, redacted or re-encoded it would
+// hand the caller a credential that does not work, which is the kind of bug that
+// only shows up when someone tries to use it.
+func TestGetAppKeyReadsTheEnvelope(t *testing.T) {
+	// A key with characters that a careless encoder would mangle.
+	const wantKey = "aB3-_xY.z9:Q4/w+8kL0mN1oP2qR3sT4uV5wX6yZ7A8b9C0d"
+
+	srv, _ := newTestServer(t, map[string]func(w http.ResponseWriter, r *http.Request){
+		"/api/v1/apps/shop/key": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				t.Errorf("method = %s, want GET", r.Method)
+			}
+			dataResponse(w, map[string]any{"app_id": "shop", "key": wantKey})
+		},
+	})
+
+	c, err := New(Options{BaseURL: srv.URL, Key: "test-key"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	key, keyErr := c.GetAppKey(context.Background(), "shop")
+	if keyErr != nil {
+		t.Fatalf("GetAppKey: %v", keyErr)
+	}
+	if key.Key != wantKey {
+		t.Errorf("key = %q, want %q — the value must survive the round trip byte for byte", key.Key, wantKey)
+	}
+	if key.AppID != "shop" {
+		t.Errorf("app_id = %q, want shop", key.AppID)
+	}
+}
+
+// TestRotateAppKeyPostsToTheRotatePath asserts rotation is a POST to the right
+// endpoint — a GET would read the existing key and look like success.
+func TestRotateAppKeyPostsToTheRotatePath(t *testing.T) {
+	var method string
+
+	srv, _ := newTestServer(t, map[string]func(w http.ResponseWriter, r *http.Request){
+		"/api/v1/apps/shop/key/rotate": func(w http.ResponseWriter, r *http.Request) {
+			method = r.Method
+			dataResponse(w, map[string]any{"app_id": "shop", "key": "rotated-key"})
+		},
+	})
+
+	c, err := New(Options{BaseURL: srv.URL, Key: "test-key"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	key, rotErr := c.RotateAppKey(context.Background(), "shop")
+	if rotErr != nil {
+		t.Fatalf("RotateAppKey: %v", rotErr)
+	}
+	if method != http.MethodPost {
+		t.Errorf("method = %s, want POST", method)
+	}
+	if key.Key != "rotated-key" {
+		t.Errorf("key = %q, want rotated-key", key.Key)
+	}
+}
+
+// TestKeyEndpointsReportAnUnavailableDeployment covers the no-cluster case: the
+// deployment answers 501 with a message, and the client must surface that text
+// rather than a generic failure, because it names the fix.
+func TestKeyEndpointsReportAnUnavailableDeployment(t *testing.T) {
+	const message = "this deployment has no cluster, so per-app keys are unavailable; use an admin key"
+
+	srv, _ := newTestServer(t, map[string]func(w http.ResponseWriter, r *http.Request){
+		"/api/v1/apps/shop/key": func(w http.ResponseWriter, r *http.Request) {
+			errorResponse(w, http.StatusNotImplemented, message, false)
+		},
+	})
+
+	c, err := New(Options{BaseURL: srv.URL, Key: "test-key"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	_, keyErr := c.GetAppKey(context.Background(), "shop")
+	if keyErr == nil {
+		t.Fatal("GetAppKey succeeded against a deployment with no key store")
+	}
+	if !strings.Contains(keyErr.Error(), message) {
+		t.Errorf("error = %q, want it to carry the server's explanation", err)
+	}
+}

@@ -1,20 +1,31 @@
 // Package auth decides whether a request may act on this deployment.
 //
-// There is no user store. An API key is the whole identity: presenting a
-// configured key means "you may do anything this service can do", and nothing
-// is looked up beyond the keys configured at boot. That is what lets an
-// instance be replaced at any moment with no database to fail over — a key is
-// rotated by restarting with a new value.
+// There are two tiers of credential, and the difference between them is reach.
 //
-// There is deliberately one tier. A key that authenticates may also delete.
-// The consequence is worth stating plainly: every key is a credential that can
-// destroy data, so hand one out the way you would hand out any other such
-// credential.
+// An **admin key** is configured at boot (APPLAB_KEYS) and may do anything this
+// service can. There is no user store, so it is the whole identity: presenting
+// one means "you may do everything", and a key is rotated by restarting with a
+// new value. That is what lets an instance be replaced at any moment with no
+// database to fail over.
+//
+// An **app key** belongs to one app and reaches only that app. It is issued by
+// the API when the app is created (see internal/appkey) and resolved per
+// request, so it is not a second copy of the configuration but a lookup. Its
+// purpose is the one the single tier could not serve: letting someone deploy
+// their own app without handing them a credential that can delete every app this
+// installation manages.
+//
+// Where the line between the tiers falls is decided by the API layer, which is
+// the only place that knows what a request is addressing — this package answers
+// "who is this", not "may they do this".
 package auth
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -113,3 +124,65 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// Identity is who a request is: which tier, and — for an app key — which app.
+type Identity struct {
+	// App is the app an app key belongs to. Empty means the admin tier.
+	App string
+}
+
+// Admin reports whether this identity is the unrestricted tier.
+func (i Identity) Admin() bool { return i.App == "" }
+
+// AppKeyResolver maps a presented app key to the app that owns it.
+//
+// It is an interface rather than a concrete dependency so this package does not
+// import the Kubernetes client, and so a test can supply a resolver without a
+// cluster. A nil resolver means this deployment has no app keys at all — which
+// is the case without a cluster — and then only the admin tier exists.
+type AppKeyResolver interface {
+	// ResolveAppKey returns the app owning the presented key. ok is false when
+	// the key belongs to no app, which is not an error: an unrecognised key is
+	// simply not a credential.
+	ResolveAppKey(ctx context.Context, presented string) (appID string, ok bool, err error)
+}
+
+// Identify reports who a request is, or that it is nobody.
+//
+// The admin tier is checked first and short-circuits: an admin key is a fixed
+// set held in memory, so the common case costs no cluster call, and an admin key
+// that happened to equal an app key would still be admin — the more privileged
+// reading of an ambiguous credential is not the safe one to pick by accident,
+// but it is the one the operator explicitly configured at boot.
+//
+// A resolver failure is returned rather than swallowed. The caller turns it into
+// a 503: a key that could not be checked is not a key that failed to check out,
+// and reporting it as 401 would tell an operator their credential is wrong when
+// the truth is that the cluster is unreachable.
+func (a *Authenticator) Identify(ctx context.Context, r *http.Request, resolver AppKeyResolver) (Identity, error) {
+	presented := KeyFromRequest(r)
+
+	if a.Authenticated(presented) {
+		return Identity{}, nil
+	}
+
+	// An unusable key is not worth a cluster call: an empty or whitespace value
+	// cannot be an app key, and asking is a free round trip for an unauthenticated
+	// caller to spend.
+	if resolver == nil || strings.TrimSpace(presented) == "" {
+		return Identity{}, ErrUnauthenticated
+	}
+
+	appID, ok, err := resolver.ResolveAppKey(ctx, presented)
+	if err != nil {
+		return Identity{}, fmt.Errorf("resolve app key: %w", err)
+	}
+	if !ok {
+		return Identity{}, ErrUnauthenticated
+	}
+	return Identity{App: appID}, nil
+}
+
+// ErrUnauthenticated means the presented credential is not one this deployment
+// recognises, at either tier.
+var ErrUnauthenticated = errors.New("unauthenticated")

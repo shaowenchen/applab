@@ -115,6 +115,12 @@ func DefaultSite(root, repoURL, branch string) Site {
 				Title:  "The HTTP API",
 				Nav:    "API reference",
 			},
+			{
+				Source: "debugger/README.md",
+				Output: "debugger.html",
+				Title:  "A whole platform on a runner",
+				Nav:    "Debugger",
+			},
 		},
 	}
 }

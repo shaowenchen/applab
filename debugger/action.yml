@@ -1,0 +1,152 @@
+name: 'Run applab (debugger environment)'
+description: >-
+  Start a complete applab environment on the runner — a kind cluster, a
+  registry, an Istio gateway and applab itself — and publish it through a
+  tunnel. Push an app and it is built, deployed and served.
+author: 'shaowenchen'
+
+branding:
+  icon: 'box'
+  color: 'orange'
+
+inputs:
+  version:
+    description: >-
+      applab image tag to run. Defaults to the chart's appVersion, which is the
+      version this action is checked against.
+    required: false
+    default: ''
+  api_key:
+    description: >-
+      API key for this environment. Generated when empty, and printed in the
+      summary either way.
+    required: false
+    default: ''
+  session_hours:
+    description: >-
+      How long the environment may run, in hours; empty or 0 means no
+      self-imposed limit (the job's own timeout still applies).
+    required: false
+    default: '4'
+  tunnel:
+    description: "cloudflare (no account needed) or ngrok (needs ngrok_token)."
+    required: false
+    default: 'cloudflare'
+  cloudflare_token:
+    description: >-
+      Token of a named Cloudflare tunnel. Empty starts a quick tunnel instead: a
+      random trycloudflare.com hostname with no account behind it.
+    required: false
+    default: ''
+  ngrok_token:
+    description: 'ngrok authtoken. Required when tunnel is ngrok.'
+    required: false
+    default: ''
+  build_rootless:
+    description: >-
+      Run BuildKit as an unprivileged user. Recommended, and the default. Set
+      false only if builds fail with a user-namespace error — which makes every
+      build a container breakout away from the node.
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        APPLAB_TUNNEL: ${{ inputs.tunnel }}
+        NGROK_TOKEN: ${{ inputs.ngrok_token }}
+      run: |
+        set -euo pipefail
+        case "$APPLAB_TUNNEL" in
+          cloudflare|ngrok) ;;
+          *) echo "::error::tunnel must be 'cloudflare' or 'ngrok', got '$APPLAB_TUNNEL'"; exit 1 ;;
+        esac
+        # The failure this catches is a run that starts a tunnel agent with no
+        # credential and only discovers it minutes later, from a missing link.
+        if [ "$APPLAB_TUNNEL" = "ngrok" ] && [ -z "$NGROK_TOKEN" ]; then
+          echo "::error::tunnel is 'ngrok' but ngrok_token is empty; ngrok needs an authtoken"
+          exit 1
+        fi
+
+    # The environment runs on the runner's own Docker daemon: kind creates nodes
+    # as containers, and the registry is one too.
+    - name: Install kind
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Pinned, unlike the dsh action's "latest" assets: kind's cluster
+        # bootstrap is version-sensitive, and a moving tag would change this
+        # environment's behaviour without this repository changing.
+        curl -fsSL -o /tmp/kind "https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64"
+        sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+        kind version
+
+    - name: Install kubectl
+      shell: bash
+      run: |
+        set -euo pipefail
+        curl -fsSL -o /tmp/kubectl \
+          "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl"
+        sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+        kubectl version --client
+
+    - name: Install istioctl
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Istio version pinned for the same reason as kind: the CRDs and the
+        # gateway's Service shape are what applab's VirtualServices are written
+        # against.
+        curl -fsSL https://istio.io/downloadIstio | ISTIO_VERSION=1.24.2 sh -
+        sudo install -m 0755 istio-1.24.2/bin/istioctl /usr/local/bin/istioctl
+        istioctl version --remote=false
+
+    - name: Install helm
+      uses: azure/setup-helm@v4
+      with:
+        version: v3.16.4
+
+    - name: Install the tunnel agent
+      shell: bash
+      env:
+        APPLAB_TUNNEL: ${{ inputs.tunnel }}
+      run: |
+        set -euo pipefail
+        if [ "$APPLAB_TUNNEL" = "cloudflare" ]; then
+          curl -fsSL -o /tmp/cloudflared \
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+          sudo install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+        else
+          curl -fsSL "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz" \
+            | sudo tar -xz -C /usr/local/bin
+          sudo chmod +x /usr/local/bin/ngrok
+          ngrok --version
+        fi
+
+    # Node runs the router. The GitHub runner already has it; this makes the
+    # version explicit rather than dependent on what the image ships, which is
+    # the kind of thing that changes under a repository without a commit.
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+
+    - name: Start the environment
+      shell: bash
+      env:
+        APPLAB_VERSION: ${{ inputs.version }}
+        APPLAB_API_KEY: ${{ inputs.api_key }}
+        APPLAB_SESSION_HOURS: ${{ inputs.session_hours }}
+        APPLAB_TUNNEL: ${{ inputs.tunnel }}
+        APPLAB_BUILD_ROOTLESS: ${{ inputs.build_rootless }}
+        CLOUDFLARE_TOKEN: ${{ inputs.cloudflare_token }}
+        NGROK_TOKEN: ${{ inputs.ngrok_token }}
+        APPLAB_RUNTIME_DIR: ${{ github.workspace }}/.applab-debugger
+      run: |
+        set -euo pipefail
+        # The chart is used from the checked-out action, so the version being
+        # tested and the chart installing it cannot come from different places.
+        exec bash "${{ github.action_path }}/../hack/environment.sh"
