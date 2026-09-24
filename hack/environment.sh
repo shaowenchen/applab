@@ -541,10 +541,12 @@ fi
 #
 # `rollout status` is not used for the same reason `--wait` is not: it blocks
 # silently and reports a condition, where the interesting thing is the reason.
+# It is only polled with a one-second timeout to ask whether the wait is over.
 applab_wait_seconds="$APPLAB_INSTALL_TIMEOUT_SECONDS"
 log "waiting up to ${applab_wait_seconds}s for applab to roll out"
 last_state=""
 rolled_out=""
+crash_grabbed=""
 for attempt in $(seq 1 "$applab_wait_seconds"); do
   # A single line per pod, in a stable order, so the same state does not print
   # every second: only a change is worth a line.
@@ -556,6 +558,20 @@ for attempt in $(seq 1 "$applab_wait_seconds"); do
     last_state="$state"
   fi
 
+  # Some states will not resolve by waiting. A container that cannot start — a
+  # crash loop, an image that cannot be pulled — is already failing, and the
+  # remaining minutes add nothing but a delay before the same answer. Grab the
+  # container's own last words while it is still there to ask, and stop.
+  #
+  # ImagePullBackOff is excluded deliberately: a first pull on a cold runner is
+  # slow, and pulling is not failing. It is ErrImagePull's settled form and it
+  # does eventually resolve.
+  case "$state" in
+    *CrashLoopBackOff*|*CreateContainerConfigError*|*RunContainerError*|*InvalidImageName*)
+      crash_grabbed="yes" ;;
+  esac
+  [ -z "$crash_grabbed" ] || break
+
   if kubectl -n "$APPLAB_NAMESPACE" rollout status deploy/applab --timeout=1s >/dev/null 2>&1; then
     rolled_out="yes"
     break
@@ -564,14 +580,25 @@ for attempt in $(seq 1 "$applab_wait_seconds"); do
 done
 
 if [ -z "$rolled_out" ]; then
-  warn "applab did not become ready within ${applab_wait_seconds}s; the state it is in follows"
+  if [ -n "$crash_grabbed" ]; then
+    warn "applab cannot start — its container is not coming up, and waiting would not change that"
+  else
+    warn "applab did not become ready within ${applab_wait_seconds}s; the state it is in follows"
+  fi
   kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service,pvc 2>&1 | sed 's/^/    /' || true
-  # The reason a pod is not Ready is almost always in these, and they are the
-  # things a person would otherwise have to guess at: an image that cannot be
-  # pulled, a volume that cannot be mounted, an applab that started and refused
-  # its own configuration.
+  # The reason a container cannot start is in these, and they are the things a
+  # person would otherwise have to guess at: an image that cannot be pulled, a
+  # volume that cannot be mounted, an applab that started and refused its own
+  # configuration. The log is what the process itself said before it died, which
+  # is the one thing no amount of waiting produces.
   kubectl -n "$APPLAB_NAMESPACE" describe pods 2>&1 | tail -n 60 | sed 's/^/    /' || true
   kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --all-containers --tail=100 2>&1 | sed 's/^/    /' || true
+  # --previous, because a crash loop's current container may have produced
+  # nothing yet — the reason is in the attempt that already died.
+  kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --all-containers --previous --tail=100 2>&1 | sed 's/^/    /' || true
+  if [ -n "$crash_grabbed" ]; then
+    die "applab exited on startup: its output is above. Nothing about waiting changes this"
+  fi
   die "applab never became ready — if this is a slow first pull, raise APPLAB_INSTALL_TIMEOUT_SECONDS"
 fi
 
