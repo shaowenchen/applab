@@ -220,11 +220,6 @@ console at <code>/</code>, the API under <code>/api/v1/</code>, and the git endp
 </thead>
 <tbody>
 <tr>
-<td><code>version</code></td>
-<td>the chart's <code>appVersion</code></td>
-<td>applab image tag.</td>
-</tr>
-<tr>
 <td><code>api_key</code></td>
 <td>generated</td>
 <td>API key. Printed in the summary either way, because it is the deliverable.</td>
@@ -245,29 +240,56 @@ console at <code>/</code>, the API under <code>/api/v1/</code>, and the git endp
 <td>Token of a named Cloudflare tunnel; empty starts a quick tunnel.</td>
 </tr>
 <tr>
+<td><code>domain</code></td>
+<td>—</td>
+<td>The domain apps are served under. Needed with a named tunnel, and explained below.</td>
+</tr>
+<tr>
 <td><code>ngrok_token</code></td>
 <td>—</td>
 <td>ngrok authtoken; required when <code>tunnel</code> is <code>ngrok</code>.</td>
-</tr>
-<tr>
-<td><code>build_rootless</code></td>
-<td><code>true</code></td>
-<td>Run BuildKit unprivileged. Set false only if builds fail with a user-namespace error.</td>
 </tr>
 </tbody>
 </table>
 <p>Only <code>api_key</code> is worth passing from a secret: it is generated when left empty,
 so the common case needs no configuration at all.</p>
-<h2>The three things most likely to go wrong</h2>
-<p><strong>Rootless builds need unprivileged user namespaces.</strong> This is the one part of
-the environment the host can refuse, and the chart's installation notes describe
-the prerequisites in full. If a build fails with a namespace or <code>unshare</code> error,
-set <code>build_rootless: false</code> — which works, and makes every build a container
-breakout away from the node, which is why it is not the default.</p>
-<p><strong>A named Cloudflare tunnel cannot publish its own link.</strong> Cloudflare never tells
-the connector its hostname, so the environment cannot discover the address it was
-given. Use a quick tunnel (the default) if you want the link in the summary, or
-configure the hostname in the dashboard and read it from there.</p>
+<p>The applab image tag is not an input. It is the published <code>latest</code>, so the
+environment runs the newest applab — the same tag the release workflow publishes
+alongside the version tags, re-resolved on every start because the chart pulls
+with <code>imagePullPolicy: Always</code>.</p>
+<h3>A named tunnel needs the domain named</h3>
+<p>With <code>cloudflare_token</code> set, the environment runs a <strong>named</strong> tunnel — the one
+whose hostname and ingress live in your Cloudflare dashboard. Cloudflare never
+tells the connector its own name, so the environment cannot discover the address
+apps should be served under, and a run without <code>domain</code> stops with:</p>
+<pre><code>this is a named tunnel: Cloudflare does not tell the connector its own hostname
+</code></pre>
+<p>Pass the domain and it is used as given:</p>
+<pre><code>domain: applab.example.com
+</code></pre>
+<p>This is app configuration, not tunnel configuration. Nothing is passed to
+<code>cloudflared</code> — a named tunnel already knows its ingress, because you configured
+it. What needs the value is applab: it becomes <code>apps.baseDomain</code>, and the host the
+router hands to Istio so a <code>VirtualService</code> matches. That is why the input is
+named for the domain rather than for the tunnel.</p>
+<p>One thing this does <strong>not</strong> do: create the ingress. Point the hostname at the
+tunnel in the Cloudflare dashboard first, or the address will resolve to a tunnel
+that routes nothing. Nothing here can make or check that.</p>
+<p>Nor can it be used with a quick tunnel or with ngrok. A quick tunnel is assigned
+a random hostname by Cloudflare and cannot be given another, so apps could not be
+served under the domain you named; the ngrok path here does not pass the flag a
+reserved domain needs. Both combinations are refused when the run starts, rather
+than after a wait for a hostname that was never coming.</p>
+<p>Leaving <code>cloudflare_token</code> empty is the simpler path, and the default: a quick
+tunnel is assigned a random <code>trycloudflare.com</code> hostname, needs no account, and
+that hostname is both where the console lives and the domain apps are served
+under. The link appears in the summary.</p>
+<h2>The two things most likely to go wrong</h2>
+<p><strong>A named Cloudflare tunnel cannot report its own hostname.</strong> Cloudflare never
+tells the connector its name, so the environment cannot discover the domain to
+serve apps under — and without one it stops rather than publishing nothing. Pass
+<code>domain</code> (see above), or leave <code>cloudflare_token</code> empty and use a quick tunnel,
+whose hostname it <em>is</em> told.</p>
 <p><strong>A quick tunnel is for trying things.</strong> It carries no SLA and its hostname is
 minted per connection, so a restart gives a different link. That is exactly right
 for a session you open now and discard, and wrong for anything you keep.</p>
@@ -292,7 +314,7 @@ are ordinary scripts, and they are documented where they are:</p>
 </tr>
 <tr>
 <td><a href="https://github.com/shaowenchen/applab/blob/master/hack/environment.sh">hack/environment.sh</a></td>
-<td>The whole environment, in order. Set <code>APPLAB_PUBLIC_HOST</code> to skip the tunnel and use a hostname you already have.</td>
+<td>The whole environment, in order. Set <code>APPLAB_PUBLIC_HOST</code> to skip the tunnel and use a hostname you already have, or <code>APPLAB_DOMAIN</code> to name the domain a named tunnel serves apps under.</td>
 </tr>
 <tr>
 <td><a href="https://github.com/shaowenchen/applab/blob/master/hack/router.mjs">hack/router.mjs</a></td>
