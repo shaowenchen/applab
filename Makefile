@@ -116,11 +116,15 @@ helm-lint:
 # Package the chart into a Helm repository directory. Needs helm; the same
 # script CI runs, so a local publish and a published one cannot diverge.
 #   make chart-package VERSION=0.1.0-dev PAGES=./pages
+#
+# The version defaults to what this commit would publish — the same script CI
+# runs — rather than a literal here, so a chart packaged by hand cannot be
+# stamped with a version the image is not published under.
 .PHONY: chart-package
 chart-package: PAGES ?= ./pages
 chart-package:
 	@mkdir -p $(PAGES)
-	./hack/package-chart.sh $${VERSION:-0.1.0-dev} $${APP_VERSION:-$$(git rev-parse --short HEAD)} $(PAGES) $${REPO_URL:-https://www.chenshaowen.com/applab}
+	./hack/package-chart.sh $${VERSION:-$$(./hack/chart-version.sh)} $${APP_VERSION:-$$(git rev-parse --short HEAD)} $(PAGES) $${REPO_URL:-https://www.chenshaowen.com/applab}
 
 # Render the chart and assert what was wrong before. Skips if helm is absent.
 # Separate from `check` because helm is a chart-only dependency: requiring it to

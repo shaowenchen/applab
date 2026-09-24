@@ -90,24 +90,17 @@ jobs:
       # instead of accumulating a listing entry per commit. The commit still
       # reaches the cluster: it is stamped into appVersion, which is the chart
       # label on every object applab creates.
+      #
+      # The version comes from the shared script rather than being computed here,
+      # because the image is tagged with the same string and the chart's default
+      # image tag is its own version. Two copies of this arithmetic is what put a
+      # chart in the repository whose image tag no image was ever published
+      # under; one script is what keeps them equal.
       - name: Derive the version
         if: steps.changed.outputs.publish == 'true'
         id: version
         run: |
-          chart_version="$(grep '^version:' charts/applab/Chart.yaml | awk '{print $2}')"
-          if [ -z "$chart_version" ]; then
-            echo "no version found in Chart.yaml" >&2
-            exit 1
-          fi
-
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            # A tag names the release, so it wins over the chart's own version.
-            version="${GITHUB_REF_NAME#v}"
-          else
-            version="${chart_version}-dev"
-          fi
-
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "version=$(./hack/chart-version.sh)" >> "$GITHUB_OUTPUT"
           echo "app_version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       # A working copy of gh-pages, so the packages already published are here

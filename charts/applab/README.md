@@ -318,8 +318,14 @@ applab config
 ## Installing a development build
 
 Every push to the default branch publishes a chart versioned `<Chart.yaml
-version>-dev`, replacing the previous one. Its `appVersion` is the commit it was
-built from, so a release that is installed is traceable back to its code.
+version>-dev`, replacing the previous one, and an image tagged with that same
+version — so the chart's default `image.tag` is the image it needs, and an
+install with nothing overridden runs the build that chart was packaged from.
+
+`appVersion` is the commit the chart was built from, which is what
+`app.kubernetes.io/version` carries on every object applab creates, so a release
+that is installed is traceable back to its code. It is deliberately **not** the
+image tag: it names a commit, and no image is published under a bare commit.
 
 ```bash
 helm repo add applab https://www.chenshaowen.com/applab

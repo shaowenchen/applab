@@ -14,12 +14,17 @@ namespaceOverride: ""
 
 image:
   repository: docker.io/shaowenchen/applab
-  # Defaults to the chart's appVersion when empty.
+  # Defaults to the chart's own version when empty, which is the tag the image
+  # is published under: installing chart 0.1.0-dev runs image 0.1.0-dev. The two
+  # are the same string by construction, so the default is one that exists —
+  # which it was not while this defaulted to appVersion, since that carries the
+  # commit and no image was ever published under it.
   tag: ""
   # Always, deliberately. Nothing here is immutable: a tag can be re-pushed, and
   # a node that already has that tag would keep running the old image. The
   # pull is cheap and the alternative is a deploy that reports success while
-  # serving the previous build.
+  # serving the previous build. It is also what makes a moving tag like
+  # 0.1.0-dev safe to serve.
   pullPolicy: Always
 
 imagePullSecrets: []

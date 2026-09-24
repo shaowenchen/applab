@@ -190,6 +190,15 @@ jobs:
       # could point at. A tag additionally gets its version, which is what makes
       # one a release.
       #
+      # The chart's version is also published, and it is not optional. The chart
+      # defaults an unset `image.tag` to its own version, so a chart with no
+      # counterpart image here is a chart that installs and then cannot pull
+      # anything. That is not hypothetical: the two were derived separately, the
+      # image went out as `sha-6ac4468` while the chart asked for `6ac4468`, and
+      # every install that did not override the tag — including the one in the
+      # chart's own README — pulled nothing. `hack/chart-version.sh` is now the
+      # one place that decides, and the chart job reads the same script.
+      #
       # Two destinations, one build. An image goes to Docker Hub and to ACR,
       # because a cluster that cannot reach the first can usually reach the
       # second — and an installation that has to build applab itself to run it is
@@ -205,6 +214,10 @@ jobs:
       # unset secret silently publishes somewhere else. ACR_REPOSITORY keeps a
       # default for the same reason the other projects in this account do — the
       # variable is there to redirect the mirror, not to be required.
+      - name: Derive the version
+        id: version
+        run: echo "version=$(./hack/chart-version.sh)" >> "$GITHUB_OUTPUT"
+
       - name: Derive tags and labels
         id: meta
         uses: docker/metadata-action@v5
@@ -215,7 +228,9 @@ jobs:
           tags: |
             # sha- is the one every build gets, tag or not.
             type=sha,prefix=sha-,format=short
-            type=semver,pattern={{version}}
+            # The chart's own version, which is what its default image tag asks
+            # for: `0.1.0-dev` on a branch, the release version on a tag.
+            type=raw,value=${{ steps.version.outputs.version }}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 

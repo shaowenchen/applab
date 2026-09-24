@@ -439,6 +439,33 @@ The same key works everywhere: `Authorization: Bearer <key>` on the API, the
 console. The console reads the tier from the API and shows an app key its own
 app only, with no overview, no app list and no delete button.
 
+## Uninstalling
+
+What it takes depends on which of the two ways above you started it, and the two
+leave different things behind.
+
+**A local run** is a process and a directory. Stopping `applab` ends the service;
+`APPLAB_DATA_DIR` — `./data` in the quick start — is everything else: the
+database, and a git repository per app. That directory is the only copy of every
+app's source, so deleting it is the point of no return for all of them. Anything
+already deployed to a cluster keeps running, because applab put it there and does
+not own it.
+
+**A chart install** is one command:
+
+```bash
+helm uninstall applab --namespace ops-system
+```
+
+and the surprise is what it leaves. **The apps are not removed** — they are
+Deployments, Services and VirtualServices carrying `applab.io/app` rather than
+helm's release labels, so an uninstall stops applab and leaves every app it
+deployed running. That is usually what you want and occasionally a surprise. The
+PersistentVolumeClaim is not removed either, and it holds every app's source.
+
+[The chart's README](charts/applab) has the full teardown, including how to
+remove the apps and the volume along with the installation.
+
 ## License
 
 See [LICENSE](LICENSE).

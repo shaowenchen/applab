@@ -219,6 +219,45 @@ fi
 # node's cache.
 grep -q 'imagePullPolicy: Always' <<<"$out" || fail "applab's own image is not pulled always"
 
+# The default image tag has to be one an image is actually published under.
+#
+# This check is the one that was missing. The chart defaulted an unset
+# image.tag to appVersion while the image was published under a chart version
+# and a `sha-`-prefixed commit, so the two never met: every install that did not
+# override the tag pulled a tag that does not exist, and the chart's own README
+# taught exactly that install.
+#
+# It has to be checked on a *packaged* chart rather than the working copy.
+# Chart.yaml has version and appVersion both at 0.1.0, so rendering the source
+# produces the same string under either spelling and the assertion would pass
+# while the bug was present — which is precisely why the bug survived. It is
+# packaging that separates them, so packaging is what this renders.
+#
+# The version used here is the one CI would publish for this commit, and the
+# app-version is a stand-in for the commit: divergent, which is the shape that
+# ships.
+if command -v helm >/dev/null 2>&1; then
+  packaged="$RUNTIME_DIR/packaged"
+  mkdir -p "$packaged"
+  helm package "$CHART" --version "$(./hack/chart-version.sh)" \
+    --app-version deadbeef --destination "$packaged" >/dev/null
+
+  published="$(./hack/chart-version.sh)"
+  pkg_tag="$(helm template applab "$packaged"/applab-*.tgz --namespace "$NS" \
+    --set "auth.key=k" --set "build.registry=r.example.com/a" 2>/dev/null \
+    | awk '/^ *image: /{gsub(/"/, "", $2); split($2, a, ":"); print a[2]; exit}')"
+
+  if [ "$pkg_tag" != "$published" ]; then
+    fail "a packaged chart's default image tag is '$pkg_tag' but this commit publishes '$published'; an install that does not set image.tag would pull a tag nothing publishes"
+  fi
+
+  # And an explicit tag still wins, or the default would be the only
+  # installable one.
+  tagged="$(render --set image.tag=v9.9.9)"
+  grep -q 'image: "docker.io/shaowenchen/applab:v9.9.9"' <<<"$tagged" \
+    || fail "--set image.tag=... does not override the chart's own version"
+fi
+
 # A base domain with no gateway is a deployment where every app is unreachable
 # from outside, so it has to be refused rather than rendered. That case is
 # covered by `must_fail "blanked gateway"` above: deploy.gateway has a default
