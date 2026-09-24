@@ -5,15 +5,38 @@
 // one app, is created with it, and reaches only that app — see internal/api for
 // where the line is drawn.
 //
-// The keys live in Kubernetes, one Secret per app, rather than in the database.
-// That is a deliberate trade with two halves. It buys the properties a credential
-// in the cluster should have: it is an ordinary object that kubectl can inspect,
-// it is covered by the chart's existing Role (which already grants secrets, so
-// no permission had to be widened), and deleting an app removes its key through
-// the label-based teardown that already exists. It costs availability: if the API
-// server cannot be reached, nothing can authenticate, the admin key included.
-// Nothing is cached here on purpose — a cached credential is one that outlives
-// its rotation, and rotation taking effect immediately is the whole point.
+// # Where a key lives
+//
+// In the object store, beside the app it belongs to, rather than in a Kubernetes
+// Secret. It was a Secret for two reasons, and neither survives the move to a
+// bucket-backed AppLab.
+//
+// The first was that a credential belongs in the cluster's own credential store.
+// That is true of a credential the cluster uses. This one AppLab issues and
+// validates itself, using it only to decide what a caller may do, and the
+// cluster never reads it — so a Secret was a place to keep it rather than a
+// place that had a use for it. Removing it also removes the last reason AppLab
+// held write permission on `secrets` at all.
+//
+// The second was that deleting an app removed its key for free, through the
+// label-based teardown that already deleted the app's other objects. That still
+// holds: the key is an object under the app's own directory, so removing the
+// directory removes it.
+//
+// # What it costs
+//
+// The key is stored in the same bucket as the source, so the bucket's credential
+// is now the thing that reaches every app's key. That is worth saying plainly
+// because it is a real widening: whoever holds the bucket's access key can read
+// every app's API key, where before they could read the source and the history
+// but the keys were in a different system with a different credential.
+//
+// What is kept from the Secret version is that the key is stored *reversibly*.
+// Hashing it would be the safer design in isolation — a leaked bucket would then
+// yield nothing usable — but AppLab deliberately allows reading a key back, and
+// a key nobody can recover is one that has to be rotated the moment it is lost.
+// The API's own documentation promises the value can be read; this keeps that
+// true.
 package appkey
 
 import (
@@ -22,18 +45,29 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-
-	"github.com/shaowenchen/applab/internal/k8s"
+	"github.com/shaowenchen/applab/internal/objectstore"
+	"github.com/shaowenchen/applab/internal/store"
 )
+
+// Store reads and writes the per-app keys in the object store.
+type Store struct {
+	apps *store.Store
+}
+
+// New returns a key store over AppLab's own state.
+//
+// There is no Ready check and no nil-ness any more: a deployment always has an
+// object store, because it has nowhere else to keep anything. That removes a
+// whole class of "this deployment cannot do that" answers — an installation with
+// no cluster now issues keys exactly like one with.
+func New(apps *store.Store) *Store {
+	return &Store{apps: apps}
+}
 
 // ErrNoKey means the app has no key stored.
 //
@@ -42,56 +76,35 @@ import (
 // simply "this presentation matched nothing".
 var ErrNoKey = errors.New("no app key")
 
-const (
-	// labelApp identifies the app a key belongs to. It is the same label every
-	// other object AppLab creates carries, which is what makes deleting an app
-	// remove its key with no extra code: k8s.Client.DeleteAppObjects lists
-	// Secrets by this selector.
-	labelApp = k8s.LabelApp
+// ErrExists means the app already has a key.
+var ErrExists = errors.New("already exists")
 
-	// labelDigest is the searchable fingerprint of the key.
-	//
-	// Resolve has to find the Secret for a presented key without reading every
-	// Secret in the namespace, so the digest is stored as a label and looked up
-	// directly. It is a *prefix* of the sha256 rather than the whole thing
-	// because a Kubernetes label value is capped at 63 bytes and the hex digest
-	// is 64 — the full value is rejected by the API server, which would surface
-	// as a Secret that cannot be created at all.
-	//
-	// 32 hex characters is 128 bits. A prefix narrows the candidates rather than
-	// granting access: the comparison after the lookup is over the whole key, so
-	// a collision would only add a candidate to check.
-	labelDigest = "applab.io/key-digest"
+// keyLength is the number of random bytes behind a key. 32 bytes is what the
+// admin key uses and what the chart generates, so the two tiers are equally hard
+// to guess.
+const keyLength = 32
 
-	// dataKey is the Secret's data field holding the key.
-	dataKey = "key"
-
-	// namePrefix makes a key Secret identifiable by name as well as by label,
-	// which is what someone debugging with kubectl will reach for.
-	namePrefix = "applab-key-"
-)
-
-// Store reads and writes app keys in one namespace.
-type Store struct {
-	client    kubernetes.Interface
-	namespace string
-}
-
-// New creates a Store.
+// objectKey is where one app's key lives.
 //
-// A nil client is not an error here: a deployment without a cluster is a
-// legitimate way to run AppLab, and the caller decides whether to attach a store
-// at all. Methods on a Store built around a nil client are not called — the API
-// layer reports the capability as unavailable instead.
-func New(client kubernetes.Interface, namespace string) *Store {
-	return &Store{client: client, namespace: namespace}
+// It is a file beside app.json rather than a field inside it. The record is
+// rewritten whole by several callers — a deploy sets the deployed commit, a
+// build sets the status — and a credential in it would be rewritten by each of
+// them, so a read-modify-write that raced another could blank it and lock the
+// app's owner out. A separate object has one writer.
+func objectKey(appID string) string {
+	return objectstore.Key("apps", appID, "key.json")
 }
 
-// Ready reports whether the store can reach a cluster.
-func (s *Store) Ready() bool { return s != nil && s.client != nil }
-
-// Name returns the Secret name for an app.
-func Name(appID string) string { return namePrefix + appID }
+// keyRecord is what the object holds.
+//
+// The value is here in the clear, which the package comment explains. The digest
+// is here so that ResolveAppKey can find the app without reading every key: a
+// presented key is hashed and compared against the digests of every app's
+// record, which is a field read rather than a credential compared.
+type keyRecord struct {
+	Key    string `json:"key"`
+	Digest string `json:"digest"`
+}
 
 // Create mints a key for an app and stores it.
 //
@@ -104,40 +117,25 @@ func (s *Store) Create(ctx context.Context, appID string) (string, error) {
 		return "", fmt.Errorf("app id must not be empty")
 	}
 
+	// Refused before the app is read, so a create for an app that does not exist
+	// fails for that reason rather than writing a key nothing belongs to.
+	exists, err := s.has(ctx, appID)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return "", fmt.Errorf("app %q already has a key: %w", appID, ErrExists)
+	}
+
 	key, err := generate()
 	if err != nil {
 		return "", err
 	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      Name(appID),
-			Namespace: s.namespace,
-			Labels: map[string]string{
-				labelApp:    appID,
-				labelDigest: digestLabel(key),
-			},
-		},
-		Type: corev1.SecretTypeOpaque,
-		// Data rather than StringData. The two are equivalent against a real API
-		// server, which folds StringData into Data on the way in — but the fake
-		// clientset used by the tests does not, so a store written against
-		// StringData would be exercised through a shape the real cluster never
-		// produces. Writing Data directly makes the object identical in both.
-		Data: map[string][]byte{dataKey: []byte(key)},
-	}
-
-	if _, err := s.client.CoreV1().Secrets(s.namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("app %q already has a key: %w", appID, ErrExists)
-		}
-		return "", fmt.Errorf("store key for app %s: %w", appID, err)
+	if err := s.put(ctx, appID, key); err != nil {
+		return "", err
 	}
 	return key, nil
 }
-
-// ErrExists means the app already has a key.
-var ErrExists = errors.New("already exists")
 
 // Get returns an app's key.
 //
@@ -146,22 +144,17 @@ var ErrExists = errors.New("already exists")
 // has to be rotated the moment it is lost, and the deployment deliberately
 // allows reading it instead.
 func (s *Store) Get(ctx context.Context, appID string) (string, error) {
-	secret, err := s.client.CoreV1().Secrets(s.namespace).Get(ctx, Name(appID), metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return "", fmt.Errorf("app %q: %w", appID, ErrNoKey)
-	}
+	record, err := s.record(ctx, appID)
 	if err != nil {
-		return "", fmt.Errorf("read key for app %s: %w", appID, err)
+		return "", err
 	}
-
-	key := secretValue(secret)
-	if key == "" {
-		// The Secret exists but does not hold a key. Treated as absent rather
+	if record.Key == "" {
+		// The object exists but does not hold a key. Treated as absent rather
 		// than as an empty credential, which would authenticate nothing and be
 		// confusing to debug.
 		return "", fmt.Errorf("app %q: %w", appID, ErrNoKey)
 	}
-	return key, nil
+	return record.Key, nil
 }
 
 // Rotate replaces an app's key, invalidating the previous one at once.
@@ -170,151 +163,143 @@ func (s *Store) Get(ctx context.Context, appID string) (string, error) {
 // normally performed because a key leaked, and a key that still works after
 // being rotated away from has not been rotated.
 //
-// It also creates the key when there is none, so an app whose key was lost — or
-// one created while AppLab had no cluster — can be brought back with the same
-// operation rather than an error telling the caller to create it first.
+// It also creates the key when there is none, so an app whose key was lost can
+// be brought back with the same operation rather than an error telling the
+// caller to create it first.
 func (s *Store) Rotate(ctx context.Context, appID string) (string, error) {
-	if appID == "" {
-		return "", fmt.Errorf("app id must not be empty")
-	}
-
 	key, err := generate()
 	if err != nil {
 		return "", err
 	}
-
-	secrets := s.client.CoreV1().Secrets(s.namespace)
-	existing, err := secrets.Get(ctx, Name(appID), metav1.GetOptions{})
-
-	if apierrors.IsNotFound(err) {
-		return s.Create(ctx, appID)
-	}
-	if err != nil {
-		return "", fmt.Errorf("read key for app %s: %w", appID, err)
-	}
-
-	// Updated in place rather than deleted and recreated: a delete-then-create
-	// leaves a window in which the app has no key at all, and the window is
-	// exactly as long as the gap between two API calls.
-	existing.Labels = mergeLabels(existing.Labels, map[string]string{
-		labelApp:    appID,
-		labelDigest: digestLabel(key),
-	})
-	existing.Data = map[string][]byte{dataKey: []byte(key)}
-
-	if _, err := secrets.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
-		return "", fmt.Errorf("rotate key for app %s: %w", appID, err)
+	if err := s.put(ctx, appID, key); err != nil {
+		return "", err
 	}
 	return key, nil
 }
 
 // Remove deletes an app's key.
 //
-// Deleting an app does not need this — k8s.Client.DeleteAppObjects already
-// removes the Secret by label. It exists for the one case that teardown does not
-// cover: deleting an app while keeping its source, where the record goes and the
-// key should go with it rather than being left behind for an app that no longer
-// exists.
+// Removing a key that is not there is not an error: the callers that remove one
+// are settling a state — "this app has no key" — and that state is reached
+// either way.
 func (s *Store) Remove(ctx context.Context, appID string) error {
-	err := s.client.CoreV1().Secrets(s.namespace).Delete(ctx, Name(appID), metav1.DeleteOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete key for app %s: %w", appID, err)
+	if err := s.apps.Objects().Delete(ctx, objectKey(appID)); err != nil {
+		return fmt.Errorf("remove key for app %s: %w", appID, err)
 	}
 	return nil
 }
 
-// ResolveAppKey maps a presented key back to the app that owns it.
+// ResolveAppKey finds the app a presented key belongs to.
 //
-// This runs on every authenticated request made with an app key, so it is one
-// lookup rather than a scan: the digest label addresses the Secret directly. A
-// key that matches no app reports ok=false, which the caller turns into the same
-// 401 an unrecognised admin key gets — an attacker learns nothing about whether
-// a key was merely wrong or belonged to an app that no longer exists.
+// It lists every app's key record and compares digests, rather than reading each
+// key and comparing values. Both are constant-time per comparison; the digest is
+// what makes the comparison possible without the key itself being in memory for
+// every request.
+//
+// The listing is the cost, and it grows with the number of apps: one key per app
+// is one small object per app. That is the price of a per-app credential with no
+// index, and it is paid on every authenticated request from an app key. An
+// installation with hundreds of apps would want the digest indexed somewhere —
+// which is a change of layout, not of interface.
 func (s *Store) ResolveAppKey(ctx context.Context, presented string) (appID string, ok bool, err error) {
+	// Trimmed before it is hashed, because the value reaching here has usually
+	// been through a shell: `APPLAB_KEY=$(cat keyfile)` keeps the file's trailing
+	// newline, and the client turns that into an Authorization header without
+	// removing it. A key that fails to resolve because of a byte the caller
+	// cannot see is a failure with no useful diagnostic.
 	presented = strings.TrimSpace(presented)
 	if presented == "" {
 		return "", false, nil
 	}
+	digest := digestOf(presented)
 
-	selector := labelDigest + "=" + digestLabel(presented)
-	list, err := s.client.CoreV1().Secrets(s.namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	records, err := s.apps.ListKeyRecords(ctx)
 	if err != nil {
-		return "", false, fmt.Errorf("resolve app key: %w", err)
+		return "", false, err
 	}
 
-	for i := range list.Items {
-		secret := &list.Items[i]
-		// The label only narrowed the candidates; the decision is made over the
-		// whole key, in constant time. A digest-prefix collision therefore costs
-		// a comparison, not access.
-		if !sameKey(secretValue(secret), presented) {
+	for _, record := range records {
+		if record.Digest == "" {
 			continue
 		}
-		app := secret.Labels[labelApp]
-		if app == "" {
-			// A labeled-by-digest Secret that does not name an app is not
-			// something this package wrote, so it grants nothing.
-			continue
+		// Constant-time, and the candidate is the stored digest rather than the
+		// presented string: a comparison that returns early leaks how much of a
+		// key was guessed correctly.
+		if sameDigest(record.Digest, digest) {
+			return record.AppID, true, nil
 		}
-		return app, true, nil
 	}
 	return "", false, nil
 }
 
-// generate returns a new key: 32 bytes of cryptographic randomness, base64url
-// encoded without padding.
+// has reports whether an app already has a key object.
+func (s *Store) has(ctx context.Context, appID string) (bool, error) {
+	exists, err := s.apps.Objects().Exists(ctx, objectKey(appID))
+	if err != nil {
+		return false, fmt.Errorf("look for a key for app %s: %w", appID, err)
+	}
+	return exists, nil
+}
+
+// record reads an app's key object.
+func (s *Store) record(ctx context.Context, appID string) (keyRecord, error) {
+	body, err := s.apps.Objects().GetBytes(ctx, objectKey(appID))
+	if err != nil {
+		if errors.Is(err, objectstore.ErrNotExist) {
+			return keyRecord{}, fmt.Errorf("app %q: %w", appID, ErrNoKey)
+		}
+		return keyRecord{}, fmt.Errorf("read key for app %s: %w", appID, err)
+	}
+
+	var record keyRecord
+	if err := decode(body, &record); err != nil {
+		return keyRecord{}, fmt.Errorf("read key for app %s: %w", appID, err)
+	}
+	return record, nil
+}
+
+// put writes an app's key object, replacing anything at that key.
+func (s *Store) put(ctx context.Context, appID, key string) error {
+	body, err := encode(keyRecord{Key: key, Digest: digestOf(key)})
+	if err != nil {
+		return fmt.Errorf("encode the key for app %s: %w", appID, err)
+	}
+	if err := s.apps.Objects().PutBytes(ctx, objectKey(appID), body); err != nil {
+		return fmt.Errorf("store key for app %s: %w", appID, err)
+	}
+	return nil
+}
+
+// generate returns a new key.
 //
-// It is not derived from the app id, so holding one app's key says nothing about
-// any other's and keys cannot be enumerated by guessing.
+// base64url rather than hex: the same entropy is 43 characters instead of 64,
+// and every character is safe to paste into a URL, a header or a git remote
+// without escaping — which is exactly where a key ends up.
 func generate() (string, error) {
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("generate app key: %w", err)
+	buf := make([]byte, keyLength)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate key: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// digestLabel is the label value used to find a key.
-//
-// Truncated to 32 hex characters because a Kubernetes label value may not exceed
-// 63 bytes and the full digest is 64 — the full value makes the Secret
-// uncreatable, which is a failure that only appears against a real API server.
-func digestLabel(key string) string {
+// digestOf returns the digest a presented key is matched by.
+func digestOf(key string) string {
 	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:])[:32]
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// sameKey compares two keys in constant time.
-//
-// Constant time matters even here: the digest lookup already told an attacker
-// that *some* key matched the prefix, and a byte-by-byte comparison would let
-// them extend that to the whole key by timing.
-func sameKey(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
+// sameDigest compares two digests without leaking where they differ.
+func sameDigest(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-// secretValue reads the key out of a Secret.
-//
-// Only Data is consulted. StringData is write-only sugar — a real API server
-// folds it into Data on the way in and never returns it — so reading it here
-// would be reading a field that is always empty against a real cluster while
-// appearing to work against the fake clientset, which does not fold. Writing
-// Data directly (see Create) keeps the two identical.
-func secretValue(secret *corev1.Secret) string {
-	return string(secret.Data[dataKey])
+// encode and decode are the object's JSON form, in one place so the two cannot
+// drift.
+func encode(record keyRecord) ([]byte, error) {
+	return json.MarshalIndent(record, "", "  ")
 }
 
-// mergeLabels returns existing with overrides applied, without mutating either.
-func mergeLabels(existing, overrides map[string]string) map[string]string {
-	merged := make(map[string]string, len(existing)+len(overrides))
-	for k, v := range existing {
-		merged[k] = v
-	}
-	for k, v := range overrides {
-		merged[k] = v
-	}
-	return merged
+func decode(body []byte, into *keyRecord) error {
+	return json.Unmarshal(body, into)
 }

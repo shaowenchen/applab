@@ -743,8 +743,11 @@
 
       <!-- The two tables are deliberately not the same shape. A variable is
            shown with its value because it is not sensitive; a secret is shown
-           as a name with no value anywhere, because there is no endpoint that
-           returns one. The difference on screen is the difference in the API. -->
+           as a name with no value, because no endpoint returns one. The
+           difference on screen is the difference in the API — and the hint
+           below the secrets table is what keeps the screen from promising more
+           than that: a secret is not readable here, but it is readable in the
+           Deployment, which is where both kinds of value end up. -->
       <h3 style="font-size:14px" data-i18n="Environment variables">Environment variables</h3>
       <table>
         <thead><tr><th data-i18n="Name">Name</th><th data-i18n="Value">Value</th><th></th></tr></thead>
@@ -773,9 +776,11 @@
         <button id="config-secret-set" data-i18n="Set">Set</button>
       </div>
       <p class="muted" style="font-size:13px;margin-bottom:0"
-         data-i18n="A secret's value can never be read back — not here, not through the API, not from the CLI. Setting one again replaces it.">A
+         data-i18n="A secret's value can never be read back — not here, not through the API, not from the CLI. Setting one again replaces it. It is written into the Deployment's environment, so anyone who can read that Deployment can read it.">A
         secret's value can never be read back — not here, not through the API,
-        not from the CLI. Setting one again replaces it.</p>
+        not from the CLI. Setting one again replaces it. It is written into the
+        Deployment's environment, so anyone who can read that Deployment can
+        read it.</p>
       <div id="config-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
 
@@ -1035,8 +1040,8 @@ const ZH = {
   "No environment variables.": "没有环境变量。",
   "Secrets": "密钥",
   "No secrets.": "没有密钥。",
-  "A secret's value can never be read back — not here, not through the API, not from the CLI. Setting one again replaces it.":
-    "密钥的值无法读回 —— 这里、API、CLI 都不行。再次设置会覆盖它。",
+  "A secret's value can never be read back — not here, not through the API, not from the CLI. Setting one again replaces it. It is written into the Deployment's environment, so anyone who can read that Deployment can read it.":
+    "密钥的值无法读回 —— 这里、API、CLI 都不行。再次设置会覆盖它。它会被写入 Deployment 的环境变量，因此任何能读取该 Deployment 的人都能读到它。",
   "Set": "设置",
   "Remove": "移除",
   "History": "历史",

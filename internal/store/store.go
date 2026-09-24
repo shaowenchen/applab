@@ -43,10 +43,15 @@
 //
 // # What is not here
 //
-// Secrets. An app's secret configuration lives in a Kubernetes Secret, read by
-// the deployer and by nothing else, so the bucket is not a second place for a
-// credential to leak from. The split is by sensitivity: everything in an
-// app.json is returned by the API, and whatever is in it should be fit to print.
+// Nothing. An app's secret configuration is in its own app.json, and the reason
+// it is there rather than in a separate object is the same one given above for
+// the plain variables: the deployer reads the record it is handed, and a second
+// object would be a second thing to keep in step.
+//
+// It is worth being plain that this is *not* a claim about sensitivity. An
+// app.json holds values no route returns, and the store does not distinguish
+// them: whoever can read the bucket can read every app's secrets, exactly as
+// whoever can read a Deployment can.
 package store
 
 import (

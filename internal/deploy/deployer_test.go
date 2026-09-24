@@ -967,21 +967,13 @@ func TestNoPathPrefixKeepsPerAppHosts(t *testing.T) {
 
 // --- app configuration -----------------------------------------------------
 
-// staticSecrets is a SecretReader that returns a fixed map.
-//
-// The deployer only ever calls Contents, so a fake this thin is enough — and it
-// keeps these tests about what the deployer builds rather than about the Secret
-// store, which internal/appconfig tests separately.
-type staticSecrets map[string]string
-
-func (s staticSecrets) Contents(_ context.Context, _ string) (map[string]string, error) {
-	return s, nil
-}
+// The app's two kinds of configuration are asserted separately, because they are
+// separate fields on model.App — but they arrive at the container the same way,
+// merged into one env list.
 
 // TestEnvVarsReachTheContainer asserts an app's variables are applied.
 func TestEnvVarsReachTheContainer(t *testing.T) {
 	cfg := testConfig()
-	cfg.Secrets = staticSecrets{}
 	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
 
@@ -1005,6 +997,66 @@ func TestEnvVarsReachTheContainer(t *testing.T) {
 	}
 }
 
+// TestSecretValueReachesTheDeployment asserts the other half arrives, and says
+// where it arrives.
+//
+// It replaces the test that asserted a secret's value appeared *nowhere* in the
+// Deployment — which held while the value lived in a Secret object and the
+// kubelet did the substitution. AppLab no longer uses Secret objects, so the
+// value is here in the clear, and asserting that plainly is the point: the old
+// property is gone, and a test that quietly disappeared along with the mechanism
+// is how the loss would go unnoticed.
+func TestSecretValueReachesTheDeployment(t *testing.T) {
+	const secretValue = "postgres://user:hunter2@db.internal:5432/app"
+
+	cfg := testConfig()
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Secrets = map[string]string{"DATABASE_URL": secretValue}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	rendered := fmt.Sprintf("%+v", deploymentFor(t, client, app))
+	if !strings.Contains(rendered, secretValue) {
+		t.Fatalf("the secret's value did not reach the Deployment, so the app would start without it:\n%s", rendered)
+	}
+}
+
+// TestSecretsAndEnvAreOneList asserts a secret is indistinguishable from a plain
+// variable once it is in the container, and that nothing references a Secret.
+//
+// The split between the two is by intent rather than by handling, and this is
+// where that shows: one env list, and no envFrom — there is no Secret object for
+// one to name, and a reference to a missing Secret would make the pod
+// unschedulable.
+func TestSecretsAndEnvAreOneList(t *testing.T) {
+	cfg := testConfig()
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Env = map[string]string{"LOG_LEVEL": "debug"}
+	app.Secrets = map[string]string{"TOKEN": "t"}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	deployment := deploymentFor(t, client, app)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if len(container.EnvFrom) != 0 {
+		t.Errorf("got %d envFrom entries; there is no Secret for them to name", len(container.EnvFrom))
+	}
+	env := containerEnv(deployment)
+	if env["TOKEN"] != "t" || env["LOG_LEVEL"] != "debug" {
+		t.Errorf("env = %v, want the secret and the variable in one list", env)
+	}
+}
+
 // TestEnvVarsAreSortedInThePodTemplate is the reason appEnv sorts.
 //
 // The pod template is what upsertDeployment compares to decide whether anything
@@ -1014,12 +1066,12 @@ func TestEnvVarsReachTheContainer(t *testing.T) {
 // "reshuffled".
 func TestEnvVarsAreSortedInThePodTemplate(t *testing.T) {
 	cfg := testConfig()
-	cfg.Secrets = staticSecrets{}
 	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
 
 	app := testApp()
 	app.Env = map[string]string{"ZED": "1", "ALPHA": "2", "MID": "3"}
+	app.Secrets = map[string]string{"TOKEN": "t"}
 
 	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -1031,142 +1083,35 @@ func TestEnvVarsAreSortedInThePodTemplate(t *testing.T) {
 		names = append(names, e.Name)
 	}
 
-	want := "PORT,ALPHA,MID,ZED"
+	want := "PORT,ALPHA,MID,TOKEN,ZED"
 	if strings.Join(names, ",") != want {
 		t.Errorf("env order = %v, want %s — the pod template must be stable across deploys", names, want)
-	}
-}
-
-// TestSecretValueNeverReachesTheDeployment is the central claim of this feature.
-//
-// It is asserted against the object the deployer actually produces, and by
-// searching the whole thing rather than the field the value would be expected
-// in: a secret that leaked into a label, an annotation or a probe would be just
-// as exposed as one in the env list, and checking only the env list would not
-// notice.
-func TestSecretValueNeverReachesTheDeployment(t *testing.T) {
-	const secretValue = "postgres://user:hunter2@db.internal:5432/app"
-
-	cfg := testConfig()
-	cfg.Secrets = staticSecrets{"DATABASE_URL": secretValue}
-	d, client := newTestDeployer(t, cfg)
-	ctx := context.Background()
-
-	app := testApp()
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	deployment := deploymentFor(t, client, app)
-	rendered := fmt.Sprintf("%+v", deployment)
-
-	if strings.Contains(rendered, secretValue) {
-		t.Fatalf("the secret's value appears in the Deployment:\n%s", rendered)
-	}
-	// Nor any fragment of it, in case a partial rendering is what leaked.
-	if strings.Contains(rendered, "hunter2") {
-		t.Fatalf("part of the secret's value appears in the Deployment:\n%s", rendered)
-	}
-}
-
-// TestSecretIsReferencedByEnvFrom asserts the value gets to the container by
-// reference rather than by being written down.
-func TestSecretIsReferencedByEnvFrom(t *testing.T) {
-	cfg := testConfig()
-	cfg.Secrets = staticSecrets{"DATABASE_URL": "postgres://x"}
-	d, client := newTestDeployer(t, cfg)
-	ctx := context.Background()
-
-	app := testApp()
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	container := deploymentFor(t, client, app).Spec.Template.Spec.Containers[0]
-	if len(container.EnvFrom) != 1 {
-		t.Fatalf("got %d envFrom entries, want 1", len(container.EnvFrom))
-	}
-	ref := container.EnvFrom[0].SecretRef
-	if ref == nil || ref.Name != "applab-env-shop" {
-		t.Fatalf("envFrom references %v, want applab-env-shop", ref)
-	}
-	// Required, not optional: an optional reference to a missing Secret would
-	// start the app with no configuration and no error.
-	if ref.Optional != nil && *ref.Optional {
-		t.Error("the secret reference is optional; a missing Secret would then start the app with no configuration and no error")
-	}
-}
-
-// TestNoSecretMeansNoEnvFrom covers the app that has no secrets.
-//
-// An envFrom naming a Secret that was never created makes the pod
-// unschedulable, which would turn "this app has no secrets" into an app that
-// will not start.
-func TestNoSecretMeansNoEnvFrom(t *testing.T) {
-	cfg := testConfig()
-	cfg.Secrets = staticSecrets{}
-	d, client := newTestDeployer(t, cfg)
-	ctx := context.Background()
-
-	app := testApp()
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	container := deploymentFor(t, client, app).Spec.Template.Spec.Containers[0]
-	if len(container.EnvFrom) != 0 {
-		t.Errorf("got %d envFrom entries for an app with no secrets, want none", len(container.EnvFrom))
-	}
-}
-
-// TestNoClusterReaderStillDeploys covers a deployment with no cluster-backed
-// secret store: environment variables still work, and nothing references a
-// Secret that cannot exist.
-func TestNoClusterReaderStillDeploys(t *testing.T) {
-	cfg := testConfig()
-	cfg.Secrets = nil
-	d, client := newTestDeployer(t, cfg)
-	ctx := context.Background()
-
-	app := testApp()
-	app.Env = map[string]string{"LOG_LEVEL": "debug"}
-
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	container := deploymentFor(t, client, app).Spec.Template.Spec.Containers[0]
-	if len(container.EnvFrom) != 0 {
-		t.Errorf("got %d envFrom entries with no secret reader, want none", len(container.EnvFrom))
-	}
-	if containerEnv(deploymentFor(t, client, app))["LOG_LEVEL"] != "debug" {
-		t.Error("the environment variables did not reach the container")
 	}
 }
 
 // TestConfigHashChangesWhenASecretValueChanges is the subtle bug this whole
 // mechanism exists to prevent.
 //
-// Kubernetes does not restart pods when a Secret changes, so envFrom alone
-// leaves the old pods running the old value. The rollout has to be triggered by
-// the pod template changing — and a hash over the secret's *names* would not
-// change when a password rotates, which is exactly the case that matters.
+// Kubernetes does not restart pods when a configuration value changes, so a new
+// value alone leaves the old pods running the old one. The rollout has to be
+// triggered by the pod template changing — and a hash over the secret's *names*
+// would not change when a password rotates, which is exactly the case that
+// matters.
 func TestConfigHashChangesWhenASecretValueChanges(t *testing.T) {
+	cfg := testConfig()
+	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
-	app := testApp()
 
 	// Same name throughout; only the value differs — the rotation case.
-	cfg := testConfig()
-	cfg.Secrets = staticSecrets{"TOKEN": "old"}
-	d, client := newTestDeployer(t, cfg)
+	app := testApp()
+	app.Secrets = map[string]string{"TOKEN": "old"}
 
 	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
 		t.Fatalf("first Apply: %v", err)
 	}
 	before := configHashOf(t, client, app)
 
-	cfg.Secrets = staticSecrets{"TOKEN": "new"}
-	d, client = newTestDeployer(t, cfg)
+	app.Secrets = map[string]string{"TOKEN": "new"}
 	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
@@ -1180,7 +1125,6 @@ func TestConfigHashChangesWhenASecretValueChanges(t *testing.T) {
 // TestConfigHashChangesWhenAVariableChanges covers the other half.
 func TestConfigHashChangesWhenAVariableChanges(t *testing.T) {
 	cfg := testConfig()
-	cfg.Secrets = staticSecrets{}
 	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
 
@@ -1210,12 +1154,12 @@ func TestConfigHashChangesWhenAVariableChanges(t *testing.T) {
 // hash exists to fix.
 func TestConfigHashIsStableAcrossDeploys(t *testing.T) {
 	cfg := testConfig()
-	cfg.Secrets = staticSecrets{"A": "1", "B": "2", "C": "3"}
 	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
 
 	app := testApp()
 	app.Env = map[string]string{"ZED": "1", "ALPHA": "2", "MID": "3"}
+	app.Secrets = map[string]string{"A": "1", "B": "2", "C": "3"}
 
 	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
 		t.Fatalf("first Apply: %v", err)
@@ -1236,15 +1180,14 @@ func TestConfigHashIsStableAcrossDeploys(t *testing.T) {
 	}
 }
 
-// TestConfigHashCoversBothHalves asserts a name reused between the two kinds of
-// value is still distinguishable.
+// TestConfigHashCoversBothHalves asserts a value moved between the two kinds of
+// configuration is still distinguishable.
 //
-// Without the kind prefix in the hash, an env A=1 and a secret A=1 would
+// Without the kind prefix in the hash, an env VALUE=x and a secret VALUE=x would
 // fingerprint identically, so moving a value from one to the other would produce
 // no rollout.
 func TestConfigHashCoversBothHalves(t *testing.T) {
 	cfg := testConfig()
-	cfg.Secrets = staticSecrets{}
 	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
 
@@ -1256,8 +1199,7 @@ func TestConfigHashCoversBothHalves(t *testing.T) {
 	asEnv := configHashOf(t, client, app)
 
 	app.Env = nil
-	cfg.Secrets = staticSecrets{"VALUE": "x"}
-	d, client = newTestDeployer(t, cfg)
+	app.Secrets = map[string]string{"VALUE": "x"}
 	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -1277,7 +1219,6 @@ func TestConfigHashCoversBothHalves(t *testing.T) {
 // would say so.
 func TestReservedPortIsNotDeclaredTwice(t *testing.T) {
 	cfg := testConfig()
-	cfg.Secrets = staticSecrets{}
 	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
 
@@ -1291,6 +1232,38 @@ func TestReservedPortIsNotDeclaredTwice(t *testing.T) {
 	deployment := deploymentFor(t, client, app)
 	seen := 0
 	for _, e := range deployment.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "PORT" {
+			seen++
+			if e.Value != "8080" {
+				t.Errorf("PORT = %q, want the app's own port 8080", e.Value)
+			}
+		}
+	}
+	if seen != 1 {
+		t.Errorf("PORT is declared %d times, want exactly 1", seen)
+	}
+}
+
+// TestReservedPortIsNotDeclaredTwiceAsASecret is the same guard for the other
+// field.
+//
+// A secret named PORT would otherwise merge in beside the derived one and win,
+// leaving the app listening where the Service does not route — the same silent
+// failure, reached through a different field.
+func TestReservedPortIsNotDeclaredTwiceAsASecret(t *testing.T) {
+	cfg := testConfig()
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Secrets = map[string]string{"PORT": "9999"}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	seen := 0
+	for _, e := range deploymentFor(t, client, app).Spec.Template.Spec.Containers[0].Env {
 		if e.Name == "PORT" {
 			seen++
 			if e.Value != "8080" {

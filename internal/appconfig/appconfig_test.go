@@ -2,74 +2,83 @@ package appconfig_test
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/fake"
+	"time"
 
 	"github.com/shaowenchen/applab/internal/appconfig"
-	"github.com/shaowenchen/applab/internal/k8s"
+	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/store"
 )
 
-const namespace = "ops-system"
-
-func newStore(t *testing.T) (*appconfig.Store, kubernetes.Interface) {
+// newStore returns a configuration store over a temporary object store, plus
+// the store underneath so a test can look at where a value ended up.
+func newStore(t *testing.T) (*appconfig.Store, *store.Store) {
 	t.Helper()
-	client := fake.NewSimpleClientset()
-	return appconfig.New(client, namespace), client
+
+	apps, err := store.OpenLocal(context.Background(), filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	return appconfig.New(apps), apps
 }
 
-// TestStoreWritesDataNotStringData guards the divergence that has bitten this
-// codebase before.
+// contentsOf reads an app's secret values out of its record.
 //
-// StringData is write-only sugar: a real API server folds it into Data and never
-// returns it, while the fake clientset used by these tests does not fold at all.
-// A store written against StringData therefore behaves one way in a test and
-// another way against a cluster. Writing Data directly is what makes the object
-// identical in both.
-func TestStoreWritesDataNotStringData(t *testing.T) {
-	store, client := newStore(t)
+// The package no longer offers a reader for them — the deployer gets the map
+// from the app it was handed — so a test that wants to see a value goes to the
+// record directly, which is also what makes these tests assert where a value
+// actually lives.
+func contentsOf(t *testing.T, apps *store.Store, appID string) (map[string]string, error) {
+	t.Helper()
+	app, err := apps.GetApp(context.Background(), appID)
+	if err != nil {
+		return nil, err
+	}
+	return app.Secrets, nil
+}
+
+// createApp records an app, which is what a value belongs to.
+func createApp(t *testing.T, apps *store.Store, id string) {
+	t.Helper()
+
+	app := &model.App{ID: id, Name: id, Port: 8080, Replicas: 1, CreatedAt: time.Now()}
+	if err := apps.CreateApp(context.Background(), app); err != nil {
+		t.Fatalf("create app %s: %v", id, err)
+	}
+}
+
+// TestSecretsAreStoredInTheAppRecord asserts where a secret ends up, because
+// that placement is the whole of this package's design now.
+//
+// It used to be a Kubernetes Secret, referenced from the Deployment with
+// envFrom so the kubelet substituted the value and it never appeared in the pod
+// spec. With no Secret object the value has to be somewhere the deployer can
+// read, and the app's own record is where it went — which means it does reach
+// the Deployment's env in the clear. This test is the one that would fail if a
+// future change quietly moved it somewhere else, so it asserts the location
+// explicitly rather than through the package's own accessor.
+func TestSecretsAreStoredInTheAppRecord(t *testing.T) {
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	if _, err := store.Set(ctx, "shop", map[string]string{"DATABASE_URL": "postgres://x"}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 
-	secret, err := client.CoreV1().Secrets(namespace).Get(ctx, appconfig.Name("shop"), metav1.GetOptions{})
+	app, err := apps.GetApp(ctx, "shop")
 	if err != nil {
-		t.Fatalf("get: %v", err)
+		t.Fatalf("get app: %v", err)
 	}
-
-	if len(secret.StringData) != 0 {
-		t.Errorf("the Secret carries StringData %v; a real API server folds it into Data and the fake does not, so the two would disagree", secret.StringData)
+	if got := app.Secrets["DATABASE_URL"]; got != "postgres://x" {
+		t.Errorf("the app record holds DATABASE_URL = %q, want %q", got, "postgres://x")
 	}
-	if got := string(secret.Data["DATABASE_URL"]); got != "postgres://x" {
-		t.Errorf("Data[DATABASE_URL] = %q, want %q", got, "postgres://x")
-	}
-}
-
-// TestSecretCarriesTheAppLabel is what makes deleting an app delete its secrets.
-//
-// k8s.Client.DeleteAppObjects lists Secrets by this selector; a Secret without
-// the label would survive the app it belongs to, leaving live credentials for an
-// app that no longer exists.
-func TestSecretCarriesTheAppLabel(t *testing.T) {
-	store, client := newStore(t)
-	ctx := context.Background()
-
-	if _, err := store.Set(ctx, "shop", map[string]string{"TOKEN": "t"}); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-
-	secret, err := client.CoreV1().Secrets(namespace).Get(ctx, appconfig.Name("shop"), metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got := secret.Labels[k8s.LabelApp]; got != "shop" {
-		t.Errorf("label %s = %q, want %q — the teardown selector would not find this Secret", k8s.LabelApp, got, "shop")
+	// The plain half is a different field, and setting a secret must not have
+	// written it there: Env is returned by the API in full, Secrets is not.
+	if _, leaked := app.Env["DATABASE_URL"]; leaked {
+		t.Error("the secret was written into Env, which every route returns in full")
 	}
 }
 
@@ -78,8 +87,9 @@ func TestSecretCarriesTheAppLabel(t *testing.T) {
 // Without it, setting one variable would silently drop the other five, which is
 // a configuration change nobody asked for and no error to explain it.
 func TestSetPreservesUnmentionedKeys(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	if _, err := store.Set(ctx, "shop", map[string]string{"A": "1", "B": "2"}); err != nil {
 		t.Fatalf("first set: %v", err)
@@ -94,7 +104,7 @@ func TestSetPreservesUnmentionedKeys(t *testing.T) {
 		t.Errorf("names after the second set = %v, want %v", names, want)
 	}
 
-	contents, err := store.Contents(ctx, "shop")
+	contents, err := contentsOf(t, apps, "shop")
 	if err != nil {
 		t.Fatalf("contents: %v", err)
 	}
@@ -106,8 +116,9 @@ func TestSetPreservesUnmentionedKeys(t *testing.T) {
 // TestSetOverwritesAnExistingKey covers the rotation case: setting a name that
 // is already there replaces it rather than failing or appending.
 func TestSetOverwritesAnExistingKey(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	if _, err := store.Set(ctx, "shop", map[string]string{"TOKEN": "old"}); err != nil {
 		t.Fatalf("first set: %v", err)
@@ -116,7 +127,7 @@ func TestSetOverwritesAnExistingKey(t *testing.T) {
 		t.Fatalf("second set: %v", err)
 	}
 
-	contents, err := store.Contents(ctx, "shop")
+	contents, err := contentsOf(t, apps, "shop")
 	if err != nil {
 		t.Fatalf("contents: %v", err)
 	}
@@ -125,16 +136,15 @@ func TestSetOverwritesAnExistingKey(t *testing.T) {
 	}
 }
 
-// TestRemoveDeletesTheSecretWhenTheLastValueGoes keeps the invariant the
-// deployer relies on: a Secret that exists means the app has secrets.
+// TestRemoveLeavesNoEmptySetBehind keeps the invariant the deployer relies on:
+// having no secrets and having an empty set are the same observable state.
 //
-// An empty Secret left behind would make the deployer reference it, which is
-// harmless — but it would also mean "has secrets" and "has none" are the same
-// observable state, and every future reader would have to check the contents
-// rather than the object.
-func TestRemoveDeletesTheSecretWhenTheLastValueGoes(t *testing.T) {
-	store, client := newStore(t)
+// An empty map left behind would mean Has and Names disagree with Contents about
+// an app that simply has none, for no gain.
+func TestRemoveLeavesNoEmptySetBehind(t *testing.T) {
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	if _, err := store.Set(ctx, "shop", map[string]string{"TOKEN": "t"}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -147,15 +157,27 @@ func TestRemoveDeletesTheSecretWhenTheLastValueGoes(t *testing.T) {
 		t.Errorf("names after removing the last value = %v, want none", names)
 	}
 
-	if _, err := client.CoreV1().Secrets(namespace).Get(ctx, appconfig.Name("shop"), metav1.GetOptions{}); err == nil {
-		t.Error("the Secret still exists after its last value was removed")
+	has, err := store.Has(ctx, "shop")
+	if err != nil {
+		t.Fatalf("has: %v", err)
+	}
+	if has {
+		t.Error("Has reported true after the last value was removed")
+	}
+	record, err := apps.GetApp(ctx, "shop")
+	if err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(record.Secrets) != 0 {
+		t.Errorf("the app record still carries %v", record.Secrets)
 	}
 }
 
-// TestRemoveKeepsTheSecretWhileValuesRemain is the other half of that invariant.
-func TestRemoveKeepsTheSecretWhileValuesRemain(t *testing.T) {
-	store, _ := newStore(t)
+// TestRemoveKeepsTheOtherValues is the other half of that invariant.
+func TestRemoveKeepsTheOtherValues(t *testing.T) {
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	if _, err := store.Set(ctx, "shop", map[string]string{"A": "1", "B": "2"}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -172,13 +194,14 @@ func TestRemoveKeepsTheSecretWhileValuesRemain(t *testing.T) {
 
 // TestNoSecretsIsNotAnError asserts the ordinary case for an app that has none.
 //
-// Reporting a missing Secret as a failure would make every app without secrets
-// look broken, and the API turns this into an empty list.
+// Reporting that as a failure would make every app without secrets look broken,
+// and the API turns this into an empty list.
 func TestNoSecretsIsNotAnError(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
-	names, err := store.Names(ctx, "nothing-configured")
+	names, err := store.Names(ctx, "shop")
 	if err != nil {
 		t.Fatalf("names: %v", err)
 	}
@@ -186,7 +209,7 @@ func TestNoSecretsIsNotAnError(t *testing.T) {
 		t.Errorf("names = %v, want none", names)
 	}
 
-	has, err := store.Has(ctx, "nothing-configured")
+	has, err := store.Has(ctx, "shop")
 	if err != nil {
 		t.Fatalf("has: %v", err)
 	}
@@ -200,8 +223,9 @@ func TestNoSecretsIsNotAnError(t *testing.T) {
 // Go randomises map iteration, so an unordered result would shuffle on every
 // read — which reads as a change that did not happen.
 func TestNamesAreSorted(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	if _, err := store.Set(ctx, "shop", map[string]string{"ZED": "1", "ALPHA": "2", "MID": "3"}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -216,12 +240,11 @@ func TestNamesAreSorted(t *testing.T) {
 	}
 }
 
-// TestValidateName covers the two ways a name can be refused.
+// TestValidateName covers the ways a name can be refused.
 //
 // PORT is the one that matters and is not about syntax: the deployer sets it
-// from the app's port, so a second declaration would win over the port the
-// Service targets and the app would run somewhere nothing routes to, with no
-// error anywhere.
+// from the app's port, so a second declaration would be dropped by the deployer
+// and the app would run somewhere nothing routes to, with no error anywhere.
 func TestValidateName(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -229,9 +252,9 @@ func TestValidateName(t *testing.T) {
 	}{
 		{"LOG_LEVEL", false},
 		{"DATABASE_URL", false},
+		{"_underscore", false},
 		{"has-dash", false},
 		{"has.dot", false},
-		{"_underscore", false},
 		{appconfig.Reserved, true},
 		{"", true},
 		{"1BAD", true},
@@ -259,8 +282,9 @@ func TestValidateName(t *testing.T) {
 // and this makes it impossible for any future caller of the package to write a
 // conflicting PORT by going around the API.
 func TestSetRefusesReservedName(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	_, err := store.Set(ctx, "shop", map[string]string{appconfig.Reserved: "9999"})
 	if err == nil {
@@ -271,10 +295,26 @@ func TestSetRefusesReservedName(t *testing.T) {
 	}
 }
 
-// TestDeleteRemovesTheWholeSecret covers the app-deletion path.
-func TestDeleteRemovesTheWholeSecret(t *testing.T) {
-	store, client := newStore(t)
+// TestSetRefusesAnAppThatDoesNotExist asserts a value is not written for a
+// record that is not there.
+//
+// With secrets in a Secret object this could not happen — the API created a
+// Secret for whatever id it was handed. Now the value lives in the app's own
+// record, so writing one for an app that does not exist would create a stray
+// object under a prefix nothing lists, and nobody would ever see it.
+func TestSetRefusesAnAppThatDoesNotExist(t *testing.T) {
+	store, _ := newStore(t)
+
+	if _, err := store.Set(context.Background(), "ghost", map[string]string{"A": "1"}); err == nil {
+		t.Error("Set accepted a value for an app that does not exist")
+	}
+}
+
+// TestDeleteRemovesEverySecret covers the app-deletion path.
+func TestDeleteRemovesEverySecret(t *testing.T) {
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	if _, err := store.Set(ctx, "shop", map[string]string{"A": "1", "B": "2"}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -283,55 +323,41 @@ func TestDeleteRemovesTheWholeSecret(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 
-	if _, err := client.CoreV1().Secrets(namespace).Get(ctx, appconfig.Name("shop"), metav1.GetOptions{}); err == nil {
-		t.Error("the Secret still exists after Delete")
+	has, err := store.Has(ctx, "shop")
+	if err != nil {
+		t.Fatalf("has: %v", err)
+	}
+	if has {
+		t.Error("the secrets survived Delete")
 	}
 
 	// Deleting again is not an error: the caller asked for the app's secrets to
 	// be gone, and they are.
 	if err := store.Delete(ctx, "shop"); err != nil {
-		t.Errorf("deleting a Secret that is already gone returned %v, want nil", err)
+		t.Errorf("deleting secrets that are already gone returned %v, want nil", err)
 	}
 }
 
-// TestStoreForAnotherAppIsNotVisible asserts the lookup is by exact name.
+// TestOneAppsSecretsAreNotAnothers asserts the lookup is per app.
 //
-// One Secret per app is the isolation between them here, so a Set for one app
-// must not be readable as another's.
-func TestStoreForAnotherAppIsNotVisible(t *testing.T) {
-	store, _ := newStore(t)
+// One record per app is the isolation between them here, so a value set for one
+// must not be readable as another's — and must not appear in the other's
+// Deployment either, which is what the deployer reads this through.
+func TestOneAppsSecretsAreNotAnothers(t *testing.T) {
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
+	createApp(t, apps, "blog")
 
 	if _, err := store.Set(ctx, "shop", map[string]string{"TOKEN": "shop-token"}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 
-	contents, err := store.Contents(ctx, "blog")
+	contents, err := contentsOf(t, apps, "blog")
 	if err != nil {
 		t.Fatalf("contents: %v", err)
 	}
 	if len(contents) != 0 {
-		t.Errorf("blog sees %v, want nothing — one Secret per app is the boundary", contents)
-	}
-}
-
-// TestNamespaceIsWhereTheSecretLives asserts the store writes where it was told.
-func TestNamespaceIsWhereTheSecretLives(t *testing.T) {
-	store, client := newStore(t)
-	ctx := context.Background()
-
-	if _, err := store.Set(ctx, "shop", map[string]string{"A": "1"}); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-
-	list, err := client.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(list.Items) != 1 {
-		t.Fatalf("found %d Secrets in %s, want 1", len(list.Items), namespace)
-	}
-	if list.Items[0].Type != corev1.SecretTypeOpaque {
-		t.Errorf("Secret type = %q, want %q", list.Items[0].Type, corev1.SecretTypeOpaque)
+		t.Errorf("blog sees %v, want nothing — one record per app is the boundary", contents)
 	}
 }

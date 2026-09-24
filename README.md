@@ -373,22 +373,24 @@ openly.
 - **Repositories are never public.** Every git request carries a key, like every
   other request, and an app key reaches only its own repository — a repository is
   where the secrets in a project live.
-- **App keys are kept in the cluster**, one Secret per app, and nothing is
-  cached. Two consequences worth knowing: rotating a key takes effect
-  immediately, and **if the API server is unreachable then nothing can
-  authenticate, the admin key included.** A deployment with no cluster at all
-  has no app keys and works on the admin tier alone; set `APPLAB_KEY` and manage
-  apps with it.
-- **Configuration is split by sensitivity.** Environment variables are not
-  secrets: they are stored with the app, returned by the API, and visible to
-  anyone who can read the app's Deployment. Secrets are kept in a Kubernetes
-  Secret, are never written into the Deployment — it references the Secret and
-  the kubelet substitutes the values inside the container — and **no route
-  returns a value**, only the names. That is structural rather than a promise:
-  the store the API holds has no method that returns a value. See
+- **App keys are kept in the bucket**, under the app's own directory, and
+  nothing is cached. Two consequences worth knowing: rotating a key takes effect
+  immediately, and whoever holds the bucket's credential can read every app's key
+  — the key is no longer in a different system with a different credential. A
+  deployment whose object storage is unreachable cannot authenticate at all, the
+  admin key included. See [Keys](#keys).
+- **Configuration is split by intent, not by handling.** Environment variables
+  and secrets are both stored with the app and both written into the Deployment's
+  `env`. The difference is that **no route returns a secret's value** — only its
+  name — while a variable is returned in full. That is structural rather than a
+  promise: the store the API holds has no method that returns a value. See
   [Configuring an app](#configuring-an-app).
-- **A secret's value still reaches the cluster as API traffic** and is stored in
-  `etcd` like any Kubernetes Secret. Encryption at rest is the cluster's job.
+- **A secret is not hidden from the cluster.** It is in the Deployment's spec in
+  the clear, because that is where a container's environment comes from: anyone
+  who can run `kubectl get deploy -o yaml` in this namespace can read every app's
+  secrets. That is the cost of an AppLab with no Secret objects — a value written
+  this way is readable by more people than one kept in `etcd`, and worth knowing
+  before putting a production credential in one.
 
 ## Configuring an app
 
@@ -399,29 +401,40 @@ An app gets two kinds of configuration, and which one you want matters.
 applab env set myshop LOG_LEVEL=debug FEATURE_X=on
 applab env unset myshop FEATURE_X
 
-# Secrets — never in the Deployment, never readable back.
+# Secrets — never readable back through AppLab. Where they do end up is the
+# table below.
 applab env secret set myshop DATABASE_URL="$DATABASE_URL"
 applab env secret unset myshop DATABASE_URL
 
 applab env myshop              # show both
 ```
 
-The distinction is the whole design. A password belongs in a secret; a log level
-does not, and putting it there would make it unreadable for no gain.
+The distinction is by **intent rather than by handling**: the two kinds of value
+are stored the same way and reach the container the same way. Use a secret for a
+password and a variable for a log level, so that the split says what is
+sensitive.
 
 | | Variables | Secrets |
 |---|---|---|
-| Stored in | The database, with the app | A Kubernetes Secret, `applab-env-<app>` |
-| In the Deployment | Yes, as env vars | No — referenced by `envFrom` |
-| Readable back | Yes, including through the API and console | **Never.** No route returns a value |
-| Needs a cluster | No | Yes |
+| Stored in | The app's record in the bucket | The app's record in the bucket |
+| In the Deployment | Yes, as env vars | Yes, as env vars, in the clear |
+| Readable back | Yes, including through the API and console | **No.** No route returns a value, only the name |
+| Needs a cluster | No | No |
+
+The last row is worth a sentence, because it is the difference between the API's
+guarantee and the cluster's: AppLab will not show you a secret, and anyone with
+`kubectl get deploy -o yaml` in the app's namespace can see it. The one way to
+keep a value out of a pod spec is a Kubernetes Secret with `envFrom`, and that is
+exactly what this design gave up — so a value that must not be readable from the
+cluster's API is a value that should not go here yet.
 
 **Changes take effect on the next deploy.** Configuration travels the same path
 as code: `applab env set myshop A=1 && applab deploy myshop`. The deployer puts a
 hash of the whole configuration into the pod template, which is what makes a
 deploy that changed only a secret value actually roll the pods — Kubernetes does
-not restart pods for a changed Secret on its own, so without that a rotated
-password would be written to the cluster and never reach the running app.
+not restart pods because an environment variable changed on its own, so without
+that a rotated password would be written to the store and never reach the running
+app.
 
 `PORT` cannot be set: it comes from the app's `port` setting, which is also what
 the Service targets. Set that instead.
@@ -436,7 +449,7 @@ platform, and whoever deploys one app.
 
 | | Admin key | App key |
 |---|---|---|
-| Where it comes from | `APPLAB_KEYS`, or `auth.key` in the chart | Created with the app, in a Secret |
+| Where it comes from | `APPLAB_KEYS`, or `auth.key` in the chart | Created with the app, in the bucket |
 | Reaches | Everything | One app |
 | Delete that app | Yes | No |
 | Clone its repository | Any | Its own |
@@ -462,11 +475,11 @@ What it takes depends on which of the two ways above you started it, and the two
 leave different things behind.
 
 **A local run** is a process and a directory. Stopping `applab` ends the service;
-`APPLAB_DATA_DIR` — `./data` in the quick start — is everything else: the
-database, and a git repository per app. That directory is the only copy of every
-app's source, so deleting it is the point of no return for all of them. Anything
-already deployed to a cluster keeps running, because AppLab put it there and does
-not own it.
+`APPLAB_DATA_DIR` — `./data` in the quick start — is scratch space, and the
+object store it was pointed at is the data. That store holds a git repository per
+app, so emptying it is the point of no return for all of them. Anything already
+deployed to a cluster keeps running, because AppLab put it there and does not own
+it.
 
 **A chart install** is one command:
 

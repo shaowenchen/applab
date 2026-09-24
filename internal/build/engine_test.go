@@ -50,9 +50,17 @@ func newTestEngine(t *testing.T, tweak ...func(*Config)) (*Engine, *fake.Clients
 	return New(client, cfg), client
 }
 
-// TestStartCreatesJobAndSecret asserts a build creates everything it needs, and
-// that the pieces agree.
-func TestStartCreatesJobAndSecret(t *testing.T) {
+// TestStartCreatesJobWithTheSourceToken asserts a build creates the Job it
+// needs and hands the token to the one container entitled to it.
+//
+// The token used to travel in a Secret beside the Job, so that no credential
+// appeared in the pod spec. AppLab no longer uses Secret objects, which makes
+// the question this test asks a different one: not "is it out of the spec" —
+// it is in the spec now, by construction — but "did it reach only the fetcher".
+// The fetch container authenticates one GET; the build container runs arbitrary
+// code from the uploaded Dockerfile, so a credential there is a credential
+// handed to whoever wrote that Dockerfile.
+func TestStartCreatesJobWithTheSourceToken(t *testing.T) {
 	engine, client := newTestEngine(t)
 	ctx := context.Background()
 	app := testApp()
@@ -79,34 +87,33 @@ func TestStartCreatesJobAndSecret(t *testing.T) {
 		t.Fatalf("get job: %v", err)
 	}
 
-	// The token must be in a Secret, never in the Job's own spec — a pod spec is
-	// readable by anyone who can describe the Job, and a container argument would
-	// put the credential there.
-	secret, err := client.CoreV1().Secrets(app.Namespace).Get(ctx, jobName+"-token", metav1.GetOptions{})
+	// No Secret objects at all: the token is an environment variable, so there
+	// is nothing beside the Job to leak or to clean up.
+	secrets, err := client.CoreV1().Secrets(app.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		t.Fatalf("the build token secret was not created: %v", err)
+		t.Fatalf("list secrets: %v", err)
 	}
-	if secret.StringData["token"] != "tok-123" {
-		t.Errorf("secret token = %q, want the token that was passed", secret.StringData["token"])
-	}
-
-	// And the Job spec itself must not contain it.
-	specText := jobSpecText(t, job)
-	if strings.Contains(specText, "tok-123") {
-		t.Error("the source token appears in the Job spec; it must only be in the Secret")
+	if len(secrets.Items) != 0 {
+		t.Errorf("the build left %d Secrets behind; AppLab keeps the token on the Job", len(secrets.Items))
 	}
 
-	// The fetcher must mount the secret.
+	// The fetcher is the container that must have it.
 	fetcher := findContainer(t, job, "fetch-source")
-	if !mountsSecretFor(fetcher, "token") {
-		t.Error("the fetch container does not mount the token secret, so it cannot authenticate")
+	if got := envValue(fetcher, "APPLAB_SOURCE_TOKEN"); got != "tok-123" {
+		t.Errorf("APPLAB_SOURCE_TOKEN on the fetch container = %q, want the token that was passed", got)
 	}
 
 	// The build container must NOT: it runs arbitrary code from the uploaded
 	// Dockerfile, so giving it the token would hand it AppLab's source access.
 	builder := findContainer(t, job, "build")
-	if mountsSecretFor(builder, "token") {
-		t.Error("the build container mounts the source token; a build must not hold a credential it can exfiltrate")
+	if got := envValue(builder, "APPLAB_SOURCE_TOKEN"); got != "" {
+		t.Errorf("the build container carries the source token (%q); a build must not hold a credential it can exfiltrate", got)
+	}
+	if specText := jobSpecText(t, job); !strings.Contains(specText, "APPLAB_SOURCE_TOKEN") {
+		// The fetcher was found by name above, so this only guards the helper
+		// staying honest: if jobSpecText stopped rendering env, the assertion
+		// above would pass for the wrong reason.
+		t.Error("the rendered Job spec does not mention the token variable at all")
 	}
 }
 
@@ -339,7 +346,7 @@ func TestCacheRefFollowsTheImage(t *testing.T) {
 				c.CacheRepoPrefix = tc.cachePath
 			})
 
-			job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag")
+			job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
 			args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
 
 			if !strings.Contains(args, tc.want) {
@@ -456,10 +463,15 @@ func TestStatusOfMissingJobIsNotAFailure(t *testing.T) {
 	}
 }
 
-// TestStartRemovesSecretWhenJobFails asserts a failed start does not leave a
-// credential behind. A Secret with no Job to use it would accumulate one per
-// attempt and keep a live token on disk.
-func TestStartRemovesSecretWhenJobFails(t *testing.T) {
+// TestStartLeavesNothingBehindWhenJobCreationFails asserts a failed start is a
+// no-op.
+//
+// It used to guard a rollback: the token was a Secret created before the Job and
+// deleted again if the Job was refused. With the token on the Job there is
+// nothing to roll back, and the assertion is what keeps that true — a future
+// change that reintroduced an object beside the Job would have to clean it up
+// here or fail this test.
+func TestStartLeavesNothingBehindWhenJobCreationFails(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	client.PrependReactor("create", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewInternalError(errForbidden())
@@ -476,13 +488,17 @@ func TestStartRemovesSecretWhenJobFails(t *testing.T) {
 
 	secrets, _ := client.CoreV1().Secrets(app.Namespace).List(ctx, metav1.ListOptions{})
 	if len(secrets.Items) != 0 {
-		t.Errorf("%d secrets were left behind after a failed build start; the token must be cleaned up", len(secrets.Items))
+		t.Errorf("%d secrets were left behind after a failed build start", len(secrets.Items))
+	}
+	jobs, _ := client.BatchV1().Jobs(app.Namespace).List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 0 {
+		t.Errorf("%d jobs exist after a start that was refused", len(jobs.Items))
 	}
 }
 
-// TestCancelRemovesBoth asserts cancelling stops the build and removes its
-// credential.
-func TestCancelRemovesBoth(t *testing.T) {
+// TestCancelStopsTheBuild asserts cancelling removes the Job, which is the whole
+// of stopping a build now: the token lives on the Job and goes with it.
+func TestCancelStopsTheBuild(t *testing.T) {
 	engine, client := newTestEngine(t)
 	ctx := context.Background()
 	app := testApp()
@@ -500,8 +516,9 @@ func TestCancelRemovesBoth(t *testing.T) {
 	if _, err := client.BatchV1().Jobs(app.Namespace).Get(ctx, jobName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Error("the job still exists after cancellation")
 	}
-	if _, err := client.CoreV1().Secrets(app.Namespace).Get(ctx, jobName+"-token", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Error("the token secret still exists after cancellation")
+	secrets, _ := client.CoreV1().Secrets(app.Namespace).List(ctx, metav1.ListOptions{})
+	if len(secrets.Items) != 0 {
+		t.Errorf("cancelling left %d Secrets behind", len(secrets.Items))
 	}
 }
 
@@ -537,7 +554,7 @@ func TestReadyRequiresConfiguration(t *testing.T) {
 // and a ten-minute rebuild.
 func TestCacheIsImportedAndExported(t *testing.T) {
 	engine, _ := newTestEngine(t)
-	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag")
+	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
 
 	builder := findContainer(t, job, "build")
 	args := strings.Join(builder.Args, " ")
@@ -560,7 +577,7 @@ func TestNoCacheWhenUnconfigured(t *testing.T) {
 	cfg.CacheRepoPrefix = ""
 	engine := New(fake.NewSimpleClientset(), cfg)
 
-	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag")
+	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
 	builder := findContainer(t, job, "build")
 
 	args := strings.Join(builder.Args, " ")
@@ -577,7 +594,7 @@ func TestDockerfilePathIsPassed(t *testing.T) {
 	app := testApp()
 	app.Dockerfile = "build/Dockerfile.prod"
 
-	job := engine.jobSpec(app, "job", "b1", strings.Repeat("a", 40), "image:tag")
+	job := engine.jobSpec(app, "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
 	builder := findContainer(t, job, "build")
 
 	args := strings.Join(builder.Args, " ")
@@ -592,7 +609,7 @@ func TestDeadlineBoundsTheBuild(t *testing.T) {
 	cfg.ActiveDeadline = 15 * time.Minute
 	engine := New(fake.NewSimpleClientset(), cfg)
 
-	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag")
+	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
 
 	if job.Spec.ActiveDeadlineSeconds == nil {
 		t.Fatal("the build job has no deadline; a hung build would occupy a slot forever")
@@ -649,6 +666,17 @@ func mountsSecretFor(c corev1.Container, volumeName string) bool {
 		}
 	}
 	return false
+}
+
+// envValue returns the value of a named environment variable on a container, or
+// the empty string when the container does not carry it.
+func envValue(c corev1.Container, name string) string {
+	for _, e := range c.Env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
 }
 
 // jobSpecText renders a Job to text, for asserting that a value does not appear

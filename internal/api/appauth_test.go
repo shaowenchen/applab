@@ -10,29 +10,24 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/client-go/kubernetes/fake"
-
 	"github.com/shaowenchen/applab/internal/api"
-	"github.com/shaowenchen/applab/internal/appconfig"
-	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
-const (
-	adminKey = "test-key"
-	// The namespace the chart deploys into, and the one app keys live in.
-	appKeyNamespace = "ops-system"
-)
+// adminKey is the key this suite's server is configured with.
+const adminKey = "test-key"
 
-// newTieredServer builds a server with both key tiers wired, which is what the
-// chart produces: admin keys from the environment, app keys from Secrets.
+// newTieredServer builds a server with both key tiers wired.
 //
-// The fake clientset stands in for the cluster, so this exercises the real
-// resolution path — label lookup, digest compare, scope decision — rather than a
-// stub that could agree with a wrong implementation.
+// The two per-app stores read and write AppLab's own object storage, so there is
+// nothing cluster-shaped about them and nothing to attach: the Server builds
+// them from the same store it was handed. That is worth stating here because the
+// function used to exist to wire a fake clientset in, and what it exercises now
+// is the real resolution path — listing the key records, comparing digests,
+// deciding scope — against a real store.
 func newTieredServer(t *testing.T) (*api.Server, *store.Store) {
 	t.Helper()
 
@@ -52,14 +47,7 @@ func newTieredServer(t *testing.T) (*api.Server, *store.Store) {
 	cfg.BaseDomain = "apps.example.com"
 	cfg.DataDir = dataDir
 
-	srv := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src)
-
-	// One clientset for both cluster-backed stores, as a real deployment has one
-	// cluster: keys and secrets are Secrets in the same namespace.
-	clientset := fake.NewSimpleClientset()
-	srv.WithAppKeys(appkey.New(clientset, appKeyNamespace))
-	srv.WithAppConfig(appconfig.New(clientset, appKeyNamespace))
-	return srv, st
+	return api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src), st
 }
 
 // withKey issues a request carrying an arbitrary key.
@@ -384,10 +372,16 @@ func TestDeletingAnAppRemovesItsKey(t *testing.T) {
 	}
 }
 
-// TestWithoutAClusterOnlyTheAdminTierExists covers the deployment that runs with
+// TestWithoutAClusterTheAppTierStillExists covers the deployment that runs with
 // no cluster at all, which is a documented way to run applab.
-func TestWithoutAClusterOnlyTheAdminTierExists(t *testing.T) {
-	// newTestServer attaches no app-key store.
+//
+// The app tier used to be missing in that shape: keys were Secrets, so a
+// deployment with no API server had nowhere to keep one and the routes answered
+// 501. They live in the object store now, which every deployment has, so the
+// only thing a cluster is still needed for is building and deploying — and this
+// asserts the boundary sits there rather than at a credential.
+func TestWithoutAClusterTheAppTierStillExists(t *testing.T) {
+	// newTestServer attaches no cluster-backed capability of any kind.
 	srv, _ := newTestServer(t)
 	h := srv.Handler()
 
@@ -396,15 +390,31 @@ func TestWithoutAClusterOnlyTheAdminTierExists(t *testing.T) {
 		t.Errorf("the admin key stopped working without a cluster: %d", rec.Code)
 	}
 
-	// And the key endpoints say so plainly rather than failing obscurely.
 	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
 	}
 
+	// And so does the app tier, including the key minted with the app.
 	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/key", nil)
-	if rec.Code != http.StatusNotImplemented {
-		t.Errorf("reading a key with no cluster got %d, want 501 with the reason (body: %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reading a key with no cluster got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Key string `json:"key"`
+	}
+	decodeData(t, rec, &got)
+	if got.Key == "" {
+		t.Fatal("the app was created with no key")
+	}
+
+	if rec := withKey(t, h, http.MethodGet, "/api/v1/apps/shop", got.Key, nil); rec.Code != http.StatusOK {
+		t.Errorf("an app key could not authenticate without a cluster: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// What a cluster is still required for, and the only thing: a deploy.
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", nil); rec.Code != http.StatusNotImplemented {
+		t.Errorf("deploying with no cluster got %d, want 501 naming the missing capability (body: %s)", rec.Code, rec.Body.String())
 	}
 }
 

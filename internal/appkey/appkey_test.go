@@ -2,65 +2,54 @@ package appkey_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/fake"
+	"time"
 
 	"github.com/shaowenchen/applab/internal/appkey"
-	"github.com/shaowenchen/applab/internal/k8s"
+	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/objectstore"
+	"github.com/shaowenchen/applab/internal/store"
 )
 
-const namespace = "ops-system"
-
-func newStore(t *testing.T) (*appkey.Store, kubernetes.Interface) {
+// newStore returns a key store over a temporary object store.
+//
+// The store underneath is the real one, and the object store under that is the
+// same implementation a deployment without a bucket runs — so these exercise the
+// layout of `apps/<id>/key.json`, which is now the thing that decides what a
+// credential can reach.
+func newStore(t *testing.T) (*appkey.Store, *store.Store) {
 	t.Helper()
-	client := fake.NewSimpleClientset()
-	return appkey.New(client, namespace), client
+
+	apps, err := store.OpenLocal(context.Background(), filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	return appkey.New(apps), apps
 }
 
-// TestStoreWritesDataNotStringData guards the divergence that made the first
-// version of this package unverifiable.
+// createApp records an app, which is the precondition for holding a key.
 //
-// StringData is write-only sugar: a real API server folds it into Data and never
-// returns it, while the fake clientset used by these tests does not fold at all.
-// A store written against StringData therefore behaves one way in a test and
-// another way against a cluster — and a read path that consulted StringData
-// would work in the test and see an empty key in production. The Secret this
-// package writes must carry the same shape in both, which writing Data directly
-// is what guarantees.
-func TestStoreWritesDataNotStringData(t *testing.T) {
-	store, client := newStore(t)
-	ctx := context.Background()
+// It is separate from minting the key because the two are separate in the
+// product: the API creates the app record and then asks for a key, so a key is
+// never written for an app that does not exist.
+func createApp(t *testing.T, apps *store.Store, id string) {
+	t.Helper()
 
-	key, err := store.Create(ctx, "shop")
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	secret, err := client.CoreV1().Secrets(namespace).Get(ctx, appkey.Name("shop"), metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-
-	if len(secret.StringData) != 0 {
-		t.Errorf("the Secret was written with StringData=%v; a real API server folds that into Data and drops it, so the stored shape differs between a cluster and these tests",
-			secret.StringData)
-	}
-	if got := string(secret.Data["key"]); got != key {
-		t.Errorf("Data[key] = %q, want the key that was minted (%q)", got, key)
+	app := &model.App{ID: id, Name: id, Port: 8080, Replicas: 1, CreatedAt: time.Now()}
+	if err := apps.CreateApp(context.Background(), app); err != nil {
+		t.Fatalf("create app %s: %v", id, err)
 	}
 }
 
 // TestCreateStoresAReadableKey asserts the key a caller is handed is the one
 // that comes back.
 func TestCreateStoresAReadableKey(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	key, err := store.Create(ctx, "shop")
 	if err != nil {
@@ -82,8 +71,10 @@ func TestCreateStoresAReadableKey(t *testing.T) {
 // TestCreateIsUniquePerCall asserts two apps never share a key, and that one app
 // cannot get a second by calling Create twice.
 func TestCreateIsUniquePerCall(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
+	createApp(t, apps, "blog")
 
 	shop, err := store.Create(ctx, "shop")
 	if err != nil {
@@ -118,11 +109,22 @@ func TestGetReportsMissingKey(t *testing.T) {
 	}
 }
 
+// TestCreateRejectsAnEmptyAppID asserts a missing id fails loudly rather than
+// scanning for a record named for nothing.
+func TestCreateRejectsAnEmptyAppID(t *testing.T) {
+	store, _ := newStore(t)
+
+	if _, err := store.Create(context.Background(), ""); err == nil {
+		t.Error("creating a key with no app id should fail")
+	}
+}
+
 // TestRotateReplacesImmediately is the security property: the old key stops
 // working the moment rotation returns.
 func TestRotateReplacesImmediately(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	original, err := store.Create(ctx, "shop")
 	if err != nil {
@@ -166,8 +168,10 @@ func TestRotateCreatesWhenAbsent(t *testing.T) {
 
 // TestResolveMapsKeyToApp is what the auth layer stands on.
 func TestResolveMapsKeyToApp(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
+	createApp(t, apps, "blog")
 
 	shopKey, _ := store.Create(ctx, "shop")
 	blogKey, _ := store.Create(ctx, "blog")
@@ -201,8 +205,9 @@ func TestResolveMapsKeyToApp(t *testing.T) {
 // TestResolveToleratesSurroundingSpace asserts a key pasted with a stray newline
 // still works — which is what a shell substitution routinely produces.
 func TestResolveToleratesSurroundingSpace(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	key, _ := store.Create(ctx, "shop")
 
@@ -215,65 +220,68 @@ func TestResolveToleratesSurroundingSpace(t *testing.T) {
 	}
 }
 
-// TestResolveIgnoresASecretWithoutAnAppLabel asserts a Secret carrying only the
-// digest label grants nothing.
+// TestResolveIgnoresARecordAtTheWrongDepth is the equivalent of the label check
+// the Secret version needed, expressed in the layout that replaced it.
 //
-// The lookup is by digest, so anything that can write a Secret with that label
-// would otherwise be able to mint a credential. Without the app label there is
-// no app to scope it to, and this package never writes such a Secret — so it is
-// refused rather than treated as admin.
-func TestResolveIgnoresASecretWithoutAnAppLabel(t *testing.T) {
-	store, client := newStore(t)
+// A key is found by listing `apps/<id>/key.json` at exactly that depth. The old
+// version keyed off a label, which meant anything that could write a Secret with
+// a matching digest label could mint a credential for itself; the object store
+// has no labels, and what scopes a key to an app is where its record sits. This
+// asserts that a record anywhere else is not a credential — which is the
+// property that keeps a value someone else's app wrote out of the app list.
+func TestResolveIgnoresARecordAtTheWrongDepth(t *testing.T) {
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
 
 	key, _ := store.Create(ctx, "shop")
 
-	// Take the real digest off shop's own Secret, so the forgery collides with
-	// the genuine lookup rather than with a value this test computed itself.
-	real, err := client.CoreV1().Secrets(namespace).Get(ctx, appkey.Name("shop"), metav1.GetOptions{})
+	// Take the real record's digest, so the forgery collides with the genuine
+	// lookup rather than with a value this test computed itself.
+	body, err := apps.Objects().GetBytes(ctx, objectstore.Key("apps", "shop", "key.json"))
 	if err != nil {
-		t.Fatalf("get shop's secret: %v", err)
+		t.Fatalf("read shop's key record: %v", err)
 	}
-	digest := real.Labels["applab.io/key-digest"]
-	if digest == "" {
-		t.Fatal("shop's Secret carries no digest label")
+	var genuine struct {
+		Digest string `json:"digest"`
 	}
-
-	// A hand-made Secret whose digest matches shop's key but which names no app.
-	forged := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "forged",
-			Namespace: namespace,
-			Labels:    map[string]string{"applab.io/key-digest": digest},
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{"key": []byte(key)},
+	if err := json.Unmarshal(body, &genuine); err != nil {
+		t.Fatalf("decode shop's key record: %v", err)
 	}
-	if _, err := client.CoreV1().Secrets(namespace).Create(ctx, forged, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create forged secret: %v", err)
+	if genuine.Digest == "" {
+		t.Fatal("shop's key record carries no digest")
 	}
 
-	// Deleting shop's key leaves only the forged Secret, which must not resolve.
+	// A record carrying shop's digest, but nested a level deeper — where the
+	// listing does not look, because that is where a build's or a commit's own
+	// files live.
+	forged, _ := json.Marshal(map[string]string{"key": key, "digest": genuine.Digest})
+	if err := apps.Objects().PutBytes(ctx, objectstore.Key("apps", "shop", "builds", "key.json"), forged); err != nil {
+		t.Fatalf("write the forged record: %v", err)
+	}
+
+	// Removing shop's key leaves only the forged record, which must not resolve.
 	if err := store.Remove(ctx, "shop"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if app, ok, err := store.ResolveAppKey(ctx, key); err != nil {
 		t.Fatalf("resolve: %v", err)
 	} else if ok {
-		t.Errorf("a Secret with no %s label resolved to app %q; the app label is what scopes the key", k8s.LabelApp, app)
+		t.Errorf("a key record outside apps/<id>/key.json resolved to app %q", app)
 	}
 }
 
 // TestRemoveIsIdempotent asserts removing a key that is not there is not an
 // error, so teardown can call it unconditionally.
 func TestRemoveIsIdempotent(t *testing.T) {
-	store, _ := newStore(t)
+	store, apps := newStore(t)
 	ctx := context.Background()
 
 	if err := store.Remove(ctx, "nothing"); err != nil {
 		t.Errorf("removing a non-existent key returned %v, want nil", err)
 	}
 
+	createApp(t, apps, "shop")
 	key, _ := store.Create(ctx, "shop")
 	if err := store.Remove(ctx, "shop"); err != nil {
 		t.Fatalf("remove: %v", err)
@@ -286,90 +294,32 @@ func TestRemoveIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestSecretCarriesTheLabelsTheSystemDependsOn asserts the two labels that carry
-// weight elsewhere: the app label, which is how deleting an app removes its key,
-// and the digest label, which is how a key is found.
-func TestSecretCarriesTheLabelsTheSystemDependsOn(t *testing.T) {
-	store, client := newStore(t)
-	ctx := context.Background()
-
-	if _, err := store.Create(ctx, "shop"); err != nil {
-		t.Fatalf("create key: %v", err)
-	}
-
-	secret, err := client.CoreV1().Secrets(namespace).Get(ctx, appkey.Name("shop"), metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get secret: %v", err)
-	}
-
-	// The exact label k8s.Client.DeleteAppObjects selects on, so that deleting
-	// an app deletes its key. If this constant ever changes, the key would be
-	// orphaned rather than removed.
-	if got := secret.Labels[k8s.LabelApp]; got != "shop" {
-		t.Errorf("the key Secret carries %s=%q, want shop — deleting an app removes its key by this label",
-			k8s.LabelApp, got)
-	}
-	if secret.Labels["applab.io/key-digest"] == "" {
-		t.Error("the key Secret has no digest label, so Resolve cannot find it")
-	}
-}
-
-// TestDigestLabelFitsAKubernetesLabelValue guards the bug that made the first
-// version of this unshippable.
+// TestDeletingAnAppTakesItsKey asserts the teardown property the Secret version
+// got from a label: removing an app leaves no working credential behind.
 //
-// A label value may not exceed 63 bytes and a sha256 hex digest is 64, so
-// storing the whole digest makes the Secret impossible to create — against a
-// real API server, and only there. The check is the API's own rule rather than a
-// length comparison, so it cannot drift from what the server enforces.
-func TestDigestLabelFitsAKubernetesLabelValue(t *testing.T) {
-	store, client := newStore(t)
+// It is the reason the key is an object under the app's own directory rather
+// than a shared index — the app's removal is a prefix deletion, and the key is
+// inside that prefix.
+func TestDeletingAnAppTakesItsKey(t *testing.T) {
+	store, apps := newStore(t)
 	ctx := context.Background()
+	createApp(t, apps, "shop")
+	createApp(t, apps, "blog")
 
-	// Creating through the store is the real test: a label the server rejects
-	// would make this fail.
-	if _, err := store.Create(ctx, "shop"); err != nil {
-		t.Fatalf("create: %v", err)
+	shopKey, _ := store.Create(ctx, "shop")
+	blogKey, _ := store.Create(ctx, "blog")
+
+	if err := apps.DeleteApp(ctx, "shop"); err != nil {
+		t.Fatalf("delete app: %v", err)
 	}
 
-	secret, err := client.CoreV1().Secrets(namespace).Get(ctx, appkey.Name("shop"), metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get: %v", err)
+	if app, ok, err := store.ResolveAppKey(ctx, shopKey); err != nil {
+		t.Fatalf("resolve: %v", err)
+	} else if ok {
+		t.Errorf("deleting an app left a working key, resolving to %q", app)
 	}
-
-	digest := secret.Labels["applab.io/key-digest"]
-	if len(digest) > 63 {
-		t.Errorf("the digest label is %d bytes; Kubernetes allows at most 63, so this Secret cannot be created", len(digest))
-	}
-	if errs := validation.IsValidLabelValue(digest); len(errs) > 0 {
-		t.Errorf("the digest label %q is not a valid label value: %v", digest, errs)
-	}
-}
-
-// TestCreateRejectsAnEmptyAppID asserts a missing id fails loudly rather than
-// writing a Secret named for nothing.
-func TestCreateRejectsAnEmptyAppID(t *testing.T) {
-	store, _ := newStore(t)
-
-	if _, err := store.Create(context.Background(), ""); err == nil {
-		t.Error("creating a key with no app id should fail")
-	}
-}
-
-// TestNameIsDerivedFromTheAppID asserts the naming rule is one function, so a
-// caller and the store cannot disagree about where a key lives.
-func TestNameIsDerivedFromTheAppID(t *testing.T) {
-	if got, want := appkey.Name("shop"), "applab-key-shop"; got != want {
-		t.Errorf("Name(shop) = %q, want %q", got, want)
-	}
-}
-
-// TestReadyReflectsWhetherAClientIsAttached covers the no-cluster deployment,
-// where the API layer must report the capability as unavailable.
-func TestReadyReflectsWhetherAClientIsAttached(t *testing.T) {
-	if !appkey.New(fake.NewSimpleClientset(), namespace).Ready() {
-		t.Error("a store with a client should be ready")
-	}
-	if appkey.New(nil, namespace).Ready() {
-		t.Error("a store with no client is not ready")
+	// The neighbour is untouched: one app's removal is one prefix.
+	if app, ok, _ := store.ResolveAppKey(ctx, blogKey); !ok || app != "blog" {
+		t.Errorf("deleting shop disturbed blog's key: (%q, %v)", app, ok)
 	}
 }

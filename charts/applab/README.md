@@ -269,40 +269,46 @@ whole revocation.
 That is also why `auth.existingSecret` is worth using even with one key. Release
 values are stored in plain text in the cluster and are frequently committed.
 
-**App keys** are created by AppLab itself, one Secret per app, as apps are
-created. An app key reaches only its app: it can push, build, deploy, roll back
-and read logs, but cannot delete the app and cannot see any other app. That is
-the credential to hand to whoever deploys an app, so they never hold one that can
+**App keys** are created by AppLab itself, one per app, as apps are created. An
+app key reaches only its app: it can push, build, deploy, roll back and read
+logs, but cannot delete the app and cannot see any other app. That is the
+credential to hand to whoever deploys an app, so they never hold one that can
 destroy the installation. Read or rotate one with `applab keys <app>` (or
 `GET /api/v1/apps/<app>/key`).
 
-App keys live in the cluster, so nothing is cached and a rotation takes effect
-immediately — and a deployment whose API server is unreachable cannot
-authenticate at all, admin keys included. They need the `secrets` permission the
-Role already grants; nothing here has to be widened.
+An app key is stored in the bucket, under the app's own directory, so nothing is
+cached and a rotation takes effect immediately. Two consequences worth knowing:
+the bucket credential now reaches every app's key as well as the source, and a
+deployment whose object storage is unreachable cannot authenticate at all, admin
+keys included. Nothing in the chart has to be configured for this.
 
 ### App configuration
 
-An app's configuration is split by sensitivity, and only one half is yours to
-configure here.
+Both halves of an app's configuration live in the app's own record in the
+bucket, and both reach the container the same way: AppLab writes them into the
+Deployment's `env` as plain values.
 
-**Environment variables** — `LOG_LEVEL`, `FEATURE_X` — are stored in AppLab's
-database and are visible in an app's Deployment to anyone who can read it. They
-need no setting.
+**Environment variables** — `LOG_LEVEL`, `FEATURE_X` — are the plain half.
 
-**Secrets** — passwords, tokens, connection strings — are created by AppLab, one
-Secret per app named `applab-env-<app>`, as they are set. They are never written
-into the Deployment: it references the Secret through `envFrom` and the kubelet
-substitutes the values inside the container. No endpoint returns a value, so a
-secret cannot be read back through the API, the CLI or the console — only its
-name.
+**Secrets** — passwords, tokens, connection strings — are the other. No endpoint
+returns a value, so a secret cannot be read back through the API, the CLI or the
+console; only its name. But **the value is in the Deployment's spec in the
+clear**, because that is where a container's environment comes from — anyone who
+can read a Deployment in this namespace can read every app's secrets:
+
+```bash
+kubectl -n ops-system get deploy <app> -o yaml   # shows every env value
+```
+
+That is the cost of an AppLab with no Secret objects, and it is worth knowing
+before you put a production credential in one. Kubernetes is where a value can
+be kept out of a pod spec, and the two objects that do it — Secret and
+`valueFrom.secretKeyRef` — are exactly what this design gives up. The Role's
+`secrets` permission remains only so that deleting an app still cleans up Secret
+objects left by an older version.
 
 Both halves are managed with `applab env` (or `PUT /api/v1/apps/<app>/secrets`),
 and **take effect on the next deploy**. Nothing to configure in the chart.
-
-Worth knowing: secrets reach the cluster as API traffic and are stored in `etcd`
-like any Kubernetes Secret. Encryption at rest is the cluster's job, not
-AppLab's.
 
 ## After installing
 
@@ -375,9 +381,15 @@ helm upgrade applab applab/applab \
 builds are published: Helm does not resolve a prerelease unless it is asked for
 by name. An upgrade without it fails the same way an install does.
 
-The database schema migrates on start. A newer AppLab refuses to run against an
-older one's schema rather than guessing, so roll the image back with the chart if
-an upgrade needs reverting.
+There is no schema to migrate: everything AppLab remembers is objects in the
+bucket, written and read by this version. An upgrade is therefore a rollout, and
+rolling the image back with the chart is the whole of a revert — with one
+exception. Upgrading *to* this version from one that kept app keys and
+configuration in Kubernetes Secrets does not carry them across. An app that had
+a key reads as having none until `applab keys <app> --rotate` mints one, so read
+the old value before upgrading if anything depends on it; and secrets have to be
+set again with `applab env`. The old Secret objects are inert — nothing reads
+them any more — and deleting an app removes them along with its other objects.
 
 ## Uninstalling
 

@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/shaowenchen/applab/internal/api"
-	"github.com/shaowenchen/applab/internal/appconfig"
-	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/buildinfo"
@@ -160,12 +158,6 @@ func run() error {
 
 	// Which repository a credential may reach is decided by the API layer, which
 	// owns the two tiers — see Server.AuthorizeGitRepo.
-	//
-	// The hook is a closure over srv rather than a check made here, because the
-	// per-app key store is attached further down (it comes with the cluster,
-	// which is optional). A closure reads srv's fields when the request arrives,
-	// so it sees whatever was attached by then, and a deployment with no cluster
-	// simply has no app keys to resolve against.
 	srv.WithGit(gitTransport.Authorize(srv.AuthorizeGitRepo))
 
 	// The console is a client of the same public API, so it holds no privileges
@@ -197,19 +189,6 @@ func run() error {
 		// there is no namespace to drop.
 		srv.WithAppObjectsDeleter(client.DeleteAppObjects)
 		srv.WithClusterStatus(client.Ready)
-
-		// Per-app API keys live in Secrets, so they come with the cluster the
-		// same way builds and deploys do. Without one the deployment keeps
-		// working on the admin tier alone — which is the documented way to run
-		// AppLab with no cluster at all.
-		srv.WithAppKeys(appkey.New(client.Clientset(), cfg.Namespace))
-
-		// An app's secrets live in a Secret beside it, so they need a cluster
-		// for the same reason the keys do. Without one an app still deploys and
-		// still gets its environment variables; only the secret endpoints
-		// report themselves unavailable.
-		appConfig := appconfig.New(client.Clientset(), cfg.Namespace)
-		srv.WithAppConfig(appConfig)
 
 		if cfg.Build.Enabled() {
 			engine := build.New(client.Clientset(), build.Config{
@@ -262,9 +241,6 @@ func run() error {
 			AppMemoryRequest: cfg.Deploy.AppMemoryRequest,
 			AppCPULimit:      cfg.Deploy.AppCPULimit,
 			AppMemoryLimit:   cfg.Deploy.AppMemoryLimit,
-			// The deployer is the one thing that reads secret values, to hash
-			// them into the pod template.
-			Secrets: appConfig,
 		}))
 	}
 

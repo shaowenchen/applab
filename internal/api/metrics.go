@@ -58,7 +58,7 @@ func NewMetrics() *Metrics {
 // RegisterGauge attaches a value sampled when the endpoint is scraped.
 //
 // A function rather than a value because these change without AppLab doing
-// anything — the number of apps is whatever is in the database — and a counter
+// anything — the number of apps is whatever the object store holds — and a counter
 // that has to be remembered to be updated is a counter that goes stale.
 func (m *Metrics) RegisterGauge(name, help string, fn func() float64) {
 	m.gaugesMu.Lock()

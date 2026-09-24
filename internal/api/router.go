@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/shaowenchen/applab/internal/appconfig"
+	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/deploy"
@@ -86,14 +88,20 @@ type Server struct {
 	// clusterReady reports whether the cluster is reachable.
 	clusterReady func(ctx context.Context) bool
 
-	// appKeys resolves an app key to its app. Nil means this deployment has no
-	// app keys — which is the case without a cluster, since they live in
-	// Secrets — and then only the admin tier exists.
+	// appKeys resolves an app key to its app, and mints and rotates them.
+	//
+	// It is built from the store this Server already holds rather than attached
+	// from outside, because it has no dependency the Server does not: keys live
+	// in the object store beside the app they belong to, which every deployment
+	// has. It was a cluster-backed attachment while keys were Secrets, and the
+	// cluster half of this Server is optional — so its absence used to mean the
+	// whole app tier was missing. That is no longer a state that exists.
 	appKeys appKeyService
 
-	// appConfig holds an app's secret configuration. Nil means this deployment
-	// cannot keep secrets, which is the case without a cluster. The environment
-	// variables are unaffected: they live in the database with the app.
+	// appConfig holds an app's secret configuration, on the same terms as
+	// appKeys and for the same reason. It is the other half of what used to be
+	// a cluster-backed attachment; environment variables were never in it,
+	// because they live in the app's own record with everything else.
 	appConfig appConfigService
 
 	// deployer is the deploy half of the pipeline. Nil means this deployment
@@ -158,9 +166,22 @@ type Deployer interface {
 	Restart(ctx context.Context, app *model.App) error
 }
 
-// New builds a Server.
+// New builds a Server over AppLab's own state.
+//
+// The per-app key and secret stores are built here rather than attached from
+// outside: both live in the object store, which is the same store this Server
+// was just handed, so there is nothing for a caller to decide and no deployment
+// shape in which one is absent. The attachments that remain are the ones that
+// genuinely depend on something optional — a cluster, a git transport, a
+// console.
 func New(cfg config.Config, st *store.Store, a *auth.Authenticator) *Server {
-	return &Server{cfg: cfg, store: st, auth: a}
+	return &Server{
+		cfg:       cfg,
+		store:     st,
+		auth:      a,
+		appKeys:   appkey.New(st),
+		appConfig: appconfig.New(st),
+	}
 }
 
 // WithSource attaches source storage.
@@ -303,13 +324,11 @@ func (s *Server) WithDeployer(d Deployer) *Server { s.deployer = d; return s }
 // appKeyService is the per-app key store, as this layer needs it.
 //
 // It is an interface rather than the concrete appkey.Store for the same reason
-// the build and deploy halves are: a deployment without app-key support — one
-// with no cluster to keep the Secrets in — leaves it nil, and the affected
-// routes report "not available" rather than failing at call time.
+// the build and deploy halves are — so the layer above can be tested without a
+// store behind it — but it is no longer an optional attachment with a Ready
+// check. Keys live in the object store now, which every deployment has, so a
+// server always holds one.
 type appKeyService interface {
-	// Ready reports whether the store can reach a cluster.
-	Ready() bool
-
 	// Create mints a key for an app that has none.
 	Create(ctx context.Context, appID string) (string, error)
 
@@ -328,12 +347,6 @@ type appKeyService interface {
 	ResolveAppKey(ctx context.Context, presented string) (string, bool, error)
 }
 
-// WithAppKeys attaches the per-app key store.
-//
-// Attached only when a cluster is reachable: keys live in Secrets, so a
-// deployment without one keeps working on the admin tier alone.
-func (s *Server) WithAppKeys(store appKeyService) *Server { s.appKeys = store; return s }
-
 // appConfigService is the per-app secret store, as this layer needs it.
 //
 // Note what is missing: there is no method returning a secret's value. The
@@ -341,9 +354,6 @@ func (s *Server) WithAppKeys(store appKeyService) *Server { s.appKeys = store; r
 // thing in AppLab that does — which is what makes "no route returns a secret" a
 // property of the code rather than a rule someone has to remember.
 type appConfigService interface {
-	// Ready reports whether the store can reach a cluster.
-	Ready() bool
-
 	// Set writes the given values, preserving any key not mentioned, and
 	// returns the app's full set of names.
 	Set(ctx context.Context, appID string, values map[string]string) ([]string, error)
@@ -357,13 +367,6 @@ type appConfigService interface {
 	// Delete removes an app's configuration entirely.
 	Delete(ctx context.Context, appID string) error
 }
-
-// WithAppConfig attaches the per-app secret store.
-//
-// Attached only when a cluster is reachable: secrets live in Secrets, so a
-// deployment without one keeps working with environment variables alone and
-// reports the secret endpoints as unavailable.
-func (s *Server) WithAppConfig(store appConfigService) *Server { s.appConfig = store; return s }
 
 // Observer reads an app's runtime state.
 type Observer interface {
@@ -394,7 +397,7 @@ func (s *Server) WithObserver(o Observer) *Server { s.observer = o; return s }
 func (s *Server) WithMetrics(m *Metrics) *Server {
 	s.metrics = m
 
-	// These are sampled at scrape time: they are whatever is in the database,
+	// These are sampled at scrape time: they are whatever the object store holds,
 	// which changes without AppLab doing anything in particular.
 	m.RegisterGauge("applab_apps", "Apps known to this installation.", func() float64 {
 		apps, err := s.store.ListApps(context.Background())
@@ -694,7 +697,7 @@ func (s *Server) routes() []route {
 			Pattern: "GET /api/v1/apps/{app}/key",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "The app's API key, in full. Works with the app's own key or an admin key. This key may be used for the API, the CLI and the console, and reaches only this app. 501 if this deployment has no cluster, where keys are kept.",
+			Doc:     "The app's API key, in full. Works with the app's own key or an admin key. This key may be used for the API, the CLI and the console, and reaches only this app.",
 			Handler: s.handleGetAppKey,
 		},
 		{

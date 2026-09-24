@@ -26,17 +26,6 @@ type appConfigResponse struct {
 	Secrets []string `json:"secrets"`
 }
 
-// configEndpointsUnavailable is the failure every handler here shares.
-//
-// Secrets live in the cluster, so a deployment without one cannot hold any.
-// That is the same shape as the key and build endpoints — a capability that is
-// absent rather than broken — so it reports 501 with the reason rather than a
-// 500 that reads as a fault.
-func (s *Server) configEndpointsUnavailable(w http.ResponseWriter, r *http.Request) {
-	fail(w, r, Errorf(http.StatusNotImplemented,
-		"this deployment has no cluster, so app secrets are unavailable; environment variables are not affected"))
-}
-
 // setEnvRequest is the body of PUT .../env.
 //
 // Each value is a pointer so that an explicitly empty string — "set this to
@@ -160,11 +149,6 @@ func (s *Server) handleDeleteAppEnv(w http.ResponseWriter, r *http.Request) {
 // request that legitimately carries its value, and echoing it back would put it
 // in a response body, a log line and a shell history for no gain.
 func (s *Server) handleSetAppSecrets(w http.ResponseWriter, r *http.Request) {
-	if s.appConfig == nil || !s.appConfig.Ready() {
-		s.configEndpointsUnavailable(w, r)
-		return
-	}
-
 	app, err := s.loadApp(r)
 	if err != nil {
 		fail(w, r, err)
@@ -204,11 +188,6 @@ func (s *Server) handleSetAppSecrets(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteAppSecret removes one secret value.
 func (s *Server) handleDeleteAppSecret(w http.ResponseWriter, r *http.Request) {
-	if s.appConfig == nil || !s.appConfig.Ready() {
-		s.configEndpointsUnavailable(w, r)
-		return
-	}
-
 	app, err := s.loadApp(r)
 	if err != nil {
 		fail(w, r, err)
@@ -237,9 +216,6 @@ func (s *Server) handleDeleteAppSecret(w http.ResponseWriter, r *http.Request) {
 // still perfectly readable, and failing the whole request because the other half
 // is unavailable would hide them for no reason.
 func (s *Server) secretNames(r *http.Request, appID string) ([]string, *apiError) {
-	if s.appConfig == nil || !s.appConfig.Ready() {
-		return nil, nil
-	}
 	names, err := s.appConfig.Names(r.Context(), appID)
 	if err != nil {
 		return nil, Errorf(http.StatusInternalServerError, "read the configuration for app %q", appID).Wrap(err)

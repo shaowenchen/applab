@@ -224,9 +224,9 @@ func (e *Engine) JobNameFor(appID, buildID string) string {
 // Start creates the build Job for a commit.
 //
 // sourceToken grants the init container access to exactly that commit. It is
-// passed through a Secret rather than as a container argument, because arguments
-// are readable by anyone who can get a pod spec and appear in the Job's own
-// description.
+// passed as an environment variable rather than as a container argument, because
+// arguments appear in the process listing of the running container and in the
+// Job's own description.
 func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, sourceToken string) (string, error) {
 	if !e.Ready() {
 		return "", fmt.Errorf("build is not configured: builder image, registry and applab URL are all required")
@@ -236,16 +236,12 @@ func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, 
 	jobName := e.JobNameFor(app.ID, buildID)
 	image := e.ImageFor(app.ID, commitSHA)
 
-	if err := e.createTokenSecret(ctx, namespace, jobName, sourceToken, app.ID, buildID); err != nil {
-		return "", err
-	}
-
-	job := e.jobSpec(app, jobName, buildID, commitSHA, image)
+	job := e.jobSpec(app, jobName, buildID, commitSHA, image, sourceToken)
 
 	if _, err := e.client.BatchV1().Jobs(namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
-		// The Secret is useless without the Job, and leaving it behind would
-		// accumulate one per failed start.
-		_ = e.client.CoreV1().Secrets(namespace).Delete(ctx, jobName+"-token", metav1.DeleteOptions{})
+		// Nothing to roll back: the token is an environment variable on the Job
+		// rather than an object beside it, so a start that fails leaves nothing
+		// behind.
 		if apierrors.IsAlreadyExists(err) {
 			return "", fmt.Errorf("a build job named %s already exists", jobName)
 		}
@@ -260,7 +256,7 @@ func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, 
 // It is separated from Start so it can be rendered and inspected in a test
 // without a cluster, which is the only way to check the security context and
 // volume wiring on a laptop.
-func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image string) *batchv1.Job {
+func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image, sourceToken string) *batchv1.Job {
 	namespace := app.Namespace
 	workspace := "workspace"
 
@@ -280,14 +276,6 @@ func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image stri
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{
 					SizeLimit: ptr(resourcePtr(e.cfg.WorkspaceSizeLimit)),
-				},
-			},
-		},
-		{
-			Name: "token",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: jobName + "-token",
 				},
 			},
 		},
@@ -321,13 +309,11 @@ func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image stri
 				Spec: corev1.PodSpec{
 					// No API token. A build runs arbitrary code from the uploaded
 					// Dockerfile, and Kubernetes mounts a service account token
-					// into every pod by default — which in this namespace grants
-					// read access to every Secret, including the registry
-					// credentials beside it. Nothing in this Job needs to talk to
-					// the API server: the init container fetches its source over
-					// HTTP with a single-use token, and the builder only pushes to
-					// a registry. Turning it off is what makes "the builder never
-					// sees a credential" true rather than aspirational.
+					// into every pod by default, which in this namespace is read
+					// access to whatever AppLab's Role grants. Nothing in this Job
+					// needs to talk to the API server: the init container fetches
+					// its source over HTTP with a single-use token, and the
+					// builder only pushes to a registry.
 					AutomountServiceAccountToken: ptr(false),
 					RestartPolicy:                corev1.RestartPolicyNever,
 					SecurityContext: &corev1.PodSecurityContext{
@@ -336,7 +322,7 @@ func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image stri
 						// by whichever uid the containers run as.
 						FSGroup: ptr(int64(1000)),
 					},
-					InitContainers: []corev1.Container{e.fetchContainer(app, jobName, commitSHA, workspace)},
+					InitContainers: []corev1.Container{e.fetchContainer(app, jobName, commitSHA, workspace, sourceToken)},
 					Containers:     []corev1.Container{e.buildContainer(app, jobName, buildID, commitSHA, image, workspace)},
 					Volumes:        volumes,
 				},
@@ -383,12 +369,19 @@ func (e *Engine) registryVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
 // because that is all the step is: one authenticated GET, piped into tar. Keeping
 // it minimal means the init image is small and its behaviour is inspectable from
 // the Job spec.
-func (e *Engine) fetchContainer(app *model.App, jobName, commitSHA, workspace string) corev1.Container {
-	// The token arrives as a file, so it never appears in the Job's arguments.
+func (e *Engine) fetchContainer(app *model.App, jobName, commitSHA, workspace, token string) corev1.Container {
+	// The token arrives as an environment variable, so it is not in the Job's
+	// arguments — which are the thing that ends up in a process listing and in
+	// the shell history of anything that copied the command.
+	//
+	// It used to arrive as a mounted Secret, so that no value appeared in the
+	// pod spec at all. AppLab no longer uses Secret objects, and the exposure
+	// this leaves is small by construction: the token is single-use, names one
+	// commit, and expires in a minute.
 	script := `
 set -eu
 
-token="$(cat /var/run/applab/token)"
+token="${APPLAB_SOURCE_TOKEN}"
 url="${APPLAB_URL}/api/v1/apps/${APPLAB_APP}/source/archive/${APPLAB_COMMIT}"
 
 echo "fetching source for ${APPLAB_APP} at ${APPLAB_COMMIT}"
@@ -427,10 +420,10 @@ echo "source ready: $(find /workspace/source -type f | wc -l) files"
 			{Name: "APPLAB_APP", Value: app.ID},
 			{Name: "APPLAB_COMMIT", Value: commitSHA},
 			{Name: "APPLAB_DOCKERFILE", Value: app.Dockerfile},
+			{Name: "APPLAB_SOURCE_TOKEN", Value: token},
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: workspace, MountPath: "/workspace"},
-			{Name: "token", MountPath: "/var/run/applab", ReadOnly: true},
 		},
 		SecurityContext: &corev1.SecurityContext{
 			RunAsNonRoot:             ptr(true),
@@ -617,38 +610,6 @@ buildctl --addr unix:///run/buildkit/buildkitd.sock "$@"
 	return container
 }
 
-// createTokenSecret stores the source token where the init container can read it.
-func (e *Engine) createTokenSecret(ctx context.Context, namespace, jobName, token, appID, buildID string) error {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName + "-token",
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "applab",
-				"applab.io/app":                appID,
-				"applab.io/build":              buildID,
-			},
-		},
-		// Opaque rather than a typed secret: this is not a standard credential
-		// shape and giving it a type would imply a meaning it does not have.
-		Type:       corev1.SecretTypeOpaque,
-		StringData: map[string]string{"token": token},
-	}
-
-	if _, err := e.client.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			// A retried start reuses the name. Replacing the token is correct:
-			// the old one may have been consumed or expired.
-			if _, updateErr := e.client.CoreV1().Secrets(namespace).Update(ctx, secret, metav1.UpdateOptions{}); updateErr != nil {
-				return fmt.Errorf("update build token secret %s: %w", secret.Name, updateErr)
-			}
-			return nil
-		}
-		return fmt.Errorf("create build token secret %s: %w", secret.Name, err)
-	}
-	return nil
-}
-
 // Status reads a build Job's current state.
 func (e *Engine) Status(ctx context.Context, namespace, jobName string) (model.BuildStatus, string, error) {
 	job, err := e.client.BatchV1().Jobs(namespace).Get(ctx, jobName, metav1.GetOptions{})
@@ -656,8 +617,8 @@ func (e *Engine) Status(ctx context.Context, namespace, jobName string) (model.B
 		if apierrors.IsNotFound(err) {
 			// The Job is gone — most likely cleaned up by its TTL after finishing.
 			// Reporting "failed" would be wrong and alarming; the recorded status
-			// in the database is the better answer, so this is surfaced as an
-			// absence rather than a verdict.
+			// in AppLab's own state is the better answer, so this is surfaced as
+			// an absence rather than a verdict.
 			return "", "the build job no longer exists; it was probably cleaned up after finishing", nil
 		}
 		return "", "", fmt.Errorf("read build job %s: %w", jobName, err)
@@ -727,7 +688,7 @@ func (e *Engine) Logs(ctx context.Context, namespace, jobName string, tailLines 
 	return buf.String(), nil
 }
 
-// Cancel deletes a build Job and its token Secret, stopping the build.
+// Cancel deletes a build Job, stopping the build.
 func (e *Engine) Cancel(ctx context.Context, namespace, jobName string) error {
 	// Foreground propagation so the pods are gone before the Job is, which is
 	// what makes a subsequent build start cleanly.
@@ -740,9 +701,6 @@ func (e *Engine) Cancel(ctx context.Context, namespace, jobName string) error {
 		return fmt.Errorf("delete build job %s: %w", jobName, err)
 	}
 
-	if err := e.client.CoreV1().Secrets(namespace).Delete(ctx, jobName+"-token", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete build token secret for %s: %w", jobName, err)
-	}
 	return nil
 }
 

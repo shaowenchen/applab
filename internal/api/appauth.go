@@ -179,12 +179,11 @@ func (s *Server) appListAuth(next http.Handler, refuse func(http.ResponseWriter)
 
 // appKeyResolver returns the resolver the auth layer should use, or nil.
 //
-// A store that cannot reach the cluster is reported as nil rather than being
-// passed on: without a cluster there is nothing to resolve a key against, and
-// the admin tier keeps working — which is the whole point of AppLab being
-// runnable with no cluster at all.
+// A server with no key store — which only happens in a test that did not attach
+// one — reports nil rather than a resolver over nothing, so the admin tier keeps
+// working on its own.
 func (s *Server) appKeyResolver() auth.AppKeyResolver {
-	if s.appKeys == nil || !s.appKeys.Ready() {
+	if s.appKeys == nil {
 		return nil
 	}
 	return s.appKeys

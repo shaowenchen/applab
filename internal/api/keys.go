@@ -20,17 +20,6 @@ type appKeyResponse struct {
 	Key   string `json:"key"`
 }
 
-// keyEndpointsUnavailable is the failure both handlers share.
-//
-// A deployment with no cluster has nowhere to keep a key, since they live in
-// Secrets. That is the same shape as the build and deploy halves — a capability
-// that is absent rather than broken — so it reports 501 with the reason rather
-// than a 500 that reads as a fault.
-func (s *Server) keyEndpointsUnavailable(w http.ResponseWriter, r *http.Request) {
-	fail(w, r, Errorf(http.StatusNotImplemented,
-		"this deployment has no cluster, so per-app keys are unavailable; use an admin key"))
-}
-
 // handleGetAppKey returns an app's key.
 //
 // Reaching this route at all means the caller is either an admin or an app key
@@ -39,11 +28,6 @@ func (s *Server) keyEndpointsUnavailable(w http.ResponseWriter, r *http.Request)
 // key is intended: the key is the app's identity, and whoever holds it is
 // already acting as that app.
 func (s *Server) handleGetAppKey(w http.ResponseWriter, r *http.Request) {
-	if s.appKeys == nil || !s.appKeys.Ready() {
-		s.keyEndpointsUnavailable(w, r)
-		return
-	}
-
 	app, err := s.loadApp(r)
 	if err != nil {
 		fail(w, r, err)
@@ -73,11 +57,6 @@ func (s *Server) handleGetAppKey(w http.ResponseWriter, r *http.Request) {
 // recovered with the same call rather than an error that tells the caller to
 // create it first — the store treats the two the same way.
 func (s *Server) handleRotateAppKey(w http.ResponseWriter, r *http.Request) {
-	if s.appKeys == nil || !s.appKeys.Ready() {
-		s.keyEndpointsUnavailable(w, r)
-		return
-	}
-
 	app, err := s.loadApp(r)
 	if err != nil {
 		fail(w, r, err)

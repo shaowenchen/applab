@@ -36,6 +36,8 @@ Get it from whoever runs the deployment: an admin key can fetch it with
 
 The repository carries a script that does all of this with nothing but curl.
 It reads the two variables above, so it needs no arguments beyond the command.
+Beyond curl it uses only sed, tar and what a POSIX shell and a base system ship —
+nothing to install. The header of `applab.sh` lists every command it calls.
 
     ./applab.sh push              # upload, build, deploy — the whole path
     ./applab.sh status            # what is running, and where
@@ -153,6 +155,11 @@ Secrets are set the same way at `.../secrets`. A secret's value can never be rea
 back — not through this API, not from the console, not from the CLI. Setting one
 again replaces it, and reading the app's configuration returns the *names* of its
 secrets and nothing more.
+
+"The API will not return it" is not the same as "it is hidden". Both kinds of value
+are written into the Deployment's `env` in the clear, so anyone who can read a
+Deployment in this namespace can read every secret in it. The distinction is worth
+keeping straight for the person who has to decide what to put in one.
 
 `PORT` is refused as an environment variable: it is derived from the app's
 configured port.

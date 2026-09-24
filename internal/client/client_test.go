@@ -632,14 +632,21 @@ func TestRotateAppKeyPostsToTheRotatePath(t *testing.T) {
 	}
 }
 
-// TestKeyEndpointsReportAnUnavailableDeployment covers the no-cluster case: the
-// deployment answers 501 with a message, and the client must surface that text
-// rather than a generic failure, because it names the fix.
-func TestKeyEndpointsReportAnUnavailableDeployment(t *testing.T) {
-	const message = "this deployment has no cluster, so per-app keys are unavailable; use an admin key"
+// TestDeployReportsAnUnavailableCapability covers the client's handling of a 501
+// that names a missing capability, and the client must surface that text rather
+// than a generic failure, because the text is where the fix is: an operator who
+// reads "this deployment cannot build" knows to install a registry, and one who
+// reads "request failed" does not.
+//
+// It used to exercise the key endpoint, which answered 501 on a deployment with
+// no cluster. Keys live in the object store now, so building is the capability
+// that remains optional — and this is a test of the client's rendering either
+// way, so the server is a stub and the message is the one the real server sends.
+func TestDeployReportsAnUnavailableCapability(t *testing.T) {
+	const message = "this deployment cannot build: no registry is configured"
 
 	srv, _ := newTestServer(t, map[string]func(w http.ResponseWriter, r *http.Request){
-		"/api/v1/apps/shop/key": func(w http.ResponseWriter, r *http.Request) {
+		"/api/v1/apps/shop/deploy": func(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, http.StatusNotImplemented, message, false)
 		},
 	})
@@ -648,11 +655,9 @@ func TestKeyEndpointsReportAnUnavailableDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	_, keyErr := c.GetAppKey(context.Background(), "shop")
-	if keyErr == nil {
-		t.Fatal("GetAppKey succeeded against a deployment with no key store")
-	}
-	if !strings.Contains(keyErr.Error(), message) {
-		t.Errorf("error = %q, want it to carry the server's explanation", err)
+	if _, deployErr := c.Deploy(context.Background(), "shop", "", false); deployErr == nil {
+		t.Fatal("Deploy succeeded against a deployment that cannot build")
+	} else if !strings.Contains(deployErr.Error(), message) {
+		t.Errorf("error = %q, want it to carry the server's explanation", deployErr)
 	}
 }

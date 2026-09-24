@@ -50,7 +50,7 @@ type Grant struct {
 
 // Issuer issues and redeems tokens.
 //
-// Grants are held in memory rather than in the database. They are ephemeral by
+// Grants are held in memory rather than in AppLab's own state. They are ephemeral by
 // design — a token that outlives the process that issued it has outlived its
 // purpose — and losing them on restart costs at most one retried build, since
 // AppLab reconciles unfinished builds at startup and can issue a fresh token.

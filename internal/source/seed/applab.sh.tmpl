@@ -11,6 +11,25 @@
 #     export APPLAB_KEY="<the app's key>"
 #     ./applab.sh status
 #
+# "Nothing else" is meant exactly, and it is worth listing because this script is
+# copied into every repository and run from wherever it was checked out: whatever
+# it needs has to already be on the machine. Beyond curl it uses only what a
+# POSIX shell and a base system ship, and nothing here has to be installed.
+#
+#     curl                      every request, and the upload
+#     sed                       the URLs, the JSON it builds, the fields it reads
+#     printf, cat, head         output, and reading a response
+#     tar                       packaging the directory      (push, upload)
+#     sleep                     waiting on a build           (push)
+#     grep, tr                  finding the build in flight  (cancel)
+#     read                      typing the app id to confirm (delete)
+#     dirname, pwd, mv, chmod, rm   replacing the script     (self-update)
+#
+# There is deliberately no jq. A JSON parser is exactly the kind of tool that is
+# on a developer's laptop and absent from a build image, and the fields this
+# script reads are few and fixed, so they go through sed instead — see json_field
+# for what that does and does not handle.
+#
 # The key is deliberately not built into this script. This repository is cloned,
 # uploaded, built into an image and mirrored like any other source, so a key
 # written here would travel everywhere the source goes — and it is a credential

@@ -10,7 +10,8 @@ worst it can do is what it would do anyway.
 
 Each rule below is used; nothing is granted for future convenience:
   - Deployments, Services and VirtualServices are an app.
-  - Jobs are builds, and Secrets are those builds' single-use source tokens.
+  - Jobs are builds (their single-use source tokens are environment variables on
+    the Job, not objects of their own).
   - Pods and pods/log are how a build's log and an app's log are read.
   - Events are what explain a pod that never started.
 */}}
@@ -42,9 +43,17 @@ rules:
     resources: ["jobs"]
     verbs: ["create", "get", "list", "watch", "delete"]
 
-  # The Secret carrying a build's single-use source token, which is how a build
-  # authenticates without holding an API key. Deletion is included because
-  # deleting an app removes its build tokens with it.
+  # Deleting an app lists and removes everything carrying its label, and that
+  # sweep covers Secrets. applab no longer creates any — a build's source token
+  # is an environment variable on the Job, and an app's API key and its secrets
+  # live in the object store — but deletions still name the kind, so an
+  # installation upgraded from a version that did create them has them removed
+  # with the app rather than left behind as live credentials for an app that no
+  # longer exists.
+  #
+  # Nothing else here writes a Secret, so this is a permission held for the sake
+  # of cleanup. It is worth removing together with the sweep, in one change, when
+  # no installation predating it is expected to be upgraded.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "get", "list", "watch", "update", "delete"]

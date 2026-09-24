@@ -58,12 +58,12 @@ replicaCount: 1
 # value here: the Secret it names carries the comma-separated list, and revoking
 # is removing an entry and upgrading.
 #
-# Every app additionally gets a key of its own, created by AppLab when the app
-# is created and kept in a Secret beside it. An app key reaches that app and
-# nothing else: it can push, build, deploy and roll back, but cannot delete the
-# app. That is the credential to give whoever deploys an app, so they never hold
-# one that can destroy the installation. Nothing here configures them — see the
-# README's "Keys" section.
+# Every app additionally gets a key of its own, created by AppLab when the app is
+# created and kept in the object store under the app's own directory. An app key
+# reaches that app and nothing else: it can push, build, deploy and roll back,
+# but cannot delete the app. That is the credential to give whoever deploys an
+# app, so they never hold one that can destroy the installation. Nothing here
+# configures them — see the README's "Keys" section.
 # ---------------------------------------------------------------------------
 auth:
   # Generate with: openssl rand -hex 32
@@ -114,11 +114,15 @@ apps:
   # with `applab env` rather than with a release:
   #
   #   applab env set shop LOG_LEVEL=debug          # plain, visible in the Deployment
-  #   applab env secret set shop DATABASE_URL=...  # kept in a Secret, never read back
+  #   applab env secret set shop DATABASE_URL=...  # never returned by any endpoint
   #
-  # Secrets are stored one Secret per app, named applab-env-<app>, in this
-  # namespace — using the same `secrets` permission the Role already grants for
-  # app keys. Changes take effect on the next deploy.
+  # Both kinds live in the app's own record in the bucket, and both reach the
+  # container the same way: AppLab writes them into the Deployment's `env`. No
+  # Kubernetes Secret is involved, which means a secret's value is readable by
+  # anyone who can read the Deployment — `kubectl get deploy -o yaml` included.
+  # The API still never returns a value, only its name.
+  #
+  # Changes take effect on the next deploy.
 
   # The public address of this AppLab installation, used by build jobs to fetch
   # source and reported to clients as api_base_url.

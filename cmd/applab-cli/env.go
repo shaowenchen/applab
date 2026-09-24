@@ -19,6 +19,10 @@ import (
 // remember. That distinction is the whole design of the feature — a plain
 // variable is fine to read back and a secret is not — so it belongs in the
 // command line's shape.
+//
+// It is a distinction of intent, not of storage: both kinds are kept with the
+// app and both reach the container as environment variables. What differs is
+// what AppLab will show you.
 func envCommand(urlFlag, keyFlag *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "env <app>",
@@ -30,12 +34,17 @@ There are two kinds of value, and which one you want matters:
   applab env set        a plain variable — LOG_LEVEL=debug, FEATURE_X=on
   applab env secret set a secret — a password, a token, a connection string
 
-Plain variables are not sensitive. They are stored with the app, returned by the
-API, and visible to anyone who can read the app's Deployment.
+Plain variables are not sensitive: they are stored with the app, returned by the
+API and the console, and visible to anyone who can read the app's Deployment.
 
-Secrets are not. They are kept in a Kubernetes Secret, never appear in the
-Deployment, and no endpoint will ever return their values — AppLab can tell you
-which secrets an app has, never what they are. If you lose one, set it again.
+Secrets are not returned by anything. No endpoint will ever give you their
+values — AppLab can tell you which secrets an app has, never what they are — and
+if you lose one you set it again.
+
+Be clear about what that does and does not buy you. A secret reaches the
+container as an environment variable, so it *is* in the Deployment's spec,
+readable by anyone who can run 'kubectl get deploy -o yaml' in the app's
+namespace. AppLab will not show it to you; the cluster will.
 
 Changes take effect on the next deploy, not immediately: configuration travels
 the same path as code. Run 'applab deploy <app>' when you are done.`,
@@ -153,9 +162,10 @@ func envSecretSetCommand(urlFlag, keyFlag *string) *cobra.Command {
 		Short: "Set secret values",
 		Long: `Set secret values.
 
-The values are sent to applab and stored in a Kubernetes Secret. They are never
-returned by any endpoint, so this command's output lists the names it set and not
-what they were set to.
+The values are sent to applab and stored with the app. They are never returned
+by any endpoint, so this command's output lists the names it set and not what
+they were set to — but they do reach the Deployment as environment variables, so
+whoever can read that Deployment can read them.
 
 Be aware that a value given on the command line is visible to anyone who can read
 your shell's history or the process list. For anything that matters, prefer

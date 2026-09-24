@@ -2,12 +2,14 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/objectstore"
 )
 
 // CreateApp writes a new app.
@@ -187,3 +189,58 @@ func (s *Store) derive(app *model.App) {
 
 // ErrExists is returned by CreateApp when the id is taken.
 var ErrExists = errors.New("already exists")
+
+// KeyRecord is one app's key, with the app it belongs to.
+//
+// It is exported because the key store lives in another package and needs the
+// app id alongside the record. The value is deliberately not the field that is
+// read here — see internal/appkey for what a caller does with it.
+type KeyRecord struct {
+	AppID  string
+	Digest string
+}
+
+// ListKeyRecords returns every app's key digest.
+//
+// It reads only the digest field rather than decoding the whole object, because
+// its one caller — resolving a presented key — must not have every app's
+// credential in memory to find out which one belongs to the caller. The value
+// stays on disk until the digest has already matched.
+func (s *Store) ListKeyRecords(ctx context.Context) ([]KeyRecord, error) {
+	objects, err := s.objects.List(ctx, appsPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("store: list key records: %w", err)
+	}
+
+	var out []KeyRecord
+	for _, object := range objects {
+		// Only apps/<id>/key.json is a key for an app.
+		rest := strings.TrimPrefix(object.Key, appsPrefix)
+		if strings.Count(rest, "/") != 1 || !strings.HasSuffix(rest, "/key.json") {
+			continue
+		}
+		appID := strings.TrimSuffix(rest, "/key.json")
+
+		body, err := s.objects.GetBytes(ctx, object.Key)
+		if err != nil {
+			// A record listed and then gone is a deletion racing this read —
+			// the app was removed, and it has no key to match.
+			if errors.Is(err, objectstore.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("store: read %s: %w", object.Key, err)
+		}
+
+		// A field of the object rather than the whole of it. json.Unmarshal into
+		// a struct that names only this field leaves the rest unread, which is
+		// the point.
+		var record struct {
+			Digest string `json:"digest"`
+		}
+		if err := json.Unmarshal(body, &record); err != nil {
+			return nil, fmt.Errorf("store: decode %s: %w", object.Key, err)
+		}
+		out = append(out, KeyRecord{AppID: appID, Digest: record.Digest})
+	}
+	return out, nil
+}

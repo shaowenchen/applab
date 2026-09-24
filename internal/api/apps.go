@@ -184,8 +184,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	// An app key is minted with the app, for the same reason the repository is:
 	// an app without one is a half-created app, and the failure belongs to the
 	// caller that caused it rather than surfacing later from a deploy that
-	// cannot authenticate. A deployment with no cluster has no key store and
-	// skips this — its apps are managed with the admin key, as before.
+	// cannot authenticate.
 	//
 	// The key is deliberately NOT returned here. It would mean putting a
 	// credential on the app response shape, which every list, get and patch
@@ -193,7 +192,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	// eventually gets filled in on another. A caller that wants the new key
 	// reads it from GET /apps/{app}/key, which is one call and cannot leak into
 	// a response that was not meant to carry it.
-	if s.appKeys != nil && s.appKeys.Ready() {
+	if s.appKeys != nil {
 		if _, err := s.appKeys.Create(r.Context(), app.ID); err != nil {
 			// Rolled back like the repository above: an app whose key could not
 			// be created would authenticate with nothing, and the caller has no
@@ -365,13 +364,12 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The key is removed here rather than left to the cluster teardown above.
-	// That teardown deletes Secrets labeled with the app, which already covers a
-	// key created by this installation — but it runs before this point and only
-	// when a cluster is reachable, so an app deleted while the cluster is down
-	// would keep a working credential behind. Deleting the record without
-	// deleting the key is the one outcome that leaves a live credential for an
-	// app that no longer exists.
-	if s.appKeys != nil && s.appKeys.Ready() {
+	// That teardown deletes the app's Kubernetes objects and runs before this
+	// point and only when a cluster is reachable, so an app deleted while the
+	// cluster is down would keep a working credential behind. Deleting the
+	// record without deleting the key is the one outcome that leaves a live
+	// credential for an app that no longer exists.
+	if s.appKeys != nil {
 		if err := s.appKeys.Remove(r.Context(), app.ID); err != nil {
 			// Logged, not fatal: the app record is going regardless, and a
 			// leftover Secret is worth a warning rather than a failed delete
@@ -381,12 +379,11 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The configuration Secret goes for the same reason the key does, and
-	// through the same window: the teardown above covers it by label, but only
-	// when a cluster is reachable, so an app deleted while the cluster is down
-	// would leave its secrets behind — live credentials and connection strings
-	// for an app that no longer exists.
-	if s.appConfig != nil && s.appConfig.Ready() {
+	// The secrets go for the same reason the key does, and through the same
+	// window: they live in the app's own directory, but the record is deleted
+	// below, so anything left under it would be unreachable — live credentials
+	// and connection strings for an app that no longer exists.
+	if s.appConfig != nil {
 		if err := s.appConfig.Delete(r.Context(), app.ID); err != nil {
 			slog.ErrorContext(r.Context(), "failed to remove app configuration; deleting app record anyway",
 				"app", app.ID, "error", err)

@@ -27,7 +27,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/shaowenchen/applab/internal/appconfig"
 	"github.com/shaowenchen/applab/internal/model"
 )
 
@@ -57,12 +56,6 @@ type Config struct {
 	// AppLab's own, so it is referenced directly rather than copied.
 	ImagePullSecret string
 
-	// Secrets supplies an app's secret configuration at deploy time.
-	//
-	// Nil means this deployment cannot hold secrets — the usual case without a
-	// cluster — and then apps are deployed with environment variables only.
-	Secrets SecretReader
-
 	// Annotations are added to every VirtualService, for Istio specifics that
 	// vary by cluster.
 	Annotations map[string]string
@@ -73,19 +66,6 @@ type Config struct {
 	AppMemoryRequest string
 	AppCPULimit      string
 	AppMemoryLimit   string
-}
-
-// SecretReader reads an app's secret configuration.
-//
-// It is an interface rather than the concrete store for the same reason the
-// build and deploy halves are: a deployment without a cluster has no secrets to
-// read and leaves it nil, and this package should not have to know that.
-//
-// Contents is the only method, and it returns values — that is the point of the
-// interface. It is satisfied by internal/appconfig, and the deployer is the one
-// place in AppLab that holds a secret's value.
-type SecretReader interface {
-	Contents(ctx context.Context, appID string) (map[string]string, error)
 }
 
 // virtualServiceGVR addresses Istio's VirtualService for the dynamic client.
@@ -199,20 +179,12 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 	labels := appLabels(app)
 	selector := selectorLabels(app)
 
-	// The app's secret configuration is read here, at deploy time, and used for
-	// two things: to decide whether there is a Secret to reference, and to hash
-	// into the pod template. It is read rather than assumed because the hash has
-	// to cover the *values* — see the config-hash comment below for why a hash
-	// over names alone would be a bug that only shows up as a rotated password
-	// never reaching the running pods.
-	var secrets map[string]string
-	if d.cfg.Secrets != nil {
-		var err error
-		secrets, err = d.cfg.Secrets.Contents(ctx, app.ID)
-		if err != nil {
-			return fmt.Errorf("read configuration for app %s: %w", app.ID, err)
-		}
-	}
+	// The app's configuration — plain variables and secrets alike — is on the
+	// app itself. There is nothing to read at deploy time: both live in the
+	// app's record, and whoever asked for this deploy loaded it. The deployer
+	// used to fetch the secret half from a Secret object, which is what made it
+	// the one place in AppLab holding a secret's value.
+	secrets := app.Secrets
 
 	// The image tag is recorded as a pod-template label and an annotation, so a
 	// rollout's progress can be told apart from a previous one and an operator
@@ -230,16 +202,15 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 	// A fingerprint of the app's configuration, so that changing configuration
 	// alone triggers a rollout.
 	//
-	// Referencing a Secret through envFrom does not: Kubernetes does not restart
-	// pods when a Secret changes, so a deploy that only changed a secret value
-	// would update the Secret, leave the old pods running on the old value, and
-	// report success. Hashing the configuration into the pod template makes the
-	// template differ, and upsertDeployment replaces Spec.Template wholesale — so
-	// the Deployment sees a change and rolls.
+	// The values themselves are in the pod template now — see appEnv — so a
+	// change to one already makes the template differ and the Deployment roll.
+	// The annotation is kept because it makes that change *visible*: a template
+	// diff for a secret is otherwise a wall of identical-looking entries, and the
+	// annotation says which deploy changed the configuration.
 	//
-	// The hash is over the values, and is the only thing written out. An
-	// annotation carrying a hash of a password reveals nothing; one carrying the
-	// password would defeat the entire reason secrets are kept out of the spec.
+	// It is a hash, not the values. An annotation carrying a hash of a password
+	// reveals nothing; one carrying the password would be a second place to read
+	// it from, and the first place is already more than there used to be.
 	annotations["applab.io/config-hash"] = configHash(app.Env, secrets)
 
 	desired := &appsv1.Deployment{
@@ -301,15 +272,17 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 							ContainerPort: app.Port,
 							Protocol:      corev1.ProtocolTCP,
 						}},
-						Env: appEnv(app),
-						// The app's secrets, as environment variables, without any
-						// value appearing here: envFrom names a Secret and the
-						// kubelet does the substitution in the container. The
-						// Secret is referenced only when it exists — an envFrom
-						// naming a missing Secret makes the pod unschedulable,
-						// which would turn "this app has no secrets" into an app
-						// that will not start.
-						EnvFrom: envFrom(app.ID, secrets),
+						// The app's environment: its plain configuration and its
+						// secrets, both written out as values.
+						//
+						// They used to be split — the secrets reached the
+						// container through envFrom, with the kubelet doing the
+						// substitution so no value appeared here. That is gone
+						// with the Secret object it relied on, and the
+						// consequence is worth stating where it happens: a
+						// secret's value is now in this spec, readable by anyone
+						// who can read the Deployment.
+						Env: appEnv(app, secrets),
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceCPU:    resourceQty(orDefault(d.cfg.AppCPURequest, "100m")),
@@ -717,56 +690,59 @@ func (d *Deployer) Restart(ctx context.Context, app *model.App) error {
 // template on every deploy of an unchanged app — and since a changed template is
 // what triggers a rollout, every deploy would roll the app for no reason. Sorting
 // makes the result a function of the configuration alone.
-func appEnv(app *model.App) []corev1.EnvVar {
+// appEnv builds the container's environment: the port, the app's plain
+// configuration, and its secrets.
+//
+// The two configuration maps are merged rather than kept apart, because by the
+// time they reach a container they are the same thing. A name in both is refused
+// by the API, so the order here does not decide anything; the sort is what makes
+// the result stable, which matters because the pod template is compared to
+// decide whether a rollout is needed.
+func appEnv(app *model.App, secrets map[string]string) []corev1.EnvVar {
 	// The port the app should bind. An app that honours this needs no
 	// configuration of its own; one that does not is unaffected.
 	env := []corev1.EnvVar{{Name: model.PortEnv, Value: fmt.Sprintf("%d", app.Port)}}
 
-	names := make([]string, 0, len(app.Env))
-	for name := range app.Env {
+	merged := make(map[string]string, len(app.Env)+len(secrets))
+	for name, value := range app.Env {
 		// PORT is refused at the API, but an app record could predate that check
 		// or have been edited directly. Skipping it here as well means the pod
 		// spec can never carry the duplicate declaration at all.
 		if name == model.PortEnv {
 			continue
 		}
+		merged[name] = value
+	}
+	for name, value := range secrets {
+		if name == model.PortEnv {
+			continue
+		}
+		merged[name] = value
+	}
+
+	names := make([]string, 0, len(merged))
+	for name := range merged {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	for _, name := range names {
-		env = append(env, corev1.EnvVar{Name: name, Value: app.Env[name]})
+		env = append(env, corev1.EnvVar{Name: name, Value: merged[name]})
 	}
 	return env
 }
 
-// envFrom references the app's configuration Secret, when it has one.
-//
-// Optional is deliberately not set. An optional reference to a missing Secret
-// would start the app with no configuration at all and no error, which is a
-// failure that presents as the app behaving oddly rather than as anything being
-// wrong; a required one fails loudly. The reference is only emitted when the
-// Secret is known to exist, so "required" never means "and also absent".
-func envFrom(appID string, secrets map[string]string) []corev1.EnvFromSource {
-	if len(secrets) == 0 {
-		return nil
-	}
-	return []corev1.EnvFromSource{{
-		SecretRef: &corev1.SecretEnvSource{
-			LocalObjectReference: corev1.LocalObjectReference{Name: appconfig.Name(appID)},
-		},
-	}}
-}
-
 // configHash fingerprints an app's whole configuration.
 //
-// Both halves matter and neither can stand in for the other. The environment
-// variables are in the pod template directly, so changing one already changes the
-// template; the secrets are not, and are the reason this exists at all. A hash
-// that covered only the secret *names* would be the subtle bug here: rotating a
-// password leaves every name in place, so the template would be unchanged, no
-// rollout would happen, and the deploy would report success while the pods kept
-// serving the previous password.
+// Now that both halves are written into the pod template, a change to either
+// already makes the template differ and the Deployment roll. The hash is kept
+// because it names *what* changed: a template diff for a configuration change is
+// otherwise a wall of lines that look alike, and an operator looking at a
+// rollout wants to know whether it was the image or the configuration.
+//
+// It covers both halves, and the values rather than the names — a hash of the
+// names alone would report "unchanged" for a rotated password, which is the one
+// case where saying so is actively misleading.
 //
 // Names and values are both fed in, separated so that no pair of configurations
 // can collide by concatenation. The result is only ever compared, never printed

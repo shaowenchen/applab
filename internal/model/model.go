@@ -101,15 +101,27 @@ type App struct {
 	// deployment's default of "<id>.<base domain>".
 	Domain string
 
-	// Env is the app's non-secret configuration, applied to the container as
+	// Env is the app's plain configuration, applied to the container as
 	// environment variables at deploy time.
 	//
-	// Secrets are deliberately not here. They live in a Kubernetes Secret, read
-	// by the deployer and by nothing else, so the database is not a second place
-	// for a credential to leak from or to drift in. The split is by sensitivity:
-	// this map is returned by the API, and whatever is in it should be fit to
-	// print.
+	// It is returned by the API in full, so whatever is in it should be fit to
+	// print. Secrets are the other half, in the field below.
 	Env map[string]string
+
+	// Secrets is the app's secret configuration, applied to the container as
+	// environment variables alongside Env.
+	//
+	// The split from Env is by intent rather than by handling: a secret is a
+	// password, a token or a connection string, and AppLab never returns these
+	// values on any route — the API reports the names and nothing more. They are
+	// stored here rather than in a Kubernetes Secret because AppLab no longer
+	// uses Secret objects at all, which means a value written this way reaches
+	// the container through the Deployment's own spec and is readable by anyone
+	// who can read that.
+	//
+	// It is why secrets are not in the app's *interface*: appResponse carries the
+	// names, not this map.
+	Secrets map[string]string
 
 	// CommitSHA is the commit currently deployed, and Image the image built from
 	// it. Both empty means nothing has been deployed yet.
