@@ -517,8 +517,13 @@ curl -s https://applab.example.com/llms.txt
 applab config
 </code></pre>
 <h2>Installing a development build</h2>
-<p>Every push to the default branch publishes a chart versioned <code>&lt;Chart.yaml version&gt;-dev</code>, replacing the previous one. Its <code>appVersion</code> is the commit it was
-built from, so a release that is installed is traceable back to its code.</p>
+<p>Every push to the default branch publishes a chart versioned <code>&lt;Chart.yaml version&gt;-dev</code>, replacing the previous one, and an image tagged with that same
+version — so the chart's default <code>image.tag</code> is the image it needs, and an
+install with nothing overridden runs the build that chart was packaged from.</p>
+<p><code>appVersion</code> is the commit the chart was built from, which is what
+<code>app.kubernetes.io/version</code> carries on every object applab creates, so a release
+that is installed is traceable back to its code. It is deliberately <strong>not</strong> the
+image tag: it names a commit, and no image is published under a bare commit.</p>
 <pre><code class="language-bash">helm repo add applab https://www.chenshaowen.com/applab
 helm repo update
 

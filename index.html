@@ -537,6 +537,25 @@ nobody can recover is one that has to be rotated the moment it is mislaid.</p>
 <code>APPLAB_KEY</code> environment variable for the CLI, and the sign-in form on the
 console. The console reads the tier from the API and shows an app key its own
 app only, with no overview, no app list and no delete button.</p>
+<h2>Uninstalling</h2>
+<p>What it takes depends on which of the two ways above you started it, and the two
+leave different things behind.</p>
+<p><strong>A local run</strong> is a process and a directory. Stopping <code>applab</code> ends the service;
+<code>APPLAB_DATA_DIR</code> — <code>./data</code> in the quick start — is everything else: the
+database, and a git repository per app. That directory is the only copy of every
+app's source, so deleting it is the point of no return for all of them. Anything
+already deployed to a cluster keeps running, because applab put it there and does
+not own it.</p>
+<p><strong>A chart install</strong> is one command:</p>
+<pre><code class="language-bash">helm uninstall applab --namespace ops-system
+</code></pre>
+<p>and the surprise is what it leaves. <strong>The apps are not removed</strong> — they are
+Deployments, Services and VirtualServices carrying <code>applab.io/app</code> rather than
+helm's release labels, so an uninstall stops applab and leaves every app it
+deployed running. That is usually what you want and occasionally a surprise. The
+PersistentVolumeClaim is not removed either, and it holds every app's source.</p>
+<p><a href="chart.html">The chart's README</a> has the full teardown, including how to
+remove the apps and the volume along with the installation.</p>
 <h2>License</h2>
 <p>See <a href="https://github.com/shaowenchen/applab/blob/master/LICENSE">LICENSE</a>.</p>
 
