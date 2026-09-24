@@ -97,6 +97,15 @@ tar czf - . | curl -sS -X POST "$APPLAB_URL/api/v1/apps/shop/source?message=firs
 Clone what you pushed:
 
 ```bash
+# The key goes in the URL as the password. Any username works — git needs one to
+# send a password at all, and applab reads only the password.
+git clone "https://x:$APPLAB_KEY@${APPLAB_URL#http://}/git/shop.git"
+```
+
+If you would rather not put the key in the URL — it lands in shell history and in
+the repository's `config` on disk — send it as a header instead:
+
+```bash
 git -c http.extraHeader="Authorization: Bearer $APPLAB_KEY" \
   clone "$APPLAB_URL/git/shop.git"
 ```

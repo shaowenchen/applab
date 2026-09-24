@@ -364,6 +364,30 @@ async function render(apps) {
     vm.runInContext('lang = "en"', context);
   }
 
+  // The app's repository address.
+  //
+  // Every app has a git repository from the moment it is created, so this is the
+  // address a caller clones from — and it is derived from where the page was
+  // served, which is the part that goes wrong. The stub's pathname is "/applab/",
+  // so a version that used the bare origin would produce a URL that 404s, and
+  // that is the mistake this checks for rather than the shape of the string.
+  {
+    const gitURL = vm.runInContext(
+      'baseURL() + "/git/" + "shop" + ".git"',
+      context
+    );
+    check(
+      "the clone URL carries the path the deployment is served under",
+      gitURL,
+      "https://applab.example.com/applab/git/shop.git"
+    );
+    check(
+      "and is not built from the bare origin",
+      gitURL.startsWith("https://applab.example.com/git/"),
+      false
+    );
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed`);
     process.exit(1);

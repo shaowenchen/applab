@@ -581,6 +581,21 @@
       <div id="app-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
 
+    <!-- The app's own repository. Creating an app creates its git repository, so
+         this is a fact from the moment the app exists rather than something that
+         appears after a push — which is why it is not hidden until there are
+         commits. The address shown carries no credential: a clone URL with a key
+         in it is one that ends up in shell history and in the repository's own
+         config on disk. -->
+    <div class="card">
+      <h2 data-i18n="Repository">Repository</h2>
+      <p class="mono" id="app-git-url" style="margin:12px 0 0"></p>
+      <p class="muted" style="font-size:13px;margin:8px 0 0">
+        <span data-i18n="Clone it with any git client. The key goes in as the password — any username works — or send it as a header:">Clone it with any git client. The key goes in as the password — any username works — or send it as a header:</span>
+      </p>
+      <pre id="app-git-hint" style="margin:8px 0 0"></pre>
+    </div>
+
     <!-- The app's own key. This is the credential to hand whoever deploys the
          app: it reaches this app and nothing else. It is not shown until asked
          for — see showAppKey — because a credential that renders itself is one
@@ -761,6 +776,9 @@ const ZH = {
   "Enter an API key to continue.": "输入 API key 继续。",
   "Sign in": "登录",
   "API key": "API key",
+  "Repository": "代码仓库",
+  "Clone it with any git client. The key goes in as the password — any username works — or send it as a header:":
+    "用任意 git 客户端克隆。key 作为密码传入（用户名随意），或改用请求头传入：",
   "Stored in this browser only, and sent to": "仅保存在此浏览器中，发送至",
   "An API key is required.": "请填写 API key。",
 
@@ -1608,6 +1626,17 @@ async function openApp(id) {
   // Cleared on every open, so a key shown for one app is never left on screen
   // when another is opened. The button re-fetches, so nothing is lost by it.
   $("app-key-value").textContent = t("Not shown.");
+
+  // The app's repository, from the deployment's own address plus the path the
+  // git transport is mounted at. Derived here rather than returned by the API
+  // for the same reason the console derives its own address: the server may be
+  // reached under a path, and this is the address the page was actually served
+  // from — the one the caller can reach.
+  const gitURL = state.url + "/git/" + id + ".git";
+  $("app-git-url").textContent = gitURL;
+  $("app-git-hint").textContent =
+    "git clone https://x:<key>@" + gitURL.replace(/^https?:\/\//, "");
+
   stopLogs();
 
   await Promise.all([loadAppState(), loadPods(), loadCommits(), loadAppConfig()]);

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/model"
@@ -187,9 +188,17 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		HowTo: describeHowTo{
 			// The commands name the address explicitly rather than relying on
 			// APPLAB_URL being set, so they can be copied into a shell as-is.
+			//
+			// The clone spelling is the URL form, with the key as the password,
+			// because that is what a caller reaches for and what works in every
+			// git client. Any username will do: git needs one to send a password
+			// at all, and only the password is read. The header spelling also
+			// works and keeps the key out of the shell history and out of the
+			// clone's own config, which is worth saying — but it is the harder
+			// thing to type, so it is offered second.
 			Push:  "applab push <app>",
 			Logs:  "applab logs <app> -f",
-			Clone: "git -c http.extraHeader='" + "Authorization: Bearer <key>" + "' clone " + base + "/git/<app>.git",
+			Clone: "git clone " + gitURLWithPassword(base, "<app>"),
 			HTTP: map[string]string{
 				"create_app":   "POST " + base + "/api/v1/apps  {\"id\":\"<app>\",\"port\":8080}",
 				"upload":       "POST " + base + "/api/v1/apps/<app>/source?message=<msg>  (application/gzip)",
@@ -232,4 +241,19 @@ func plural(n int, one, many string) string {
 		return "1 " + one
 	}
 	return strconv.Itoa(n) + " " + many
+}
+
+// gitURLWithPassword turns a base URL into the form a clone uses, with a
+// placeholder where the credential goes.
+//
+// Built here rather than written as a literal so the scheme is stripped once and
+// the result is right for a deployment reached over https and over http alike:
+// the address is inserted into a `git clone` line, and that line already names
+// the scheme.
+func gitURLWithPassword(base, appID string) string {
+	host := base
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	return "https://x:<key>@" + host + "/git/" + appID + ".git"
 }

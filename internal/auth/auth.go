@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -83,8 +84,23 @@ func (a *Authenticator) Authenticated(presented string) bool {
 // field: URLs are written to access logs, kept in shell history and sent in
 // Referer headers, so a credential placed in one leaks by default.
 //
-// Both "Authorization: Bearer <key>" and a bare "Authorization: <key>" are
-// accepted, because a caller pasting a key by hand routinely omits the scheme.
+// Three forms are accepted:
+//
+//   - "Authorization: Bearer <key>", what this API's own clients send;
+//   - "Authorization: <key>", because a caller pasting a key by hand routinely
+//     omits the scheme;
+//   - "Authorization: Basic <base64>", because that is the only thing git sends
+//     when the credential is in the URL. `git clone https://user:key@host/...`
+//     produces Basic and nothing else, so without this a clone against a URL
+//     carrying the key would be refused — and the extraHeader spelling would be
+//     the only way in, which is not what anyone reaches for.
+//
+// The Basic password is what is taken, and the username is ignored. Git needs
+// *some* username in the URL to send a password at all, and callers fill it with
+// whatever comes to mind — the app id, "git", "x" — so requiring a particular
+// one would reject working credentials for no gain. A username-only Basic header
+// (no colon) is still read as a key, since a caller who pastes a key into the
+// username field of a prompt is doing the obvious thing.
 func KeyFromRequest(r *http.Request) string {
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
 	if header == "" {
@@ -93,7 +109,39 @@ func KeyFromRequest(r *http.Request) string {
 	if rest, ok := cutPrefixFold(header, "bearer "); ok {
 		return strings.TrimSpace(rest)
 	}
+	if rest, ok := cutPrefixFold(header, "basic "); ok {
+		return basicKey(rest)
+	}
 	return header
+}
+
+// basicKey decodes a Basic credential and returns the password, falling back to
+// the username when there is nothing else.
+//
+// Both fallbacks are the same situation: a person confronted with a username and
+// a password field, holding one key. They may put it in the password field with
+// the username set to something arbitrary — which is the intended form — or they
+// may type it into the username field and leave the password empty, which is
+// just as common and not something they would recognise as a mistake.
+//
+// An undecodable value is returned as-is rather than dropped, so it is compared
+// against the configured keys like any other and refused. Returning "" would
+// make a malformed header indistinguishable from no header, and the two want
+// different answers from the middleware.
+func basicKey(encoded string) string {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil {
+		return encoded
+	}
+	user, pass, found := strings.Cut(string(raw), ":")
+	if !found {
+		return strings.TrimSpace(user)
+	}
+	// The password, not the username: git puts the token there.
+	if pass = strings.TrimSpace(pass); pass != "" {
+		return pass
+	}
+	return strings.TrimSpace(user)
 }
 
 // cutPrefixFold trims prefix from s when it matches case-insensitively, which

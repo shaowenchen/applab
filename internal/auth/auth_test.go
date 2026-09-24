@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -72,6 +73,11 @@ func TestNoKeysAuthenticatesNothing(t *testing.T) {
 // TestKeyFromRequest covers how a credential is read, including the forms a
 // caller pastes by hand.
 func TestKeyFromRequest(t *testing.T) {
+	// Built rather than written out, so the case names stay readable.
+	basic := func(user, pass string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	}
+
 	cases := []struct {
 		name    string
 		header  string
@@ -86,6 +92,25 @@ func TestKeyFromRequest(t *testing.T) {
 		{"trailing spaces", "Bearer abc123   ", "abc123"},
 		{"no header", "", ""},
 		{"bare scheme word", "Bearer", "Bearer"},
+
+		// Basic is what git sends when the credential is in the URL, which is
+		// the spelling anyone reaches for: git clone https://user:key@host/...
+		{"basic, app id as user", basic("shop", "abc123"), "abc123"},
+		{"basic, git as user", basic("git", "abc123"), "abc123"},
+		{"basic, x as user", basic("x", "abc123"), "abc123"},
+		{"basic, empty user", basic("", "abc123"), "abc123"},
+		{"lowercase basic", "basic " + base64.StdEncoding.EncodeToString([]byte("shop:abc123")), "abc123"},
+		// A key pasted into the username field of a prompt, with the password
+		// left empty, sends "abc123:" — which is not the same as no colon at
+		// all, and both are worth accepting since neither is a mistake anyone
+		// would recognise as one.
+		{"basic, key in user and empty password", basic("abc123", ""), "abc123"},
+		{"basic with no colon at all", "Basic " + base64.StdEncoding.EncodeToString([]byte("abc123")), "abc123"},
+		// A password holding a colon keeps all of it: the split is on the first.
+		{"basic with a colon in the password", basic("shop", "ab:cd"), "ab:cd"},
+		// Not valid base64. Returned as-is so it is refused by comparison rather
+		// than looking like no credential at all.
+		{"basic that is not base64", "Basic not!base64", "not!base64"},
 	}
 
 	for _, tc := range cases {
@@ -98,6 +123,30 @@ func TestKeyFromRequest(t *testing.T) {
 				t.Errorf("KeyFromRequest with %q = %q, want %q", tc.header, got, tc.wantKey)
 			}
 		})
+	}
+}
+
+// TestBasicCredentialAuthenticates is the end-to-end half: a key read from a
+// Basic header is accepted by the same comparison as one read from a Bearer.
+//
+// The unit test above pins what is extracted; this pins that the extraction
+// reaches Authenticated at all, which is the thing a clone depends on.
+func TestBasicCredentialAuthenticates(t *testing.T) {
+	a := New([]string{"real-key"})
+
+	header := "Basic " + base64.StdEncoding.EncodeToString([]byte("shop:real-key"))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", header)
+
+	if !a.Authenticated(KeyFromRequest(req)) {
+		t.Error("a key presented as a Basic credential was refused; git clone against a URL carrying the key would not work")
+	}
+
+	// And a wrong password is still refused, so the form is not a bypass.
+	bad := "Basic " + base64.StdEncoding.EncodeToString([]byte("shop:wrong"))
+	req.Header.Set("Authorization", bad)
+	if a.Authenticated(KeyFromRequest(req)) {
+		t.Error("a wrong key presented as Basic was accepted")
 	}
 }
 

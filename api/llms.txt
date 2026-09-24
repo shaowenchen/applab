@@ -135,6 +135,17 @@ hand. A key is **never** accepted as a query parameter or a form field — URLs 
 written to access logs, kept in shell history and sent in Referer headers, so a
 credential placed in one leaks by default.
 
+`Authorization: Basic <base64>` is accepted too, and it exists for git: a
+credential in a clone URL is sent as Basic and nothing else, so the repository an
+app is created with can be cloned with the ordinary form —
+
+    git clone https://x:<key>@<host>/git/<app>.git
+
+Any username works; only the password is read. Note that this address is the one
+place a key does go in a URL, which is why applab never puts one there itself:
+`GET /api/v1/describe` reports the clone command with a placeholder rather
+than a working credential.
+
 There is one tier. A key that authenticates can also delete, so treat it the way
 you would treat any credential that can destroy data.
 
