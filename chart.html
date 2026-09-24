@@ -132,7 +132,6 @@ img { max-width: 100%; height: auto; }
     <ul>
       <li><a href="index.html">Overview</a></li>
       <li><a href="chart.html" aria-current="page">Installing</a></li>
-      <li><a href="api.html">API reference</a></li>
       <li><a href="debugger.html">Debugger</a></li>
     </ul>
     <div class="repo"><a href="https://github.com/shaowenchen/applab">Source on GitHub</a></div>
@@ -510,8 +509,8 @@ applab's.</p>
 <pre><code class="language-bash"># The key the chart generated, if you used auth.key
 kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
 
-# The API contract — what to read before calling anything
-curl -s https://applab.example.com/llms.txt
+# What this deployment is, and every endpoint it serves — read this first
+curl -s https://applab.example.com/api/v1/describe
 
 # What the deployment can do
 applab config
