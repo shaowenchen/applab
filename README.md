@@ -59,6 +59,15 @@ That is the whole workflow. `push` creates the app if it is new, packages the
 directory, uploads it, follows the build and waits for the rollout, and prints the
 URL. Build output and version-control directories are left out automatically.
 
+An app that needs configuration — a database URL, an API token — gets it with
+`applab env`, and it takes effect on the next deploy:
+
+```bash
+applab env set myshop LOG_LEVEL=debug
+applab env secret set myshop DATABASE_URL="$DATABASE_URL"
+applab deploy myshop
+```
+
 Everything else answers a question:
 
 ```bash
@@ -282,6 +291,24 @@ code, only to check the chart. It renders the chart and asserts what the
 rendering has to contain — a chart whose templates are wrong still renders, so
 "it rendered" is not evidence of anything.
 
+The cluster-backed pieces — app keys, app secrets, the deployer — are tested
+against `k8s.io/client-go/kubernetes/fake`, which is a real object tracker rather
+than a stub. It is close enough to take the label selectors and create/update
+semantics seriously, with one divergence worth knowing: a real API server folds a
+Secret's `StringData` into `Data` on the way in and the fake does not, so
+anything writing a Secret writes `Data` directly and a test asserts that.
+
+Two claims are asserted against the object the code produces rather than a
+summary of it, because they are the ones a plausible-looking implementation can
+still get wrong:
+
+- **a secret's value never appears in the generated Deployment**, checked by
+  searching the whole object, so a leak into a label or an annotation is caught
+  as well as one into the env list;
+- **the migration brings a version-1 database forward without losing it**, since
+  every database already in the field is at version 1 and a fresh-database test
+  would never exercise that.
+
 ### A whole platform on a runner
 
 The build and deploy halves need real infrastructure, so they are exercised on
@@ -354,6 +381,55 @@ openly.
   authenticate, the admin key included.** A deployment with no cluster at all
   has no app keys and works on the admin tier alone; set `APPLAB_KEY` and manage
   apps with it.
+- **Configuration is split by sensitivity.** Environment variables are not
+  secrets: they are stored with the app, returned by the API, and visible to
+  anyone who can read the app's Deployment. Secrets are kept in a Kubernetes
+  Secret, are never written into the Deployment — it references the Secret and
+  the kubelet substitutes the values inside the container — and **no route
+  returns a value**, only the names. That is structural rather than a promise:
+  the store the API holds has no method that returns a value. See
+  [Configuring an app](#configuring-an-app).
+- **A secret's value still reaches the cluster as API traffic** and is stored in
+  `etcd` like any Kubernetes Secret. Encryption at rest is the cluster's job.
+
+## Configuring an app
+
+An app gets two kinds of configuration, and which one you want matters.
+
+```bash
+# Plain variables — visible in the Deployment, readable back.
+applab env set myshop LOG_LEVEL=debug FEATURE_X=on
+applab env unset myshop FEATURE_X
+
+# Secrets — never in the Deployment, never readable back.
+applab env secret set myshop DATABASE_URL="$DATABASE_URL"
+applab env secret unset myshop DATABASE_URL
+
+applab env myshop              # show both
+```
+
+The distinction is the whole design. A password belongs in a secret; a log level
+does not, and putting it there would make it unreadable for no gain.
+
+| | Variables | Secrets |
+|---|---|---|
+| Stored in | The database, with the app | A Kubernetes Secret, `applab-env-<app>` |
+| In the Deployment | Yes, as env vars | No — referenced by `envFrom` |
+| Readable back | Yes, including through the API and console | **Never.** No route returns a value |
+| Needs a cluster | No | Yes |
+
+**Changes take effect on the next deploy.** Configuration travels the same path
+as code: `applab env set myshop A=1 && applab deploy myshop`. The deployer puts a
+hash of the whole configuration into the pod template, which is what makes a
+deploy that changed only a secret value actually roll the pods — Kubernetes does
+not restart pods for a changed Secret on its own, so without that a rotated
+password would be written to the cluster and never reach the running app.
+
+`PORT` cannot be set: it comes from the app's `port` setting, which is also what
+the Service targets. Set that instead.
+
+There is no route that returns a secret's value, and none is planned. If one is
+lost, set it again — recovery is the same operation.
 
 ## Keys
 

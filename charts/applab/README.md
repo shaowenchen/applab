@@ -254,6 +254,29 @@ Role already grants; nothing here has to be widened.
 `auth.existingSecret` is worth using. Release values are stored in plain text in
 the cluster and are frequently committed.
 
+### App configuration
+
+An app's configuration is split by sensitivity, and only one half is yours to
+configure here.
+
+**Environment variables** — `LOG_LEVEL`, `FEATURE_X` — are stored in applab's
+database and are visible in an app's Deployment to anyone who can read it. They
+need no setting.
+
+**Secrets** — passwords, tokens, connection strings — are created by applab, one
+Secret per app named `applab-env-<app>`, as they are set. They are never written
+into the Deployment: it references the Secret through `envFrom` and the kubelet
+substitutes the values inside the container. No endpoint returns a value, so a
+secret cannot be read back through the API, the CLI or the console — only its
+name.
+
+Both halves are managed with `applab env` (or `PUT /api/v1/apps/<app>/secrets`),
+and **take effect on the next deploy**. Nothing to configure in the chart.
+
+Worth knowing: secrets reach the cluster as API traffic and are stored in `etcd`
+like any Kubernetes Secret. Encryption at rest is the cluster's job, not
+applab's.
+
 ## After installing
 
 ```bash

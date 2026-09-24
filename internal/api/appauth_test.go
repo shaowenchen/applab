@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/shaowenchen/applab/internal/api"
+	"github.com/shaowenchen/applab/internal/appconfig"
 	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
@@ -53,7 +54,12 @@ func newTieredServer(t *testing.T) (*api.Server, *store.Store) {
 	cfg.DataDir = dataDir
 
 	srv := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src)
-	srv.WithAppKeys(appkey.New(fake.NewSimpleClientset(), appKeyNamespace))
+
+	// One clientset for both cluster-backed stores, as a real deployment has one
+	// cluster: keys and secrets are Secrets in the same namespace.
+	clientset := fake.NewSimpleClientset()
+	srv.WithAppKeys(appkey.New(clientset, appKeyNamespace))
+	srv.WithAppConfig(appconfig.New(clientset, appKeyNamespace))
 	return srv, st
 }
 

@@ -303,6 +303,77 @@ func (c *Client) RotateAppKey(ctx context.Context, appID string) (*AppKey, error
 	return &out, nil
 }
 
+// AppConfig is an app's configuration.
+//
+// The asymmetry is the API's, and it is deliberate: Env carries values because
+// environment variables are not sensitive, and Secrets carries only names —
+// there is no route anywhere that returns a secret's value.
+type AppConfig struct {
+	AppID   string            `json:"app_id"`
+	Env     map[string]string `json:"env"`
+	Secrets []string          `json:"secrets"`
+}
+
+// GetAppConfig reads an app's configuration.
+func (c *Client) GetAppConfig(ctx context.Context, appID string) (*AppConfig, error) {
+	var out AppConfig
+	if err := c.do(ctx, http.MethodGet, "/api/v1/apps/"+appID+"/config", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetAppEnv sets environment variables, leaving any name not given alone.
+func (c *Client) SetAppEnv(ctx context.Context, appID string, env map[string]string) (*AppConfig, error) {
+	body, err := json.Marshal(map[string]any{"env": env})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+
+	var out AppConfig
+	if err := c.do(ctx, http.MethodPut, "/api/v1/apps/"+appID+"/env", bytes.NewReader(body), "application/json", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteAppEnv removes one environment variable.
+func (c *Client) DeleteAppEnv(ctx context.Context, appID, name string) (*AppConfig, error) {
+	var out AppConfig
+	path := "/api/v1/apps/" + appID + "/env/" + url.PathEscape(name)
+	if err := c.do(ctx, http.MethodDelete, path, nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetAppSecrets writes secret values, leaving any name not given alone.
+//
+// The response lists names only. The values went out in the request and are not
+// echoed back — there is nothing to read them from afterwards either, by design.
+func (c *Client) SetAppSecrets(ctx context.Context, appID string, secrets map[string]string) (*AppConfig, error) {
+	body, err := json.Marshal(map[string]any{"secrets": secrets})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+
+	var out AppConfig
+	if err := c.do(ctx, http.MethodPut, "/api/v1/apps/"+appID+"/secrets", bytes.NewReader(body), "application/json", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteAppSecret removes one secret.
+func (c *Client) DeleteAppSecret(ctx context.Context, appID, name string) (*AppConfig, error) {
+	var out AppConfig
+	path := "/api/v1/apps/" + appID + "/secrets/" + url.PathEscape(name)
+	if err := c.do(ctx, http.MethodDelete, path, nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // App is an app as the API presents it.
 type App struct {
 	ID   string `json:"id"`
@@ -313,6 +384,10 @@ type App struct {
 
 	Dockerfile string `json:"dockerfile"`
 	Domain     string `json:"domain"`
+
+	// EnvCount is how many environment variables the app has. The variables
+	// themselves come from AppConfig, so a list does not carry them.
+	EnvCount int `json:"env_count"`
 
 	// Hostname is the host an app answers on and Path where under it. With a
 	// shared path prefix the host is the deployment's rather than the app's, so

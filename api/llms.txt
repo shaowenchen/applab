@@ -159,6 +159,11 @@ requires `Authorization: Bearer <key>`; `no key` means it does not.)_
 - `GET /api/v1/apps/{app}` — One app. _(key)_
 - `PATCH /api/v1/apps/{app}` — Change an app's settings: `{name?, port?, replicas?, dockerfile?, domain?}`. Fields omitted are left alone. _(key)_
 - `DELETE /api/v1/apps/{app}` — Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository. Requires an admin key: an app key may manage its app but not destroy it. _(key)_
+- `GET /api/v1/apps/{app}/config` — The app's configuration: environment variables with their values, and the *names* of its secrets. Secret values are never returned by any route. _(key)_
+- `PUT /api/v1/apps/{app}/env` — Set environment variables. Body: `{env: {"NAME": "value"}}`. Names not mentioned are left alone. `PORT` is refused — it is derived from the app's `port`. _(key)_
+- `DELETE /api/v1/apps/{app}/env/{name}` — Remove one environment variable. _(key)_
+- `PUT /api/v1/apps/{app}/secrets` — Set secret values. Body: `{secrets: {"NAME": "value"}}`. Names not mentioned are left alone. The response lists names only, never values. 501 if this deployment has no cluster, where secrets are kept. _(key)_
+- `DELETE /api/v1/apps/{app}/secrets/{name}` — Remove one secret. _(key)_
 - `GET /api/v1/apps/{app}/key` — The app's API key, in full. Works with the app's own key or an admin key. This key may be used for the API, the CLI and the console, and reaches only this app. 501 if this deployment has no cluster, where keys are kept. _(key)_
 - `POST /api/v1/apps/{app}/key/rotate` — Replace the app's API key, invalidating the previous one immediately. Also creates one for an app that has none, so a lost key is recovered here. Returns the new key. _(key)_
 - `POST /api/v1/apps/{app}/source` — Upload source as a tar or tar.gz and commit it. This is the main way to push code. Send the archive as the raw request body (`--data-binary @-`), or as `multipart/form-data` with a `file` field. `?message=` sets the commit message; `?parent=<sha>` commits onto a chosen commit instead of the current tip. A single wrapping directory is stripped, so `tar czf - myproject` lands with its contents at the root. _(key)_

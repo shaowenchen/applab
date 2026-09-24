@@ -447,6 +447,51 @@
     </div>
 
     <div class="card">
+      <h2>Configuration</h2>
+      <p class="muted" style="margin-top:0">
+        Changes take effect on the next deploy, not immediately — configuration
+        travels the same path as code.
+      </p>
+
+      <!-- The two tables are deliberately not the same shape. A variable is
+           shown with its value because it is not sensitive; a secret is shown
+           as a name with no value anywhere, because there is no endpoint that
+           returns one. The difference on screen is the difference in the API. -->
+      <h3 style="font-size:14px">Environment variables</h3>
+      <table>
+        <thead><tr><th>Name</th><th>Value</th><th></th></tr></thead>
+        <tbody id="config-env"></tbody>
+      </table>
+      <div id="config-env-empty" class="empty hidden">No environment variables.</div>
+
+      <div class="row" style="margin-top:8px">
+        <input id="config-env-name" placeholder="NAME" size="16">
+        <input id="config-env-value" placeholder="value" size="24"
+               style="flex:1">
+        <button id="config-env-set">Set</button>
+      </div>
+
+      <h3 style="font-size:14px;margin-top:20px">Secrets</h3>
+      <table>
+        <thead><tr><th>Name</th><th></th></tr></thead>
+        <tbody id="config-secret"></tbody>
+      </table>
+      <div id="config-secret-empty" class="empty hidden">No secrets.</div>
+
+      <div class="row" style="margin-top:8px">
+        <input id="config-secret-name" placeholder="NAME" size="16">
+        <input id="config-secret-value" placeholder="value" type="password" size="24"
+               style="flex:1">
+        <button id="config-secret-set">Set</button>
+      </div>
+      <p class="muted" style="font-size:13px;margin-bottom:0">
+        A secret's value can never be read back — not here, not through the API,
+        not from the CLI. Setting one again replaces it.
+      </p>
+      <div id="config-problem" class="error hidden" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
       <h2>History</h2>
       <table>
         <thead><tr><th>Commit</th><th>When</th><th>Rollback</th><th>Message</th></tr></thead>
@@ -932,8 +977,148 @@ async function openApp(id) {
   show($("app-delete"), state.scope !== "app");
   stopLogs();
 
-  await Promise.all([loadAppState(), loadPods(), loadCommits()]);
+  await Promise.all([loadAppState(), loadPods(), loadCommits(), loadAppConfig()]);
   startLogs();
+}
+
+// loadAppConfig renders the app's configuration.
+//
+// One request fills both tables, because the API answers both halves from one
+// endpoint. The rendering differs between them on purpose and mirrors the API:
+// variables carry their values, secrets are names with no value to show.
+async function loadAppConfig() {
+  const problem = $("config-problem");
+  show(problem, false);
+
+  let config;
+  try {
+    config = await api("/api/v1/apps/" + state.app + "/config");
+  } catch (err) {
+    // Secrets need a cluster; environment variables do not. A deployment
+    // without one reports 501 for the secret half, and saying so is more
+    // useful than hiding the whole card.
+    show(problem, true);
+    problem.textContent = "Could not read configuration: " + err.message;
+    return;
+  }
+
+  renderEnv(config.env || {});
+  renderSecrets(config.secrets || []);
+}
+
+function renderEnv(env) {
+  const body = $("config-env");
+  body.replaceChildren();
+
+  const names = Object.keys(env).sort();
+  for (const name of names) {
+    const tr = document.createElement("tr");
+
+    const key = document.createElement("td");
+    key.className = "mono";
+    key.textContent = name;
+    tr.appendChild(key);
+
+    const value = document.createElement("td");
+    value.className = "mono";
+    value.textContent = env[name];
+    tr.appendChild(value);
+
+    const actions = document.createElement("td");
+    const remove = document.createElement("button");
+    remove.textContent = "Remove";
+    remove.onclick = () => removeEnv(name);
+    actions.appendChild(remove);
+    tr.appendChild(actions);
+
+    body.appendChild(tr);
+  }
+
+  show($("config-env-empty"), names.length === 0);
+}
+
+function renderSecrets(names) {
+  const body = $("config-secret");
+  body.replaceChildren();
+
+  for (const name of names) {
+    const tr = document.createElement("tr");
+
+    const key = document.createElement("td");
+    key.className = "mono";
+    key.textContent = name;
+    tr.appendChild(key);
+
+    const actions = document.createElement("td");
+    const remove = document.createElement("button");
+    remove.textContent = "Remove";
+    remove.onclick = () => removeSecret(name);
+    actions.appendChild(remove);
+    tr.appendChild(actions);
+
+    body.appendChild(tr);
+  }
+
+  show($("config-secret-empty"), names.length === 0);
+}
+
+// configAction runs a configuration change and reports the outcome.
+//
+// Every one of these refreshes the card and, on failure, says what happened in
+// the card rather than only in the page's global error banner — the failure is
+// about the thing the person was looking at.
+async function configAction(problem, run) {
+  show(problem, false);
+  try {
+    await run();
+  } catch (err) {
+    show(problem, true);
+    problem.textContent = err.message;
+    return;
+  }
+  await loadAppConfig();
+}
+
+function setEnv(name, value) {
+  const problem = $("config-problem");
+  configAction(problem, async () => {
+    await api("/api/v1/apps/" + state.app + "/env", {
+      method: "PUT",
+      body: JSON.stringify({ env: { [name]: value } }),
+    });
+  });
+}
+
+function removeEnv(name) {
+  const problem = $("config-problem");
+  configAction(problem, async () => {
+    await api("/api/v1/apps/" + state.app + "/env/" + encodeURIComponent(name), {
+      method: "DELETE",
+    });
+  });
+}
+
+function setSecret(name, value) {
+  const problem = $("config-problem");
+  configAction(problem, async () => {
+    await api("/api/v1/apps/" + state.app + "/secrets", {
+      method: "PUT",
+      body: JSON.stringify({ secrets: { [name]: value } }),
+    });
+    // Cleared as soon as it is sent: the value cannot be read back, so leaving
+    // it in the field would only invite the belief that it is still on screen
+    // somewhere.
+    $("config-secret-value").value = "";
+  });
+}
+
+function removeSecret(name) {
+  const problem = $("config-problem");
+  configAction(problem, async () => {
+    await api("/api/v1/apps/" + state.app + "/secrets/" + encodeURIComponent(name), {
+      method: "DELETE",
+    });
+  });
 }
 
 function closeApp() {
@@ -1391,6 +1576,35 @@ $("app-restart").onclick = restart;
 $("app-stop").onclick = stop;
 $("app-delete").onclick = remove;
 $("pods-refresh").onclick = loadPods;
+
+// Configuration. The name and value fields are read at click time rather than
+// tracked as state, so there is nothing to keep in sync.
+$("config-env-set").onclick = () => {
+  const name = $("config-env-name").value.trim();
+  const value = $("config-env-value").value;
+  const problem = $("config-problem");
+  if (!name) {
+    show(problem, true);
+    problem.textContent = "An environment variable needs a name.";
+    return;
+  }
+  setEnv(name, value);
+  $("config-env-name").value = "";
+  $("config-env-value").value = "";
+};
+
+$("config-secret-set").onclick = () => {
+  const name = $("config-secret-name").value.trim();
+  const value = $("config-secret-value").value;
+  const problem = $("config-problem");
+  if (!name) {
+    show(problem, true);
+    problem.textContent = "A secret needs a name.";
+    return;
+  }
+  setSecret(name, value);
+  $("config-secret-name").value = "";
+};
 
 $("logs-toggle").onclick = () => {
   if (state.logFollowing) stopLogs();

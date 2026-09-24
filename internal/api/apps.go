@@ -37,6 +37,16 @@ type appResponse struct {
 	Dockerfile string `json:"dockerfile"`
 	Domain     string `json:"domain"`
 
+	// EnvCount reports how many environment variables an app has, without
+	// shipping their values. It comes from the app record, so it costs nothing
+	// to include on every app in a list.
+	//
+	// There is no matching secret count, deliberately: secrets live in the
+	// cluster, so a list of N apps would cost N Secret reads to produce one. The
+	// app's own config endpoint reports them, where a single read is cheap and
+	// the names are worth having anyway.
+	EnvCount int `json:"env_count"`
+
 	// Hostname and Path are the two halves of where an app is served, and URL is
 	// them joined with a scheme. All three are derived, and reported so a caller
 	// does not have to reconstruct the deployment's addressing convention.
@@ -78,6 +88,7 @@ func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string) appRespo
 		Image:        a.Image,
 		Status:       string(a.Status),
 		StatusReason: a.StatusReason,
+		EnvCount:     len(a.Env),
 		CreatedAt:    a.CreatedAt,
 		UpdatedAt:    a.UpdatedAt,
 	}
@@ -366,6 +377,18 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 			// leftover Secret is worth a warning rather than a failed delete
 			// that leaves the caller unable to remove the app at all.
 			slog.ErrorContext(r.Context(), "failed to remove app key; deleting app record anyway",
+				"app", app.ID, "error", err)
+		}
+	}
+
+	// The configuration Secret goes for the same reason the key does, and
+	// through the same window: the teardown above covers it by label, but only
+	// when a cluster is reachable, so an app deleted while the cluster is down
+	// would leave its secrets behind — live credentials and connection strings
+	// for an app that no longer exists.
+	if s.appConfig != nil && s.appConfig.Ready() {
+		if err := s.appConfig.Delete(r.Context(), app.ID); err != nil {
+			slog.ErrorContext(r.Context(), "failed to remove app configuration; deleting app record anyway",
 				"app", app.ID, "error", err)
 		}
 	}

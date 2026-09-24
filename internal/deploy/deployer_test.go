@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -962,4 +963,366 @@ func TestNoPathPrefixKeepsPerAppHosts(t *testing.T) {
 	if _, hasRewrite := entries[0]["rewrite"]; hasRewrite {
 		t.Error("the route rewrites the path; there is no prefix to strip")
 	}
+}
+
+// --- app configuration -----------------------------------------------------
+
+// staticSecrets is a SecretReader that returns a fixed map.
+//
+// The deployer only ever calls Contents, so a fake this thin is enough — and it
+// keeps these tests about what the deployer builds rather than about the Secret
+// store, which internal/appconfig tests separately.
+type staticSecrets map[string]string
+
+func (s staticSecrets) Contents(_ context.Context, _ string) (map[string]string, error) {
+	return s, nil
+}
+
+// TestEnvVarsReachTheContainer asserts an app's variables are applied.
+func TestEnvVarsReachTheContainer(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Env = map[string]string{"LOG_LEVEL": "debug", "FEATURE_X": "on"}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	deployment := deploymentFor(t, client, app)
+	env := containerEnv(deployment)
+
+	if env["LOG_LEVEL"] != "debug" || env["FEATURE_X"] != "on" {
+		t.Errorf("env = %v, want LOG_LEVEL=debug and FEATURE_X=on", env)
+	}
+	// PORT is still set from the app, and still wins by being the only
+	// declaration of it.
+	if env["PORT"] != "8080" {
+		t.Errorf("PORT = %q, want 8080", env["PORT"])
+	}
+}
+
+// TestEnvVarsAreSortedInThePodTemplate is the reason appEnv sorts.
+//
+// The pod template is what upsertDeployment compares to decide whether anything
+// changed, and Go randomises map iteration. An unsorted env list would produce a
+// different template on every deploy of an unchanged app — so every deploy would
+// roll the app for no reason, and the config hash couldn't tell "changed" from
+// "reshuffled".
+func TestEnvVarsAreSortedInThePodTemplate(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Env = map[string]string{"ZED": "1", "ALPHA": "2", "MID": "3"}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	deployment := deploymentFor(t, client, app)
+	var names []string
+	for _, e := range deployment.Spec.Template.Spec.Containers[0].Env {
+		names = append(names, e.Name)
+	}
+
+	want := "PORT,ALPHA,MID,ZED"
+	if strings.Join(names, ",") != want {
+		t.Errorf("env order = %v, want %s — the pod template must be stable across deploys", names, want)
+	}
+}
+
+// TestSecretValueNeverReachesTheDeployment is the central claim of this feature.
+//
+// It is asserted against the object the deployer actually produces, and by
+// searching the whole thing rather than the field the value would be expected
+// in: a secret that leaked into a label, an annotation or a probe would be just
+// as exposed as one in the env list, and checking only the env list would not
+// notice.
+func TestSecretValueNeverReachesTheDeployment(t *testing.T) {
+	const secretValue = "postgres://user:hunter2@db.internal:5432/app"
+
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{"DATABASE_URL": secretValue}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	deployment := deploymentFor(t, client, app)
+	rendered := fmt.Sprintf("%+v", deployment)
+
+	if strings.Contains(rendered, secretValue) {
+		t.Fatalf("the secret's value appears in the Deployment:\n%s", rendered)
+	}
+	// Nor any fragment of it, in case a partial rendering is what leaked.
+	if strings.Contains(rendered, "hunter2") {
+		t.Fatalf("part of the secret's value appears in the Deployment:\n%s", rendered)
+	}
+}
+
+// TestSecretIsReferencedByEnvFrom asserts the value gets to the container by
+// reference rather than by being written down.
+func TestSecretIsReferencedByEnvFrom(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{"DATABASE_URL": "postgres://x"}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	container := deploymentFor(t, client, app).Spec.Template.Spec.Containers[0]
+	if len(container.EnvFrom) != 1 {
+		t.Fatalf("got %d envFrom entries, want 1", len(container.EnvFrom))
+	}
+	ref := container.EnvFrom[0].SecretRef
+	if ref == nil || ref.Name != "applab-env-shop" {
+		t.Fatalf("envFrom references %v, want applab-env-shop", ref)
+	}
+	// Required, not optional: an optional reference to a missing Secret would
+	// start the app with no configuration and no error.
+	if ref.Optional != nil && *ref.Optional {
+		t.Error("the secret reference is optional; a missing Secret would then start the app with no configuration and no error")
+	}
+}
+
+// TestNoSecretMeansNoEnvFrom covers the app that has no secrets.
+//
+// An envFrom naming a Secret that was never created makes the pod
+// unschedulable, which would turn "this app has no secrets" into an app that
+// will not start.
+func TestNoSecretMeansNoEnvFrom(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	container := deploymentFor(t, client, app).Spec.Template.Spec.Containers[0]
+	if len(container.EnvFrom) != 0 {
+		t.Errorf("got %d envFrom entries for an app with no secrets, want none", len(container.EnvFrom))
+	}
+}
+
+// TestNoClusterReaderStillDeploys covers a deployment with no cluster-backed
+// secret store: environment variables still work, and nothing references a
+// Secret that cannot exist.
+func TestNoClusterReaderStillDeploys(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = nil
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Env = map[string]string{"LOG_LEVEL": "debug"}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	container := deploymentFor(t, client, app).Spec.Template.Spec.Containers[0]
+	if len(container.EnvFrom) != 0 {
+		t.Errorf("got %d envFrom entries with no secret reader, want none", len(container.EnvFrom))
+	}
+	if containerEnv(deploymentFor(t, client, app))["LOG_LEVEL"] != "debug" {
+		t.Error("the environment variables did not reach the container")
+	}
+}
+
+// TestConfigHashChangesWhenASecretValueChanges is the subtle bug this whole
+// mechanism exists to prevent.
+//
+// Kubernetes does not restart pods when a Secret changes, so envFrom alone
+// leaves the old pods running the old value. The rollout has to be triggered by
+// the pod template changing — and a hash over the secret's *names* would not
+// change when a password rotates, which is exactly the case that matters.
+func TestConfigHashChangesWhenASecretValueChanges(t *testing.T) {
+	ctx := context.Background()
+	app := testApp()
+
+	// Same name throughout; only the value differs — the rotation case.
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{"TOKEN": "old"}
+	d, client := newTestDeployer(t, cfg)
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	before := configHashOf(t, client, app)
+
+	cfg.Secrets = staticSecrets{"TOKEN": "new"}
+	d, client = newTestDeployer(t, cfg)
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+	after := configHashOf(t, client, app)
+
+	if before == after {
+		t.Fatalf("the config hash did not change when a secret's value did (%s); a rotated password would never reach the running pods", before)
+	}
+}
+
+// TestConfigHashChangesWhenAVariableChanges covers the other half.
+func TestConfigHashChangesWhenAVariableChanges(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Env = map[string]string{"LOG_LEVEL": "info"}
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	before := configHashOf(t, client, app)
+
+	app.Env = map[string]string{"LOG_LEVEL": "debug"}
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+	after := configHashOf(t, client, app)
+
+	if before == after {
+		t.Errorf("the config hash did not change when a variable did (%s)", before)
+	}
+}
+
+// TestConfigHashIsStableAcrossDeploys is the other direction, and matters just
+// as much: an app whose configuration did not change must not roll.
+//
+// A hash that varied per deploy — over a map's iteration order, say — would
+// restart every app on every deploy, which is a worse failure than the one the
+// hash exists to fix.
+func TestConfigHashIsStableAcrossDeploys(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{"A": "1", "B": "2", "C": "3"}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Env = map[string]string{"ZED": "1", "ALPHA": "2", "MID": "3"}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	before := configHashOf(t, client, app)
+
+	// Applied repeatedly: map order differs between runs, so an unstable hash
+	// shows up as a difference here even though nothing changed.
+	for i := 0; i < 5; i++ {
+		if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+			t.Fatalf("Apply %d: %v", i, err)
+		}
+	}
+	after := configHashOf(t, client, app)
+
+	if before != after {
+		t.Errorf("the config hash changed across identical deploys (%s then %s), so the app would roll on every deploy", before, after)
+	}
+}
+
+// TestConfigHashCoversBothHalves asserts a name reused between the two kinds of
+// value is still distinguishable.
+//
+// Without the kind prefix in the hash, an env A=1 and a secret A=1 would
+// fingerprint identically, so moving a value from one to the other would produce
+// no rollout.
+func TestConfigHashCoversBothHalves(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Env = map[string]string{"VALUE": "x"}
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	asEnv := configHashOf(t, client, app)
+
+	app.Env = nil
+	cfg.Secrets = staticSecrets{"VALUE": "x"}
+	d, client = newTestDeployer(t, cfg)
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	asSecret := configHashOf(t, client, app)
+
+	if asEnv == asSecret {
+		t.Error("moving a value from a variable to a secret did not change the hash, so it would not roll")
+	}
+}
+
+// TestReservedPortIsNotDeclaredTwice asserts the deployer cannot produce a pod
+// spec with two PORT declarations even if the app record carries one.
+//
+// The API refuses to set PORT, but a record could predate that check or have
+// been edited directly. A duplicate declaration is accepted by Kubernetes and
+// the later one wins, so the app would listen where nothing routes and no error
+// would say so.
+func TestReservedPortIsNotDeclaredTwice(t *testing.T) {
+	cfg := testConfig()
+	cfg.Secrets = staticSecrets{}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+
+	app := testApp()
+	app.Env = map[string]string{"PORT": "9999"}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	deployment := deploymentFor(t, client, app)
+	seen := 0
+	for _, e := range deployment.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "PORT" {
+			seen++
+			if e.Value != "8080" {
+				t.Errorf("PORT = %q, want the app's own port 8080", e.Value)
+			}
+		}
+	}
+	if seen != 1 {
+		t.Errorf("PORT is declared %d times, want exactly 1", seen)
+	}
+}
+
+// --- helpers ---------------------------------------------------------------
+
+func deploymentFor(t *testing.T, client *fake.Clientset, app *model.App) *appsv1.Deployment {
+	t.Helper()
+	deployment, err := client.AppsV1().Deployments(app.Namespace).Get(context.Background(), ObjectName(app.ID), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("read the deployment: %v", err)
+	}
+	return deployment
+}
+
+func containerEnv(deployment *appsv1.Deployment) map[string]string {
+	env := map[string]string{}
+	for _, e := range deployment.Spec.Template.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	return env
+}
+
+func configHashOf(t *testing.T, client *fake.Clientset, app *model.App) string {
+	t.Helper()
+	return deploymentFor(t, client, app).Spec.Template.Annotations["applab.io/config-hash"]
 }

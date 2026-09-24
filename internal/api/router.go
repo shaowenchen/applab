@@ -92,6 +92,11 @@ type Server struct {
 	// Secrets — and then only the admin tier exists.
 	appKeys appKeyService
 
+	// appConfig holds an app's secret configuration. Nil means this deployment
+	// cannot keep secrets, which is the case without a cluster. The environment
+	// variables are unaffected: they live in the database with the app.
+	appConfig appConfigService
+
 	// deployer is the deploy half of the pipeline. Nil means this deployment
 	// cannot deploy.
 	deployer Deployer
@@ -321,6 +326,37 @@ type appKeyService interface {
 // Attached only when a cluster is reachable: keys live in Secrets, so a
 // deployment without one keeps working on the admin tier alone.
 func (s *Server) WithAppKeys(store appKeyService) *Server { s.appKeys = store; return s }
+
+// appConfigService is the per-app secret store, as this layer needs it.
+//
+// Note what is missing: there is no method returning a secret's value. The
+// deployer reads values, through its own narrower interface, and it is the only
+// thing in applab that does — which is what makes "no route returns a secret" a
+// property of the code rather than a rule someone has to remember.
+type appConfigService interface {
+	// Ready reports whether the store can reach a cluster.
+	Ready() bool
+
+	// Set writes the given values, preserving any key not mentioned, and
+	// returns the app's full set of names.
+	Set(ctx context.Context, appID string, values map[string]string) ([]string, error)
+
+	// Remove deletes the named values and returns the names that remain.
+	Remove(ctx context.Context, appID string, names []string) ([]string, error)
+
+	// Names lists the keys present, never their values.
+	Names(ctx context.Context, appID string) ([]string, error)
+
+	// Delete removes an app's configuration entirely.
+	Delete(ctx context.Context, appID string) error
+}
+
+// WithAppConfig attaches the per-app secret store.
+//
+// Attached only when a cluster is reachable: secrets live in Secrets, so a
+// deployment without one keeps working with environment variables alone and
+// reports the secret endpoints as unavailable.
+func (s *Server) WithAppConfig(store appConfigService) *Server { s.appConfig = store; return s }
 
 // Observer reads an app's runtime state.
 type Observer interface {
@@ -565,6 +601,46 @@ func (s *Server) routes() []route {
 			AppAdminOnly: true,
 			Doc:          "Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository. Requires an admin key: an app key may manage its app but not destroy it.",
 			Handler:      s.handleDeleteApp,
+		},
+
+		// -- App configuration --------------------------------------------
+		{
+			// The asymmetry in the response is deliberate: environment
+			// variables are returned with their values, secrets as names only.
+			// There is no route anywhere that returns a secret's value.
+			Pattern: "GET /api/v1/apps/{app}/config",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "The app's configuration: environment variables with their values, and the *names* of its secrets. Secret values are never returned by any route.",
+			Handler: s.handleGetAppConfig,
+		},
+		{
+			Pattern: "PUT /api/v1/apps/{app}/env",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "Set environment variables. Body: `{env: {\"NAME\": \"value\"}}`. Names not mentioned are left alone. `PORT` is refused — it is derived from the app's `port`.",
+			Handler: s.handleSetAppEnv,
+		},
+		{
+			Pattern: "DELETE /api/v1/apps/{app}/env/{name}",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "Remove one environment variable.",
+			Handler: s.handleDeleteAppEnv,
+		},
+		{
+			Pattern: "PUT /api/v1/apps/{app}/secrets",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "Set secret values. Body: `{secrets: {\"NAME\": \"value\"}}`. Names not mentioned are left alone. The response lists names only, never values. 501 if this deployment has no cluster, where secrets are kept.",
+			Handler: s.handleSetAppSecrets,
+		},
+		{
+			Pattern: "DELETE /api/v1/apps/{app}/secrets/{name}",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "Remove one secret.",
+			Handler: s.handleDeleteAppSecret,
 		},
 
 		// -- App keys -----------------------------------------------------

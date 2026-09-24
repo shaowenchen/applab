@@ -9,7 +9,10 @@ package deploy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +27,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/shaowenchen/applab/internal/appconfig"
 	"github.com/shaowenchen/applab/internal/model"
 )
 
@@ -53,6 +57,12 @@ type Config struct {
 	// applab's own, so it is referenced directly rather than copied.
 	ImagePullSecret string
 
+	// Secrets supplies an app's secret configuration at deploy time.
+	//
+	// Nil means this deployment cannot hold secrets — the usual case without a
+	// cluster — and then apps are deployed with environment variables only.
+	Secrets SecretReader
+
 	// Annotations are added to every VirtualService, for Istio specifics that
 	// vary by cluster.
 	Annotations map[string]string
@@ -63,6 +73,19 @@ type Config struct {
 	AppMemoryRequest string
 	AppCPULimit      string
 	AppMemoryLimit   string
+}
+
+// SecretReader reads an app's secret configuration.
+//
+// It is an interface rather than the concrete store for the same reason the
+// build and deploy halves are: a deployment without a cluster has no secrets to
+// read and leaves it nil, and this package should not have to know that.
+//
+// Contents is the only method, and it returns values — that is the point of the
+// interface. It is satisfied by internal/appconfig, and the deployer is the one
+// place in applab that holds a secret's value.
+type SecretReader interface {
+	Contents(ctx context.Context, appID string) (map[string]string, error)
 }
 
 // virtualServiceGVR addresses Istio's VirtualService for the dynamic client.
@@ -176,6 +199,21 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 	labels := appLabels(app)
 	selector := selectorLabels(app)
 
+	// The app's secret configuration is read here, at deploy time, and used for
+	// two things: to decide whether there is a Secret to reference, and to hash
+	// into the pod template. It is read rather than assumed because the hash has
+	// to cover the *values* — see the config-hash comment below for why a hash
+	// over names alone would be a bug that only shows up as a rotated password
+	// never reaching the running pods.
+	var secrets map[string]string
+	if d.cfg.Secrets != nil {
+		var err error
+		secrets, err = d.cfg.Secrets.Contents(ctx, app.ID)
+		if err != nil {
+			return fmt.Errorf("read configuration for app %s: %w", app.ID, err)
+		}
+	}
+
 	// The image tag is recorded as a pod-template label and an annotation, so a
 	// rollout's progress can be told apart from a previous one and an operator
 	// reading the Deployment can see which commit is running.
@@ -189,6 +227,20 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 	if app.CommitSHA != "" {
 		annotations["applab.io/commit"] = app.CommitSHA
 	}
+	// A fingerprint of the app's configuration, so that changing configuration
+	// alone triggers a rollout.
+	//
+	// Referencing a Secret through envFrom does not: Kubernetes does not restart
+	// pods when a Secret changes, so a deploy that only changed a secret value
+	// would update the Secret, leave the old pods running on the old value, and
+	// report success. Hashing the configuration into the pod template makes the
+	// template differ, and upsertDeployment replaces Spec.Template wholesale — so
+	// the Deployment sees a change and rolls.
+	//
+	// The hash is over the values, and is the only thing written out. An
+	// annotation carrying a hash of a password reveals nothing; one carrying the
+	// password would defeat the entire reason secrets are kept out of the spec.
+	annotations["applab.io/config-hash"] = configHash(app.Env, secrets)
 
 	desired := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -249,12 +301,15 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 							ContainerPort: app.Port,
 							Protocol:      corev1.ProtocolTCP,
 						}},
-						Env: []corev1.EnvVar{
-							// The port the app should bind. An app that honours
-							// this needs no configuration of its own; one that
-							// does not is unaffected.
-							{Name: "PORT", Value: fmt.Sprintf("%d", app.Port)},
-						},
+						Env: appEnv(app),
+						// The app's secrets, as environment variables, without any
+						// value appearing here: envFrom names a Secret and the
+						// kubelet does the substitution in the container. The
+						// Secret is referenced only when it exists — an envFrom
+						// naming a missing Secret makes the pod unschedulable,
+						// which would turn "this app has no secrets" into an app
+						// that will not start.
+						EnvFrom: envFrom(app.ID, secrets),
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceCPU:    resourceQty(orDefault(d.cfg.AppCPURequest, "100m")),
@@ -652,6 +707,90 @@ func (d *Deployer) Restart(ctx context.Context, app *model.App) error {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// appEnv is the container's environment: the port applab derives, then the
+// app's own variables.
+//
+// The order is fixed and the names are sorted, because the value of this
+// function ends up verbatim in the pod template. Go randomises map iteration,
+// so building the list straight from app.Env would produce a different pod
+// template on every deploy of an unchanged app — and since a changed template is
+// what triggers a rollout, every deploy would roll the app for no reason. Sorting
+// makes the result a function of the configuration alone.
+func appEnv(app *model.App) []corev1.EnvVar {
+	// The port the app should bind. An app that honours this needs no
+	// configuration of its own; one that does not is unaffected.
+	env := []corev1.EnvVar{{Name: model.PortEnv, Value: fmt.Sprintf("%d", app.Port)}}
+
+	names := make([]string, 0, len(app.Env))
+	for name := range app.Env {
+		// PORT is refused at the API, but an app record could predate that check
+		// or have been edited directly. Skipping it here as well means the pod
+		// spec can never carry the duplicate declaration at all.
+		if name == model.PortEnv {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		env = append(env, corev1.EnvVar{Name: name, Value: app.Env[name]})
+	}
+	return env
+}
+
+// envFrom references the app's configuration Secret, when it has one.
+//
+// Optional is deliberately not set. An optional reference to a missing Secret
+// would start the app with no configuration at all and no error, which is a
+// failure that presents as the app behaving oddly rather than as anything being
+// wrong; a required one fails loudly. The reference is only emitted when the
+// Secret is known to exist, so "required" never means "and also absent".
+func envFrom(appID string, secrets map[string]string) []corev1.EnvFromSource {
+	if len(secrets) == 0 {
+		return nil
+	}
+	return []corev1.EnvFromSource{{
+		SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: appconfig.Name(appID)},
+		},
+	}}
+}
+
+// configHash fingerprints an app's whole configuration.
+//
+// Both halves matter and neither can stand in for the other. The environment
+// variables are in the pod template directly, so changing one already changes the
+// template; the secrets are not, and are the reason this exists at all. A hash
+// that covered only the secret *names* would be the subtle bug here: rotating a
+// password leaves every name in place, so the template would be unchanged, no
+// rollout would happen, and the deploy would report success while the pods kept
+// serving the previous password.
+//
+// Names and values are both fed in, separated so that no pair of configurations
+// can collide by concatenation. The result is only ever compared, never printed
+// as anything but a digest.
+func configHash(env, secrets map[string]string) string {
+	h := sha256.New()
+	writeSorted := func(kind string, values map[string]string) {
+		names := make([]string, 0, len(values))
+		for name := range values {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Fprintf(h, "%s\x00%s\x00%s\x00", kind, name, values[name])
+		}
+	}
+	writeSorted("env", env)
+	writeSorted("secret", secrets)
+
+	// Truncated to 16 hex characters. The annotation is a change detector rather
+	// than a security boundary, and a short one stays readable in `kubectl
+	// describe`.
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
 
 func pullSecrets(name string) []corev1.LocalObjectReference {
 	if name == "" {

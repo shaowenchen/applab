@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -35,11 +36,11 @@ func (s *Store) CreateApp(ctx context.Context, app *model.App) error {
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO apps (id, name, port, replicas, dockerfile, domain, commit_sha, image,
+		INSERT INTO apps (id, name, port, replicas, dockerfile, domain, env, commit_sha, image,
 		                  status, status_reason, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		app.ID, app.Name, app.Port, app.Replicas, app.Dockerfile, app.Domain,
-		app.CommitSHA, app.Image, app.Status, app.StatusReason,
+		encodeEnv(app.Env), app.CommitSHA, app.Image, app.Status, app.StatusReason,
 		app.CreatedAt.Unix(), app.UpdatedAt.Unix(),
 	)
 	if err != nil {
@@ -54,7 +55,7 @@ func (s *Store) CreateApp(ctx context.Context, app *model.App) error {
 // GetApp loads one app by id.
 func (s *Store) GetApp(ctx context.Context, id string) (*model.App, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, port, replicas, dockerfile, domain, commit_sha, image,
+		SELECT id, name, port, replicas, dockerfile, domain, env, commit_sha, image,
 		       status, status_reason, created_at, updated_at
 		FROM apps WHERE id = ?`, id)
 
@@ -75,7 +76,7 @@ func (s *Store) GetApp(ctx context.Context, id string) (*model.App, error) {
 // would make "why did my app vanish" unanswerable from the API.
 func (s *Store) ListApps(ctx context.Context) ([]*model.App, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, port, replicas, dockerfile, domain, commit_sha, image,
+		SELECT id, name, port, replicas, dockerfile, domain, env, commit_sha, image,
 		       status, status_reason, created_at, updated_at
 		FROM apps ORDER BY created_at DESC, id ASC`)
 	if err != nil {
@@ -107,10 +108,10 @@ func (s *Store) UpdateApp(ctx context.Context, app *model.App) error {
 
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE apps SET
-			name = ?, port = ?, replicas = ?, dockerfile = ?, domain = ?,
+			name = ?, port = ?, replicas = ?, dockerfile = ?, domain = ?, env = ?,
 			commit_sha = ?, image = ?, status = ?, status_reason = ?, updated_at = ?
 		WHERE id = ?`,
-		app.Name, app.Port, app.Replicas, app.Dockerfile, app.Domain,
+		app.Name, app.Port, app.Replicas, app.Dockerfile, app.Domain, encodeEnv(app.Env),
 		app.CommitSHA, app.Image, app.Status, app.StatusReason,
 		app.UpdatedAt.Unix(), app.ID,
 	)
@@ -206,16 +207,61 @@ type rowScanner interface {
 func scanApp(sc rowScanner) (*model.App, error) {
 	var (
 		app                  model.App
+		env                  string
 		createdAt, updatedAt int64
 	)
 	if err := sc.Scan(
-		&app.ID, &app.Name, &app.Port, &app.Replicas, &app.Dockerfile, &app.Domain,
+		&app.ID, &app.Name, &app.Port, &app.Replicas, &app.Dockerfile, &app.Domain, &env,
 		&app.CommitSHA, &app.Image, &app.Status, &app.StatusReason,
 		&createdAt, &updatedAt,
 	); err != nil {
 		return nil, err
 	}
+	decoded, err := decodeEnv(env)
+	if err != nil {
+		return nil, fmt.Errorf("app %s: %w", app.ID, err)
+	}
+	app.Env = decoded
 	app.CreatedAt = time.Unix(createdAt, 0).UTC()
 	app.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 	return &app, nil
+}
+
+// encodeEnv renders the environment map for its column.
+//
+// A nil map is written as an empty object rather than as NULL, so that every row
+// decodes the same way and a reader never has to tell "no variables" apart from
+// "this row predates the column".
+func encodeEnv(env map[string]string) string {
+	if len(env) == 0 {
+		return "{}"
+	}
+	encoded, err := json.Marshal(env)
+	if err != nil {
+		// Unreachable for a map[string]string — json.Marshal can only fail on a
+		// value it cannot represent, and every value here is a string. Returning
+		// the empty object keeps the failure from being one that corrupts a row.
+		return "{}"
+	}
+	return string(encoded)
+}
+
+// decodeEnv reads the environment map back out of its column.
+//
+// An empty column is an empty map, not an error: rows written before the column
+// existed carry the ” that ALTER TABLE backfills. A malformed value is reported
+// rather than swallowed, because silently dropping an app's configuration would
+// be worse than refusing to load it.
+func decodeEnv(encoded string) (map[string]string, error) {
+	if encoded == "" {
+		return nil, nil
+	}
+	var env map[string]string
+	if err := json.Unmarshal([]byte(encoded), &env); err != nil {
+		return nil, fmt.Errorf("decode environment: %w", err)
+	}
+	if len(env) == 0 {
+		return nil, nil
+	}
+	return env, nil
 }

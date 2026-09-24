@@ -87,6 +87,17 @@ apps:
   # correct absolute links.
   pathPrefix: ""
 
+  # An app's own configuration is not set here. It is per app rather than per
+  # installation, and it is changed while the deployment runs, so it is managed
+  # with `applab env` rather than with a release:
+  #
+  #   applab env set shop LOG_LEVEL=debug          # plain, visible in the Deployment
+  #   applab env secret set shop DATABASE_URL=...  # kept in a Secret, never read back
+  #
+  # Secrets are stored one Secret per app, named applab-env-<app>, in this
+  # namespace — using the same `secrets` permission the Role already grants for
+  # app keys. Changes take effect on the next deploy.
+
   # The public address of this applab installation, used by build jobs to fetch
   # source and reported to clients as api_base_url.
   #

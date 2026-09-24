@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shaowenchen/applab/internal/api"
+	"github.com/shaowenchen/applab/internal/appconfig"
 	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/build"
@@ -190,6 +191,13 @@ func run() error {
 		// applab with no cluster at all.
 		srv.WithAppKeys(appkey.New(client.Clientset(), cfg.Namespace))
 
+		// An app's secrets live in a Secret beside it, so they need a cluster
+		// for the same reason the keys do. Without one an app still deploys and
+		// still gets its environment variables; only the secret endpoints
+		// report themselves unavailable.
+		appConfig := appconfig.New(client.Clientset(), cfg.Namespace)
+		srv.WithAppConfig(appConfig)
+
 		if cfg.Build.Enabled() {
 			engine := build.New(client.Clientset(), build.Config{
 				BuilderImage:       cfg.Build.BuilderImage,
@@ -226,14 +234,24 @@ func run() error {
 		// The dynamic client goes with it because publishing an app means writing
 		// an Istio VirtualService, which is not in client-go.
 		srv.WithDeployer(deploy.NewWithDynamic(client.Clientset(), client.Dynamic(), deploy.Config{
-			Gateway:          cfg.Deploy.Gateway,
-			BaseDomain:       cfg.BaseDomain,
+			Gateway:    cfg.Deploy.Gateway,
+			BaseDomain: cfg.BaseDomain,
+			// The prefix is what puts every app under one path on a shared host
+			// instead of on a subdomain of its own. It has to reach the deployer
+			// as well as the API: the API is what advertises an app's address and
+			// the deployer is what writes the VirtualService that serves it, so a
+			// prefix known to only one of them produces an address that does not
+			// route.
+			PathPrefix:       cfg.PathPrefix,
 			ImagePullSecret:  cfg.Deploy.ImagePullSecret,
 			Annotations:      cfg.Deploy.Annotations,
 			AppCPURequest:    cfg.Deploy.AppCPURequest,
 			AppMemoryRequest: cfg.Deploy.AppMemoryRequest,
 			AppCPULimit:      cfg.Deploy.AppCPULimit,
 			AppMemoryLimit:   cfg.Deploy.AppMemoryLimit,
+			// The deployer is the one thing that reads secret values, to hash
+			// them into the pod template.
+			Secrets: appConfig,
 		}))
 	}
 

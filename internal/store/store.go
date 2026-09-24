@@ -144,6 +144,17 @@ var migrations = []string{
 		created_at INTEGER NOT NULL
 	);
 	`,
+
+	// 2 — an app's environment variables.
+	//
+	// JSON in a TEXT column rather than a table of its own. The map is small,
+	// always read and written with the app it belongs to, and never queried
+	// independently — so a join would buy nothing and cost a second thing to
+	// keep consistent. Secrets are not here at all; they live in Kubernetes,
+	// where a credential belongs.
+	`
+	ALTER TABLE apps ADD COLUMN env TEXT NOT NULL DEFAULT '{}';
+	`,
 }
 
 // migrate applies every migration the database has not seen yet.

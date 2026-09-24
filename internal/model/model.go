@@ -11,6 +11,16 @@ import (
 	"time"
 )
 
+// PortEnv is the environment variable the deployer sets from an app's Port, so
+// the app knows which port to bind and the Service has something to target.
+//
+// It is named here rather than in the deployer because two packages need it and
+// they need to agree: the deployer sets it, and configuration validation refuses
+// a caller who tries to set it too. Two literals would drift, and the failure
+// that follows is silent — a duplicate declaration in the pod spec, a later
+// value winning, and an app listening on a port nothing routes to.
+const PortEnv = "PORT"
+
 // AppStatus is where an app is in its lifecycle.
 //
 // The status is derived rather than authoritative: it is applab's summary of
@@ -79,6 +89,16 @@ type App struct {
 	// Domain overrides the hostname the app is served at. Empty means the
 	// deployment's default of "<id>.<base domain>".
 	Domain string
+
+	// Env is the app's non-secret configuration, applied to the container as
+	// environment variables at deploy time.
+	//
+	// Secrets are deliberately not here. They live in a Kubernetes Secret, read
+	// by the deployer and by nothing else, so the database is not a second place
+	// for a credential to leak from or to drift in. The split is by sensitivity:
+	// this map is returned by the API, and whatever is in it should be fit to
+	// print.
+	Env map[string]string
 
 	// CommitSHA is the commit currently deployed, and Image the image built from
 	// it. Both empty means nothing has been deployed yet.
