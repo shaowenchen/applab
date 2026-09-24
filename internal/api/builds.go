@@ -165,7 +165,158 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, commitSHA strin
 	}
 	s.setAppStatus(ctx, app.ID, model.AppStatusBuilding, "building commit "+shortSHA(commitSHA))
 
+	// Any other build of this app is now the older one. Stopping it here as well
+	// as on upload is what makes the invariant hold for every way a build can
+	// start: two of them running at once would race to push the same image tag,
+	// and which one won would be whichever finished last.
+	//
+	// This build is excluded by id — it is already in the unfinished list.
+	s.supersedeOtherBuilds(ctx, app, buildID)
+
 	return build, nil
+}
+
+// supersedeOtherBuilds stops every build of an app except one.
+func (s *Server) supersedeOtherBuilds(ctx context.Context, app *model.App, exceptBuildID string) {
+	if s.build == nil {
+		return
+	}
+
+	unfinished, err := s.store.ListUnfinishedBuildsForApp(ctx, app.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "could not list the builds in flight", "app", app.ID, "error", err)
+		return
+	}
+
+	for _, build := range unfinished {
+		if build.ID == exceptBuildID || build.JobName == "" {
+			continue
+		}
+		if err := s.build.Cancel(ctx, app.Namespace, build.JobName); err != nil {
+			slog.WarnContext(ctx, "could not stop a superseded build",
+				"app", app.ID, "build", build.ID, "job", build.JobName, "error", err)
+			continue
+		}
+		s.setBuildStatus(ctx, build.ID, model.BuildStatusCancelled,
+			"superseded by a newer build of "+app.ID)
+		slog.InfoContext(ctx, "stopped a superseded build",
+			"app", app.ID, "build", build.ID, "job", build.JobName)
+	}
+}
+
+// handleCancelBuild stops a running build and marks it cancelled.
+//
+// The same operation the upload path performs, offered explicitly: someone may
+// simply want the build to stop — it is pushing a bad commit, or it is wedged —
+// without uploading anything.
+func (s *Server) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
+	build, apiErr := s.loadBuild(r)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+	app, apiErr := s.loadApp(r)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
+	if build.Status.Terminal() {
+		fail(w, r, Conflict("build %s has already finished (%s)", shortSHA(build.ID), build.Status))
+		return
+	}
+
+	// The cluster is consulted first, the same way reading a build does: a build
+	// whose Job ended while nothing was watching would otherwise be reported as
+	// stopped when it had in fact finished on its own.
+	s.refreshBuild(r.Context(), build)
+	if build.Status.Terminal() {
+		fail(w, r, Conflict("build %s has already finished (%s)", shortSHA(build.ID), build.Status))
+		return
+	}
+
+	// A build with no Job was recorded but never started, so there is nothing in
+	// the cluster to delete and the record is the only thing to settle.
+	if build.JobName != "" {
+		if s.build == nil || !s.build.Ready() {
+			fail(w, r, Errorf(http.StatusNotImplemented, "this deployment cannot build"))
+			return
+		}
+		if err := s.build.Cancel(r.Context(), app.Namespace, build.JobName); err != nil {
+			fail(w, r, Errorf(http.StatusInternalServerError, "stop build job %s", build.JobName).Wrap(err))
+			return
+		}
+	}
+
+	s.setBuildStatus(r.Context(), build.ID, model.BuildStatusCancelled, "stopped on request")
+	build.Status = model.BuildStatusCancelled
+	build.Reason = "stopped on request"
+
+	slog.InfoContext(r.Context(), "build stopped", "app", app.ID, "build", build.ID, "job", build.JobName)
+	respond(w, http.StatusOK, toBuildResponse(build))
+}
+
+// supersedeBuilds stops whatever this app is currently building.
+//
+// A new upload makes the build already in flight obsolete: it is building a
+// commit that is no longer the tip, and left alone it would run to completion,
+// hold a build slot and push an image nobody is waiting for — possibly landing
+// after the newer build and overwriting what the app should be running. So the
+// upload stops it.
+//
+// Best-effort, and deliberately not fatal to the upload: the source is stored by
+// the time this runs, and refusing an upload because a Job could not be deleted
+// would trade a working commit for a tidier cluster. Every failure is logged and
+// the upload proceeds.
+//
+// The record is marked cancelled rather than deleted, because it happened: the
+// builds table is a history, and a build that was stopped is part of it — which
+// is also what keeps someone from reading a vanished build as "the build I asked
+// for never started".
+//
+// Only builds with a Job are touched. One with no JobName is either still being
+// created — `startBuild` writes the record before the Job, so there is a real
+// window — or was left behind by a restart, and deleting a Job name that was
+// never created would be a delete of "" against the cluster. The restart case is
+// already handled: `ReconcileBuilds` fails those at startup.
+func (s *Server) supersedeBuilds(ctx context.Context, app *model.App) {
+	if s.build == nil {
+		return
+	}
+
+	unfinished, err := s.store.ListUnfinishedBuildsForApp(ctx, app.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "could not list the builds in flight", "app", app.ID, "error", err)
+		return
+	}
+
+	for _, build := range unfinished {
+		if build.JobName == "" {
+			continue
+		}
+
+		if err := s.build.Cancel(ctx, app.Namespace, build.JobName); err != nil {
+			// The Job is recorded as failed rather than cancelled, because it was
+			// not stopped: whatever it is doing, it is still doing it.
+			slog.WarnContext(ctx, "could not stop the build in flight",
+				"app", app.ID, "build", build.ID, "job", build.JobName, "error", err)
+			continue
+		}
+
+		s.setBuildStatus(ctx, build.ID, model.BuildStatusCancelled,
+			"superseded by a newer upload of "+app.ID)
+		slog.InfoContext(ctx, "stopped the build in flight to make way for an upload",
+			"app", app.ID, "build", build.ID, "job", build.JobName)
+
+		// The app's own status reverts to what the cluster is actually running.
+		// "building" is the status of an app whose build is in flight, and there
+		// is no longer one; leaving it would show an app as busy until something
+		// else happened to overwrite it.
+		if app.Status == model.AppStatusBuilding {
+			s.setAppStatus(ctx, app.ID, model.AppStatusDeploying,
+				"the build in flight was superseded by a newer upload")
+		}
+	}
 }
 
 func (s *Server) handleGetBuild(w http.ResponseWriter, r *http.Request) {

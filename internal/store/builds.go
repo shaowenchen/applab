@@ -181,6 +181,34 @@ func (s *Store) ListUnfinishedBuilds(ctx context.Context) ([]*model.Build, error
 	return out, rows.Err()
 }
 
+// ListUnfinishedBuildsForApp returns one app's builds that are still pending or
+// running, oldest first.
+//
+// It exists so that a new upload can supersede the build already in flight: the
+// upload that arrived later is the one whose source someone is waiting to see,
+// and a Job left running for the earlier commit would push an image for a
+// revision that is no longer the tip.
+func (s *Store) ListUnfinishedBuildsForApp(ctx context.Context, appID string) ([]*model.Build, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+createBuildColumns+` FROM builds
+		 WHERE app_id = ? AND status IN (?, ?) ORDER BY created_at ASC`,
+		appID, string(model.BuildStatusPending), string(model.BuildStatusRunning))
+	if err != nil {
+		return nil, fmt.Errorf("list unfinished builds for app %s: %w", appID, err)
+	}
+	defer rows.Close()
+
+	var out []*model.Build
+	for rows.Next() {
+		b, err := scanBuild(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan build: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 func scanBuild(sc rowScanner) (*model.Build, error) {
 	var (
 		b                            model.Build

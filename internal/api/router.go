@@ -130,6 +130,14 @@ type BuildEngine interface {
 
 	// ImageFor returns the image a build of a commit pushes to.
 	ImageFor(appID, commitSHA string) string
+
+	// Cancel stops a build by deleting its Job.
+	//
+	// It is what makes a new upload supersede the build already in flight: the
+	// Job would otherwise run to completion and push an image for a commit that
+	// is no longer the tip, holding a build slot and a registry push that nobody
+	// asked for.
+	Cancel(ctx context.Context, namespace, jobName string) error
 }
 
 // Deployer is the deploy half of the pipeline.
@@ -789,6 +797,13 @@ func (s *Server) routes() []route {
 			AppAuth: true,
 			Doc:     "The build's log, as `text/plain`. Follows the build while it runs and ends when it finishes; works unchanged for a build that has already finished. `?follow=false` returns what exists so far and stops.",
 			Handler: s.handleBuildLogs,
+		},
+		{
+			Pattern: "DELETE /api/v1/apps/{app}/builds/{build}",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "Stop a build that has not finished, and mark it `cancelled`. A build that already finished is refused with 409 rather than relabelled. Returns 501 if this deployment cannot build.",
+			Handler: s.handleCancelBuild,
 		},
 
 		// -- Deploy -------------------------------------------------------

@@ -123,6 +123,7 @@ Source
   push [message]     upload this directory, build it and deploy it
   upload [message]   upload this directory without building
   build [commit]     build a commit (default: the newest)
+  cancel [build]     stop a build (default: the one in flight)
   deploy [commit]    deploy a commit (default: the newest), building it if needed
   rollback <commit>  deploy an earlier commit, reusing its image
 
@@ -285,6 +286,29 @@ case "${1:-help}" in
   build)
     shift
     api POST "/api/v1/apps/$APP/builds" "{\"commit_sha\":\"${1:-}\"}"
+    ;;
+  cancel)
+    shift
+    # The build to stop: one named on the command line, or whatever is in flight.
+    # Naming it is how a specific build is stopped; naming nothing is what someone
+    # means after a push has gone wrong, which is "stop what you are doing".
+    if [ -n "${1:-}" ]; then
+      id="$1"
+    else
+      # The newest build that has not finished. `builds` is newest first, so the
+      # first non-terminal status in the list is the one running. json_field reads
+      # one field per call and the list is a single line per build, so this walks
+      # the ids and statuses together rather than parsing the array.
+      listing=$(api GET "/api/v1/apps/$APP/builds?limit=20")
+      id=$(printf '%s' "$listing" | tr '{' '\n' | grep -v '"status":"succeeded"' \
+        | grep -v '"status":"failed"' | grep -v '"status":"cancelled"' \
+        | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
+    fi
+
+    [ -n "$id" ] || { echo "nothing is building" >&2; exit 0; }
+    api DELETE "/api/v1/apps/$APP/builds/$id" | json_field status
+    echo
+    echo "stopped $id" >&2
     ;;
   deploy)
     shift

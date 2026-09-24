@@ -56,12 +56,23 @@ const (
 	BuildStatusRunning   BuildStatus = "running"
 	BuildStatusSucceeded BuildStatus = "succeeded"
 	BuildStatusFailed    BuildStatus = "failed"
+
+	// BuildStatusCancelled means the build was stopped before it finished — by a
+	// newer upload for the same app, which supersedes the build in flight, or by
+	// an explicit request.
+	//
+	// It is a terminal status of its own rather than "failed" because the two
+	// mean opposite things to whoever reads them: a failed build needs looking
+	// at, and a superseded one was replaced on purpose and needs nothing. It is
+	// deliberately not named "superseded": the same state is reached by a stop
+	// request, and a build stopped that way was not superseded by anything.
+	BuildStatusCancelled BuildStatus = "cancelled"
 )
 
 // Terminal reports whether the build has stopped and its status will not change
 // again. Callers polling or streaming a build use this to decide when to stop.
 func (s BuildStatus) Terminal() bool {
-	return s == BuildStatusSucceeded || s == BuildStatusFailed
+	return s == BuildStatusSucceeded || s == BuildStatusFailed || s == BuildStatusCancelled
 }
 
 // App is a deployed application.

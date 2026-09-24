@@ -1044,6 +1044,7 @@ const ZH = {
   "Build log": "构建日志",
   "Deploy": "部署",
   "(loading)": "（加载中）",
+  "Could not stop the build: {error}": "无法停止构建：{error}",
   "Nothing has been built yet. Build the newest commit with": "还没有构建过。构建最新提交请用",
 
   // -- App state ------------------------------------------------------------
@@ -1067,6 +1068,7 @@ const ZH = {
   "created": "已创建",
   "unknown": "未知",
   "succeeded": "成功",
+  "cancelled": "已取消",
   "pending": "等待中",
   "ready": "就绪",
   "not ready": "未就绪",
@@ -1521,6 +1523,11 @@ function buildStatusClass(status) {
     case "failed": return "bad";
     case "running":
     case "pending": return "busy";
+    // A cancelled build is neither a success nor a failure: it was stopped on
+    // purpose, usually because a newer upload replaced it. Colouring it red
+    // would put a problem on screen where none exists, which is the one thing a
+    // status colour must not do.
+    case "cancelled": return "neutral";
     default: return "neutral";
   }
 }
@@ -1862,8 +1869,37 @@ async function loadAppBuilds() {
     logs.appendChild(logsButton);
     tr.appendChild(logs);
 
+    // Only offered while there is something to stop. A finished build's cancel
+    // would be a button whose only outcome is a 409.
+    const stop = document.createElement("td");
+    if (!["succeeded", "failed", "cancelled"].includes(build.status)) {
+      const stopButton = document.createElement("button");
+      stopButton.textContent = t("Stop");
+      stopButton.onclick = () => cancelBuild(build.id);
+      stop.appendChild(stopButton);
+    } else {
+      stop.className = "muted";
+      stop.textContent = "—";
+    }
+    tr.appendChild(stop);
+
     body.appendChild(tr);
   }
+}
+
+// cancelBuild stops a build that has not finished.
+//
+// Marked cancelled rather than deleted, which is what the API does: the builds
+// table is a history, and a build that was stopped is part of it.
+async function cancelBuild(buildID) {
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app + "/builds/" + buildID, { method: "DELETE" });
+  } catch (err) {
+    setError(tf("Could not stop the build: {error}", { error: err.message }));
+    return;
+  }
+  await loadAppBuilds();
 }
 
 // showBuildLog switches the log panel below the table to one build's output and

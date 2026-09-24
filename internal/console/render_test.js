@@ -521,6 +521,10 @@ async function render(apps) {
       // which the static scan cannot read — the argument is an expression.
       // Exercised by the eye checks above.
       "Show", "Hide", "Copy", "Copied",
+      // A build status rendered by buildPill as t(status), where the status is
+      // whatever the API returned. Every value of model.BuildStatus has to be
+      // here or a build shows its raw API word.
+      "cancelled",
     ]);
     const unreferenced = Object.keys(zh).filter((k) => !wanted.has(k) && !viaVariable.has(k));
     check(

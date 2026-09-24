@@ -71,6 +71,12 @@ func (s *Server) handleUploadSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordCommit(r, app, result)
+
+	// A new upload supersedes whatever this app is building. Placed after the
+	// commit, so a build is never stopped for an upload that then failed to
+	// store anything.
+	s.supersedeBuilds(r.Context(), app)
+
 	if s.metrics != nil {
 		s.metrics.ObserveUpload(result.Bytes)
 	}
@@ -512,6 +518,12 @@ func (s *Server) handleChunkedUploadComplete(w http.ResponseWriter, r *http.Requ
 	}
 
 	s.recordCommit(r, app, result)
+
+	// A new upload supersedes whatever this app is building. Placed after the
+	// commit, so a build is never stopped for an upload that then failed to
+	// store anything.
+	s.supersedeBuilds(r.Context(), app)
+
 	respond(w, http.StatusOK, uploadResponse{
 		CommitSHA:    result.SHA,
 		Message:      result.Subject,

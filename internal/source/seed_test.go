@@ -281,6 +281,7 @@ func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
 		{"DELETE", "/api/v1/apps/"},
 		{"POST", "/builds"},
 		{"GET", "/builds"},
+		{"DELETE", "/builds/"},
 		{"GET", "/commits"},
 		{"GET", "/config"},
 		{"POST", "/deploy"},
