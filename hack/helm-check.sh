@@ -37,6 +37,13 @@ BASE=(
   --set "build.registry=registry.example.com/apps"
   --set "build.pushSecret=regcred"
   --set "deploy.imagePullSecret=regpull"
+  # A bucket is required now, and the reason is worth stating where it is
+  # exercised: without one the server falls back to ./data/objects, which in
+  # this chart is an emptyDir — so a deployment that omitted it would render,
+  # install, run, and lose every app on the next restart. The guard below is
+  # what refuses it; this is what a correct install looks like.
+  --set "objectStore.endpoint=http://minio.ops-system:9000"
+  --set "objectStore.bucket=applab"
 )
 
 render() { helm template applab "$CHART" "${BASE[@]}" "$@"; }
@@ -104,18 +111,32 @@ done
 
 # A malformed configuration must be refused at render time rather than deployed
 # and discovered later. Each of these has a guard in _helpers.tpl.
+# Every value that is not the one under test is supplied, so each call reaches
+# the guard it names. Without that, adding a guard for a later setting turns an
+# earlier check into a test of the new guard — it still fails, so it still looks
+# like it is working, and the defect it was written for goes unnoticed.
+OK=(--set "auth.key=k" --set "build.registry=r.example.com/a"
+    --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab")
 must_fail() {
   local desc="$1"; shift
   if helm template applab "$CHART" --namespace "$NS" "$@" >/dev/null 2>&1; then
     fail "expected a render failure: $desc"
   fi
 }
-must_fail "no API keys"       --set apps.baseDomain=a.example.com
-must_fail "no registry"       --set "auth.key=k" --set apps.baseDomain=a.example.com --set "deploy.gateway=$NS/gateway"
-must_fail "bad gateway"       --set "auth.key=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway=nope"
+must_fail "no API keys"       --set apps.baseDomain=a.example.com "${OK[@]}" --set "auth.key="
+must_fail "no registry"       --set apps.baseDomain=a.example.com --set "deploy.gateway=$NS/gateway" "${OK[@]}" --set "build.registry="
+must_fail "bad gateway"       --set "apps.baseDomain=a.example.com" --set "deploy.gateway=nope" "${OK[@]}"
 # deploy.gateway now has a default, so "unset" no longer produces an empty one;
 # these two blank it explicitly to reach the guard.
-must_fail "blanked gateway"   --set "auth.key=k" --set "build.registry=r.example.com/a" --set "apps.baseDomain=a.example.com" --set "deploy.gateway="
+must_fail "blanked gateway"   --set "apps.baseDomain=a.example.com" --set "deploy.gateway=" "${OK[@]}"
+# A bucket is what the whole deployment is stored in, and the fallback when it
+# is unset is a directory in the pod's emptyDir — so this one is not a broken
+# deployment, it is one that works and then loses everything.
+must_fail "no bucket"         --set "auth.key=k" --set "build.registry=r.example.com/a" --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket="
+must_fail "no endpoint"       --set "auth.key=k" --set "build.registry=r.example.com/a" --set "objectStore.bucket=applab"
+# The credential's Secret does not carry the address, so it does not stand in
+# for one — reaching for it instead of an endpoint is the mistake this catches.
+must_fail "existingSecret without an endpoint" --set "auth.key=k" --set "build.registry=r.example.com/a" --set "objectStore.existingSecret=my-bucket"
 # More than one replica is allowed now — AppLab holds nothing on a replica, so
 # there is no volume to detach and nothing to corrupt. The check is the other
 # way round: it must render, and it must render without a claim.
@@ -228,7 +249,8 @@ grep -q 'APPLAB_DEPLOY_GATEWAY: "ops-system/gateway"' <<<"$out" \
 # `--set deploy.gateway=` blanks it rather than restoring it.
 defaulted="$(helm template applab "$CHART" --namespace "$NS" \
   --set "auth.key=k" --set "build.registry=r.example.com/a" \
-  --set "apps.baseDomain=apps.example.com")"
+  --set "apps.baseDomain=apps.example.com" \
+  --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab")"
 grep -q 'APPLAB_DEPLOY_GATEWAY: "istio-ingress/istio-ingress"' <<<"$defaulted" \
   || fail "the default deploy.gateway does not reach the server"
 
@@ -267,7 +289,8 @@ if command -v helm >/dev/null 2>&1; then
 
   published="$(./hack/chart-version.sh)"
   pkg_tag="$(helm template applab "$packaged"/applab-*.tgz --namespace "$NS" \
-    --set "auth.key=k" --set "build.registry=r.example.com/a" 2>/dev/null \
+    --set "auth.key=k" --set "build.registry=r.example.com/a" \
+    --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab" 2>/dev/null \
     | awk '/^ *image: /{gsub(/"/, "", $2); split($2, a, ":"); print a[2]; exit}')"
 
   if [ "$pkg_tag" != "$published" ]; then
@@ -289,6 +312,7 @@ fi
 # A gateway that is not namespace/name would not resolve.
 if helm template applab "$CHART" --namespace "$NS" \
   --set "auth.key=k" --set "build.registry=r.example.com/a" \
+  --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab" \
   --set "apps.baseDomain=apps.example.com" --set "deploy.gateway=just-a-name" >/dev/null 2>&1; then
   fail "a gateway without a namespace should be refused"
 fi
@@ -302,6 +326,7 @@ grep -q 'APPLAB_PATH_PREFIX: "/apps"' <<<"$prefixed" \
 # app from another on a shared host, so every app would be unreachable.
 if helm template applab "$CHART" --namespace "$NS" \
   --set "auth.key=k" --set "build.registry=r.example.com/a" \
+  --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab" \
   --set "apps.pathPrefix=/apps" >/dev/null 2>&1; then
   fail "a path prefix without a base domain should be refused"
 fi

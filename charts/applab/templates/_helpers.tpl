@@ -178,4 +178,21 @@ another, so there has to be a host for them to share.
 {{- if and (not (empty .Values.apps.pathPrefix)) (empty .Values.apps.baseDomain) }}
 {{- fail "apps.pathPrefix is set but apps.baseDomain is empty: the prefix distinguishes apps on a shared host, so there has to be a host. Set apps.baseDomain, or leave apps.pathPrefix empty to give each app its own subdomain" }}
 {{- end }}
+{{/*
+A bucket with no endpoint or no bucket name is the one configuration that fails
+silently and expensively.
+
+The server reads an unconfigured object store as "write to ./data/objects", which
+is deliberate and useful outside a cluster: it is how the binary runs on a
+laptop with nothing else set up. In this chart /data is scratch space — an
+emptyDir — so the same fallback does not fail, it *works*, right up until the pod
+is replaced. Then every app, every repository and every key is gone, and nothing
+in the logs ever said so.
+
+That asymmetry is why this is refused at render time. Off a cluster the fallback
+costs a directory; here it costs all of the state, on a schedule nobody controls.
+*/}}
+{{- if or (empty .Values.objectStore.endpoint) (empty .Values.objectStore.bucket) }}
+{{- fail "objectStore.endpoint and objectStore.bucket are both required: without them applab falls back to writing to a directory on the pod's own disk, which in this chart is an emptyDir — it would appear to work and lose every app, every repository and every key on the next restart. objectStore.existingSecret supplies the credential, not the address, so it does not replace these" }}
+{{- end }}
 {{- end }}
