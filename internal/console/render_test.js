@@ -523,6 +523,34 @@ async function render(apps) {
     vm.runInContext('lang = "en"', context);
   }
 
+  // What can be changed about a running app, on the page that reports it. The
+  // controls belong next to the state they change, so this asserts they are in
+  // that card rather than only that they exist somewhere.
+  {
+    const card = markup.match(/<h2 data-i18n="State"[\s\S]*?<\/div>\s*<\/div>/);
+    check("the State card exists", card !== null, true);
+    if (card) {
+      for (const id of ["app-replicas", "app-build", "app-deploy"]) {
+        check(`the State card carries ${id}`, card[0].includes(`id="${id}"`), true);
+      }
+    }
+  }
+
+  // Replicas are validated before the request is made. The server refuses a bad
+  // value too, but a field that is right here can say what is wrong with it
+  // instead of surfacing a 400 that names a parameter.
+  {
+    const setReplicas = vm.runInContext("setReplicas", context);
+    check("setReplicas is defined", typeof setReplicas, "function");
+    if (typeof setReplicas === "function") {
+      elements.get("app-replicas").value = "0";
+      await setReplicas();
+      const message = elements.get("error").textContent || "";
+      check("a replica count below one is refused", message.includes("1"), true);
+      check("and the refusal is shown", elements.get("error").classList.contains("hidden"), false);
+    }
+  }
+
   // The app's repository address.
   //
   // Every app has a git repository from the moment it is created, so this is the

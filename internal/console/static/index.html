@@ -244,6 +244,22 @@
   .card-head h2 { margin: 0; }
   .card p { margin: 0 0 12px; color: var(--text-muted); font-size: 14px; }
 
+  /* The controls that change what is running, under the record of what is. A
+     rule above them separates the reading from the acting rather than leaving
+     the two as one undifferentiated column. */
+  .state-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .state-actions .spacer { flex: 1; }
+  .field { display: flex; align-items: center; gap: 8px; }
+  .field > span { color: var(--text-muted); font-size: 13px; }
+
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
   /* A page's title, above its cards and outside them. Nothing is gained by
@@ -668,6 +684,28 @@
       <h2 data-i18n="State">State</h2>
       <dl id="app-state"></dl>
       <div id="app-problem" class="error hidden" style="margin-top:12px"></div>
+
+      <!-- What can be changed, next to what is running. These act on the app
+           rather than on one commit: a build or a deploy here means the latest
+           commit, and the history table below is where one specific commit is
+           chosen. -->
+      <div class="state-actions">
+        <label class="field">
+          <span data-i18n="Replicas">Replicas</span>
+          <input id="app-replicas" type="number" min="1" max="50" size="3" style="width:72px">
+          <button id="app-replicas-set" data-i18n="Set">Set</button>
+        </label>
+        <!-- Said out loud because the alternative is someone setting three
+             replicas, seeing nothing change, and concluding it is broken. The
+             setting is the app's; the deployer is what applies it, exactly as it
+             applies the app's port and image. `applab update --replicas` behaves
+             the same way, so this also keeps the console and the CLI honest with
+             each other. -->
+        <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
+        <span class="spacer"></span>
+        <button id="app-build" data-i18n="Build latest">Build latest</button>
+        <button id="app-deploy" data-i18n="Deploy latest">Deploy latest</button>
+      </div>
     </div>
 
     <!-- The app's own repository. Creating an app creates its git repository, so
@@ -986,6 +1024,15 @@ const ZH = {
   "Hide": "隐藏",
   "Copy": "复制",
   "Copied": "已复制",
+  "Replicas": "副本数",
+  "takes effect on the next deploy": "下次部署时生效",
+  "Build latest": "构建最新",
+  "Deploy latest": "部署最新",
+  "Replicas must be a whole number between 1 and 50.": "副本数必须是 1 到 50 之间的整数。",
+  "This app has no source yet. Upload some before building it.": "该应用还没有代码，请先上传。",
+  "Could not set replicas: {error}": "设置副本数失败：{error}",
+  "Could not start a build: {error}": "触发构建失败：{error}",
+  "Could not deploy: {error}": "部署失败：{error}",
   "Reaches": "仅能访问",
   "this app only": "本应用",
   "— it can push, build, deploy and roll back, but cannot delete the app and cannot see any other. The same key works with the API, the CLI and this console.":
@@ -2149,6 +2196,15 @@ function closeApp() {
 async function loadAppState() {
   setError("");
 
+  // Read alongside the status so the replicas field shows what the app is set
+  // to, rather than whatever was last typed into it. The status does not carry
+  // settings — they are the app's, not the cluster's — so this is a second call.
+  let app = null;
+  try { app = await api("/api/v1/apps/" + state.app); } catch { /* optional */ }
+  if (app && typeof app.replicas === "number") {
+    $("app-replicas").value = String(app.replicas);
+  }
+
   let status;
   try {
     status = await api("/api/v1/apps/" + state.app + "/status");
@@ -2340,6 +2396,97 @@ async function loadCommits() {
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
+
+// setReplicas changes how many copies of the app run.
+//
+// A PATCH rather than a deploy: the change is recorded on the app and takes
+// effect here, because the deployer applies the app's settings when it runs.
+async function setReplicas() {
+  const field = $("app-replicas");
+  const wanted = Number(field.value);
+
+  // Checked here as well as on the server. The server refuses a bad value either
+  // way, but "must be a whole number between 1 and 50" is a better answer than a
+  // 400 that names a field, and the field is right here.
+  if (!Number.isInteger(wanted) || wanted < 1 || wanted > 50) {
+    setError(t("Replicas must be a whole number between 1 and 50."));
+    return;
+  }
+
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app, {
+      method: "PATCH",
+      body: JSON.stringify({ replicas: wanted }),
+    });
+  } catch (err) {
+    setError(tf("Could not set replicas: {error}", { error: err.message }));
+    return;
+  }
+  await Promise.all([loadAppState(), loadPods()]);
+}
+
+// buildLatest starts a build of the app's newest commit.
+//
+// The newest commit and not the deployed one: the two differ when someone has
+// uploaded without deploying, and that difference is the reason to press this.
+async function buildLatest() {
+  const head = await headCommit();
+  if (!head) return;
+
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app + "/builds", {
+      method: "POST",
+      body: JSON.stringify({ commit_sha: head }),
+    });
+  } catch (err) {
+    setError(tf("Could not start a build: {error}", { error: err.message }));
+    return;
+  }
+  await loadCommits();
+  // The build runs as a Job, so there is nothing to wait for here — the history
+  // is reloaded so the new build appears, with its status updating as it runs.
+}
+
+// deployLatest deploys the app's newest commit.
+//
+// build:true so it does not fail for the one reason that would make it useless:
+// a commit uploaded and not yet built. A commit that already has an image reuses
+// it, so this is not a rebuild in the common case.
+async function deployLatest() {
+  const head = await headCommit();
+  if (!head) return;
+
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app + "/deploy", {
+      method: "POST",
+      body: JSON.stringify({ commit_sha: head, build: true }),
+    });
+  } catch (err) {
+    setError(tf("Could not deploy: {error}", { error: err.message }));
+    return;
+  }
+  await Promise.all([loadAppState(), loadPods(), loadCommits()]);
+}
+
+// headCommit returns the app's newest commit, or "" after reporting why not.
+async function headCommit() {
+  setError("");
+  let history;
+  try {
+    history = await api("/api/v1/apps/" + state.app + "/commits");
+  } catch (err) {
+    setError(tf("Could not read history: {error}", { error: err.message }));
+    return "";
+  }
+  if (!history.head) {
+    setError(t("This app has no source yet. Upload some before building it."));
+    return "";
+  }
+  return history.head;
+}
 
 async function rollback(sha) {
   if (!confirm(tf("Deploy commit {sha}?", { sha: shortSHA(sha) }))) return;
@@ -2630,6 +2777,10 @@ $("apps-new-id").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
 $("apps-new-port").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
 $("back").onclick = closeApp;
 $("app-restart").onclick = restart;
+$("app-replicas-set").onclick = setReplicas;
+$("app-replicas").onkeydown = (e) => { if (e.key === "Enter") setReplicas(); };
+$("app-build").onclick = buildLatest;
+$("app-deploy").onclick = deployLatest;
 $("app-stop").onclick = stop;
 $("app-delete").onclick = remove;
 $("pods-refresh").onclick = loadPods;
