@@ -433,8 +433,9 @@ would never exercise that.</li>
 one that is built for the purpose and thrown away: <a href="debugger.html"><code>debugger</code></a> is a
 GitHub Action that creates a <code>kind</code> cluster, a registry and an Istio gateway,
 installs applab from this repository's own chart, and publishes the result
-through a tunnel. Open the run's summary for a link, and <code>applab push</code> works
-against it.</p>
+through a tunnel. It is started by hand — it holds a runner for the whole
+session, which is not something to spend on every push. Open the run's summary
+for a link, and <code>applab push</code> works against it.</p>
 <pre><code>hack/environment.sh   the whole environment, in order
 </code></pre>
 <p>One address serves everything, and the gateway is what serves it. Istio routes
@@ -444,8 +445,9 @@ base domain — is evaluated only after every app has declined the request, and 
 apps match on <code>/&lt;pathPrefix&gt;/&lt;app&gt;/</code>, a prefix the console's own paths do not
 share. That ordering is defined, so nothing has to sit in front of the gateway to
 tell the two apart.</p>
-<p>CI runs the same environment and pushes <a href="https://github.com/shaowenchen/applab/blob/master/hack/demo-app/Dockerfile"><code>hack/demo-app</code></a> through
-it, so &quot;an app can be uploaded, built, deployed and served&quot; is a check rather
+<p>The same environment runs as a check on every push, in the <code>image</code> workflow's
+<code>end-to-end</code> job, which pushes <a href="https://github.com/shaowenchen/applab/blob/master/hack/demo-app/Dockerfile"><code>hack/demo-app</code></a> through
+it — so &quot;an app can be uploaded, built, deployed and served&quot; is a check rather
 than a claim.</p>
 <h3>The documentation site</h3>
 <p><code>https://www.chenshaowen.com/applab</code> is both the Helm repository and these
