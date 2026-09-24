@@ -553,6 +553,28 @@ func (s *Server) routes() []route {
 			Handler: s.handleOverview,
 		},
 		{
+			// The orientation call. An agent that has just been handed an
+			// address and a key has to learn what this installation is, what it
+			// can do and what already exists before it can act; every one of
+			// those is answerable from the endpoints above and below, but only
+			// by knowing which of them to call and which parts to read.
+			//
+			// Authenticated, unlike /api/v1/config: it lists the apps and names
+			// the registry and gateway, which is the deployment's structure
+			// rather than a client-facing fact.
+			//
+			// AppListScope rather than Auth, because it is the *orientation*
+			// call and an app key needs it most: that key reaches one app, and
+			// the first thing its holder has to learn is which. The middleware
+			// establishes which tier the key is and the handler narrows the app
+			// list to match — the same split as GET /api/v1/apps, and for the
+			// same reason.
+			Pattern:      "GET /api/v1/describe",
+			AppListScope: true,
+			Doc:          "Everything needed to work with this deployment, in one call: a one-line summary, how to reach it, what it is wired to (registry, gateway, domains), what the presented key may do, every app with its address, and the shortest call for each operation. Start here; the full contract is /llms.txt.",
+			Handler:      s.handleDescribe,
+		},
+		{
 			// Unauthenticated for the same reason as /api/v1/config: this file
 			// is how a caller learns the key is needed and how to present it.
 			Pattern: "GET /llms.txt",
@@ -832,8 +854,16 @@ func (s *Server) RouteReference() string {
 			continue
 		}
 		method, path, _ := strings.Cut(r.Pattern, " ")
+		// `(key)` means the API key, which is what a reader of this document
+		// has. A route requiring an AppListScope credential is one — it is the
+		// same key, checked without an {app} to scope against.
+		//
+		// TokenAuth is deliberately not counted. That route takes a single-use
+		// source token minted for one commit of one app, which no reader of this
+		// document holds and none can obtain; labelling it `(key)` would send
+		// someone to call it with a credential that does not work.
 		key := "no key"
-		if r.Auth {
+		if r.Auth || r.AppListScope {
 			key = "key"
 		}
 		b.WriteString("- `" + method + " " + path + "` — " + r.Doc + " _(" + key + ")_\n")
@@ -863,7 +893,16 @@ func (s *Server) DocumentedRouteCount() int {
 func (s *Server) PatternRequiresAuth(pattern string) bool {
 	for _, r := range s.routes() {
 		if r.Pattern == pattern {
-			return r.Auth || r.TokenAuth
+			// AppListScope included: it is a distinct middleware, not an absence
+			// of one. The route is authenticated by the two-tier check — an app
+			// key must still present a key — it simply has no {app} for the
+			// middleware to scope against, so the handler narrows instead.
+			//
+			// This was wrong until GET /api/v1/describe was added: the one
+			// AppListScope route that existed also carried Auth, so it answered
+			// correctly by accident and a route declared with the scope alone
+			// would have been reported as open.
+			return r.Auth || r.TokenAuth || r.AppListScope
 		}
 	}
 	return true

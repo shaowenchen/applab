@@ -6,8 +6,17 @@
 <title>applab</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
 <style>
+  /* The palette. Light is the base definition and dark is a redefinition of the
+     same tokens, so nothing has a colour defined in only one place.
+
+     The theme has three states, not two, because "follow the system" is a real
+     choice and not the same as "light" or "dark": the stamp on <html> is what
+     distinguishes them. No stamp means follow the system, and the media query
+     below therefore has to be guarded against an explicit light choice — without
+     the :not(), a viewer who picked light on a dark system would be overridden
+     by their own OS. */
   :root {
-    color-scheme: light dark;
+    color-scheme: light;
 
     --bg: #ffffff;
     --bg-sunken: #f6f7f9;
@@ -31,7 +40,8 @@
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
       --bg: #0f1115;
       --bg-sunken: #161a20;
       --bg-raised: #1b2029;
@@ -50,6 +60,28 @@
       --busy: #93b4f8;
       --busy-bg: #16233f;
     }
+  }
+  /* Stated, not inferred: an explicit dark choice has to win on a light system
+     as well, which is why this is a second rule rather than only the one above. */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f1115;
+    --bg-sunken: #161a20;
+    --bg-raised: #1b2029;
+    --border: #2a313c;
+    --text: #e6e9ee;
+    --text-muted: #9aa4b2;
+    --accent: #4f83f1;
+    --accent-text: #0b0e12;
+
+    --ok: #6ee7a0;
+    --ok-bg: #14331f;
+    --warn: #fcd34d;
+    --warn-bg: #332b0d;
+    --bad: #fca5a5;
+    --bad-bg: #3b1616;
+    --busy: #93b4f8;
+    --busy-bg: #16233f;
   }
 
   * { box-sizing: border-box; }
@@ -75,6 +107,35 @@
   header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   header .spacer { flex: 1; }
   header .endpoint { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+
+  /* The header's own controls. Small, square-ish and quiet: they change a
+     preference, which is not what anyone opened the console to do, so they sit
+     at the edge and stay out of the way. */
+  .controls { display: flex; gap: 2px; align-items: center; }
+  .controls button {
+    padding: 4px 8px;
+    font-size: 13px;
+    line-height: 1.2;
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-muted);
+  }
+  .controls button:hover { color: var(--text); background: var(--bg-sunken); border-color: transparent; }
+  .controls button[aria-pressed="true"] { color: var(--text); font-weight: 600; background: var(--bg-sunken); }
+
+  /* The sign-in card carries the same controls, because the two settings are
+     most worth changing on the screen where someone is deciding whether to use
+     this at all — and because there is no header there to hold them. */
+  .signin-controls { display: flex; justify-content: flex-end; gap: 2px; margin-bottom: 4px; }
+  .signin-controls button {
+    padding: 3px 7px;
+    font-size: 12px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-muted);
+  }
+  .signin-controls button:hover { color: var(--text); background: var(--bg-sunken); border-color: transparent; }
+  .signin-controls button[aria-pressed="true"] { color: var(--text); font-weight: 600; background: var(--bg-sunken); }
 
   main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
@@ -316,13 +377,21 @@
   <!-- Which view is showing is navigation, not decoration: it is hidden until
        there is something to navigate, since the sign-in screen has no views. -->
   <nav id="nav" class="hidden">
-    <button id="nav-overview">Overview</button>
-    <button id="nav-apps">Apps</button>
-    <button id="nav-builds">Builds</button>
+    <button id="nav-overview" data-i18n="Overview">Overview</button>
+    <button id="nav-apps" data-i18n="Apps">Apps</button>
+    <button id="nav-builds" data-i18n="Builds">Builds</button>
   </nav>
   <span class="endpoint" id="endpoint"></span>
   <span class="spacer"></span>
-  <button id="signout" class="hidden">Sign out</button>
+  <!-- Grouped so they move together if the header is ever rearranged, and named
+       per control rather than as one combined widget: the two settings are
+       independent, and a single "display options" popover for three buttons
+       would be more chrome than the thing it holds. -->
+  <div class="controls">
+    <button id="theme-toggle" type="button" aria-label="Theme"></button>
+    <button id="lang-toggle" type="button" aria-label="Language"></button>
+  </div>
+  <button id="signout" class="hidden" data-i18n="Sign out">Sign out</button>
 </header>
 
 <main>
@@ -341,17 +410,27 @@
        in after it. -->
   <section id="signin" class="signin hidden">
     <div class="signin-card">
+      <!-- The same two controls the header carries. They are here because this
+           is the screen where someone decides whether to use this at all, and
+           the header is not up yet — see the CSS note above. -->
+      <div class="signin-controls">
+        <button id="signin-theme-toggle" type="button" aria-label="Theme"></button>
+        <button id="signin-lang-toggle" type="button" aria-label="Language"></button>
+      </div>
       <div class="signin-head">
         <span class="signin-mark" aria-hidden="true">a</span>
         <h2>applab</h2>
       </div>
-      <p class="signin-lead">Enter an API key to continue.</p>
+      <p class="signin-lead" data-i18n="Enter an API key to continue.">Enter an API key to continue.</p>
       <form id="signin-form" class="signin-form" autocomplete="off">
         <input id="signin-key" type="password" placeholder="API key" autocomplete="off"
-               spellcheck="false" aria-label="API key">
-        <button id="signin-go" class="primary" type="submit">Sign in</button>
+               spellcheck="false" aria-label="API key" data-i18n-placeholder="API key">
+        <button id="signin-go" class="primary" type="submit" data-i18n="Sign in">Sign in</button>
       </form>
-      <p class="signin-hint">Stored in this browser only, and sent to <span id="signin-where" class="mono"></span>.</p>
+      <p class="signin-hint">
+        <span data-i18n="Stored in this browser only, and sent to">Stored in this browser only, and sent to</span>
+        <span id="signin-where" class="mono"></span>.
+      </p>
     </div>
   </section>
 
@@ -362,8 +441,8 @@
   <section id="overview-view" class="hidden">
     <div class="card">
       <div class="row">
-        <h2 style="flex:1;margin:0">Overview</h2>
-        <button id="overview-refresh">Refresh</button>
+        <h2 style="flex:1;margin:0" data-i18n="Overview">Overview</h2>
+        <button id="overview-refresh" data-i18n="Refresh">Refresh</button>
       </div>
     </div>
 
@@ -374,16 +453,16 @@
 
     <div class="split">
       <div class="card">
-        <h2>Deployment</h2>
+        <h2 data-i18n="Deployment">Deployment</h2>
         <dl class="grid-2" id="overview-deployment"></dl>
         <div style="margin-top:12px">
-          <div class="muted" style="font-size:12px;margin-bottom:6px">Capabilities</div>
+          <div class="muted" style="font-size:12px;margin-bottom:6px" data-i18n="Capabilities">Capabilities</div>
           <div class="chips" id="overview-caps"></div>
         </div>
       </div>
 
       <div class="card">
-        <h2>Cluster</h2>
+        <h2 data-i18n="Cluster">Cluster</h2>
         <!-- This gets its own panel because it is the answer to "why can I not
              deploy anything", which is otherwise only discoverable from a
              failure. The sentence carries the state; the dot only colours it. -->
@@ -393,17 +472,17 @@
 
     <div class="card" style="padding:0">
       <div class="row" style="padding:16px">
-        <h2 style="flex:1;margin:0">Recent builds</h2>
-        <button id="overview-see-builds">All builds</button>
+        <h2 style="flex:1;margin:0" data-i18n="Recent builds">Recent builds</h2>
+        <button id="overview-see-builds" data-i18n="All builds">All builds</button>
       </div>
       <table>
         <thead>
-          <tr><th>App</th><th>Build</th><th>Commit</th><th>Status</th><th>Age</th></tr>
+          <tr><th data-i18n="App">App</th><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Age">Age</th></tr>
         </thead>
         <tbody id="overview-builds"></tbody>
       </table>
       <div id="overview-builds-empty" class="empty hidden">
-        No builds yet. Push an app with <span class="mono">applab push &lt;app&gt;</span>.
+        <span data-i18n="No builds yet. Push an app with">No builds yet. Push an app with</span> <span class="mono">applab push &lt;app&gt;</span>.
       </div>
     </div>
   </section>
@@ -413,14 +492,14 @@
   <section id="builds-view" class="hidden">
     <div class="card">
       <div class="row">
-        <h2 style="flex:1;margin:0">Builds</h2>
-        <button id="builds-refresh">Refresh</button>
+        <h2 style="flex:1;margin:0" data-i18n="Builds">Builds</h2>
+        <button id="builds-refresh" data-i18n="Refresh">Refresh</button>
       </div>
     </div>
     <div class="card" style="padding:0">
       <table>
         <thead>
-          <tr><th>App</th><th>Build</th><th>Commit</th><th>Status</th><th>Age</th><th>Image</th></tr>
+          <tr><th data-i18n="App">App</th><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Age">Age</th><th data-i18n="Image">Image</th></tr>
         </thead>
         <tbody id="builds"></tbody>
       </table>
@@ -433,9 +512,9 @@
   <section id="apps-view" class="hidden">
     <div class="card">
       <div class="row">
-        <h2 style="flex:1;margin:0">Apps</h2>
-        <button id="apps-refresh">Refresh</button>
-        <button id="apps-new" class="primary">New app</button>
+        <h2 style="flex:1;margin:0" data-i18n="Apps">Apps</h2>
+        <button id="apps-refresh" data-i18n="Refresh">Refresh</button>
+        <button id="apps-new" class="primary" data-i18n="New app">New app</button>
       </div>
       <!-- Creating an app mints its key, which is the credential whoever deploys
            it will use. It is shown here once the app exists rather than typed
@@ -443,23 +522,26 @@
            key field on the app response would reach every list and get, so it is
            fetched from the app's own key route instead. -->
       <div id="apps-new-form" class="row hidden" style="margin-top:12px">
-        <input id="apps-new-id" placeholder="app id, e.g. shop" size="24"
+        <input id="apps-new-id" placeholder="app id, e.g. shop" size="24" data-i18n-placeholder="apps.new.id"
                autocomplete="off" spellcheck="false">
-        <input id="apps-new-port" placeholder="port" size="6" value="8080"
+        <input id="apps-new-port" placeholder="port" size="6" value="8080" data-i18n-placeholder="port"
                autocomplete="off">
-        <button id="apps-new-create" class="primary">Create</button>
-        <button id="apps-new-cancel">Cancel</button>
+        <button id="apps-new-create" class="primary" data-i18n="Create">Create</button>
+        <button id="apps-new-cancel" data-i18n="Cancel">Cancel</button>
       </div>
       <div id="apps-new-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
     <div class="card" style="padding:0">
       <table>
         <thead>
-          <tr><th>App</th><th>Status</th><th>Commit</th><th>Where</th></tr>
+          <tr><th data-i18n="App">App</th><th data-i18n="Status">Status</th><th data-i18n="Commit">Commit</th><th data-i18n="Where">Where</th></tr>
         </thead>
         <tbody id="apps"></tbody>
       </table>
-      <div id="apps-empty" class="empty hidden">No apps yet. Push one with <span class="mono">applab push &lt;app&gt;</span>, or create one here.</div>
+      <div id="apps-empty" class="empty hidden">
+        <span data-i18n="No apps yet. Push one with">No apps yet. Push one with</span>
+        <span class="mono">applab push &lt;app&gt;</span><span data-i18n="or create one here.">, or create one here.</span>
+      </div>
     </div>
   </section>
 
@@ -468,9 +550,11 @@
          from what an admin sees rather than leaving it a mystery. -->
     <div id="app-key-note" class="card hidden">
       <p style="margin:0">
-        Signed in with this app's own key. It reaches <strong>this app only</strong> —
+        <span data-i18n="Signed in with this app's own key. It reaches">Signed in with this app's own key. It reaches</span>
+        <strong data-i18n="this app only">this app only</strong><span
+          data-i18n="—it can push, build, deploy and roll back, but cannot delete the app and cannot see any other.">—
         it can push, build, deploy and roll back, but cannot delete the app and
-        cannot see any other.
+        cannot see any other.</span>
       </p>
     </div>
 
@@ -478,14 +562,14 @@
       <div class="row">
         <button id="back">← Apps</button>
         <h2 style="flex:1;margin:0" id="app-title"></h2>
-        <button id="app-restart">Restart</button>
-        <button id="app-stop">Stop</button>
-        <button id="app-delete" class="danger">Delete</button>
+        <button id="app-restart" data-i18n="Restart">Restart</button>
+        <button id="app-stop" data-i18n="Stop">Stop</button>
+        <button id="app-delete" class="danger" data-i18n="Delete">Delete</button>
       </div>
     </div>
 
     <div class="card">
-      <h2>State</h2>
+      <h2 data-i18n="State">State</h2>
       <dl id="app-state"></dl>
       <div id="app-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
@@ -496,89 +580,92 @@
          that ends up in screenshots. -->
     <div class="card">
       <div class="row">
-        <h2 style="flex:1;margin:0">API key</h2>
-        <button id="app-key-show">Show key</button>
+        <h2 style="flex:1;margin:0" data-i18n="API key">API key</h2>
+        <button id="app-key-show" data-i18n="Show key">Show key</button>
       </div>
-      <p class="mono" id="app-key-value" style="margin:12px 0 0">Not shown.</p>
+      <p class="mono" id="app-key-value" style="margin:12px 0 0" data-i18n="Not shown.">Not shown.</p>
       <p class="muted" style="font-size:13px;margin:8px 0 0">
-        Reaches <strong>this app only</strong> — it can push, build, deploy and
-        roll back, but cannot delete the app and cannot see any other. The same
-        key works with the API, the CLI and this console.
+        <span data-i18n="Reaches">Reaches</span>
+        <strong data-i18n="this app only">this app only</strong><span
+          data-i18n="— it can push, build, deploy and roll back, but cannot delete the app and cannot see any other. The same key works with the API, the CLI and this console.">—
+        it can push, build, deploy and roll back, but cannot delete the app and
+        cannot see any other. The same key works with the API, the CLI and this
+        console.</span>
       </p>
     </div>
 
     <div class="card">
       <div class="row">
-        <h2 style="flex:1;margin:0">Pods</h2>
-        <button id="pods-refresh">Refresh</button>
+        <h2 style="flex:1;margin:0" data-i18n="Pods">Pods</h2>
+        <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
       </div>
       <table>
-        <thead><tr><th>Pod</th><th>Ready</th><th>Restarts</th><th>Reason</th></tr></thead>
+        <thead><tr><th data-i18n="Pod">Pod</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="Reason">Reason</th></tr></thead>
         <tbody id="pods"></tbody>
       </table>
-      <div id="pods-empty" class="empty hidden">Nothing is running.</div>
+      <div id="pods-empty" class="empty hidden" data-i18n="Nothing is running.">Nothing is running.</div>
     </div>
 
     <div class="card">
       <div class="row">
-        <h2 style="flex:1;margin:0">Log</h2>
+        <h2 style="flex:1;margin:0" data-i18n="Log">Log</h2>
         <label class="muted" style="font-size:13px">
-          <input type="checkbox" id="logs-previous"> previous instance
+          <input type="checkbox" id="logs-previous"> <span data-i18n="previous instance">previous instance</span>
         </label>
-        <button id="logs-toggle">Follow</button>
+        <button id="logs-toggle" data-i18n="Follow">Follow</button>
       </div>
-      <pre id="logs" style="margin-top:12px">(not started)</pre>
+      <pre id="logs" style="margin-top:12px" data-i18n="(not started)">(not started)</pre>
     </div>
 
     <div class="card">
-      <h2>Configuration</h2>
-      <p class="muted" style="margin-top:0">
-        Changes take effect on the next deploy, not immediately — configuration
-        travels the same path as code.
-      </p>
+      <h2 data-i18n="Configuration">Configuration</h2>
+      <p class="muted" style="margin-top:0"
+         data-i18n="Changes take effect on the next deploy, not immediately — configuration travels the same path as code.">Changes
+        take effect on the next deploy, not immediately — configuration travels
+        the same path as code.</p>
 
       <!-- The two tables are deliberately not the same shape. A variable is
            shown with its value because it is not sensitive; a secret is shown
            as a name with no value anywhere, because there is no endpoint that
            returns one. The difference on screen is the difference in the API. -->
-      <h3 style="font-size:14px">Environment variables</h3>
+      <h3 style="font-size:14px" data-i18n="Environment variables">Environment variables</h3>
       <table>
-        <thead><tr><th>Name</th><th>Value</th><th></th></tr></thead>
+        <thead><tr><th data-i18n="Name">Name</th><th data-i18n="Value">Value</th><th></th></tr></thead>
         <tbody id="config-env"></tbody>
       </table>
-      <div id="config-env-empty" class="empty hidden">No environment variables.</div>
+      <div id="config-env-empty" class="empty hidden" data-i18n="No environment variables.">No environment variables.</div>
 
       <div class="row" style="margin-top:8px">
         <input id="config-env-name" placeholder="NAME" size="16">
         <input id="config-env-value" placeholder="value" size="24"
                style="flex:1">
-        <button id="config-env-set">Set</button>
+        <button id="config-env-set" data-i18n="Set">Set</button>
       </div>
 
-      <h3 style="font-size:14px;margin-top:20px">Secrets</h3>
+      <h3 style="font-size:14px;margin-top:20px" data-i18n="Secrets">Secrets</h3>
       <table>
-        <thead><tr><th>Name</th><th></th></tr></thead>
+        <thead><tr><th data-i18n="Name">Name</th><th></th></tr></thead>
         <tbody id="config-secret"></tbody>
       </table>
-      <div id="config-secret-empty" class="empty hidden">No secrets.</div>
+      <div id="config-secret-empty" class="empty hidden" data-i18n="No secrets.">No secrets.</div>
 
       <div class="row" style="margin-top:8px">
         <input id="config-secret-name" placeholder="NAME" size="16">
         <input id="config-secret-value" placeholder="value" type="password" size="24"
                style="flex:1">
-        <button id="config-secret-set">Set</button>
+        <button id="config-secret-set" data-i18n="Set">Set</button>
       </div>
-      <p class="muted" style="font-size:13px;margin-bottom:0">
-        A secret's value can never be read back — not here, not through the API,
-        not from the CLI. Setting one again replaces it.
-      </p>
+      <p class="muted" style="font-size:13px;margin-bottom:0"
+         data-i18n="A secret's value can never be read back — not here, not through the API, not from the CLI. Setting one again replaces it.">A
+        secret's value can never be read back — not here, not through the API,
+        not from the CLI. Setting one again replaces it.</p>
       <div id="config-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
 
     <div class="card">
-      <h2>History</h2>
+      <h2 data-i18n="History">History</h2>
       <table>
-        <thead><tr><th>Commit</th><th>When</th><th>Rollback</th><th>Message</th></tr></thead>
+        <thead><tr><th data-i18n="Commit">Commit</th><th data-i18n="When">When</th><th data-i18n="Rollback">Rollback</th><th data-i18n="Message">Message</th></tr></thead>
         <tbody id="commits"></tbody>
       </table>
     </div>
@@ -637,6 +724,345 @@ const $ = (id) => document.getElementById(id);
 function baseURL() {
   return (window.location.origin || "") +
     (window.location.pathname || "").replace(/\/+$/, "");
+}
+
+// ---------------------------------------------------------------------------
+// Language
+//
+// English is the source, and the English string *is* the key. There is no
+// separate key space: ZH is a mapping from the sentence as written to the
+// sentence in Chinese, and anything absent falls back to the English it was
+// asked for. That is deliberate — a key indirection ("signin.submit") is a
+// second thing to keep in sync with the markup, and when it drifts the failure
+// is an identifier on screen instead of a sentence. Here a missing translation
+// is untranslated text, which reads as a gap rather than as a bug.
+//
+// Substitutions use {name}, since a sentence's word order is not the same in
+// both languages and concatenating fragments would fix English order into the
+// Chinese one.
+// ---------------------------------------------------------------------------
+const STORE_LANG = "applab.lang";
+
+const ZH = {
+  // -- Header and navigation ------------------------------------------------
+  "Overview": "概览",
+  "Apps": "应用",
+  "Builds": "构建",
+  "Sign out": "退出登录",
+
+  // -- Sign in --------------------------------------------------------------
+  "Enter an API key to continue.": "输入 API key 继续。",
+  "Sign in": "登录",
+  "API key": "API key",
+  "Stored in this browser only, and sent to": "仅保存在此浏览器中，发送至",
+  "An API key is required.": "请填写 API key。",
+
+  // -- Overview -------------------------------------------------------------
+  "Refresh": "刷新",
+  "Deployment": "部署",
+  "Capabilities": "能力",
+  "Cluster": "集群",
+  "Recent builds": "最近构建",
+  "All builds": "全部构建",
+  "No builds yet. Push an app with": "还没有构建。用这个命令推送一个应用：",
+  "Needs attention": "需要处理",
+  "In progress": "进行中",
+  "nothing broken": "一切正常",
+  "failed or build-failed": "失败或构建失败",
+  "building or deploying": "构建中或部署中",
+  "{n} running": "{n} 个运行中",
+  "{n} failed": "{n} 个失败",
+  "{n} succeeded": "{n} 个成功",
+  "version": "版本",
+  "api": "API",
+  "namespace": "命名空间",
+  "apps at": "应用地址",
+  "{name} on": "{name} 可用",
+  "{name} off": "{name} 不可用",
+  "Not configured": "未配置",
+  "Reachable": "可访问",
+  "Unreachable": "不可访问",
+  "No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run applab.":
+    "启动时没有附加集群客户端。API 和源码存储可用，但构建与部署不可用。这是运行 applab 的一种合理方式。",
+  "This deployment can reach the Kubernetes API, so builds and deploys will run here.":
+    "此部署可以访问 Kubernetes API，构建和部署会在这里运行。",
+  "A cluster client is configured but the API server is not answering. Builds and deploys will fail until this recovers.":
+    "已配置集群客户端，但 API server 没有响应。在恢复之前，构建和部署都会失败。",
+
+  // -- Tables ---------------------------------------------------------------
+  "App": "应用",
+  "Build": "构建",
+  "Commit": "提交",
+  "Status": "状态",
+  "Age": "时间",
+  "Image": "镜像",
+  "Where": "地址",
+  "Pod": "Pod",
+  "Ready": "就绪",
+  "Restarts": "重启",
+  "Reason": "原因",
+  "Name": "名称",
+  "Value": "值",
+  "When": "时间",
+  "Rollback": "回滚",
+  "Message": "说明",
+
+  // -- Apps -----------------------------------------------------------------
+  "New app": "新建应用",
+  "apps.new.id": "应用 ID，例如 shop",
+  "port": "端口",
+  "Create": "创建",
+  "Cancel": "取消",
+  "An app needs an id.": "请填写应用 ID。",
+  "An environment variable needs a name.": "环境变量需要一个名称。",
+  "A secret needs a name.": "密钥需要一个名称。",
+  "The port must be a number between 1 and 65535.": "端口必须是 1 到 65535 之间的数字。",
+  "Could not create {id}: {error}": "无法创建 {id}：{error}",
+  "No apps yet. Push one with": "还没有应用。用这个命令推送一个，或者在这里创建一个：",
+  "or create one here.": "",
+  "Could not list apps: {error}": "无法获取应用列表：{error}",
+  "(not deployed)": "（未部署）",
+
+  // -- App detail -----------------------------------------------------------
+  "State": "状态",
+  "API key": "API key",
+  "Show key": "显示 key",
+  "Not shown.": "未显示。",
+  "Reaches": "仅能访问",
+  "this app only": "本应用",
+  "— it can push, build, deploy and roll back, but cannot delete the app and cannot see any other. The same key works with the API, the CLI and this console.":
+    "—— 可以推送、构建、部署和回滚，但不能删除应用，也看不到其他应用。同一个 key 可用于 API、CLI 和本控制台。",
+  "Signed in with this app's own key. It reaches": "正在使用本应用自己的 key 登录。它仅能访问",
+  "—it can push, build, deploy and roll back, but cannot delete the app and cannot see any other.":
+    "—— 可以推送、构建、部署和回滚，但不能删除应用，也看不到其他应用。",
+  "Restart": "重启",
+  "Stop": "停止",
+  "Delete": "删除",
+  "Pods": "Pods",
+  "Nothing is running.": "没有正在运行的实例。",
+  "Log": "日志",
+  "previous instance": "上一个实例",
+  "Follow": "跟随",
+  "(not started)": "（未开始）",
+  "(no output)": "（无输出）",
+  "Configuration": "配置",
+  "Changes take effect on the next deploy, not immediately — configuration travels the same path as code.":
+    "改动在下次部署时生效，不会立即生效 —— 配置和代码走同一条路径。",
+  "Environment variables": "环境变量",
+  "No environment variables.": "没有环境变量。",
+  "Secrets": "密钥",
+  "No secrets.": "没有密钥。",
+  "A secret's value can never be read back — not here, not through the API, not from the CLI. Setting one again replaces it.":
+    "密钥的值无法读回 —— 这里、API、CLI 都不行。再次设置会覆盖它。",
+  "Set": "设置",
+  "Remove": "移除",
+  "History": "历史",
+
+  // -- App state ------------------------------------------------------------
+  "recorded": "记录状态",
+  "commit": "提交",
+  "image": "镜像",
+  "reason": "原因",
+  "cluster": "集群",
+  "nothing deployed": "未部署任何内容",
+  "running image": "运行中的镜像",
+  "{ready}/{desired} ready": "{ready}/{desired} 就绪",
+  " (available)": "（可用）",
+  "url": "地址",
+  "host": "主机",
+
+  // -- Statuses -------------------------------------------------------------
+  "running": "运行中",
+  "failed": "失败",
+  "build-failed": "构建失败",
+  "building": "构建中",
+  "deploying": "部署中",
+  "created": "已创建",
+  "unknown": "未知",
+  "succeeded": "成功",
+  "pending": "等待中",
+  "ready": "就绪",
+  "not ready": "未就绪",
+  "deployed": "已部署",
+  "no image": "无镜像",
+
+  // -- Time -----------------------------------------------------------------
+  "just now": "刚刚",
+  "{n}m ago": "{n} 分钟前",
+  "{n}h ago": "{n} 小时前",
+  "{n}d ago": "{n} 天前",
+
+  // -- Actions --------------------------------------------------------------
+  "Roll back": "回滚",
+  "Deploy commit {sha}?": "部署提交 {sha}？",
+  "Stop {app}? Its source and history are kept, so it can be deployed again.":
+    "停止 {app}？源码和历史会保留，之后可以重新部署。",
+  "This deletes {app} and its source, and cannot be undone. Type the app id to confirm:":
+    "这会删除 {app} 及其源码，且无法撤销。请输入应用 ID 以确认：",
+  "Rollback failed: {error}": "回滚失败：{error}",
+  "Restart failed: {error}": "重启失败：{error}",
+  "Stop failed: {error}": "停止失败：{error}",
+  "Delete failed: {error}": "删除失败：{error}",
+
+  // -- Errors ---------------------------------------------------------------
+  "Could not connect: {error}": "无法连接：{error}",
+  "Could not connect: this key does not reach any app.": "无法连接：这个 key 访问不到任何应用。",
+  "Could not read the overview: {error}": "无法读取概览：{error}",
+  "Could not read builds: {error}": "无法读取构建记录：{error}",
+  "Could not read status: {error}": "无法读取状态：{error}",
+  "Could not read history: {error}": "无法读取历史：{error}",
+  "Could not read configuration: {error}": "无法读取配置：{error}",
+  "Could not read the log: {error}": "无法读取日志：{error}",
+  "Log stream ended: {error}": "日志流已结束：{error}",
+  "Pods are not available: {error}": "无法获取 Pod：{error}",
+
+  // -- Controls -------------------------------------------------------------
+  "Theme": "主题",
+  "Language": "语言",
+  "Light": "浅色",
+  "Dark": "深色",
+  "System": "跟随系统",
+};
+
+// lang is the current language. Set by setLang and read by t().
+let lang = "en";
+
+// t translates a string, falling back to the string itself.
+function t(s) {
+  if (lang === "zh") return ZH[s] || s;
+  return s;
+}
+
+// tf translates and substitutes {name} placeholders.
+//
+// A missing translation still gets its substitutions, so an untranslated
+// sentence names the app it is about rather than printing a bare brace.
+function tf(s, vars) {
+  let out = t(s);
+  for (const key of Object.keys(vars)) {
+    out = out.split("{" + key + "}").join(String(vars[key]));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Theme
+//
+// Three states, and the distinction is the whole point: "system" is the absence
+// of a stamp on <html>, so the stylesheet's media query decides, and "light" or
+// "dark" is a stamp that overrides it. Storing "system" as a word rather than
+// clearing the key means someone can choose it back after choosing dark, which
+// a cleared key could not express.
+// ---------------------------------------------------------------------------
+const STORE_THEME = "applab.theme";
+
+const THEMES = ["system", "light", "dark"];
+
+// theme is the current choice, one of THEMES.
+let theme = "system";
+
+function applyTheme() {
+  const root = document.documentElement;
+  if (theme === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", theme);
+
+  // The control shows what it will switch to, so its label is the next state
+  // rather than the current one — a button labelled with the state it is in
+  // reads as a status display and gets clicked by mistake.
+  const next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+  const label = { system: t("System"), light: t("Light"), dark: t("Dark") }[next];
+
+  // Both places the control appears: the header, and the sign-in card, which is
+  // up before there is a header. Labelling only the first leaves the second
+  // blank on the one screen a first-time visitor sees.
+  for (const id of ["theme-toggle", "signin-theme-toggle"]) {
+    const button = $(id);
+    if (!button) continue;
+    button.textContent = label;
+    button.title = t("Theme");
+    button.setAttribute("aria-label", t("Theme") + ": " + label);
+  }
+}
+
+function setTheme(value) {
+  theme = THEMES.includes(value) ? value : "system";
+  try { localStorage.setItem(STORE_THEME, theme); } catch { /* see loadTheme */ }
+  applyTheme();
+}
+
+function loadTheme() {
+  try { return localStorage.getItem(STORE_THEME) || "system"; } catch {
+    // Storage blocked (private window, site data off). The console still has to
+    // work; it just cannot remember the choice.
+    return "system";
+  }
+}
+
+// setLang switches language and re-renders everything that carries text.
+//
+// The re-render walks the markup for data-i18n and re-applies t(), then asks the
+// current view to redraw. Re-loading the view is what covers the strings the JS
+// builds — table rows, messages, labels — since those are produced by functions
+// that have already run and hold no reference to their nodes.
+function setLang(value) {
+  lang = value === "zh" ? "zh" : "en";
+  try { localStorage.setItem(STORE_LANG, lang); } catch { /* not remembered */ }
+
+  // setAttribute rather than assigning .lang: it is the same thing in a browser
+  // and it is the form that works when the document element is not the real one
+  // — which it is not in a test harness, and assigning to a property that does
+  // not exist throws where setting an attribute does not.
+  document.documentElement.setAttribute("lang", lang === "zh" ? "zh-CN" : "en");
+  translateStaticText();
+  applyTheme();
+
+  // The label is the language it switches *to*, so it reads as an offer rather
+  // than as a statement of the current one. Both places it appears, for the same
+  // reason as the theme control above.
+  for (const id of ["lang-toggle", "signin-lang-toggle"]) {
+    const button = $(id);
+    if (!button) continue;
+    button.textContent = lang === "zh" ? "EN" : "中文";
+    button.title = t("Language");
+    button.setAttribute("aria-label", t("Language"));
+  }
+
+  // Anything already on screen was rendered in the previous language. Only the
+  // visible view needs redrawing, and only if there is one — before sign-in
+  // there is nothing but the static form.
+  if (!$("signin").classList.contains("hidden")) return;
+  const view = state.view;
+  if (view === "overview") showOverview();
+  else if (view === "builds") showBuilds();
+  else if (view === "apps") showApps();
+  else if (view === "app" && state.app) openApp(state.app);
+}
+
+// translateStaticText applies t() to every element that carries a data-i18n key,
+// and to the placeholders, which are not text nodes.
+function translateStaticText() {
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    el.textContent = t(el.dataset.i18n);
+  }
+  for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  }
+}
+
+function loadLang() {
+  try {
+    const saved = localStorage.getItem(STORE_LANG);
+    if (saved) return saved;
+  } catch { /* not remembered */ }
+  // First visit: follow the browser, since someone whose browser is in Chinese
+  // is more likely to want Chinese than to want the default.
+  //
+  // navigator is read defensively rather than assumed: a document can exist
+  // without one (about:blank, some embedded webviews, a test harness), and a
+  // throw here would happen during boot — before the sign-in form is showing —
+  // so the console would come up blank instead of in the wrong language.
+  const nav = (typeof navigator !== "undefined" && navigator.language) || "";
+  return nav.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
 function show(el, visible) {
@@ -706,7 +1132,7 @@ function statusClass(status) {
 function pill(status) {
   const el = document.createElement("span");
   el.className = "pill " + statusClass(status);
-  el.textContent = status || "unknown";
+  el.textContent = t(status) || t("unknown");
   return el;
 }
 
@@ -731,7 +1157,7 @@ function buildStatusClass(status) {
 function buildPill(status) {
   const el = document.createElement("span");
   el.className = "pill " + buildStatusClass(status);
-  el.textContent = status || "unknown";
+  el.textContent = t(status) || t("unknown");
   return el;
 }
 
@@ -744,10 +1170,10 @@ function ago(iso) {
   const then = new Date(iso);
   if (isNaN(then)) return "—";
   const seconds = (Date.now() - then.getTime()) / 1000;
-  if (seconds < 60) return "just now";
-  if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
-  if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
-  return Math.floor(seconds / 86400) + "d ago";
+  if (seconds < 60) return t("just now");
+  if (seconds < 3600) return tf("{n}m ago", { n: Math.floor(seconds / 60) });
+  if (seconds < 86400) return tf("{n}h ago", { n: Math.floor(seconds / 3600) });
+  return tf("{n}d ago", { n: Math.floor(seconds / 86400) });
 }
 
 // tile builds one statistic. The label names it, the value is the number, and
@@ -896,7 +1322,7 @@ async function loadOverview() {
   try {
     data = await api("/api/v1/overview");
   } catch (err) {
-    setError("Could not read the overview: " + err.message);
+    setError(tf("Could not read the overview: {error}", { error: err.message }));
     return;
   }
 
@@ -909,18 +1335,20 @@ async function loadOverview() {
   const tiles = $("overview-tiles");
   tiles.replaceChildren();
 
-  tiles.appendChild(tile("Apps", apps.total ?? 0, (apps.running ?? 0) + " running"));
+  tiles.appendChild(tile(t("Apps"), apps.total ?? 0, tf("{n} running", { n: apps.running ?? 0 })));
   tiles.appendChild(tile(
-    "Needs attention",
+    t("Needs attention"),
     apps.needs_attention ?? 0,
-    (apps.needs_attention ?? 0) > 0 ? "failed or build-failed" : "nothing broken",
+    t((apps.needs_attention ?? 0) > 0 ? "failed or build-failed" : "nothing broken"),
     (apps.needs_attention ?? 0) > 0 ? "attention" : "ok"
   ));
-  tiles.appendChild(tile("In progress", (apps.building ?? 0) + (apps.deploying ?? 0), "building or deploying"));
+  tiles.appendChild(tile(t("In progress"), (apps.building ?? 0) + (apps.deploying ?? 0), t("building or deploying")));
   tiles.appendChild(tile(
-    "Builds",
+    t("Builds"),
     builds.total ?? 0,
-    (builds.failed ?? 0) > 0 ? (builds.failed + " failed") : (builds.succeeded ?? 0) + " succeeded",
+    (builds.failed ?? 0) > 0
+      ? tf("{n} failed", { n: builds.failed })
+      : tf("{n} succeeded", { n: builds.succeeded ?? 0 }),
     (builds.failed ?? 0) > 0 ? "attention" : ""
   ));
 
@@ -939,10 +1367,10 @@ async function loadOverview() {
     dl.append(dt, dd);
   };
 
-  add("version", d.version);
-  add("api", d.api_version);
-  add("namespace", d.namespace);
-  add("apps at", d.domain_template);
+  add(t("version"), d.version);
+  add(t("api"), d.api_version);
+  add(t("namespace"), d.namespace);
+  add(t("apps at"), d.domain_template);
 
   const caps = $("overview-caps");
   caps.replaceChildren();
@@ -951,7 +1379,7 @@ async function loadOverview() {
     const chip = document.createElement("span");
     chip.className = "chip " + (on ? "on" : "off");
     // The word is the signal; "on"/"off" is what carries it, not the colour.
-    chip.textContent = name + (on ? " on" : " off");
+    chip.textContent = tf(on ? "{name} on" : "{name} off", { name: name });
     caps.appendChild(chip);
   }
 
@@ -966,18 +1394,30 @@ async function loadOverview() {
   detail.className = "detail";
   detail.style.marginTop = "8px";
 
+  // The dot is decoration; the word beside it is the state. Built as a node
+  // rather than with innerHTML so the translated label is text, not markup.
+  const stateLabel = (text) => {
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const label = document.createElement("span");
+    label.textContent = text;
+    const line = document.createElement("div");
+    line.append(dot, label);
+    return line;
+  };
+
   if (!cluster.configured) {
     wrap.className = "state";
-    wrap.innerHTML = '<span class="dot"></span><span>Not configured</span>';
-    detail.textContent = "No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run applab.";
+    wrap.appendChild(stateLabel(t("Not configured")));
+    detail.textContent = t("No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run applab.");
   } else if (cluster.reachable) {
     wrap.className = "state ok";
-    wrap.innerHTML = '<span class="dot"></span><span>Reachable</span>';
-    detail.textContent = "This deployment can reach the Kubernetes API, so builds and deploys will run here.";
+    wrap.appendChild(stateLabel(t("Reachable")));
+    detail.textContent = t("This deployment can reach the Kubernetes API, so builds and deploys will run here.");
   } else {
     wrap.className = "state bad";
-    wrap.innerHTML = '<span class="dot"></span><span>Unreachable</span>';
-    detail.textContent = "A cluster client is configured but the API server is not answering. Builds and deploys will fail until this recovers.";
+    wrap.appendChild(stateLabel(t("Unreachable")));
+    detail.textContent = t("A cluster client is configured but the API server is not answering. Builds and deploys will fail until this recovers.");
   }
 
   box.append(wrap, detail);
@@ -997,7 +1437,7 @@ async function loadBuilds() {
   try {
     data = await api("/api/v1/overview");
   } catch (err) {
-    setError("Could not read builds: " + err.message);
+    setError(tf("Could not read builds: {error}", { error: err.message }));
     return;
   }
 
@@ -1018,7 +1458,7 @@ async function loadApps() {
   try {
     apps = await api("/api/v1/apps");
   } catch (err) {
-    setError("Could not list apps: " + err.message);
+    setError(tf("Could not list apps: {error}", { error: err.message }));
     return;
   }
 
@@ -1059,7 +1499,7 @@ async function loadApps() {
       where.appendChild(link);
     } else if (address) {
       where.className = "muted";
-      where.textContent = address + " (not deployed)";
+      where.textContent = address + " " + t("(not deployed)");
     } else {
       where.className = "muted";
       where.textContent = "—";
@@ -1086,13 +1526,13 @@ async function createApp() {
 
   const id = $("apps-new-id").value.trim();
   if (!id) {
-    problem.textContent = "An app needs an id.";
+    problem.textContent = t("An app needs an id.");
     show(problem, true);
     return;
   }
   const port = parseInt($("apps-new-port").value.trim(), 10);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    problem.textContent = "The port must be a number between 1 and 65535.";
+    problem.textContent = t("The port must be a number between 1 and 65535.");
     show(problem, true);
     return;
   }
@@ -1107,7 +1547,7 @@ async function createApp() {
       body: JSON.stringify({ id: id, port: port }),
     });
   } catch (err) {
-    problem.textContent = "Could not create " + id + ": " + err.message;
+    problem.textContent = tf("Could not create {id}: {error}", { id: id, error: err.message });
     show(problem, true);
     return;
   } finally {
@@ -1152,7 +1592,7 @@ async function openApp(id) {
   // from — an app reached from a build row should not claim to return to Apps.
   // An app key has no parent view, so it gets no way back.
   const label = { apps: "Apps", builds: "Builds", overview: "Overview" }[state.cameFrom];
-  $("back").textContent = "← " + (label || "Apps");
+  $("back").textContent = "← " + t(label || "Apps");
   show($("back"), state.scope !== "app");
   $("app-title").textContent = id;
   // Delete is an admin operation — the API refuses it for an app key — so the
@@ -1160,7 +1600,7 @@ async function openApp(id) {
   show($("app-delete"), state.scope !== "app");
   // Cleared on every open, so a key shown for one app is never left on screen
   // when another is opened. The button re-fetches, so nothing is lost by it.
-  $("app-key-value").textContent = "Not shown.";
+  $("app-key-value").textContent = t("Not shown.");
   stopLogs();
 
   await Promise.all([loadAppState(), loadPods(), loadCommits(), loadAppConfig()]);
@@ -1184,7 +1624,7 @@ async function loadAppConfig() {
     // without one reports 501 for the secret half, and saying so is more
     // useful than hiding the whole card.
     show(problem, true);
-    problem.textContent = "Could not read configuration: " + err.message;
+    problem.textContent = tf("Could not read configuration: {error}", { error: err.message });
     return;
   }
 
@@ -1212,7 +1652,7 @@ function renderEnv(env) {
 
     const actions = document.createElement("td");
     const remove = document.createElement("button");
-    remove.textContent = "Remove";
+    remove.textContent = t("Remove");
     remove.onclick = () => removeEnv(name);
     actions.appendChild(remove);
     tr.appendChild(actions);
@@ -1237,7 +1677,7 @@ function renderSecrets(names) {
 
     const actions = document.createElement("td");
     const remove = document.createElement("button");
-    remove.textContent = "Remove";
+    remove.textContent = t("Remove");
     remove.onclick = () => removeSecret(name);
     actions.appendChild(remove);
     tr.appendChild(actions);
@@ -1325,7 +1765,7 @@ async function loadAppState() {
   try {
     status = await api("/api/v1/apps/" + state.app + "/status");
   } catch (err) {
-    setError("Could not read status: " + err.message);
+    setError(tf("Could not read status: {error}", { error: err.message }));
     return;
   }
 
@@ -1340,25 +1780,27 @@ async function loadAppState() {
     list.append(dt, dd);
   };
 
-  add("recorded", status.status);
-  if (status.deployed && status.deployed.commit_sha) add("commit", status.deployed.commit_sha);
-  if (status.deployed && status.deployed.image) add("image", status.deployed.image);
-  if (status.deployed && status.deployed.status_reason) add("reason", status.deployed.status_reason);
+  add(t("recorded"), t(status.status));
+  if (status.deployed && status.deployed.commit_sha) add(t("commit"), status.deployed.commit_sha);
+  if (status.deployed && status.deployed.image) add(t("image"), status.deployed.image);
+  if (status.deployed && status.deployed.status_reason) add(t("reason"), status.deployed.status_reason);
 
   // The live state is shown separately from the record, because the difference
   // between them is the useful information: applab can believe a rollout
   // succeeded while the pods have since stopped.
   if (status.live) {
     if (!status.live.deployed) {
-      add("cluster", "nothing deployed");
+      add(t("cluster"), t("nothing deployed"));
     } else {
-      add("cluster", status.live.ready_replicas + "/" + status.live.desired_replicas + " ready"
-        + (status.live.available ? " (available)" : ""));
-      if (status.live.current_image) add("running image", status.live.current_image);
+      add(t("cluster"), tf("{ready}/{desired} ready", {
+        ready: status.live.ready_replicas,
+        desired: status.live.desired_replicas,
+      }) + (status.live.available ? t(" (available)") : ""));
+      if (status.live.current_image) add(t("running image"), status.live.current_image);
     }
   }
-  if (status.url) add("url", status.url);
-  else if (status.host) add("host", status.host + (status.path || "") + " (not deployed)");
+  if (status.url) add(t("url"), status.url);
+  else if (status.host) add(t("host"), status.host + (status.path || "") + " " + t("(not deployed)"));
 
   // A rollout that cannot progress carries the reason, which is the most useful
   // single thing to surface when an app will not come up.
@@ -1379,7 +1821,7 @@ async function loadPods() {
     // Observability is an optional capability; a deployment without a cluster
     // reports 501 here, which is not a failure of the console.
     show($("pods-empty"), true);
-    $("pods-empty").textContent = "Pods are not available: " + err.message;
+    $("pods-empty").textContent = tf("Pods are not available: {error}", { error: err.message });
     return;
   }
 
@@ -1387,7 +1829,7 @@ async function loadPods() {
   body.replaceChildren();
   show($("pods-empty"), result.pods.length === 0);
   if (result.pods.length === 0) {
-    $("pods-empty").textContent = "Nothing is running.";
+    $("pods-empty").textContent = t("Nothing is running.");
     return;
   }
 
@@ -1424,7 +1866,7 @@ async function loadCommits() {
   try {
     history = await api("/api/v1/apps/" + state.app + "/commits");
   } catch (err) {
-    setError("Could not read history: " + err.message);
+    setError(tf("Could not read history: {error}", { error: err.message }));
     return;
   }
 
@@ -1467,7 +1909,7 @@ async function loadCommits() {
       action.firstChild.className = "pill ok";
     } else if (buildable.has(commit.sha)) {
       const button = document.createElement("button");
-      button.textContent = "Roll back";
+      button.textContent = t("Roll back");
       button.onclick = () => rollback(commit.sha);
       action.appendChild(button);
     } else {
@@ -1489,7 +1931,7 @@ async function loadCommits() {
 // ---------------------------------------------------------------------------
 
 async function rollback(sha) {
-  if (!confirm("Deploy commit " + shortSHA(sha) + "?")) return;
+  if (!confirm(tf("Deploy commit {sha}?", { sha: shortSHA(sha) }))) return;
   setError("");
   try {
     await api("/api/v1/apps/" + state.app + "/rollback", {
@@ -1497,7 +1939,7 @@ async function rollback(sha) {
       body: JSON.stringify({ commit_sha: sha }),
     });
   } catch (err) {
-    setError("Rollback failed: " + err.message);
+    setError(tf("Rollback failed: {error}", { error: err.message }));
     return;
   }
   await Promise.all([loadAppState(), loadPods(), loadCommits()]);
@@ -1508,19 +1950,19 @@ async function restart() {
   try {
     await api("/api/v1/apps/" + state.app + "/restart", { method: "POST" });
   } catch (err) {
-    setError("Restart failed: " + err.message);
+    setError(tf("Restart failed: {error}", { error: err.message }));
     return;
   }
   await Promise.all([loadAppState(), loadPods()]);
 }
 
 async function stop() {
-  if (!confirm("Stop " + state.app + "?\n\nIts source and history are kept, so it can be deployed again.")) return;
+  if (!confirm(tf("Stop {app}? Its source and history are kept, so it can be deployed again.", { app: state.app }))) return;
   setError("");
   try {
     await api("/api/v1/apps/" + state.app + "/stop", { method: "POST" });
   } catch (err) {
-    setError("Stop failed: " + err.message);
+    setError(tf("Stop failed: {error}", { error: err.message }));
     return;
   }
   await Promise.all([loadAppState(), loadPods()]);
@@ -1529,14 +1971,14 @@ async function stop() {
 async function remove() {
   // Deleting destroys the source as well as the running app, and there is no
   // undo — so the app id has to be typed rather than a button clicked.
-  const typed = prompt("This deletes " + state.app + " and its source, and cannot be undone.\n\nType the app id to confirm:");
+  const typed = prompt(tf("This deletes {app} and its source, and cannot be undone. Type the app id to confirm:", { app: state.app }));
   if (typed !== state.app) return;
 
   setError("");
   try {
     await api("/api/v1/apps/" + state.app, { method: "DELETE" });
   } catch (err) {
-    setError("Delete failed: " + err.message);
+    setError(tf("Delete failed: {error}", { error: err.message }));
     return;
   }
   closeApp();
@@ -1557,7 +1999,7 @@ function stopLogs() {
   }
   state.logFollowing = false;
   const toggle = $("logs-toggle");
-  if (toggle) toggle.textContent = "Follow";
+  if (toggle) toggle.textContent = t("Follow");
 }
 
 async function startLogs() {
@@ -1569,7 +2011,7 @@ async function startLogs() {
   const controller = new AbortController();
   state.logAbort = controller;
   state.logFollowing = true;
-  $("logs-toggle").textContent = "Stop";
+  $("logs-toggle").textContent = t("Stop");
 
   const params = new URLSearchParams({ follow: "false", tail: "500" });
   if ($("logs-previous").checked) params.set("previous", "true");
@@ -1584,7 +2026,7 @@ async function startLogs() {
       const text = await response.text();
       let message = response.status + " " + response.statusText;
       try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
-      el.textContent = "Could not read the log: " + message;
+      el.textContent = tf("Could not read the log: {error}", { error: message });
       return;
     }
 
@@ -1596,14 +2038,14 @@ async function startLogs() {
       el.textContent += decoder.decode(value, { stream: true });
       el.scrollTop = el.scrollHeight;
     }
-    if (el.textContent === "") el.textContent = "(no output)";
+    if (el.textContent === "") el.textContent = t("(no output)");
   } catch (err) {
-    if (err.name !== "AbortError") el.textContent = "Log stream ended: " + err.message;
+    if (err.name !== "AbortError") el.textContent = tf("Log stream ended: {error}", { error: err.message });
   } finally {
     if (state.logAbort === controller) {
       state.logAbort = null;
       state.logFollowing = false;
-      $("logs-toggle").textContent = "Follow";
+      $("logs-toggle").textContent = t("Follow");
     }
   }
 }
@@ -1667,7 +2109,7 @@ async function connect(key) {
     // would make the next page load retry it and show the same error, with the
     // form hidden behind a session that was never established.
     clearCredentials();
-    setError("Could not connect: " + err.message);
+    setError(tf("Could not connect: {error}", { error: err.message }));
     return false;
   }
 
@@ -1685,7 +2127,7 @@ async function connect(key) {
     // An app key always resolves to exactly one app, so an empty list with no
     // admin rights means the key authenticates to nothing worth showing.
     clearCredentials();
-    setError("Could not connect: this key does not reach any app.");
+    setError(t("Could not connect: this key does not reach any app."));
     return false;
   }
 
@@ -1736,9 +2178,16 @@ function signOut() {
 $("signin-form").onsubmit = (e) => {
   e.preventDefault();
   const key = $("signin-key").value.trim();
-  if (!key) { setError("An API key is required."); return; }
+  if (!key) { setError(t("An API key is required.")); return; }
   connect(key);
 };
+
+$("theme-toggle").onclick = () => {
+  setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]);
+};
+$("signin-theme-toggle").onclick = $("theme-toggle").onclick;
+$("lang-toggle").onclick = () => setLang(lang === "zh" ? "en" : "zh");
+$("signin-lang-toggle").onclick = $("lang-toggle").onclick;
 
 $("signout").onclick = signOut;
 
@@ -1778,7 +2227,7 @@ $("config-env-set").onclick = () => {
   const problem = $("config-problem");
   if (!name) {
     show(problem, true);
-    problem.textContent = "An environment variable needs a name.";
+    problem.textContent = t("An environment variable needs a name.");
     return;
   }
   setEnv(name, value);
@@ -1792,7 +2241,7 @@ $("config-secret-set").onclick = () => {
   const problem = $("config-problem");
   if (!name) {
     show(problem, true);
-    problem.textContent = "A secret needs a name.";
+    problem.textContent = t("A secret needs a name.");
     return;
   }
   setSecret(name, value);
@@ -1808,6 +2257,12 @@ $("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
 // On boot: work out the deployment's address from this page, and use a saved key
 // if there is one.
 (async function boot() {
+  // Preferences first, before anything is rendered: the stylesheet has to have
+  // the theme stamp before the first paint or a dark-mode viewer sees a white
+  // flash, and every string below is produced by code that reads `lang`.
+  setTheme(loadTheme());
+  setLang(loadLang());
+
   state.url = baseURL();
   // Shown in the sign-in card so it is visible which deployment a key is about to
   // be sent to — the one thing the removed address field was genuinely telling

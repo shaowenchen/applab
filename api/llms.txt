@@ -153,6 +153,7 @@ requires `Authorization: Bearer <key>`; `no key` means it does not.)_
 - `GET /api/v1/config` — This deployment's limits and capabilities. No key required, so it doubles as the cheapest reachability check. _(no key)_
 - `GET /api/v1/version` — Build version and commit. _(no key)_
 - `GET /api/v1/overview` — The platform at a glance: app counts by status, build counts and the most recent builds across every app, whether the cluster is configured and reachable, and this deployment's self-description. Counts exclude deleted apps. _(key)_
+- `GET /api/v1/describe` — Everything needed to work with this deployment, in one call: a one-line summary, how to reach it, what it is wired to (registry, gateway, domains), what the presented key may do, every app with its address, and the shortest call for each operation. Start here; the full contract is /llms.txt. _(key)_
 - `GET /llms.txt` — This document. _(no key)_
 - `GET /api/v1/apps` — List apps. `?include_deleted=true` also returns apps that were deleted but whose id is still reserved. _(key)_
 - `POST /api/v1/apps` — Create an app. Body: `{id, name?, port?, replicas?, dockerfile?, domain?}`. _(key)_

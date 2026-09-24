@@ -57,6 +57,14 @@ function makeElement(id = "") {
     focus() {},
     addEventListener() {},
     querySelector() { return null; },
+    // The theme and language controls label themselves with setAttribute, and
+    // boot applies both before it renders anything — so an element without this
+    // makes the whole script throw before the form is ever shown, which is a
+    // failure no assertion in this file would name.
+    attrs: {},
+    setAttribute(k, v) { this.attrs[k] = String(v); },
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    removeAttribute(k) { delete this.attrs[k]; },
     // Enough for the code under test to read back what it rendered.
     allText() {
       return (this.textContent || "") + this.children.map((c) => c.allText()).join("");
@@ -86,6 +94,20 @@ const sandbox = {
       el.tagName = tag.toUpperCase();
       return el;
     },
+    // The theme is applied by stamping an attribute on the root element, so the
+    // root has to exist here. Tracked as a real map so a check can read back
+    // which theme the console settled on.
+    documentElement: {
+      attributes: new Map(),
+      setAttribute(k, v) { this.attributes.set(k, String(v)); },
+      removeAttribute(k) { this.attributes.delete(k); },
+      getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null; },
+    },
+    // Translation walks the markup for data-i18n. The stub has no real DOM to
+    // query, so this returns nothing and the static-text half is a no-op here —
+    // the JS-produced strings, which are what the rendering checks assert on,
+    // go through t() directly and are covered.
+    querySelectorAll: () => [],
   },
   // A browser always has both of these. Modelled here rather than left as
   // origin alone, because the console derives the address it offers from them —
@@ -249,6 +271,97 @@ async function render(apps) {
       check("and holds exactly one field", fields.length, 1);
       check("which is the key", form[0].includes('id="signin-key"'), true);
     }
+  }
+
+  // The theme must be stamped on the root element by boot, before anything is
+  // rendered. Two things ride on it: a dark-mode viewer sees the right colours
+  // on the first paint rather than a white flash, and the choice persists across
+  // reloads. The default is no stamp at all, which is what "follow the system"
+  // means — so this asserts the attribute is absent rather than that it is
+  // "system", because a stamp spelling out the default would override the
+  // stylesheet's media query and pin every viewer to light.
+  {
+    const root = sandbox.document.documentElement;
+    check(
+      "an unset theme leaves no stamp on the root, so the system decides",
+      root.getAttribute("data-theme"),
+      null
+    );
+    check("and the document language is set", root.getAttribute("lang"), "en");
+  }
+
+  // Both preference controls label themselves, which is what the theme function
+  // does with setAttribute — the call that would throw in a real browser only if
+  // the element were missing, and throws here if the stub is incomplete.
+  for (const id of ["theme-toggle", "lang-toggle", "signin-theme-toggle", "signin-lang-toggle"]) {
+    check(
+      `the ${id} control is labelled`,
+      (elements.get(id).textContent || "").length > 0,
+      true
+    );
+  }
+
+  // --- Translation coverage -------------------------------------------------
+  //
+  // Every string the interface can show must have a Chinese translation, and
+  // every string in the dictionary must be one the interface can show.
+  //
+  // Both directions matter and they fail differently. A missing entry is English
+  // text in an otherwise Chinese page, which reads as a gap. An unreferenced
+  // entry is a translation of a sentence nobody can see any more — markup that
+  // was edited without the dictionary following, which is exactly how a
+  // dictionary rots: it still looks complete.
+  //
+  // The English-is-the-key design is what makes this checkable at all. There is
+  // no key space to drift from the markup, so coverage is decidable by reading
+  // the two together.
+  {
+    const zh = vm.runInContext("ZH", context);
+
+    // Keys come from two places: data-i18n attributes in the markup, and string
+    // literals passed to t()/tf() in the script.
+    const fromMarkup = [...html.matchAll(/data-i18n(?:-placeholder)?="([^"]+)"/g)].map((m) => m[1]);
+
+    // Literal arguments only. A value passed through a variable — t(status) —
+    // cannot be read statically, and is covered by the runtime checks below.
+    const fromJS = [];
+    for (const m of source.matchAll(/\btf?\(\s*"((?:[^"\\]|\\.){2,})"/g)) fromJS.push(m[1]);
+
+    const wanted = new Set([...fromMarkup, ...fromJS]);
+    const missing = [...wanted].filter((k) => !(k in zh));
+    check(
+      "every string the interface shows is translated",
+      missing.join(" | "),
+      ""
+    );
+
+    // The dictionary side. Values reached through a variable are listed here
+    // because the static scan cannot see them; each is asserted reachable by the
+    // pill and status checks elsewhere in this file.
+    const viaVariable = new Set([
+      "nothing broken", "failed or build-failed", "{name} on", "{name} off",
+      "running", "failed", "build-failed", "building", "deploying", "created",
+      "succeeded", "pending", "ready", "not ready", "deployed", "no image",
+    ]);
+    const unreferenced = Object.keys(zh).filter((k) => !wanted.has(k) && !viaVariable.has(k));
+    check(
+      "and every translation is one the interface still shows",
+      unreferenced.join(" | "),
+      ""
+    );
+  }
+
+  // A translated status is reachable through a variable, so it is exercised
+  // through the real function rather than assumed. These are the words a person
+  // reads most often in the console — they are what the status column says.
+  {
+    const zhStatuses = ["running", "failed", "build-failed", "deploying", "created"];
+    const untranslated = zhStatuses.filter((s) => {
+      const got = vm.runInContext(`(function(){ lang = "zh"; return t(${JSON.stringify(s)}); })()`, context);
+      return got === s;
+    });
+    check("the statuses read in Chinese too", untranslated.join(" | "), "");
+    vm.runInContext('lang = "en"', context);
   }
 
   if (failures > 0) {
