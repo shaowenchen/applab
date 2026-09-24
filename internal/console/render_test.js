@@ -398,7 +398,7 @@ async function render(apps) {
   // has to get right without any JavaScript having run a view.
   {
     check("signed out, the sign-in card is up", elements.get("signin").classList.contains("hidden"), false);
-    for (const view of ["overview", "apps", "builds", "app"]) {
+    for (const view of ["overview", "apps", "app"]) {
       check(
         `signed out, the ${view} view is not on screen`,
         elements.get(view + "-view").classList.contains("hidden"),

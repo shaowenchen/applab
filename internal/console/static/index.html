@@ -499,7 +499,6 @@
   <nav id="nav" class="hidden">
     <button id="nav-overview" data-i18n="Overview">Overview</button>
     <button id="nav-apps" data-i18n="Apps">Apps</button>
-    <button id="nav-builds" data-i18n="Builds">Builds</button>
   </nav>
   <span class="spacer"></span>
   <!-- Grouped so they move together if the header is ever rearranged, and named
@@ -578,7 +577,6 @@
     <div class="card flush">
       <div class="card-head">
         <h2 data-i18n="Recent builds">Recent builds</h2>
-        <button id="overview-see-builds" data-i18n="All builds">All builds</button>
       </div>
       <table>
         <thead>
@@ -588,26 +586,6 @@
       </table>
       <div id="overview-builds-empty" class="empty hidden">
         <span data-i18n="No builds yet. Push an app with">No builds yet. Push an app with</span> <span class="mono">applab push &lt;app&gt;</span>.
-      </div>
-    </div>
-  </section>
-
-  <!-- Builds. The platform-wide list, which no per-app view can give: it is
-       what answers "is anything failing anywhere" without visiting each app. -->
-  <section id="builds-view" class="hidden">
-    <div class="page-head">
-      <h1 data-i18n="Builds">Builds</h1>
-      <button id="builds-refresh" data-i18n="Refresh">Refresh</button>
-    </div>
-    <div class="card flush">
-      <table>
-        <thead>
-          <tr><th data-i18n="App">App</th><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Age">Age</th><th data-i18n="Image">Image</th></tr>
-        </thead>
-        <tbody id="builds"></tbody>
-      </table>
-      <div id="builds-empty" class="empty hidden">
-        No builds yet. Push an app with <span class="mono">applab push &lt;app&gt;</span>.
       </div>
     </div>
   </section>
@@ -801,6 +779,40 @@
       <div id="config-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
 
+    <!-- The app's builds. Per app, which is the question someone arrives with
+         while looking at an app; the platform-wide answer — is anything failing
+         anywhere — is the overview's recent-builds panel.
+
+         Before History, because a build is what produces the image a commit can
+         be deployed with, so this is the table that explains the next one. -->
+    <div class="card flush">
+      <div class="card-head">
+        <h2 data-i18n="Builds">Builds</h2>
+        <button id="app-builds-refresh" data-i18n="Refresh">Refresh</button>
+      </div>
+      <table>
+        <thead>
+          <tr><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Age">Age</th><th data-i18n="Reason">Reason</th><th></th><th></th></tr>
+        </thead>
+        <tbody id="app-builds"></tbody>
+      </table>
+      <div id="app-builds-empty" class="empty hidden">
+        <span data-i18n="Nothing has been built yet. Build the newest commit with">Nothing has been built yet. Build the newest commit with</span> <span class="mono">Build latest</span>.
+      </div>
+    </div>
+
+    <!-- The one build's log, filled in by the Log button on a build row above.
+         Hidden until then: an empty log panel on every app page would be a card
+         that is empty almost always. It has its own heading rather than reusing
+         the runtime log's, because the two are different streams and reading the
+         wrong one is how a build failure looks like an app failure. -->
+    <div id="build-logs-card" class="card hidden">
+      <div class="card-head">
+        <h2><span data-i18n="Build log">Build log</span> <span class="mono muted" id="build-logs-label"></span></h2>
+      </div>
+      <pre id="build-logs" style="margin:0"></pre>
+    </div>
+
     <div class="card">
       <h2 data-i18n="History">History</h2>
       <table>
@@ -913,7 +925,6 @@ const ZH = {
   // -- Header and navigation ------------------------------------------------
   "Overview": "概览",
   "Apps": "应用",
-  "Builds": "构建",
   "Sign out": "退出登录",
 
   // -- Sign in --------------------------------------------------------------
@@ -928,7 +939,6 @@ const ZH = {
   "Capabilities": "能力",
   "Cluster": "集群",
   "Recent builds": "最近构建",
-  "All builds": "全部构建",
   "No builds yet. Push an app with": "还没有构建。用这个命令推送一个应用：",
   "Needs attention": "需要处理",
   "In progress": "进行中",
@@ -960,7 +970,6 @@ const ZH = {
   "Commit": "提交",
   "Status": "状态",
   "Age": "时间",
-  "Image": "镜像",
   "Where": "地址",
   "Pod": "Pod",
   "Ready": "就绪",
@@ -1031,6 +1040,11 @@ const ZH = {
   "Set": "设置",
   "Remove": "移除",
   "History": "历史",
+  "Builds": "构建",
+  "Build log": "构建日志",
+  "Deploy": "部署",
+  "(loading)": "（加载中）",
+  "Nothing has been built yet. Build the newest commit with": "还没有构建过。构建最新提交请用",
 
   // -- App state ------------------------------------------------------------
   "recorded": "记录状态",
@@ -1392,7 +1406,6 @@ function setLang(value) {
   if (!state.signedIn) return;
   const view = state.view;
   if (view === "overview") showOverview();
-  else if (view === "builds") showBuilds();
   else if (view === "apps") showApps();
   else if (view === "app" && state.app) openApp(state.app);
 }
@@ -1571,10 +1584,10 @@ function navTo(name) {
   // whatever was showing underneath it.
   if (name !== "app") state.view = name;
 
-  for (const view of ["overview", "apps", "builds", "app"]) {
+  for (const view of ["overview", "apps", "app"]) {
     show($(view + "-view"), view === name);
   }
-  for (const item of ["overview", "apps", "builds"]) {
+  for (const item of ["overview", "apps"]) {
     const button = $("nav-" + item);
     // aria-current is what a screen reader reads; the styling follows from it
     // rather than being set separately, so the two cannot disagree.
@@ -1593,13 +1606,6 @@ async function showOverview() {
   await loadOverview();
 }
 
-async function showBuilds() {
-  stopLogs();
-  state.app = "";
-  navTo("builds");
-  await loadBuilds();
-}
-
 async function showApps() {
   stopLogs();
   state.app = "";
@@ -1614,10 +1620,12 @@ async function showApps() {
 
 // buildRows renders build records as table rows.
 //
-// It is shared by the overview panel and the builds view so the two cannot
-// describe the same build differently — and because a build row is reached from
-// both, "which app was this" has to link the same way in each.
-function buildRows(builds, withImage) {
+// It renders the overview panel's recent builds. It used to be shared with a
+// platform-wide builds view, which is gone — builds are per app now, in the
+// app's own table, which is a different shape: that one is about one app and can
+// afford the log and the deploy button, where this is a glance across all of
+// them.
+function buildRows(builds) {
   const rows = [];
 
   for (const build of builds) {
@@ -1649,13 +1657,6 @@ function buildRows(builds, withImage) {
     when.className = "muted";
     when.textContent = ago(build.created_at);
     tr.appendChild(when);
-
-    if (withImage) {
-      const image = document.createElement("td");
-      image.className = "mono";
-      image.textContent = build.image || "—";
-      tr.appendChild(image);
-    }
 
     // A failed build's reason is the useful part and has nowhere else to appear
     // in this table; the title attribute keeps the row one line.
@@ -1784,29 +1785,119 @@ async function loadOverview() {
   const body = $("overview-builds");
   body.replaceChildren();
   show($("overview-builds-empty"), recent.length === 0);
-  for (const row of buildRows(recent, false)) body.appendChild(row);
+  for (const row of buildRows(recent)) body.appendChild(row);
 }
 
-// loadBuilds renders the platform-wide build list.
-async function loadBuilds() {
-  setError("");
-
-  let data;
+// loadAppBuilds renders this app's build history.
+//
+// Per app rather than platform-wide: the builds view that listed every app's
+// builds has gone, and the question someone arrives with is about the app they
+// are looking at. "Is anything failing anywhere" is answered by the overview's
+// recent-builds panel, which carries the worst of it across every app.
+//
+// A failed build's reason is the useful part and has nowhere else to appear in
+// this table, so it is a column rather than the row's title — a title is
+// invisible until hovered, and a failure is exactly the row someone needs to
+// read.
+async function loadAppBuilds() {
+  let builds;
   try {
-    data = await api("/api/v1/overview");
+    builds = await api("/api/v1/apps/" + state.app + "/builds?limit=20");
   } catch (err) {
     setError(tf("Could not read builds: {error}", { error: err.message }));
     return;
   }
 
-  // The API carries a bounded list of the most recent builds — the same rows
-  // the overview panel shows. A per-app history is on the app's own page.
-  const builds = (data.builds && data.builds.recent) || [];
-
-  const body = $("builds");
+  const body = $("app-builds");
   body.replaceChildren();
-  show($("builds-empty"), builds.length === 0);
-  for (const row of buildRows(builds, true)) body.appendChild(row);
+  show($("app-builds-empty"), builds.length === 0);
+
+  for (const build of builds) {
+    const tr = document.createElement("tr");
+
+    const id = document.createElement("td");
+    id.className = "mono";
+    id.textContent = shortSHA(build.id);
+    tr.appendChild(id);
+
+    const commit = document.createElement("td");
+    commit.className = "mono";
+    commit.textContent = shortSHA(build.commit_sha);
+    tr.appendChild(commit);
+
+    const status = document.createElement("td");
+    status.appendChild(buildPill(build.status));
+    tr.appendChild(status);
+
+    const when = document.createElement("td");
+    when.className = "muted";
+    when.textContent = ago(build.created_at);
+    tr.appendChild(when);
+
+    const reason = document.createElement("td");
+    reason.className = "muted";
+    reason.textContent = build.reason || "—";
+    tr.appendChild(reason);
+
+    // Deploying a build's commit is the reason to look at this table at all —
+    // finding the sha and pasting it into the History card would be the same
+    // information one column over and a copy-paste away.
+    const deploy = document.createElement("td");
+    if (build.status === "succeeded" && build.image) {
+      const button = document.createElement("button");
+      button.textContent = t("Deploy");
+      button.onclick = () => deployCommit(build.commit_sha);
+      deploy.appendChild(button);
+    } else {
+      deploy.className = "muted";
+      deploy.textContent = "—";
+    }
+    tr.appendChild(deploy);
+
+    // The log is the build's own output, which is where a failure is explained.
+    const logs = document.createElement("td");
+    const logsButton = document.createElement("button");
+    logsButton.textContent = t("Log");
+    logsButton.onclick = () => showBuildLog(build.id);
+    logs.appendChild(logsButton);
+    tr.appendChild(logs);
+
+    body.appendChild(tr);
+  }
+}
+
+// showBuildLog switches the log panel below the table to one build's output and
+// scrolls to it.
+//
+// The output is fetched once with follow=false rather than streamed: a build's
+// Job has usually finished by the time anyone opens this, and the streaming
+// endpoint exists for watching a run in progress. The app's own runtime log —
+// the more common thing to want — is the panel above, which does stream.
+async function showBuildLog(buildID) {
+  const el = $("build-logs");
+  el.textContent = t("(loading)");
+
+  try {
+    const response = await fetch(
+      state.url + "/api/v1/apps/" + state.app + "/builds/" + buildID + "/logs?follow=false",
+      { headers: { "Authorization": "Bearer " + state.key } }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      let message = response.status + " " + response.statusText;
+      try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
+      el.textContent = tf("Could not read the log: {error}", { error: message });
+    } else {
+      const text = await response.text();
+      el.textContent = text === "" ? t("(no output)") : text;
+    }
+  } catch (err) {
+    el.textContent = tf("Could not read the log: {error}", { error: err.message });
+  }
+
+  show($("build-logs-card"), true);
+  $("build-logs-label").textContent = shortSHA(buildID);
+  $("build-logs-card").scrollIntoView({ block: "nearest" });
 }
 
 
@@ -1980,7 +2071,7 @@ async function openApp(id) {
   // The button says where it goes, which depends on where the app was opened
   // from — an app reached from a build row should not claim to return to Apps.
   // An app key has no parent view, so it gets no way back.
-  const label = { apps: "Apps", builds: "Builds", overview: "Overview" }[state.cameFrom];
+  const label = { apps: "Apps", overview: "Overview" }[state.cameFrom];
   $("back").textContent = "← " + t(label || "Apps");
   show($("back"), state.scope !== "app");
   $("app-title").textContent = id;
@@ -2007,8 +2098,21 @@ async function openApp(id) {
 
   stopLogs();
 
-  await Promise.all([loadAppState(), loadPods(), loadCommits(), loadAppConfig(), loadRepository()]);
+  await Promise.all([
+    loadAppState(),
+    loadPods(),
+    loadCommits(),
+    loadAppConfig(),
+    loadAppBuilds(),
+    loadRepository(),
+  ]);
   startLogs();
+
+  // The build log panel belongs to the app that was open, so it goes with it.
+  // Left as it was, the next app's page would open showing the previous app's
+  // build output under a heading naming a build that is not its own.
+  show($("build-logs-card"), false);
+  $("build-logs").textContent = "";
 }
 
 // loadAppConfig renders the app's configuration.
@@ -2157,8 +2261,7 @@ function closeApp() {
 
   // Re-loaded rather than merely re-shown: actions taken in the detail view
   // (a rollback, a stop, a restart) change what the list should say.
-  if (state.cameFrom === "builds") showBuilds();
-  else if (state.cameFrom === "overview") showOverview();
+  if (state.cameFrom === "overview") showOverview();
   else showApps();
 }
 
@@ -2453,6 +2556,26 @@ async function deployLatest() {
   await Promise.all([loadAppState(), loadPods(), loadCommits()]);
 }
 
+// deployCommit deploys one named commit, which is what the builds table's
+// Deploy button does.
+//
+// The same call as deployLatest with the commit named rather than derived from
+// the tip, and with the same build:true — a commit with an image reuses it, so
+// deploying a build from this table does not rebuild it.
+async function deployCommit(sha) {
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app + "/deploy", {
+      method: "POST",
+      body: JSON.stringify({ commit_sha: sha, build: true }),
+    });
+  } catch (err) {
+    setError(tf("Could not deploy: {error}", { error: err.message }));
+    return;
+  }
+  await Promise.all([loadAppState(), loadPods(), loadCommits()]);
+}
+
 // headCommit returns the app's newest commit, or "" after reporting why not.
 async function headCommit() {
   setError("");
@@ -2714,7 +2837,7 @@ function signOut() {
   show($("signout"), false);
   show($("nav"), false);
   show($("app-key-note"), false);
-  for (const view of ["overview", "apps", "builds", "app"]) show($(view + "-view"), false);
+  for (const view of ["overview", "apps", "app"]) show($(view + "-view"), false);
   show($("signin"), true);
 }
 
@@ -2738,10 +2861,7 @@ $("signout").onclick = signOut;
 
 $("nav-overview").onclick = showOverview;
 $("nav-apps").onclick = showApps;
-$("nav-builds").onclick = showBuilds;
 $("overview-refresh").onclick = loadOverview;
-$("overview-see-builds").onclick = showBuilds;
-$("builds-refresh").onclick = loadBuilds;
 
 $("apps-refresh").onclick = () => { loadApps(); };
 $("apps-new").onclick = () => {
@@ -2763,6 +2883,7 @@ $("app-replicas-set").onclick = setReplicas;
 $("app-replicas").onkeydown = (e) => { if (e.key === "Enter") setReplicas(); };
 $("app-build").onclick = buildLatest;
 $("app-deploy").onclick = deployLatest;
+$("app-builds-refresh").onclick = loadAppBuilds;
 $("app-stop").onclick = stop;
 $("app-delete").onclick = remove;
 $("pods-refresh").onclick = loadPods;
