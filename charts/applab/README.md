@@ -3,8 +3,9 @@
 Deploy an application to Kubernetes by uploading its source.
 
 This chart installs the control plane: it stores source in a git repository per
-app, builds images in the cluster, deploys them and exposes them on a hostname. Give someone its URL and an API key, and they can ship
-with one command.
+app per branch, builds images in the cluster, deploys them and exposes them on a
+hostname. Give someone its URL and an API key, and they can ship with one
+command.
 
 ## Quick start
 
@@ -25,12 +26,11 @@ helm install applab applab/applab \
 ```
 
 The bucket is not optional and has no default. AppLab keeps everything in it —
-every app, every repository and every key — so a release that omitted it would
-not fail: the server falls back to a directory, which in this chart is the pod's
-scratch space, and the deployment would look healthy until the pod was replaced.
-It is refused at render time for that reason. Create the bucket first; AppLab
-does not create one, because a bucket's name, region and lifecycle policy belong
-to whoever runs the platform.
+every app, every repository, every commit and every key — so there is nothing for
+a release without one to store anything in, and the chart refuses to render. The
+server checks the same thing at startup, because a chart is not the only way this
+runs. Create the bucket first; AppLab does not create one, because a bucket's
+name, region and lifecycle policy belong to whoever runs the platform.
 
 `--version` is not optional yet, and leaving it out fails with `chart "applab"
 matching  not found in applab index` — which reads like a typo or a stale index
@@ -264,11 +264,13 @@ AppLab holds nothing on a replica. Every app, every repository and all of the
 history are in the bucket you point `objectStore` at, so `replicaCount` can be
 raised for availability and a pod can be replaced at any moment.
 
-The one thing that is not coordinated across replicas is a write to one app's
-repository: the lock that serialises those is per process, so two pushes to the
-same app arriving at the same instant on two replicas can lose one of the two.
-A push is a rare event and the next build reads what git actually has, so this
-is a note rather than a warning — but it is why one replica is still the default.
+The one thing that is not coordinated across replicas is a write to one branch's
+repository: the lock that serialises those is per process and per branch, so two
+pushes arriving at the same instant on two replicas can lose one of the two —
+while two pushes to *different* branches of one app never contend at all, since
+each branch is a repository of its own. A push is a rare event and the next build
+reads what git actually has, so this is a note rather than a warning — but it is
+why one replica is still the default.
 
 **Back up the bucket.** It is the only copy of every app's source.
 

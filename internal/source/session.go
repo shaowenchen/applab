@@ -31,11 +31,12 @@ func branchRef(branch string) string { return "refs/heads/" + branch }
 // not deferred past the upload: a failure leaves the scratch copy gone rather
 // than lying around to be mistaken for state.
 func (s *Store) withRepo(ctx context.Context, appID, branch string, fn func(repoPath string) error) error {
-	// Serialise per app. Two operations on one repository would each download a
-	// copy, each change it, and each upload — and the second upload would be
+	// Serialise per branch. Two operations on one repository would each download
+	// a copy, each change it, and each upload — and the second upload would be
 	// last-write-wins over the whole set of changed files, so one of the two
-	// commits would simply be gone. A lock per app is enough because the
-	// repository is per app; there is no shared state between them.
+	// commits would simply be gone. A lock per branch is enough because the
+	// repository is per branch: two branches of one app are separate
+	// repositories with nothing shared between them, so they do not contend.
 	unlock := s.lockRepo(appID, branch)
 	defer unlock()
 
@@ -96,15 +97,19 @@ func (s *Store) uploadRepo(ctx context.Context, appID, branch, repoPath string) 
 	return repo.upload(ctx)
 }
 
-// lockRepo serialises operations on one app's repository.
+// lockRepo serialises operations on one branch's repository.
 //
-// It is a per-app mutex rather than a global one so that two apps uploading at
-// once do not wait for each other: the expensive part of an operation is the
-// download and the upload, and those are per app.
+// It is a per-branch mutex rather than a global one so that two operations that
+// touch different repositories do not wait for each other: the expensive part of
+// an operation is the download and the upload, and those are per branch.
+//
+// The key is the app and the branch together. Keyed by the app alone, pushing
+// one branch would block a push to another for no reason, since the two share
+// nothing.
 //
 // It is a process-local lock, which is exactly as much as it can be: replicas do
-// not share it, so two replicas pushing to one app at the same instant can still
-// lose one of the two commits. Making that safe needs a lock object in the
+// not share it, so two replicas pushing to one branch at the same instant can
+// still lose one of the two commits. Making that safe needs a lock object in the
 // bucket and a lease protocol object storage does not offer — and the cost of
 // getting it wrong is bounded, because a push is followed by a build and the
 // build reads what git actually has. It is named here rather than left to be

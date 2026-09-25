@@ -366,9 +366,10 @@ objectStore:
   # The service's address. AWS is https://s3.<region>.amazonaws.com; a
   # self-hosted service is its own address, e.g. http://minio.ops-system:9000.
   #
-  # Required. AppLab refuses to start without it rather than quietly writing to a
-  # directory on the pod's own disk, which would look like it worked and lose
-  # everything on the first restart.
+  # Required, and the chart refuses to render without it. There is no directory
+  # fallback to fall back to — a deployment with no store would have nothing to
+  # keep anything in, and it would fail on the first write rather than at startup
+  # where the mistake can still be corrected.
   endpoint: ""
   bucket: ""
 
