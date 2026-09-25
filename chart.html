@@ -141,8 +141,9 @@ img { max-width: 100%; height: auto; }
 <h1>AppLab</h1>
 <p>Deploy an application to Kubernetes by uploading its source.</p>
 <p>This chart installs the control plane: it stores source in a git repository per
-app, builds images in the cluster, deploys them and exposes them on a hostname. Give someone its URL and an API key, and they can ship
-with one command.</p>
+app per branch, builds images in the cluster, deploys them and exposes them on a
+hostname. Give someone its URL and an API key, and they can ship with one
+command.</p>
 <h2>Quick start</h2>
 <pre><code class="language-bash">helm repo add applab https://www.chenshaowen.com/applab
 helm repo update
@@ -159,12 +160,11 @@ helm install applab applab/applab \
   --set build.registry=registry.example.com/apps
 </code></pre>
 <p>The bucket is not optional and has no default. AppLab keeps everything in it —
-every app, every repository and every key — so a release that omitted it would
-not fail: the server falls back to a directory, which in this chart is the pod's
-scratch space, and the deployment would look healthy until the pod was replaced.
-It is refused at render time for that reason. Create the bucket first; AppLab
-does not create one, because a bucket's name, region and lifecycle policy belong
-to whoever runs the platform.</p>
+every app, every repository, every commit and every key — so there is nothing for
+a release without one to store anything in, and the chart refuses to render. The
+server checks the same thing at startup, because a chart is not the only way this
+runs. Create the bucket first; AppLab does not create one, because a bucket's
+name, region and lifecycle policy belong to whoever runs the platform.</p>
 <p><code>--version</code> is not optional yet, and leaving it out fails with <code>chart &quot;applab&quot; matching  not found in applab index</code> — which reads like a typo or a stale index
 and is neither. See <a href="#installing-a-development-build">Installing a development
 build</a> for why, and for what changes when a
@@ -408,11 +408,13 @@ elsewhere. <code>applab push</code> will say clearly that this deployment cannot
 <p>AppLab holds nothing on a replica. Every app, every repository and all of the
 history are in the bucket you point <code>objectStore</code> at, so <code>replicaCount</code> can be
 raised for availability and a pod can be replaced at any moment.</p>
-<p>The one thing that is not coordinated across replicas is a write to one app's
-repository: the lock that serialises those is per process, so two pushes to the
-same app arriving at the same instant on two replicas can lose one of the two.
-A push is a rare event and the next build reads what git actually has, so this
-is a note rather than a warning — but it is why one replica is still the default.</p>
+<p>The one thing that is not coordinated across replicas is a write to one branch's
+repository: the lock that serialises those is per process and per branch, so two
+pushes arriving at the same instant on two replicas can lose one of the two —
+while two pushes to <em>different</em> branches of one app never contend at all, since
+each branch is a repository of its own. A push is a rare event and the next build
+reads what git actually has, so this is a note rather than a warning — but it is
+why one replica is still the default.</p>
 <p><strong>Back up the bucket.</strong> It is the only copy of every app's source.</p>
 <h3>The Role</h3>
 <p>AppLab runs in one namespace and deploys every app into it too, so a namespaced
