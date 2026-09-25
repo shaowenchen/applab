@@ -144,18 +144,18 @@ command.</p>
 AppLab does, because a build reads it from the namespace AppLab runs in.</p>
 <p><strong>1. The namespace, and the registry credential</strong></p>
 <pre><code class="language-bash">kubectl create namespace ops-system
-
-kubectl -n ops-system create secret docker-registry applab \
+</code></pre>
+<p>Then the Secret, if the registry needs one — a cluster-local registry usually
+does not, in which case skip to step 2 and set <code>--set build.pushSecret=</code> there.</p>
+<pre><code class="language-bash">kubectl -n ops-system create secret docker-registry applab \
   --docker-server=registry.example.com \
   --docker-username=&lt;user&gt; \
   --docker-password=&lt;password&gt;
 </code></pre>
-<p>The Secret is named <code>applab</code>, which is what the chart expects by default, so it
-does not have to be mentioned again below. Skip it entirely if the registry needs
-no credentials — a cluster-local one usually does not, and then set
-<code>--set build.pushSecret=</code> to say so.</p>
 <p>The namespace is created here rather than by <code>--create-namespace</code> on the install,
-because the Secret has to be in it first.</p>
+because the Secret has to be in it first. The name matters: <code>applab</code> is what the
+chart expects, so call the Secret that and the install needs to say nothing more
+about it. A Secret by another name is passed to the install in step 2.</p>
 <p><strong>2. AppLab</strong></p>
 <pre><code class="language-bash">helm repo add applab https://www.chenshaowen.com/applab
 helm repo update
@@ -169,20 +169,24 @@ helm install applab applab/applab \
   --set objectStore.accessKey=... --set objectStore.secretKey=... \
   --set ingress.host=applab.example.com \
   --set deploy.gateway=istio-system/istio-ingressgateway \
-  --set build.registry=registry.example.com/apps
+  --set build.registry=registry.example.com/apps \
+  --set build.pushSecret=applab
 </code></pre>
+<p><code>build.pushSecret</code> is the registry credential — the one thing that reaches the
+private registry in <code>build.registry</code>, used both to push the built image and for
+the app to pull it. It is shown here at its default, so the line can simply be
+deleted: the value is the name of the Secret from step 1, and <code>applab</code> is what
+the chart looks for when nothing is set. Change it to reach a Secret by another
+name, or set it to <code>&quot;&quot;</code> when the registry needs no credentials at all.</p>
 <p>The bucket is not optional and has no default. AppLab keeps everything in it —
 every app, every repository, every commit and every key — so there is nothing for
 a release without one to store anything in, and the chart refuses to render. The
 server checks the same thing at startup, because a chart is not the only way this
 runs. Create the bucket first; AppLab does not create one, because a bucket's
 name, region and lifecycle policy belong to whoever runs the platform.</p>
-<p>There is one registry credential, and it is the Secret created above:
-<code>build.pushSecret</code> names it unless you have a Secret by another name. The same
-one is used to push the built image and for the app to pull it, because that is
-one registry. See <a href="#1-a-registry-the-cluster-can-push-to-and-pull-from">A registry the cluster can push to and pull
+<p>See <a href="#1-a-registry-the-cluster-can-push-to-and-pull-from">A registry the cluster can push to and pull
 from</a> for what happens when
-it is named and missing.</p>
+the Secret is named and missing.</p>
 <p><code>--version</code> is not optional yet, and leaving it out fails with <code>chart &quot;applab&quot; matching  not found in applab index</code> — which reads like a typo or a stale index
 and is neither. See <a href="#installing-a-development-build">Installing a development
 build</a> for why, and for what changes when a
@@ -415,6 +419,9 @@ fixing the node setting.</p>
 <p><strong>Or</strong> set <code>build.enabled=false</code> and run AppLab without the build pipeline. Source
 storage, the API and the console all still work, and you can deploy images built
 elsewhere. <code>applab push</code> will say clearly that this deployment cannot build.</p>
+<p>With the pipeline off there is no registry to authenticate to either, so the
+registry credential is ignored: <code>build.pushSecret</code> is emptied along with
+<code>build.registry</code>, and no Secret has to exist for an app to deploy.</p>
 <h2>What gets installed</h2>
 <table>
 <thead>
@@ -540,7 +547,7 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <tr>
 <td><code>build.pushSecret</code></td>
 <td><code>applab</code></td>
-<td>The registry credential: pushes the image and pulls it. <code>&quot;&quot;</code> for a registry needing none</td>
+<td>The registry credential: pushes the image and pulls it. <code>&quot;&quot;</code> for a registry needing none, and ignored when <code>build.enabled=false</code></td>
 </tr>
 <tr>
 <td><code>deploy.appResources</code></td>
