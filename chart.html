@@ -638,35 +638,23 @@ remove a release.</p>
 <p><code>--version</code> is needed here for the same reason it is on install, while only dev
 builds are published: Helm does not resolve a prerelease unless it is asked for
 by name. An upgrade without it fails the same way an install does.</p>
-<p>There is no schema to migrate: everything AppLab remembers is objects in the
-bucket, written and read by this version. An upgrade is therefore a rollout, and
-rolling the image back with the chart is the whole of a revert — with two
-exceptions, both of which are about the <em>shape</em> of what is already in the bucket.</p>
-<p><strong>App keys and configuration held in Kubernetes Secrets are not carried across.</strong>
-An app that had a key reads as having none until <code>applab keys &lt;app&gt; --rotate</code>
-mints one, so read the old value before upgrading if anything depends on it; and
-secrets have to be set again with <code>applab env</code>. The old Secret objects are inert —
-nothing reads them any more — and deleting an app removes them along with its
-other objects.</p>
-<p><strong>A repository written by a version before branches moved.</strong> This version stores
-each branch at <code>apps/&lt;id&gt;/repo/branches/&lt;branch&gt;/</code>; earlier versions stored one
-repository, flat, at <code>apps/&lt;id&gt;/repo/</code>. The old location is not read, so after an
-upgrade every app reads as having no branches and no commits until you move the
-repository — a copy, not a re-push, and it takes one command per bucket layout:</p>
-<pre><code class="language-bash"># MinIO / mc — move the flat repository to the default branch's directory.
-mc mv --recursive myminio/applab/apps/shop/repo/ \
-                myminio/applab/apps/shop/repo/branches/main/
-
-# AWS CLI — the same move, plus removing the empty source of the copy.
-aws s3 cp s3://applab/apps/shop/repo/ s3://applab/apps/shop/repo/branches/main/ \
-  --recursive
-aws s3 rm s3://applab/apps/shop/repo/ --recursive \
-  --exclude &quot;branches/*&quot;
-</code></pre>
-<p>Do the copy before upgrading, or the app is briefly unreadable; do it with AppLab
-stopped, or a push arriving mid-copy is a push into the old location. Apps that
-were only ever deployed — nothing pushed through AppLab — are unaffected, since
-they have no repository to move.</p>
+<p>An upgrade is a rollout, and that is the whole of it. AppLab holds no state:
+every app, every repository, every commit, every build and every key is an object
+in the bucket you pointed it at. There is nothing inside the deployment to carry
+forward, no schema to migrate, and rolling the image back with the chart is the
+whole of a revert.</p>
+<p>That is also why the chart mounts no volume. Replacing a pod, losing a node, or
+running three replicas changes nothing, because no replica is the only copy of
+anything — the bucket is, which is what makes backing it up the one piece of
+upkeep this installation needs.</p>
+<p>Nothing is released yet: the chart is published only as a prerelease built from
+each commit, and the bucket's layout has changed more than once across those
+builds. Those changes are not migrated on the way in — each is read by the
+version that wrote it, and an app whose history predates one simply reads as
+having no commits until it is pushed again. That is the ordinary cost of running
+a pre-release, and it is why the shape of the bucket is not something this
+document walks you through: it is not part of the contract until there is a
+release to break.</p>
 <h2>Uninstalling</h2>
 <pre><code class="language-bash">helm uninstall applab --namespace ops-system
 </code></pre>
@@ -681,10 +669,14 @@ release. An uninstall that emptied the bucket would be an uninstall that deleted
 every app's source, so it does not; the bucket is yours to keep or remove.</p>
 <p>To remove an installation completely:</p>
 <pre><code class="language-bash">kubectl -n ops-system get deployments,services -l applab.io/app   # what it deployed
-kubectl -n ops-system delete deployments,services,jobs,secrets -l applab.io/app
+kubectl -n ops-system delete deployments,services,jobs -l applab.io/app
 kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/app
 # and the source, which is whatever you pointed objectStore at
 </code></pre>
+<p>There are no Secrets to remove with them: AppLab keeps keys and configuration in
+the bucket, so an app owns no Secret of its own. The chart's own
+<code>applab-auth</code> and object-store Secrets belong to the release and go with the
+uninstall.</p>
 <p>The namespace itself is yours rather than AppLab's — it is where AppLab was
 installed, and it may hold other things. AppLab never deletes it.</p>
 
