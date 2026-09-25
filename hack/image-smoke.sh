@@ -24,6 +24,12 @@
 # filesystem — those are the two properties that make it able to see what the
 # other checks cannot.
 #
+# It brings up an object store for the container to talk to, because a deployment
+# without one now refuses to start. That is the point of the bucket requirement,
+# and a smoke test that omitted it would be testing a configuration the server
+# rejects by design — which is exactly what it did between the two changes, and
+# how it failed.
+#
 # Needs docker. Skips loudly without it, since docker is not required to build or
 # test the Go code.
 set -euo pipefail
@@ -64,6 +70,82 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ── The object store it now requires ────────────────────────────────────────
+#
+# A deployment with no bucket refuses to start, so the smoke test has to give it
+# one. MinIO is used rather than a mock because the thing under test is the
+# image's own S3 client — the request signing, the path style, the listing that
+# the branch layout depends on — and a stub that answered whatever it was asked
+# would verify none of it.
+#
+# The same image and the same client image the chart pins, so a failure here is
+# one a real install would meet. The bucket is created with `mc`, run as a
+# one-shot container on the store's own network namespace, and the credential is
+# generated per run: this is a throwaway, and nothing is written into the
+# repository.
+smoke_net="applab-smoke-net-$$"
+store_name="applab-smoke-store-$$"
+store_volume="applab-smoke-store-data-$$"
+name="applab-smoke-$$"
+volume="applab-smoke-data-$$"
+access_key="smokeaccess"
+secret_key="$(openssl rand -hex 16 2>/dev/null || echo smoke-secret-key)"
+
+cleanup() {
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker rm -f "$store_name" >/dev/null 2>&1 || true
+  docker volume rm "$volume" >/dev/null 2>&1 || true
+  docker volume rm "$store_volume" >/dev/null 2>&1 || true
+  docker network rm "$smoke_net" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+# One network for the store and the server, so the server reaches the store by
+# its container name — which is how the chart's pods reach theirs, and the only
+# way the endpoint can be a hostname rather than an address.
+docker network create "$smoke_net" >/dev/null
+docker volume create "$store_volume" >/dev/null
+docker run -d --name "$store_name" \
+  --network "$smoke_net" \
+  -v "$store_volume:/bitnami/minio/data" \
+  -e MINIO_ROOT_USER="$access_key" \
+  -e MINIO_ROOT_PASSWORD="$secret_key" \
+  -e MINIO_DATA_DIR=/bitnami/minio/data \
+  -e MINIO_SKIP_CLIENT=yes \
+  "${APPLAB_OBJECT_STORE_IMAGE:-bitnamilegacy/minio:2025.7.23-debian-12-r3}" >/dev/null
+
+# The bucket has to exist before the server will use it, and the server does not
+# create one — a bucket's name and lifecycle belong to whoever runs the platform.
+#
+# `mc` talks to the store over the shared network by name, not over the loopback
+# of the store's namespace: joining a namespace with `--network container:` would
+# put the client's own 127.0.0.1 in the store's, which works, but it also means
+# the client cannot resolve anything else and the arrangement no longer resembles
+# the one the server uses a few lines below.
+#
+# A loop rather than a sleep: the store takes a moment to listen, and a fixed
+# wait is either too short on a cold runner or wasted everywhere else. It is not
+# silent on giving up, because the failure it would otherwise produce is the
+# server refusing to start, which reads as a bug in the image.
+bucket_made=false
+for _ in $(seq 1 60); do
+  if docker run --rm --network "$smoke_net" \
+      -e "HOME=/tmp" \
+      --entrypoint /bin/bash \
+      "${APPLAB_OBJECT_STORE_CLIENT_IMAGE:-bitnamilegacy/minio-client:2025.7.21-debian-12-r2}" -c \
+      "mc alias set local http://${store_name}:9000 '${access_key}' '${secret_key}' && mc mb --ignore-existing local/applab" \
+      >/dev/null 2>&1; then
+    bucket_made=true
+    break
+  fi
+  sleep 1
+done
+if [ "$bucket_made" != true ]; then
+  echo "--- object store log ---" >&2
+  docker logs "$store_name" >&2 2>&1 || true
+  fail "the object store did not accept a bucket within 60s, so the server below has nowhere to keep anything"
+fi
+
 # The CLI runs inside the container, against the container's own server: no host
 # networking, and no second copy of the client to drift from the one shipping in
 # the image. The address is localhost because it is the same container.
@@ -73,12 +155,25 @@ trap cleanup EXIT
 # configuration no install has: the prefix changes how the server routes, and the
 # probe paths have to keep working under it — a kubelet asks for /health on the
 # container port whatever path the Ingress publishes the deployment under.
+#
+# The /data volume is kept even though the bucket now holds everything: it is
+# still where a repository is materialised while git runs against it, and that is
+# where the boot chmod that killed this container used to happen. Removing the
+# mount would stop the test covering the arrangement that broke it.
+docker volume create "$volume" >/dev/null
 docker run -d --name "$name" \
+  --network "$smoke_net" \
   -v "$volume:/data" \
   -p 0:8080 \
   -e APPLAB_KEY=smoke-test-key \
   -e APPLAB_BASE_PATH=/applab \
   -e APPLAB_URL=http://127.0.0.1:8080/applab \
+  -e APPLAB_OBJECT_STORE_ENDPOINT="http://${store_name}:9000" \
+  -e APPLAB_OBJECT_STORE_BUCKET=applab \
+  -e APPLAB_OBJECT_STORE_ACCESS_KEY="$access_key" \
+  -e APPLAB_OBJECT_STORE_SECRET_KEY="$secret_key" \
+  -e APPLAB_OBJECT_STORE_PATH_STYLE=true \
+  -e APPLAB_OBJECT_STORE_INSECURE=true \
   "$image" >/dev/null
 
 # The container's own log is the evidence, so it is what a failure prints: the
