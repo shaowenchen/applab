@@ -396,20 +396,26 @@ is what a person starts when they want to push an app at something.
 
 ### The documentation site
 
-`https://www.chenshaowen.com/applab` is both the Helm repository and these
-documents. The site is generated from this repository's own markdown — this file,
-the chart's README, and the debugger's — by `cmd/gendocs`, so the pages cannot
-drift from the documents people actually edit.
+`https://www.chenshaowen.com/applab` is both the Helm repository and the page
+someone lands on from `helm repo add`. That page is the chart's README, rendered
+by `cmd/gendocs` — installing, upgrading, uninstalling and the values reference,
+which is the whole of what a reader who arrived that way needs. Anything else
+belongs in this file, which stays in the repository.
+
+It is the chart's README rather than a second document written for the site,
+because a second copy is a copy that goes stale, and the version people actually
+edit is the one in the tree.
 
 A link in the markdown names a repository file, which is not where anything lives
-on the site, so links are rewritten to a resolved target: another page, or GitHub
-for a file like the license. A link that resolves to neither **fails the build**,
+on the site, so links are rewritten to a resolved target: the page, or GitHub for
+a file like the license. A link that resolves to neither **fails the build**,
 because a dead end in a document someone is reading is the markdown author's to
 fix, not the reader's to discover.
 
 The destination is shared with the chart repository, so the build removes exactly
 what the previous one wrote, recorded in a manifest, rather than clearing the
-directory. `make docs` renders it into a directory of your own.
+directory — which is also how the pages this site no longer publishes go away.
+`make docs` renders it into a directory of your own.
 
 ## Configuration
 

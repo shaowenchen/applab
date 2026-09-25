@@ -144,11 +144,13 @@ img { max-width: 100%; height: auto; }
 <div class="layout">
   <nav>
     <div class="brand"><a href="index.html">AppLab</a></div>
+    {{- if gt (len .Pages) 1 }}
     <ul>
       {{- range .Pages }}
       <li><a href="{{ .Output }}"{{ if eq .Nav $.Nav }} aria-current="page"{{ end }}>{{ .Nav }}</a></li>
       {{- end }}
     </ul>
+    {{- end }}
     <div class="repo"><a href="{{ .RepoURL }}">Source on GitHub</a></div>
   </nav>
   <main>

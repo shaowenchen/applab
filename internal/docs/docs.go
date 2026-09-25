@@ -5,11 +5,16 @@
 // directory listing — index.yaml and a .tgz — and someone who arrives there from
 // `helm repo add` has nowhere to read what they are installing.
 //
-// The pages are generated from the markdown already in the repository rather
-// than written again for the site, for the reason that decides most of this
-// codebase: a second copy of a document is a copy that goes stale. README.md and
-// the chart's README are the ones people actually maintain, so they are the ones
-// published, and the generator is what has to adapt.
+// It publishes one page: the chart's README, as the site's root. That reader
+// came to install something, so installing, upgrading, uninstalling and the
+// values reference are the whole of what they need; the repository's own README
+// describes building AppLab itself and stays where its audience is.
+//
+// The page is generated from the markdown already in the repository rather than
+// written again for the site, for the reason that decides most of this codebase:
+// a second copy of a document is a copy that goes stale. The chart's README is
+// the one people actually maintain, so it is the one published, and the
+// generator is what has to adapt.
 //
 // Three consequences shape the design:
 //
@@ -26,7 +31,8 @@
 // Stale output is pruned from a manifest rather than by wiping the destination,
 // because the destination is also the chart repository: gh-pages holds
 // index.yaml and the packaged charts, which a docs build has no business
-// deleting.
+// deleting. That pruning is also how a page this site stops publishing is
+// removed — the last build's manifest names it and this one does not produce it.
 package docs
 
 import (
@@ -90,6 +96,18 @@ type Result struct {
 const manifestName = ".docs-manifest"
 
 // DefaultSite returns the pages this repository publishes.
+//
+// One page: the chart's README, served as the site's root. The site sits at the
+// Helm repository's own address, so everyone who arrives there came through
+// `helm repo add` and is deciding whether and how to install this — which makes
+// installing, upgrading, uninstalling and the values reference the whole of what
+// that reader needs, and makes anything else a detour. The chart README is
+// already exactly that document, so it is published rather than a second one
+// being written for the site.
+//
+// The repository's own README and the debugger's build instructions stay in the
+// repository and are linked out to GitHub. They are for people working on
+// AppLab, not for someone installing it.
 func DefaultSite(root, repoURL, branch string) Site {
 	return Site{
 		Root:       root,
@@ -98,22 +116,10 @@ func DefaultSite(root, repoURL, branch string) Site {
 		Title:      "AppLab",
 		Pages: []Page{
 			{
-				Source: "README.md",
-				Output: "index.html",
-				Title:  "AppLab: deploy an application by uploading its source",
-				Nav:    "Overview",
-			},
-			{
 				Source: "charts/applab/README.md",
-				Output: "chart.html",
+				Output: "index.html",
 				Title:  "Installing the AppLab chart",
 				Nav:    "Installing",
-			},
-			{
-				Source: "debugger/README.md",
-				Output: "debugger.html",
-				Title:  "A whole platform on a runner",
-				Nav:    "Debugger",
 			},
 		},
 	}

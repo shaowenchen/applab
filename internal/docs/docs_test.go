@@ -311,12 +311,15 @@ func TestRealRepositoryBuilds(t *testing.T) {
 		t.Fatalf("this repository's documentation does not build:\n%v", err)
 	}
 
-	// The published set is asserted rather than the count, so removing a page
-	// from DefaultSite is caught here instead of on the site.
-	for _, want := range []string{"index.html", "chart.html", "debugger.html"} {
-		if _, err := os.Stat(filepath.Join(dest, want)); err != nil {
-			t.Errorf("%s was not published: %v", want, err)
-		}
+	// The published set is asserted rather than the count, so a change to
+	// DefaultSite is caught here instead of on the site. It is one page: the
+	// site is the Helm repository's address, so it is read by someone deciding
+	// whether and how to install, and the chart's README is that document.
+	if len(result.Written) != 2 {
+		t.Errorf("published %v, want one page and a manifest", result.Written)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "index.html")); err != nil {
+		t.Errorf("index.html was not published: %v", err)
 	}
 	t.Logf("published %v", result.Written)
 }
