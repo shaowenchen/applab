@@ -1108,6 +1108,7 @@ const ZH = {
   // -- Errors ---------------------------------------------------------------
   "Could not connect: {error}": "无法连接：{error}",
   "Could not connect: this key does not reach any app.": "无法连接：这个 key 访问不到任何应用。",
+  "That key was not accepted. Check it and try again.": "这个 key 未被接受，请检查后重试。",
   "Could not read the overview: {error}": "无法读取概览：{error}",
   "Could not read builds: {error}": "无法读取构建记录：{error}",
   "Could not read status: {error}": "无法读取状态：{error}",
@@ -1498,13 +1499,26 @@ async function api(path, options = {}) {
   try {
     body = text ? JSON.parse(text) : {};
   } catch {
-    throw new Error(response.status + " " + response.statusText + ": " + text.slice(0, 200));
+    throw apiError(response.status + " " + response.statusText + ": " + text.slice(0, 200), response.status);
   }
 
   if (!response.ok) {
-    throw new Error(body.error || (response.status + " " + response.statusText));
+    throw apiError(body.error || (response.status + " " + response.statusText), response.status);
   }
   return body.data;
+}
+
+// apiError is an Error carrying the response status.
+//
+// The status is kept because a caller sometimes has a better way to say what
+// went wrong than the server does. A refused key is the case that matters: the
+// server answers "unauthorized: present an API key as ...", which is a correct
+// instruction for a client and an unhelpful thing to show someone who has just
+// typed a key into a form.
+function apiError(message, status) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
 }
 
 // ---------------------------------------------------------------------------
@@ -2889,6 +2903,14 @@ async function connect(key) {
     // would make the next page load retry it and show the same error, with the
     // form hidden behind a session that was never established.
     clearCredentials();
+    // A refused key is said in the terms of the form that is about to be shown,
+    // rather than by repeating the server's instruction back. "present an API
+    // key as \"Authorization: Bearer <key>\"" is right for a client and
+    // meaningless to someone who has just typed one in.
+    if (err.status === 401 || err.status === 403) {
+      setError(t("That key was not accepted. Check it and try again."));
+      return false;
+    }
     setError(tf("Could not connect: {error}", { error: err.message }));
     return false;
   }
@@ -3049,12 +3071,22 @@ $("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
   state.url = baseURL();
 
   const saved = loadCredentials();
-  if (saved.key) {
-    await connect(saved.key);
+  if (saved.key && await connect(saved.key)) {
     return;
   }
 
-  // No saved key: show the form and put the cursor in the one field there is.
+  // Either there was no saved key, or the one there was no longer works — it
+  // was rotated, or the deployment was reinstalled, or it belonged to another
+  // deployment at this address. All three are ordinary, and none of them is
+  // something to explain in HTTP terms: connect has already dropped the
+  // credentials, and what someone needs is the field to type a working key
+  // into.
+  //
+  // The error it set is cleared, because the form is the answer to it. Left
+  // there, a rejected saved key renders as a bare "401 Unauthorized" above a
+  // page with nothing on it — which reads as the console being broken rather
+  // than as the key having gone stale.
+  setError("");
   show($("signin"), true);
   $("signin-key").focus();
 })();

@@ -430,6 +430,79 @@ async function render(apps) {
     check("clicking again masks it", key.type, "password");
   }
 
+  // A saved key the server no longer accepts has to land on the sign-in form.
+  //
+  // This is a bug that shipped: boot called connect(), the call was refused,
+  // connect set an error and returned, and boot returned with it — so the page
+  // was a bare "401 Unauthorized: present an API key as ..." over nothing. The
+  // form was never shown, and the only way out was clearing site data.
+  //
+  // Driven through boot itself rather than by calling connect(), because the
+  // bug was in boot's return, not in connect's failure.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+
+    // A stored key, which is what makes boot take the saved-credentials path.
+    const saved = new Map([["applab.key", "stale-key"]]);
+    ctx.localStorage = {
+      getItem: (k) => (saved.has(k) ? saved.get(k) : null),
+      setItem: (k, v) => saved.set(k, String(v)),
+      removeItem: (k) => saved.delete(k),
+    };
+
+    // Every request is refused, which is what a rotated or foreign key gets.
+    ctx.fetch = async () => ({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify({
+        error: 'unauthorized: present an API key as "Authorization: Bearer <key>"',
+      }),
+    });
+
+    // The element map is shared across renders, and an earlier one has already
+    // un-hidden the form. Reset it, or "the form is shown" asserts a state this
+    // boot did not produce and passes even when boot never shows it.
+    elements.get("signin").classList.add("hidden");
+    elements.get("error").classList.add("hidden");
+    elements.get("error").textContent = "";
+
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    // boot is an async IIFE, so this lets its microtasks finish.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const form = elements.get("signin");
+    const error = elements.get("error");
+    check("a refused saved key shows the sign-in form", form.classList.contains("hidden"), false);
+    check("and does not leave the raw 401 on screen", error.classList.contains("hidden"), true);
+    check("with the stale key forgotten", saved.has("applab.key"), false);
+  }
+
+  // The same refusal typed into the form is said in the form's own terms rather
+  // than by repeating the server's instruction, which is written for a client.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.fetch = async () => ({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify({
+        error: 'unauthorized: present an API key as "Authorization: Bearer <key>"',
+      }),
+    });
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    const connect = vm.runInContext("connect", ctx);
+    await connect("wrong-key");
+
+    const shown = elements.get("error").textContent || "";
+    check("a refused key does not quote the server's instruction", /Authorization|Bearer/.test(shown), false);
+    check("it says what to do instead", /not accepted/i.test(shown), true);
+  }
+
   // The theme must be stamped on the root element by boot, before anything is
   // rendered. Two things ride on it: a dark-mode viewer sees the right colours
   // on the first paint rather than a white flash, and the choice persists across
