@@ -135,11 +135,30 @@ jobs:
           # the way out is `build.rootless=false` on the chart, which the chart's
           # README documents. Named here so the check keeps failing for a variable
           # nobody meant to fix, rather than being relaxed for the two that were.
+          #
+          # The object store's variables are here for the other reason. The
+          # launcher starts MinIO itself, on the runner, and hands AppLab the
+          # address of the container it started — there is nothing meaningful for
+          # an operator to point at an input, the way there is for `domain` or
+          # `tunnel`. They were added to the script without being added here, and
+          # this check failed on every run between then and now: a red gate that
+          # had nothing to say about the commit it was reporting on.
+          #
+          # Adding a variable here is the moment to ask whether it is really
+          # infrastructure the script owns, or a knob someone would want. The
+          # second is an input, and putting it here instead is how a launch form
+          # quietly stops being able to configure the thing it launches.
           internal = {'APPLAB_RUNTIME_DIR', 'APPLAB_NAMESPACE', 'APPLAB_PATH_PREFIX',
                       'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME', 'APPLAB_REGISTRY_NAME',
                       'APPLAB_REGISTRY_PORT', 'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
                       'APPLAB_PUBLIC_HOST', 'APPLAB_INSTALL_TIMEOUT_SECONDS',
-                      'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS'}
+                      'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS',
+                      # The object store: a container this script starts, on a
+                      # port it picks, with a credential it generates.
+                      'APPLAB_OBJECT_STORE_NAME', 'APPLAB_OBJECT_STORE_PORT',
+                      'APPLAB_OBJECT_STORE_BUCKET', 'APPLAB_OBJECT_STORE_ENDPOINT',
+                      'APPLAB_OBJECT_STORE_ACCESS_KEY', 'APPLAB_OBJECT_STORE_SECRET_KEY',
+                      'APPLAB_OBJECT_STORE_IMAGE', 'APPLAB_OBJECT_STORE_CLIENT_IMAGE'}
           unreachable = read - supplied - internal
           if unreachable:
               problems.append(f'environment.sh reads variables no input can set: {sorted(unreachable)}')
