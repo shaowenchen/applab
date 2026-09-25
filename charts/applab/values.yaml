@@ -240,10 +240,16 @@ build:
   # on something that never answers would otherwise occupy a slot forever.
   timeout: 30m
 
-  # How long a finished build's Job is kept, so its log can still be read. Zero
-  # would delete it the moment it ends and make every failure undiagnosable, so
-  # it is validated as a positive duration.
-  ttlAfterFinished: 24h
+  # How long a finished build's Job is kept after it ends, so its log can still
+  # be read. Counted from the moment the Job reaches a terminal state, not from
+  # when it started.
+  #
+  # Zero would delete it the instant it ended and make every failure
+  # undiagnosable, so it is validated as a positive duration. Half an hour is
+  # long enough for someone to notice a failed push and read why, and short
+  # enough that the Jobs and their pods do not accumulate — a build leaves a Job
+  # and a pod behind on every push.
+  ttlAfterFinished: 30m
 
 # ---------------------------------------------------------------------------
 # Deploy

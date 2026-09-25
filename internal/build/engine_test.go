@@ -589,9 +589,26 @@ func TestDeadlineBoundsTheBuild(t *testing.T) {
 	if got := *job.Spec.ActiveDeadlineSeconds; got != 900 {
 		t.Errorf("deadline = %d seconds, want 900", got)
 	}
-	// The Job must be kept long enough to read why it failed.
-	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished == 0 {
-		t.Error("the finished job is deleted immediately, so a failure could not be diagnosed")
+}
+
+// TestFinishedJobsAreCollected pins how long a finished build's Job is kept.
+//
+// It is a two-sided assertion, because both directions are failures. Too short
+// and a failed build's log is gone before anyone reads why — the build's own
+// reason points at the Job, and the Job is what holds the output. Too long and
+// every push leaves a Job and a pod behind for a day: the TTL is measured from a
+// terminal state, and a successful build's log is worth nothing after a few
+// minutes because nothing reads it unless something went wrong.
+func TestFinishedJobsAreCollected(t *testing.T) {
+	engine := New(fake.NewSimpleClientset(), testConfig())
+
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+
+	if job.Spec.TTLSecondsAfterFinished == nil {
+		t.Fatal("the finished job is never collected, so every push leaves a Job and a pod behind for good")
+	}
+	if got, want := *job.Spec.TTLSecondsAfterFinished, int32(1800); got != want {
+		t.Errorf("TTLSecondsAfterFinished = %d, want %d (30m)", got, want)
 	}
 }
 

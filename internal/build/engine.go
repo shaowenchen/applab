@@ -120,8 +120,9 @@ func New(client kubernetes.Interface, cfg Config) *Engine {
 	}
 	if cfg.TTLAfterFinished == 0 {
 		// Long enough to read a failure's log after the fact, short enough that
-		// pods do not accumulate.
-		cfg.TTLAfterFinished = 24 * time.Hour
+		// pods do not accumulate: every build leaves a Job and a pod behind, and
+		// a push makes one.
+		cfg.TTLAfterFinished = 30 * time.Minute
 	}
 	if cfg.WorkspaceSizeLimit == "" {
 		// Kaniko unpacks the base image and every intermediate layer and filesystem

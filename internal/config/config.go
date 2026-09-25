@@ -345,7 +345,10 @@ func Default() Config {
 
 			// A day is long enough to investigate a failure and short enough
 			// that finished Jobs do not accumulate in the app's namespace.
-			TTLAfterFinished: 24 * time.Hour,
+			// Counted from the moment the Job reaches a terminal state, so
+			// this is the window to read a failed build's log rather than a
+			// guess at how long a build takes.
+			TTLAfterFinished: 30 * time.Minute,
 		},
 	}
 }
