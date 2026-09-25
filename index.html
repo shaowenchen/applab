@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AppLab: deploy an application by uploading its source</title>
+<title>Installing the AppLab chart</title>
 <meta name="description" content="Deploy an application to Kubernetes by uploading its source.">
 <style>
 :root {
@@ -129,507 +129,555 @@ img { max-width: 100%; height: auto; }
 <div class="layout">
   <nav>
     <div class="brand"><a href="index.html">AppLab</a></div>
-    <ul>
-      <li><a href="index.html" aria-current="page">Overview</a></li>
-      <li><a href="chart.html">Installing</a></li>
-      <li><a href="debugger.html">Debugger</a></li>
-    </ul>
     <div class="repo"><a href="https://github.com/shaowenchen/applab">Source on GitHub</a></div>
   </nav>
   <main>
     <article>
 <h1>AppLab</h1>
-<p>Deploy an application to Kubernetes by uploading its source. You get back a URL.</p>
-<p>There is no Dockerfile you must write by hand, no CI to configure, no registry to
-push to and no manifest to apply. One HTTP call starts the path from a local
-working directory to a running application; one call streams the build log; one
-call tells you what is running.</p>
-<p>Two things are enough to use it: <strong>the base URL</strong> and <strong>an API key</strong>.</p>
-<pre><code>upload source ──▶ build image ──▶ deploy ──▶ https://shop.apps.example.com
-                                             or .../apps/shop
-</code></pre>
+<p>Deploy an application to Kubernetes by uploading its source.</p>
+<p>This chart installs the control plane: it stores source in a git repository per
+app per branch, builds images in the cluster, deploys them and exposes them on a
+hostname. Give someone its URL and an API key, and they can ship with one
+command.</p>
 <h2>Quick start</h2>
-<p>AppLab keeps everything in a bucket — every app, every repository, every key — so
-one is needed before it will start. For a local run, MinIO is the shortest path:</p>
-<pre><code class="language-bash">make build          # builds bin/applab and bin/applab-cli
+<pre><code class="language-bash">helm repo add applab https://www.chenshaowen.com/applab
+helm repo update
 
-docker run -d -p 9000:9000   -e MINIO_ROOT_USER=applab -e MINIO_ROOT_PASSWORD=devdevdev   minio/minio server /data
-# then create the bucket &quot;applab&quot;, with the mc client or http://localhost:9001
+helm install applab applab/applab \
+  --version 0.1.0-dev \
+  --namespace ops-system --create-namespace \
+  --set auth.key=&quot;$(openssl rand -hex 32)&quot; \
+  --set objectStore.endpoint=https://s3.us-east-1.amazonaws.com \
+  --set objectStore.bucket=applab \
+  --set objectStore.accessKey=... --set objectStore.secretKey=... \
+  --set apps.baseDomain=apps.example.com \
+  --set ingress.host=applab.example.com \
+  --set build.registry=registry.example.com/apps
+</code></pre>
+<p>The bucket is not optional and has no default. AppLab keeps everything in it —
+every app, every repository, every commit and every key — so there is nothing for
+a release without one to store anything in, and the chart refuses to render. The
+server checks the same thing at startup, because a chart is not the only way this
+runs. Create the bucket first; AppLab does not create one, because a bucket's
+name, region and lifecycle policy belong to whoever runs the platform.</p>
+<p><code>--version</code> is not optional yet, and leaving it out fails with <code>chart &quot;applab&quot; matching  not found in applab index</code> — which reads like a typo or a stale index
+and is neither. See <a href="#installing-a-development-build">Installing a development
+build</a> for why, and for what changes when a
+release is tagged.</p>
+<p>Then, from any project:</p>
+<pre><code class="language-bash">export APPLAB_URL=https://applab.example.com
+export APPLAB_KEY=&lt;the key from the release's Secret&gt;
 
-export APPLAB_KEY=&quot;$(openssl rand -hex 32)&quot;
-export APPLAB_OBJECT_STORE_ENDPOINT=http://localhost:9000
-export APPLAB_OBJECT_STORE_BUCKET=applab
-export APPLAB_OBJECT_STORE_ACCESS_KEY=applab
-export APPLAB_OBJECT_STORE_SECRET_KEY=devdevdev
-export APPLAB_OBJECT_STORE_PATH_STYLE=true
-export APPLAB_OBJECT_STORE_INSECURE=true
-export APPLAB_BASE_DOMAIN=apps.example.com
-
-./bin/applab
+applab push myshop
 </code></pre>
-<p>There is no directory fallback: a deployment with no bucket refuses to start
-rather than writing to local disk, because that is a failure that looks like it
-worked until the filesystem it chose is gone. <code>APPLAB_DATA_DIR</code> still exists, but
-it is only scratch space for <code>git</code>, which needs a real filesystem.</p>
-<p>Then, from the project you want to deploy:</p>
-<pre><code class="language-bash">export APPLAB_URL=http://localhost:8080
-export APPLAB_KEY=&lt;the key above&gt;
-
-applab push myshop        # uploads, builds and deploys this directory
+<h2>Before you install</h2>
+<p>A bucket and three decisions. The bucket is required and has no default, and each
+decision is much easier to make now than after, because it changes what the
+cluster has to be able to do.</p>
+<h3>0. A bucket, which is where everything lives</h3>
+<p>AppLab is stateless: every app, every repository, every commit, every build and
+every key are objects in a bucket you point it at. Create the bucket before
+installing — AppLab does not create one, because a bucket's name, region and
+lifecycle policy belong to whoever runs the platform — and give it a credential
+that can read, write, delete and list:</p>
+<pre><code class="language-bash">--set objectStore.endpoint=https://s3.us-east-1.amazonaws.com \
+--set objectStore.bucket=applab \
+--set objectStore.accessKey=... --set objectStore.secretKey=...
 </code></pre>
-<p>That is the whole workflow. <code>push</code> creates the app if it is new, packages the
-directory, uploads it, follows the build and waits for the rollout, and prints the
-URL. Build output and version-control directories are left out automatically.</p>
-<p>An app that needs configuration — a database URL, an API token — gets it with
-<code>applab env</code>, and it takes effect on the next deploy:</p>
-<pre><code class="language-bash">applab env set myshop LOG_LEVEL=debug
-applab env secret set myshop DATABASE_URL=&quot;$DATABASE_URL&quot;
-applab deploy myshop
+<p>AWS needs no <code>endpoint</code> beyond the region's address and no <code>pathStyle</code>. A
+self-hosted service such as MinIO is the opposite on both counts:</p>
+<pre><code class="language-bash">--set objectStore.endpoint=http://minio.ops-system:9000 \
+--set objectStore.pathStyle=true --set objectStore.insecure=true
 </code></pre>
-<p>Everything else answers a question:</p>
-<pre><code class="language-bash">applab overview           # the whole platform at a glance
-applab list               # what exists
-applab status myshop      # what is running, and where
-applab logs myshop -f     # watch it
-applab branch myshop      # which branches there are, and which one runs
-applab pods myshop        # the pods, and why one is not ready
-applab events myshop      # Kubernetes events, warnings first
-applab diagnose myshop    # why it is not working
-applab build myshop       # build a commit without deploying it
-applab update myshop --replicas 3
-applab rollback myshop    # go back to an earlier upload
+<p><code>insecure</code> is separate from the scheme on purpose: allowing an http endpoint means
+sending the credential and every app's source in the clear, which is a decision to
+make on purpose rather than one to infer from a typo.</p>
+<p>Two things worth knowing before you put production data in it:</p>
+<ul>
+<li><strong>Back the bucket up.</strong> It is the only copy of every app's source, and an
+uninstall deliberately does not touch it.</li>
+<li><strong>The bucket's credential reaches every app's API key</strong>, which live under
+<code>apps/&lt;id&gt;/key.json</code>. Before, those were in the cluster with a different
+credential; now they are in the same place as the source.</li>
+</ul>
+<p>The layout inside the bucket is one directory per app, and its source is one
+repository per branch:</p>
+<pre><code>apps/&lt;id&gt;/app.json                    the app: name, port, env, status, deployed commit
+apps/&lt;id&gt;/key.json                    the app's API key
+apps/&lt;id&gt;/commits/&lt;sha&gt;.json          one recorded commit
+apps/&lt;id&gt;/builds/&lt;id&gt;.json            one build attempt
+apps/&lt;id&gt;/repo/branches/&lt;branch&gt;/     the repository for one branch
 </code></pre>
-<h3>The dashboard</h3>
-<p>The same deployment serves a web dashboard at its root, opening on a platform
-overview: how many apps are running, how many need attention, how many builds
-have failed, whether the cluster is reachable, and the most recent builds across
-every app. From there, <strong>Apps</strong> lists everything and <strong>Builds</strong> is the
-platform-wide build history.</p>
-<p>It is a client of the same public API — every request it makes is one you could
-make with <code>curl</code>, and the overview is <code>GET /api/v1/overview</code> — so it has no
-privileged position and no separate backend. Sign in with the deployment's
-address and a key; both are kept in your browser.</p>
-<h2>Or by hand</h2>
-<p>If you would rather not install the CLI:</p>
-<pre><code class="language-bash"># Create the app (once).
-curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps&quot; \
-  -H &quot;Authorization: Bearer $APPLAB_KEY&quot; \
-  -H &quot;Content-Type: application/json&quot; \
-  -d '{&quot;id&quot;:&quot;shop&quot;,&quot;port&quot;:8080}'
-
-# Push the source.
-tar czf - . | curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps/shop/source?message=first&quot; \
-  -H &quot;Authorization: Bearer $APPLAB_KEY&quot; \
-  -H &quot;Content-Type: application/gzip&quot; \
-  --data-binary @-
+<p><strong><code>branches/</code> is where storage multiplies.</strong> Each branch is a repository of its
+own, holding a full copy of everything reachable from it — so an app with three
+live branches occupies roughly three times one branch's repository. Measured: a
+repository of 40 commits of 1 MB files is 39 MB with one branch and 78 MB once a
+second branch is pushed, even when that second branch held one extra commit. This
+is a deliberate trade, not an oversight: it is what makes a branch a directory you
+can list and delete on its own, and git offers no way to share an object database
+between branches that could be split this way. Budget for it if apps are large or
+branches are many.</p>
+<p>Put more than one AppLab in one bucket by setting <code>objectStore.prefix</code> to a
+per-installation key prefix.</p>
+<h3>1. A registry the cluster can push to and pull from</h3>
+<p><code>build.registry</code> is where built images go. How an app's image is named depends on
+how much path the registry has — a repository can only be extended so far before
+the registry rejects it, so a deep prefix puts the app in the tag instead:</p>
+<table>
+<thead>
+<tr>
+<th><code>build.registry</code></th>
+<th>the image for app <code>shop</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>registry.example.com/apps</code></td>
+<td><code>registry.example.com/apps/shop:&lt;commit&gt;</code></td>
+</tr>
+<tr>
+<td><code>registry.example.com</code></td>
+<td><code>registry.example.com/shop:&lt;commit&gt;</code></td>
+</tr>
+<tr>
+<td><code>shaowenchen</code></td>
+<td><code>shaowenchen/shop:&lt;commit&gt;</code></td>
+</tr>
+<tr>
+<td><code>shaowenchen/applab</code></td>
+<td><code>shaowenchen/applab:shop-&lt;commit&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Either way the tag names the commit, which is what lets a rollback reuse an image
+rather than rebuild it.</p>
+<p>If the registry needs credentials, create a <code>docker-registry</code> Secret <strong>in the
+namespace AppLab runs in</strong> and name it:</p>
+<pre><code class="language-bash">kubectl -n ops-system create secret docker-registry regcred \
+  --docker-server=registry.example.com \
+  --docker-username=&lt;user&gt; \
+  --docker-password=&lt;password&gt;
 </code></pre>
-<p>Clone what you pushed:</p>
-<pre><code class="language-bash"># The key goes in the URL as the password. Any username works — git needs one to
-# send a password at all, and applab reads only the password.
-git clone &quot;https://x:$APPLAB_KEY@${APPLAB_URL#http://}/git/shop.git&quot;
+<pre><code class="language-bash">--set build.pushSecret=regcred --set deploy.imagePullSecret=regcred
 </code></pre>
-<p>That URL is the app's active branch. Another branch is the same URL with the
-branch after an <code>@</code> — see <a href="#branches">Branches</a>:</p>
-<pre><code class="language-bash">git clone &quot;https://x:$APPLAB_KEY@${APPLAB_URL#http://}/git/shop@dev.git&quot;
-</code></pre>
-<p>If you would rather not put the key in the URL — it lands in shell history and in
-the repository's <code>config</code> on disk — send it as a header instead:</p>
-<pre><code class="language-bash">git -c http.extraHeader=&quot;Authorization: Bearer $APPLAB_KEY&quot; \
-  clone &quot;$APPLAB_URL/git/shop.git&quot;
-</code></pre>
-<h2>How it works</h2>
-<h3>Source is a git repository</h3>
-<p>Every app's source lives in its own real git repository, hosted here. An upload
-arrives as a tarball — because a <code>curl</code> works from anywhere, including an agent
-or a container with no git credential — but what it leaves behind is a genuine
-commit. You can clone it, diff two uploads, browse the history, and check out any
-earlier revision with ordinary git tools.</p>
-<p>The tarball is how the bytes travel. The commit is what is recorded.</p>
-<h3>Branches</h3>
-<p>An app can hold several branches. One of them is <strong>active</strong> — the one that builds
-and deploys — and switching which one is active redeploys the app from it.</p>
-<pre><code class="language-bash">applab branch myshop              # what branches there are, and which is running
-applab branch use myshop dev      # switch to dev and deploy it
-</code></pre>
-<p>Every branch has its own address, so the same app is reachable at two URLs:</p>
-<pre><code>https://&lt;host&gt;/git/shop.git        the active branch
-https://&lt;host&gt;/git/shop@dev.git    the branch named dev
-</code></pre>
-<p>The default branch (<code>main</code>) is the one URL that omits the branch, which keeps an
-app's address stable as it gains branches.</p>
-<p><strong>A branch comes into being when something is pushed to it</strong> — that is git's own
-rule, and there is no separate &quot;create a branch&quot; here:</p>
-<pre><code class="language-bash">git push &quot;https://x:$APPLAB_KEY@&lt;host&gt;/git/shop@dev.git&quot; HEAD:dev
-</code></pre>
-<p>Cloning a branch that does not exist fails with &quot;repository not found&quot;, exactly as
-cloning an app that does not exist does.</p>
-<p><strong>Each branch is stored as a repository of its own</strong>, so an app with three live
-branches holds three copies of the history it can reach from each. That is the
-cost of a branch being a directory in the bucket — listable and deletable on its
-own — and it is real: measured, a repository of 40 commits of 1 MB files is 39 MB
-with one branch and 78 MB once a second branch is pushed, even though that second
-branch held a single extra commit. Git's own answer to this, a shared worktree, is
-not available here: it separates a worktree's refs but not its object database.</p>
-<h3>A build is a Job, not a daemon</h3>
-<p>Each build runs as a one-shot Kubernetes Job: AppLab operates no build service,
-and a build's resources are released the moment it ends. The Job has two
-containers — an init container that downloads one commit's source, and a builder
-that runs BuildKit rootless over it — and <strong>the builder never sees a credential</strong>.
-The fetch uses a single-use token scoped to one commit, because a build runs
-arbitrary code from the uploaded Dockerfile and must not hold anything worth
-stealing.</p>
-<p>Layers are cached in the registry (<code>&lt;cache-prefix&gt;/&lt;app&gt;:buildcache</code>). A Job has
-no persistent disk, so without a registry-side cache every rebuild would start
-from nothing.</p>
-<h3>Commits are what you deploy</h3>
-<p>A deploy names a commit. Rolling back means deploying an earlier one, and if that
-commit was built before, its image is reused rather than rebuilt — which is what
-makes a rollback fast and unable to fail for a reason the original build did not.</p>
-<p><code>POST /apps/{app}/deploy</code> deploys a commit; <code>POST /apps/{app}/rollback</code> returns to
-an earlier one. A deploy of a commit that has never been built is refused rather
-than quietly building, so a caller always knows which operation is running and a
-build failure is never reported as a deploy failure.</p>
-<h3>One namespace, for everything</h3>
-<p>Every app runs in the same namespace as AppLab itself (default <code>ops-system</code>).
-The trade is deliberate, and both halves of it matter.</p>
-<p><strong>What it buys:</strong> AppLab needs a namespaced <code>Role</code> and nothing else. It holds no
-permission anywhere else in the cluster, so the reach of a bug in it, or of a
-compromise, is the apps it manages rather than every workload you run. The chart
-renders a Role and a RoleBinding; there is no ClusterRole to audit.</p>
-<p><strong>What it costs:</strong> apps are not isolated from each other by a namespace boundary.
-One app taking a node's memory affects its neighbours, and <code>kubectl get pods</code>
-shows you everything at once. There is no per-app <code>ResourceQuota</code> — the CPU and
-memory limits on each app's container are the only bound, which is why
-<code>deploy.appResources</code> exists and why its limits are not generous.</p>
-<p>Objects are told apart by the <code>applab.io/app</code> label they carry. Deleting an app
-removes its objects and leaves everything else alone, including AppLab's own
-Deployment, which shares the namespace and carries no app label.</p>
-<p><strong>Neither an app's pods nor a build's are given a Kubernetes API token</strong>
-(<code>automountServiceAccountToken: false</code>). A token can read every Secret in its
-namespace, which here means the API keys and the registry credentials, and an
-app is arbitrary code from whoever pushed the source. Nothing AppLab runs needs
-to reach the API server: a build fetches its source over HTTP with a single-use
-token, and an app just serves traffic.</p>
-<h3>How apps are published</h3>
-<p>Apps are published through an <strong>Istio gateway</strong> as <code>VirtualService</code> resources.</p>
-<p>The gateway is cluster infrastructure that already exists, holding the listeners
-and the certificate for the whole domain. AppLab attaches to it by name
-(<code>deploy.gateway</code>, default <code>istio-ingress/istio-ingress</code>) and never creates or
-modifies it. TLS is therefore not per-app configuration: an app is served over
-HTTPS when the gateway has an HTTPS listener.</p>
-<p>An app is addressed one of two ways, and the deployment picks one:</p>
-<p><strong>A hostname per app</strong> — the default. <code>apps.baseDomain</code> is what apps are served
-under, so an app with id <code>shop</code> is at <code>shop.apps.example.com</code>. This needs a
-wildcard DNS record and a wildcard certificate.</p>
+<p>Two settings rather than one because pushing and pulling can need different
+credentials, and a registry that is open to pull but not to push only needs the
+build one.</p>
+<p>Both names refer to a Secret in the release namespace. Apps run in that same
+namespace, so there is no boundary for the credential to cross and nothing is
+copied. A Secret named here and missing is discovered at the first build or
+deploy rather than at install.</p>
+<p>A registry that is only reachable over plain HTTP, or with a self-signed
+certificate, needs <code>build.insecureRegistry=true</code> — which is a deliberate weakening
+of the guarantee that the image that arrived is the image that was pushed, so it
+is off by default.</p>
+<h3>2. A domain, and a certificate for it</h3>
+<p><code>apps.baseDomain</code> is what apps are served under. Everything under it needs to
+resolve to the gateway.</p>
+<p>There are two ways to put an app on it:</p>
+<p><strong>A subdomain per app</strong> — the default. An app with id <code>shop</code> becomes
+<code>shop.apps.example.com</code>. The certificate has to cover every host under the
+domain, which in practice means a wildcard, and a wildcard DNS record to go with
+it.</p>
 <p><strong>One host, one path per app</strong> — set <code>apps.pathPrefix</code>. Every app then shares
-<code>apps.baseDomain</code> and the path says which is meant, so <code>shop</code> is at
-<code>apps.example.com/apps/shop</code>. One ordinary certificate covers any number of
-apps, and nothing has to be reissued as the deployment grows.</p>
-<p>AppLab strips the prefix before the request reaches the app, so an app sees the
+<code>apps.baseDomain</code> and the path says which is meant:</p>
+<pre><code class="language-bash">--set apps.baseDomain=apps.example.com --set apps.pathPrefix=/apps
+# shop is served at https://apps.example.com/apps/shop
+</code></pre>
+<p>The reason to want this is the certificate. One host needs one ordinary
+certificate, not a wildcard, and nothing has to be reissued as apps are added.
+AppLab strips the prefix before the request reaches the app, so an app sees the
 paths it would see at a root and needs no change to work under one; it also sets
-<code>X-Forwarded-Prefix</code>, which an app that honours it can use to build correct
-absolute links. The cost is a shared origin: browser connection limits and
-cookies are shared between apps, and two apps cannot both own <code>/</code>.</p>
-<p>Two failure modes are designed around rather than left to be discovered:</p>
-<ul>
-<li>A base domain without a gateway is refused at startup and at render time,
-because it produces a <code>VirtualService</code> whose empty gateway list Istio reads as
-mesh-internal only — an app that deploys, reports healthy, and is unreachable
-from outside.</li>
-<li>The path an app is routed on always ends in a slash. Istio's prefix match is a
-plain string prefix rather than a path-segment match, so a route on
-<code>/apps/shop</code> would also claim <code>/apps/shop-2/anything</code> — and since the order
-between two VirtualServices on one host is undefined, which app won would not
-even be consistent. <code>/apps/shop/</code> cannot match <code>/apps/shop-2/</code>.</li>
-</ul>
-<h3>AppLab's record versus the cluster</h3>
-<p>AppLab records what it last did. <strong>The cluster is the source of truth for what is
-running.</strong> When the two disagree, believe the cluster — <code>/apps/{app}/status</code>
-reports both side by side rather than picking one.</p>
-<h3>Finding out what went wrong</h3>
-<p><code>GET /apps/{app}/diagnose</code> answers &quot;why is my app down&quot; in one call: the pods and
-their per-container state, the Kubernetes events, and the log that explains it,
-ordered so the most likely cause comes first.</p>
-<p>Two details make it work in practice. A crash loop's reason is read from the
-<strong>previous</strong> container instance, because the current one is merely &quot;waiting&quot; and
-says nothing. And warnings are listed before routine notices — a namespace's
-events are mostly image pulls and scheduling notes, and burying the one that
-explains the failure among them is the difference between a useful answer and a
-list to dig through.</p>
-<p><code>/metrics</code> publishes the platform's own counters (requests, builds, deploys,
-auth refusals) so a scraper can watch AppLab itself. It needs no key — a scraper
-holds one awkwardly and these numbers describe the platform rather than any app —
-so restrict the path at the network edge where that matters.</p>
-<h2>The API</h2>
-<p><strong>Start at <code>GET /api/v1/describe</code>.</strong> One call answers everything needed to work
-with a deployment: where it is, the full endpoint list with the credential each
-route requires, what it is wired to, what the presented key may do, which apps
-exist and where each is served, and the shortest call for each operation. It
-needs no key, so it is also how you find out what a deployment is before you have
-one — but the answer is fuller with a key, which is what lets it name the apps
-that key reaches.</p>
-<p>The endpoint list is generated from the route table in <code>internal/api/router.go</code>,
-so the served API and the described API cannot drift: there is nothing to
-regenerate and no committed copy to go stale. Two routes deliberately stay out of
-it — they are destructive maintenance operations, and the list is read by agents
-that act on what they find.</p>
-<p>Two standing rules for the descriptions in that table:</p>
-<ul>
-<li><strong>Describe capability, not destruction.</strong> Each entry says what the route does
-and what credential it needs, in enough detail to call it correctly.</li>
-<li><strong>Keep it true.</strong> A changed parameter or a changed default is a change to the
-route's <code>Doc</code> in the same commit. A test asserts every served route appears in
-the list, so a route cannot be added and forgotten.</li>
-</ul>
-<h2>Development</h2>
-<pre><code class="language-bash">make build-server   # build the control plane
-make run            # run with a development key
-make check          # fmt, vet, tests — the gate CI runs
-make test           # tests only
-make coverage       # coverage summary
-make docs           # render the documentation site into ./pages
+<code>X-Forwarded-Prefix</code> for an app that builds absolute links. The cost is a shared
+origin — browser connection limits and cookies are shared between apps, and two
+apps cannot both own <code>/</code>.</p>
+<p>TLS is configured on the <strong>gateway</strong>, not here. The gateway holds the listeners
+and the certificate for the whole domain, so an app is served over HTTPS when the
+gateway has an HTTPS listener, and there is no per-app certificate setting to get
+wrong.</p>
+<p>Set <code>deploy.gateway</code> to the gateway apps are published through, as
+<code>&lt;namespace&gt;/&lt;name&gt;</code>. It defaults to <code>istio-ingress/istio-ingress</code> — the naming
+the official <code>istio/gateway</code> chart produces. A cluster installed with
+<code>istioctl install</code> names it <code>istio-system/istio-ingressgateway</code> instead, and has
+to say so:</p>
+<pre><code class="language-bash">--set deploy.gateway=istio-system/istio-ingressgateway
 </code></pre>
-<p>Requires Go 1.24+ and <code>git</code> on <code>PATH</code>. Nothing else — in particular no cloud
-SDK: the S3 client is written against the protocol with the standard library, so
-<code>CGO_ENABLED=0</code> and the binary is static.</p>
-<h3>Verification without a cluster</h3>
-<p>Everything except the build and deploy halves runs and is tested locally. The
-source layer is exercised with the real <code>git</code> binary over a real HTTP server —
-<code>internal/gitx</code> clones and pushes in its tests — and the API is driven through its
-own handler with <code>httptest</code>.</p>
-<p><code>make helm-check</code> needs <code>helm</code>, which is not required to build or test the Go
-code, only to check the chart. It renders the chart and asserts what the
-rendering has to contain — a chart whose templates are wrong still renders, so
-&quot;it rendered&quot; is not evidence of anything.</p>
-<p>The cluster-backed pieces — the deployer and the observer — are tested against
-<code>k8s.io/client-go/kubernetes/fake</code>, which is a real object tracker rather than a
-stub. It is close enough to take the label selectors and create/update semantics
-seriously, which is what those tests lean on.</p>
-<p>Two claims are asserted against the object the code produces rather than a
-summary of it, because they are the ones a plausible-looking implementation can
-still get wrong:</p>
-<ul>
-<li><strong>a secret's value reaches the Deployment</strong>, asserted by searching the whole
-object for the value rather than for one env entry. This is a claim about
-<em>where</em> the value is, not that it is hidden — AppLab has no Secret objects, so
-the value is in the Deployment in the clear, and that is the deliberate trade
-the section above describes. A test asserting that plainly is what keeps the
-loss visible: the equivalent test used to assert the value appeared nowhere,
-and it was replaced rather than deleted when the mechanism went;</li>
-<li><strong>deleting an app removes its objects and nothing else</strong>, including AppLab's own
-Deployment, which shares the namespace and carries no app label.</li>
-</ul>
-<h3>A whole platform on a runner</h3>
-<p>The build and deploy halves need real infrastructure, so they are exercised on
-one that is built for the purpose and thrown away: <a href="debugger.html"><code>debugger</code></a> is a
-GitHub Action that creates a <code>kind</code> cluster, a registry and an Istio gateway,
-installs AppLab from this repository's own chart, and publishes the result
-through a tunnel. It is started by hand — it holds a runner for the whole
-session, which is not something to spend on every push. Open the run's summary
-for a link, and <code>applab push</code> works against it.</p>
-<pre><code>hack/environment.sh   the whole environment, in order
-</code></pre>
-<p>One address serves everything, and the gateway is what serves it. Istio routes
-one virtual host's catch-all route last while leaving the rest in order
-(<code>route.SortVHostRoutes</code>), so the console — a catch-all the chart installs on the
-base domain — is evaluated only after every app has declined the request, and the
-apps match on <code>/&lt;pathPrefix&gt;/&lt;app&gt;/</code>, a prefix the console's own paths do not
-share. That ordering is defined, so nothing has to sit in front of the gateway to
-tell the two apart.</p>
-<p>CI checks the commit and builds the image on every change; the environment above
-is what a person starts when they want to push an app at something.</p>
-<h3>The documentation site</h3>
-<p><code>https://www.chenshaowen.com/applab</code> is both the Helm repository and these
-documents. The site is generated from this repository's own markdown — this file,
-the chart's README, and the debugger's — by <code>cmd/gendocs</code>, so the pages cannot
-drift from the documents people actually edit.</p>
-<p>A link in the markdown names a repository file, which is not where anything lives
-on the site, so links are rewritten to a resolved target: another page, or GitHub
-for a file like the license. A link that resolves to neither <strong>fails the build</strong>,
-because a dead end in a document someone is reading is the markdown author's to
-fix, not the reader's to discover.</p>
-<p>The destination is shared with the chart repository, so the build removes exactly
-what the previous one wrote, recorded in a manifest, rather than clearing the
-directory. <code>make docs</code> renders it into a directory of your own.</p>
-<h2>Configuration</h2>
-<p>See <a href="https://github.com/shaowenchen/applab/blob/master/.env.example"><code>.env.example</code></a> for every variable. Precedence, lowest to
-highest: built-in defaults, an optional YAML file named by <code>APPLAB_CONFIG</code>, then
-the environment.</p>
-<p>A deployment with no key configured refuses to start rather than serving the API
-openly.</p>
-<h2>Security notes</h2>
-<ul>
-<li><strong>There are two tiers of key.</strong> An <strong>admin key</strong> — what <code>APPLAB_KEYS</code> holds —
-can do everything, including delete. Treat it as a credential that can destroy
-data. An <strong>app key</strong> belongs to one app and reaches only that app: it can push,
-build, deploy, roll back and read logs, but it cannot delete the app and cannot
-see any other. Hand the admin key to operators and an app key to whoever
-deploys that app. See <a href="#keys">Keys</a>.</li>
-<li><strong>Keys are read only from the <code>Authorization</code> header</strong> — never a query
-parameter or a form field, both of which are logged and leaked by default.</li>
-<li><strong>Uploaded archives are untrusted input.</strong> Extraction refuses absolute paths and
-<code>..</code> components, and writes through an <code>os.Root</code> so a symlink cannot be used to
-escape the destination even though the path string looks clean.</li>
-<li><strong>Repositories are never public.</strong> Every git request carries a key, like every
-other request, and an app key reaches only its own repository — a repository is
-where the secrets in a project live.</li>
-<li><strong>App keys are kept in the bucket</strong>, under the app's own directory, and
-nothing is cached. Two consequences worth knowing: rotating a key takes effect
-immediately, and whoever holds the bucket's credential can read every app's key
-— the key is no longer in a different system with a different credential. A
-deployment whose object storage is unreachable cannot authenticate at all, the
-admin key included. See <a href="#keys">Keys</a>.</li>
-<li><strong>Configuration is split by intent, not by handling.</strong> Environment variables
-and secrets are both stored with the app and both written into the Deployment's
-<code>env</code>. The difference is that <strong>no route returns a secret's value</strong> — only its
-name — while a variable is returned in full. That is structural rather than a
-promise: the store the API holds has no method that returns a value. See
-<a href="#configuring-an-app">Configuring an app</a>.</li>
-<li><strong>A secret is not hidden from the cluster.</strong> It is in the Deployment's spec in
-the clear, because that is where a container's environment comes from: anyone
-who can run <code>kubectl get deploy -o yaml</code> in this namespace can read every app's
-secrets. That is the cost of an AppLab with no Secret objects — a value written
-this way is readable by more people than one kept in <code>etcd</code>, and worth knowing
-before putting a production credential in one.</li>
-</ul>
-<h2>Configuring an app</h2>
-<p>An app gets two kinds of configuration, and which one you want matters.</p>
-<pre><code class="language-bash"># Plain variables — visible in the Deployment, readable back.
-applab env set myshop LOG_LEVEL=debug FEATURE_X=on
-applab env unset myshop FEATURE_X
-
-# Secrets — never readable back through AppLab. Where they do end up is the
-# table below.
-applab env secret set myshop DATABASE_URL=&quot;$DATABASE_URL&quot;
-applab env secret unset myshop DATABASE_URL
-
-applab env myshop              # show both
-</code></pre>
-<p>The distinction is by <strong>intent rather than by handling</strong>: the two kinds of value
-are stored the same way and reach the container the same way. Use a secret for a
-password and a variable for a log level, so that the split says what is
-sensitive.</p>
+<p>AppLab attaches a <code>VirtualService</code> to that gateway and never creates or modifies
+it — the gateway is infrastructure you own.</p>
+<p>Setting <code>apps.baseDomain</code> without a gateway is refused at render time: it would
+produce a <code>VirtualService</code> whose empty gateway list Istio reads as mesh-internal
+only, so the app would deploy, report healthy and be unreachable from outside.
+So is setting <code>apps.pathPrefix</code> without a base domain, since the prefix is the
+only thing telling one app from another on that shared host.</p>
+<h3>3. Whether the cluster can build</h3>
+<p>This is the one to check before installing, because a build that cannot run fails
+in a way that looks like nothing is happening.</p>
+<p>Builds run as a Kubernetes Job per build, with <strong>BuildKit in rootless mode</strong>. That
+is the default because a build executes code from whoever pushed the source, and a
+privileged build container is a container breakout away from the node.</p>
+<p>Rootless BuildKit needs the nodes to permit <strong>unprivileged user namespaces</strong>. The
+requirements, from BuildKit's own documentation:</p>
 <table>
 <thead>
 <tr>
-<th></th>
-<th>Variables</th>
-<th>Secrets</th>
+<th>Requirement</th>
+<th>Why</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Stored in</td>
-<td>The app's record in the bucket</td>
-<td>The app's record in the bucket</td>
+<td><code>user.max_user_namespaces</code> &gt; 0 on the node</td>
+<td>RootlessKit creates a user namespace; with this at 0 it cannot</td>
 </tr>
 <tr>
-<td>In the Deployment</td>
-<td>Yes, as env vars</td>
-<td>Yes, as env vars, in the clear</td>
+<td>seccomp <strong>unconfined</strong> for the build container</td>
+<td>The default seccomp profile blocks the <code>unshare</code> and <code>mount</code> syscalls the namespace needs</td>
 </tr>
 <tr>
-<td>Readable back</td>
-<td>Yes, including through the API and console</td>
-<td><strong>No.</strong> No route returns a value, only the name</td>
+<td>AppArmor <strong>unconfined</strong> for the build container</td>
+<td>AppArmor blocks the mounts RootlessKit performs</td>
 </tr>
 <tr>
-<td>Needs a cluster</td>
-<td>No</td>
-<td>No</td>
+<td>Kernel ≥ 5.11, or <code>fuse-overlayfs</code> + <code>/dev/fuse</code></td>
+<td>Overlayfs in a user namespace needs a recent kernel; older ones fall back</td>
+</tr>
+<tr>
+<td>On Ubuntu 24.04+: <code>kernel.apparmor_restrict_unprivileged_userns=0</code></td>
+<td>Ubuntu restricts unprivileged user namespaces by default</td>
 </tr>
 </tbody>
 </table>
-<p>The last row is worth a sentence, because it is the difference between the API's
-guarantee and the cluster's: AppLab will not show you a secret, and anyone with
-<code>kubectl get deploy -o yaml</code> in the app's namespace can see it. The one way to
-keep a value out of a pod spec is a Kubernetes Secret with <code>envFrom</code>, and that is
-exactly what this design gave up — so a value that must not be readable from the
-cluster's API is a value that should not go here yet.</p>
-<p><strong>Changes take effect on the next deploy.</strong> Configuration travels the same path
-as code: <code>applab env set myshop A=1 &amp;&amp; applab deploy myshop</code>. The deployer puts a
-hash of the whole configuration into the pod template, which is what makes a
-deploy that changed only a secret value actually roll the pods — Kubernetes does
-not restart pods because an environment variable changed on its own, so without
-that a rotated password would be written to the store and never reach the running
-app.</p>
-<p><code>PORT</code> cannot be set: it comes from the app's <code>port</code> setting, which is also what
-the Service targets. Set that instead.</p>
-<p>There is no route that returns a secret's value, and none is planned. If one is
-lost, set it again — recovery is the same operation.</p>
-<h2>Keys</h2>
-<p>Two tiers, for the two kinds of person who use AppLab: whoever operates the
-platform, and whoever deploys one app.</p>
+<p>The chart sets the seccomp and AppArmor profiles already. The node-level settings
+are yours.</p>
+<p><strong>To check before installing</strong>, on any node:</p>
+<pre><code class="language-bash">sysctl user.max_user_namespaces
+# 0 means rootless builds cannot work on this node
+</code></pre>
+<p><strong>If the cluster cannot satisfy this</strong>, set <code>build.rootless=false</code>. Build
+containers then run privileged. It works everywhere, and it means a build — which
+is arbitrary code from whoever pushed the source — has the run of the node. Prefer
+fixing the node setting.</p>
+<p><strong>Or</strong> set <code>build.enabled=false</code> and run AppLab without the build pipeline. Source
+storage, the API and the console all still work, and you can deploy images built
+elsewhere. <code>applab push</code> will say clearly that this deployment cannot build.</p>
+<h2>What gets installed</h2>
 <table>
 <thead>
 <tr>
-<th></th>
-<th>Admin key</th>
-<th>App key</th>
+<th>Resource</th>
+<th>Why</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Where it comes from</td>
-<td><code>APPLAB_KEYS</code>, or <code>auth.key</code> in the chart</td>
-<td>Created with the app, in the bucket</td>
+<td>Deployment, Service</td>
+<td>the control plane</td>
 </tr>
 <tr>
-<td>Reaches</td>
-<td>Everything</td>
-<td>One app</td>
+<td>Secret</td>
+<td>the API keys</td>
 </tr>
 <tr>
-<td>Delete that app</td>
-<td>Yes</td>
-<td>No</td>
+<td>Secret</td>
+<td>the bucket credential</td>
 </tr>
 <tr>
-<td>Clone its repository</td>
-<td>Any</td>
-<td>Its own</td>
+<td>ConfigMap</td>
+<td>everything else</td>
 </tr>
 <tr>
-<td>Rotate</td>
-<td>Restart with a new value</td>
-<td><code>applab keys rotate &lt;app&gt;</code>, live</td>
+<td>Role, RoleBinding</td>
+<td>AppLab keeps everything in one namespace, and this is all it needs</td>
+</tr>
+<tr>
+<td>Ingress</td>
+<td>how a person reaches the console and the API</td>
+</tr>
+<tr>
+<td>ServiceMonitor</td>
+<td>optional, for <code>/metrics</code></td>
 </tr>
 </tbody>
 </table>
-<pre><code class="language-bash">applab keys myshop              # read the app's key
-applab keys rotate myshop       # replace it; the old one stops working at once
+<h3>Replicas and the bucket</h3>
+<p>AppLab holds nothing on a replica. Every app, every repository and all of the
+history are in the bucket you point <code>objectStore</code> at, so <code>replicaCount</code> can be
+raised for availability and a pod can be replaced at any moment.</p>
+<p>The one thing that is not coordinated across replicas is a write to one branch's
+repository: the lock that serialises those is per process and per branch, so two
+pushes arriving at the same instant on two replicas can lose one of the two —
+while two pushes to <em>different</em> branches of one app never contend at all, since
+each branch is a repository of its own. A push is a rare event and the next build
+reads what git actually has, so this is a note rather than a warning — but it is
+why one replica is still the default.</p>
+<p><strong>Back up the bucket.</strong> It is the only copy of every app's source.</p>
+<h3>The Role</h3>
+<p>AppLab runs in one namespace and deploys every app into it too, so a namespaced
+<code>Role</code> and <code>RoleBinding</code> are enough — one namespace, one binding, no cluster-wide
+grant.</p>
+<p>A platform like this is usually bound to a <code>ClusterRole</code>, or worse to
+<code>cluster-admin</code>, because it manages resources across namespaces. AppLab does not,
+so the reach of a bug in it is the apps it manages.</p>
+<p>The rules in <code>role.yaml</code> are exactly what AppLab uses, each with a comment saying
+why. Nothing is granted for future convenience. In particular there is no
+permission on <code>namespaces</code> at all, and none to write pods.</p>
+<p><strong>What this costs:</strong> apps are not isolated from one another by a namespace
+boundary. A resource-hungry app affects its neighbours, and an operator reading
+<code>kubectl get pods</code> sees every app at once. The CPU and memory limits on each app
+container are the only bound — which is why <code>deploy.appResources</code> exists.</p>
+<p>One thing the chart cannot do for you: <strong>an app's pods and a build's are given no
+Kubernetes API token</strong> (<code>automountServiceAccountToken: false</code>). A token reads
+every Secret in its namespace, so an app holding one could reach the API keys and
+the registry credentials. AppLab sets this itself, so there is nothing to
+configure — but an app deployed into this namespace by hand needs the same.</p>
+<h2>Values</h2>
+<p>See <a href="https://github.com/shaowenchen/applab/blob/master/charts/applab/values.yaml"><code>values.yaml</code></a> for every option, each with a note on what it
+does and why it defaults the way it does. The ones that matter most:</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Default</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auth.key</code></td>
+<td><code>&quot;&quot;</code></td>
+<td><strong>Required.</strong> The admin key: <code>openssl rand -hex 32</code>. One is enough; see <a href="#keys">Keys</a> for more</td>
+</tr>
+<tr>
+<td><code>auth.existingSecret</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Preferred over <code>auth.key</code>: keeps the key out of the release, and carries more than one</td>
+</tr>
+<tr>
+<td><code>apps.baseDomain</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Domain apps are served under</td>
+</tr>
+<tr>
+<td><code>apps.pathPrefix</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Serves every app under one path on that host; needs no wildcard certificate</td>
+</tr>
+<tr>
+<td><code>deploy.gateway</code></td>
+<td><code>istio-ingress/istio-ingress</code></td>
+<td><strong>Required with a base domain.</strong> <code>&lt;namespace&gt;/&lt;name&gt;</code></td>
+</tr>
+<tr>
+<td><code>build.enabled</code></td>
+<td><code>true</code></td>
+<td><code>false</code> runs AppLab without building</td>
+</tr>
+<tr>
+<td><code>build.registry</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Required when <code>build.enabled</code></td>
+</tr>
+<tr>
+<td><code>build.rootless</code></td>
+<td><code>true</code></td>
+<td>See the prerequisites above</td>
+</tr>
+<tr>
+<td><code>build.cacheRepoPrefix</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Registry-side layer cache; a Job has no persistent disk</td>
+</tr>
+<tr>
+<td><code>build.pushSecret</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Registry credentials for the build Job to push with</td>
+</tr>
+<tr>
+<td><code>deploy.imagePullSecret</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Registry credentials for the app to pull with</td>
+</tr>
+<tr>
+<td><code>deploy.appResources</code></td>
+<td>2 CPU / 2Gi</td>
+<td>Applied to every app AppLab deploys</td>
+</tr>
+<tr>
+<td><code>ingress.host</code></td>
+<td><code>applab.example.com</code></td>
+<td>The host the console and API are reached at</td>
+</tr>
+<tr>
+<td><code>ingress.path</code></td>
+<td><code>/applab</code></td>
+<td>The path under it; the server is told the same one</td>
+</tr>
+<tr>
+<td><code>objectStore.endpoint</code></td>
+<td><code>&quot;&quot;</code></td>
+<td><strong>Required.</strong> The bucket AppLab keeps everything in</td>
+</tr>
+<tr>
+<td><code>objectStore.bucket</code></td>
+<td><code>&quot;&quot;</code></td>
+<td><strong>Required.</strong> Created by you, not by the chart</td>
+</tr>
+<tr>
+<td><code>objectStore.accessKey</code> / <code>secretKey</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>Or <code>objectStore.existingSecret</code></td>
+</tr>
+<tr>
+<td><code>objectStore.pathStyle</code></td>
+<td><code>false</code></td>
+<td>Most self-hosted services need <code>true</code></td>
+</tr>
+<tr>
+<td><code>scratchSizeLimit</code></td>
+<td><code>2Gi</code></td>
+<td>Scratch only; nothing durable is written there</td>
+</tr>
+</tbody>
+</table>
+<h3>Keys</h3>
+<p>There are two tiers, and the difference is reach.</p>
+<p><strong>Admin keys</strong> are what this chart configures. A key that authenticates can also
+delete — every app this installation manages — so give it to nobody you would not
+give the installation to.</p>
+<p><code>auth.key</code> holds one. That is enough to install with, and one is the honest
+default: it is a single credential, and a second copy in the release's values is
+a second place to leak from rather than a second identity. To give several people
+their own key, so one can be revoked without disturbing the others, point
+<code>auth.existingSecret</code> at a Secret you manage, carrying an <code>APPLAB_KEYS</code> key whose
+value is the comma-separated list. Removing an entry from it and upgrading is the
+whole revocation.</p>
+<p>That is also why <code>auth.existingSecret</code> is worth using even with one key. Release
+values are stored in plain text in the cluster and are frequently committed.</p>
+<p><strong>App keys</strong> are created by AppLab itself, one per app, as apps are created. An
+app key reaches only its app: it can push, build, deploy, roll back and read
+logs, but cannot delete the app and cannot see any other app. That is the
+credential to hand to whoever deploys an app, so they never hold one that can
+destroy the installation. Read or rotate one with <code>applab keys &lt;app&gt;</code> (or
+<code>GET /api/v1/apps/&lt;app&gt;/key</code>).</p>
+<p>An app key is stored in the bucket, under the app's own directory, so nothing is
+cached and a rotation takes effect immediately. Two consequences worth knowing:
+the bucket credential now reaches every app's key as well as the source, and a
+deployment whose object storage is unreachable cannot authenticate at all, admin
+keys included. Nothing in the chart has to be configured for this.</p>
+<h3>App configuration</h3>
+<p>Both halves of an app's configuration live in the app's own record in the
+bucket, and both reach the container the same way: AppLab writes them into the
+Deployment's <code>env</code> as plain values.</p>
+<p><strong>Environment variables</strong> — <code>LOG_LEVEL</code>, <code>FEATURE_X</code> — are the plain half.</p>
+<p><strong>Secrets</strong> — passwords, tokens, connection strings — are the other. No endpoint
+returns a value, so a secret cannot be read back through the API, the CLI or the
+console; only its name. But <strong>the value is in the Deployment's spec in the
+clear</strong>, because that is where a container's environment comes from — anyone who
+can read a Deployment in this namespace can read every app's secrets:</p>
+<pre><code class="language-bash">kubectl -n ops-system get deploy &lt;app&gt; -o yaml   # shows every env value
 </code></pre>
-<p>An app key is minted when the app is created, so it always exists. Its value can
-be read back at any time rather than shown once — deliberately, since a key
-nobody can recover is one that has to be rotated the moment it is mislaid.</p>
-<p>The same key works everywhere: <code>Authorization: Bearer &lt;key&gt;</code> on the API, the
-<code>APPLAB_KEY</code> environment variable for the CLI, and the sign-in form on the
-console. The console reads the tier from the API and shows an app key its own
-app only, with no overview, no app list and no delete button.</p>
+<p>That is the cost of an AppLab with no Secret objects, and it is worth knowing
+before you put a production credential in one. Kubernetes is where a value can
+be kept out of a pod spec, and the two objects that do it — Secret and
+<code>valueFrom.secretKeyRef</code> — are exactly what this design gives up. The Role's
+<code>secrets</code> permission remains only so that deleting an app still cleans up Secret
+objects left by an older version.</p>
+<p>Both halves are managed with <code>applab env</code> (or <code>PUT /api/v1/apps/&lt;app&gt;/secrets</code>),
+and <strong>take effect on the next deploy</strong>. Nothing to configure in the chart.</p>
+<h2>After installing</h2>
+<pre><code class="language-bash"># The key the chart generated, if you used auth.key
+kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
+
+# What this deployment is, and every endpoint it serves — read this first
+curl -s https://applab.example.com/api/v1/describe
+
+# What the deployment can do
+applab config
+</code></pre>
+<h2>Installing a development build</h2>
+<p>Every push to the default branch publishes a chart versioned <code>&lt;Chart.yaml version&gt;-dev</code>, replacing the previous one, and an image tagged with that same
+version — so the chart's default <code>image.tag</code> is the image it needs, and an
+install with nothing overridden runs the build that chart was packaged from.</p>
+<p><code>appVersion</code> is the commit the chart was built from, which is what
+<code>app.kubernetes.io/version</code> carries on every object AppLab creates, so a release
+that is installed is traceable back to its code. It is deliberately <strong>not</strong> the
+image tag: it names a commit, and no image is published under a bare commit.</p>
+<pre><code class="language-bash">helm repo add applab https://www.chenshaowen.com/applab
+helm repo update
+
+helm upgrade --install applab applab/applab \
+  --namespace ops-system --set ... \
+  --version 0.1.0-dev
+</code></pre>
+<p><strong><code>--version</code> is required, and this is why.</strong> <code>0.1.0-dev</code> is a prerelease — a
+version with a hyphen and a suffix — and Helm leaves prereleases out of version
+resolution. It does not rank them below releases and fall back to one; it does
+not see them at all. So with only dev builds published, <code>helm install applab applab/applab</code> resolves no version and fails with:</p>
+<pre><code>Error: INSTALLATION FAILED: chart &quot;applab&quot; matching  not found in applab index.
+(try 'helm repo update'): no chart version found for applab-
+</code></pre>
+<p>The <code>helm repo update</code> in that message is a red herring: the index is fine, and
+running it changes nothing. The <code>matching</code> and <code>applab-</code> with nothing after them
+are the version constraint coming out empty, which is the tell.</p>
+<p>Once a release is tagged the picture changes, because a tagged version has no
+hyphen and is therefore visible. Then the plain form works and takes the highest
+release — <code>helm install applab applab/applab</code> — while <code>--version 0.1.0-dev</code>
+still asks for the dev build specifically. Until then, there is nothing to fall
+back to.</p>
+<p>Tagged releases (<code>v0.2.0</code> → chart <code>0.2.0</code>) are published alongside and never
+pruned. Only the <code>-dev</code> package is replaced, so a development build can never
+remove a release.</p>
+<h2>Upgrading</h2>
+<pre><code class="language-bash">helm upgrade applab applab/applab \
+  --namespace ops-system -f my-values.yaml \
+  --version 0.1.0-dev
+</code></pre>
+<p><code>--version</code> is needed here for the same reason it is on install, while only dev
+builds are published: Helm does not resolve a prerelease unless it is asked for
+by name. An upgrade without it fails the same way an install does.</p>
+<p>An upgrade is a rollout, and that is the whole of it. AppLab holds no state:
+every app, every repository, every commit, every build and every key is an object
+in the bucket you pointed it at. There is nothing inside the deployment to carry
+forward, no schema to migrate, and rolling the image back with the chart is the
+whole of a revert.</p>
+<p>That is also why the chart mounts no volume. Replacing a pod, losing a node, or
+running three replicas changes nothing, because no replica is the only copy of
+anything — the bucket is, which is what makes backing it up the one piece of
+upkeep this installation needs.</p>
+<p>Nothing is released yet: the chart is published only as a prerelease built from
+each commit, and the bucket's layout has changed more than once across those
+builds. Those changes are not migrated on the way in — each is read by the
+version that wrote it, and an app whose history predates one simply reads as
+having no commits until it is pushed again. That is the ordinary cost of running
+a pre-release, and it is why the shape of the bucket is not something this
+document walks you through: it is not part of the contract until there is a
+release to break.</p>
 <h2>Uninstalling</h2>
-<p>What it takes depends on which of the two ways above you started it, and the two
-leave different things behind.</p>
-<p><strong>A local run</strong> is a process and a directory. Stopping <code>applab</code> ends the service;
-<code>APPLAB_DATA_DIR</code> — <code>./data</code> in the quick start — is scratch space, and the
-object store it was pointed at is the data. That store holds a git repository per
-app per branch, so emptying it is the point of no return for all of them. Anything
-already deployed to a cluster keeps running, because AppLab put it there and does
-not own it.</p>
-<p><strong>A chart install</strong> is one command:</p>
 <pre><code class="language-bash">helm uninstall applab --namespace ops-system
 </code></pre>
-<p>and the surprise is what it leaves. <strong>The apps are not removed</strong> — they are
-Deployments, Services and VirtualServices carrying <code>applab.io/app</code> rather than
-helm's release labels, so an uninstall stops AppLab and leaves every app it
-deployed running. That is usually what you want and occasionally a surprise. The
-bucket is not touched either, and it holds every app's source: an uninstall that
-emptied it would be one that deleted the source of every app.</p>
-<p><a href="chart.html">The chart's README</a> has the full teardown, including how to
-remove the apps along with the installation.</p>
-<h2>License</h2>
-<p>See <a href="https://github.com/shaowenchen/applab/blob/master/LICENSE">LICENSE</a>.</p>
+<p><strong>The apps are not removed.</strong> They are Deployments, Services and
+VirtualServices in the release namespace, and the release does not own them —
+they carry <code>applab.io/app</code>, not helm's release labels. So an uninstall stops
+AppLab and leaves every app it deployed running, which is usually what you want
+and occasionally a surprise.</p>
+<p><strong>The bucket is not touched.</strong> Everything AppLab remembers — the apps, their
+history and their source — is in object storage, which is not part of the
+release. An uninstall that emptied the bucket would be an uninstall that deleted
+every app's source, so it does not; the bucket is yours to keep or remove.</p>
+<p>To remove an installation completely:</p>
+<pre><code class="language-bash">kubectl -n ops-system get deployments,services -l applab.io/app   # what it deployed
+kubectl -n ops-system delete deployments,services,jobs -l applab.io/app
+kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/app
+# and the source, which is whatever you pointed objectStore at
+</code></pre>
+<p>There are no Secrets to remove with them: AppLab keeps keys and configuration in
+the bucket, so an app owns no Secret of its own. The chart's own
+<code>applab-auth</code> and object-store Secrets belong to the release and go with the
+uninstall.</p>
+<p>The namespace itself is yours rather than AppLab's — it is where AppLab was
+installed, and it may hold other things. AppLab never deletes it.</p>
 
-      <p class="source">This page is rendered from <a href="https://github.com/shaowenchen/applab/blob/master/README.md"><code>README.md</code></a> in the repository.</p>
+      <p class="source">This page is rendered from <a href="https://github.com/shaowenchen/applab/blob/master/charts/applab/README.md"><code>charts/applab/README.md</code></a> in the repository.</p>
     </article>
   </main>
 </div>
