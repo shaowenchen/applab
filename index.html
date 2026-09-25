@@ -371,53 +371,25 @@ nothing serves, and with no Ingress the console would have no route either.</li>
 telling one app from another on that shared host.</li>
 </ul>
 <h3 id="3-whether-the-cluster-can-build">3. Whether the cluster can build</h3>
-<p>This is the one to check before installing, because a build that cannot run fails
-in a way that looks like nothing is happening.</p>
-<p>Builds run as a Kubernetes Job per build, with <strong>BuildKit in rootless mode</strong>. That
-is the default because a build executes code from whoever pushed the source, and a
-privileged build container is a container breakout away from the node.</p>
-<p>Rootless BuildKit needs the nodes to permit <strong>unprivileged user namespaces</strong>. The
-requirements, from BuildKit's own documentation:</p>
-<table>
-<thead>
-<tr>
-<th>Requirement</th>
-<th>Why</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>user.max_user_namespaces</code> &gt; 0 on the node</td>
-<td>RootlessKit creates a user namespace; with this at 0 it cannot</td>
-</tr>
-<tr>
-<td>seccomp <strong>unconfined</strong> for the build container</td>
-<td>The default seccomp profile blocks the <code>unshare</code> and <code>mount</code> syscalls the namespace needs</td>
-</tr>
-<tr>
-<td>AppArmor <strong>unconfined</strong> for the build container</td>
-<td>AppArmor blocks the mounts RootlessKit performs</td>
-</tr>
-<tr>
-<td>Kernel ≥ 5.11, or <code>fuse-overlayfs</code> + <code>/dev/fuse</code></td>
-<td>Overlayfs in a user namespace needs a recent kernel; older ones fall back</td>
-</tr>
-<tr>
-<td>On Ubuntu 24.04+: <code>kernel.apparmor_restrict_unprivileged_userns=0</code></td>
-<td>Ubuntu restricts unprivileged user namespaces by default</td>
-</tr>
-</tbody>
-</table>
-<p>The chart sets the seccomp and AppArmor profiles already. The node-level settings
-are yours.</p>
-<p><strong>To check before installing</strong>, on any node:</p>
-<pre><code class="language-bash">sysctl user.max_user_namespaces
-# 0 means rootless builds cannot work on this node
-</code></pre>
-<p><strong>If the cluster cannot satisfy this</strong>, set <code>build.rootless=false</code>. Build
-containers then run privileged. It works everywhere, and it means a build — which
-is arbitrary code from whoever pushed the source — has the run of the node. Prefer
-fixing the node setting.</p>
+<p>A build runs as a Kubernetes Job whose one container is <strong>kaniko</strong>. It clones the
+app's repository at the commit being built, runs its Dockerfile, and pushes the
+image. There is no daemon beside it, nothing is privileged, it mounts no host
+path, and it holds no API token — the credential it carries is the app's own key,
+which reaches that app's repository and nothing else.</p>
+<p>Two things are worth knowing before installing, because both are properties of
+kaniko rather than of this chart:</p>
+<p><strong>A build runs as root, inside its own container.</strong> Kaniko unpacks the base image
+into its container's root filesystem and runs each Dockerfile step there; there is
+no unprivileged mode. A build executes code from whoever pushed the source, so
+that code is root within the build container. It is one container and it can reach
+nothing the pod spec does not give it — but &quot;unprivileged&quot; would be the wrong word
+for it, and the Deployment carries a note saying so.</p>
+<p><strong>The node pulls the kaniko image.</strong> The default is
+<code>ghcr.io/osscontainertools/kaniko</code>, the maintained community build — Google
+archived <code>GoogleContainerTools/kaniko</code> in June 2025 and its images are no longer
+published. A cluster that cannot reach ghcr.io needs that image mirrored, with
+<code>build.kanikoImage</code> set to the mirror. Nothing else about a build needs the
+internet beyond the base images the Dockerfile itself names.</p>
 <p><strong>Or</strong> set <code>build.enabled=false</code> and run AppLab without the build pipeline. Source
 storage, the API and the console all still work, and you can deploy images built
 elsewhere. <code>applab push</code> will say clearly that this deployment cannot build.</p>
@@ -537,9 +509,9 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <td>Required when <code>build.enabled</code></td>
 </tr>
 <tr>
-<td><code>build.rootless</code></td>
-<td><code>true</code></td>
-<td>See the prerequisites above</td>
+<td><code>build.kanikoImage</code></td>
+<td><code>ghcr.io/osscontainertools/kaniko:v1.26.2</code></td>
+<td>The executor every build runs; mirror it for a cluster that cannot reach ghcr.io</td>
 </tr>
 <tr>
 <td><code>build.cacheRepoPrefix</code></td>
@@ -734,21 +706,24 @@ git add .
 git commit -m &quot;first&quot;
 git push origin main
 </code></pre>
-<p>A push stores the source and nothing else — it does not build. That is deliberate
-(<code>git push</code> is how you get code in, not how you ask for a deploy), so the next
-step is explicit.</p>
-<h3 id="5-build-and-deploy">5. Build and deploy</h3>
+<p>That is the whole deployment. The push stores the source, and AppLab then builds it
+and deploys the result on its own — <code>git push</code> returns as soon as git is done, so
+the build runs in the background and the app goes live when it succeeds.</p>
+<h3 id="5-watch-it-come-up">5. Watch it come up</h3>
+<p>Nothing needs calling, so this step is only about seeing where it got to:</p>
+<pre><code class="language-bash">applab status shop         # what AppLab recorded and what the cluster actually has
+applab logs shop -f        # the running app's output
+applab builds shop --logs  # the build's output, if it did not get that far
+</code></pre>
+<p><code>applab status</code> is the first thing to read when something is wrong: it reports
+AppLab's own record beside the cluster's, and the difference between the two is
+the information. <code>applab diagnose shop</code> walks the same checks in order and reports
+the first that fails.</p>
+<p>If you would rather drive it by hand — to build a specific commit, or to rebuild
+something without pushing:</p>
 <pre><code class="language-bash">applab build shop          # build the newest commit into an image
 applab deploy shop         # run that image
-
-# Or both, following the log until it is serving:
-applab deploy shop --build
 </code></pre>
-<p>When it finishes, <code>applab deploy</code> prints the URL the app is served at. If it does
-not come up, <code>applab status shop</code> says what AppLab recorded and what the cluster
-actually has — the two side by side, because the difference between them is the
-information — and <code>applab diagnose shop</code> is the first thing to read: it walks the
-same checks in order and reports the first that fails.</p>
 <h3 id="the-same-thing-with-curl">The same thing with curl</h3>
 <p>No CLI required. Each numbered step above is one request:</p>
 <pre><code class="language-bash"># 1. Create — the admin key does this.
@@ -762,7 +737,13 @@ curl -sS &quot;$APPLAB_URL/api/v1/apps/shop/key&quot; \
   -H &quot;Authorization: Bearer $APPLAB_KEY&quot;
 </code></pre>
 <p>Steps 3 and 4 are git itself, unchanged — the clone URL above works the same
-either way. Step 5, as one call rather than two:</p>
+either way, and the push is what starts the build.</p>
+<p>Step 5 is a read, since the build and the deploy were already started:</p>
+<pre><code class="language-bash">curl -sS &quot;$APPLAB_URL/api/v1/apps/shop/status&quot; \
+  -H &quot;Authorization: Bearer $APPLAB_APP_KEY&quot;
+</code></pre>
+<p>To build and deploy a commit without pushing one — a rebuild, or a commit built
+from another machine:</p>
 <pre><code class="language-bash">curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps/shop/deploy&quot; \
   -H &quot;Authorization: Bearer $APPLAB_APP_KEY&quot; \
   -H &quot;Content-Type: application/json&quot; \
