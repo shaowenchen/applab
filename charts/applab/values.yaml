@@ -201,9 +201,9 @@ build:
   #     --docker-username=<user> --docker-password=<password>
   #
   # Nothing is copied: apps run in that same namespace, so the Job reads the
-  # Secret where it is. A name that does not exist shows up as a Job that never
-  # starts — `kubectl describe pod` names the missing Secret, the build's own
-  # log does not, because the container it would come from never ran.
+  # Secret where it is. A name that does not exist is refused before the Job is
+  # created, naming the Secret and the namespace — a Job that exists but cannot
+  # start is worse, because it holds the build's name and shows as pending.
   pushSecret: ""
 
   # Resource bounds for a build container and for the ephemeral volume the

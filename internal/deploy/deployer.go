@@ -121,6 +121,13 @@ func (d *Deployer) Ready() bool { return d.client != nil }
 // objects in place, which is the correct outcome — they are consistent with each
 // other, and the next attempt continues from there.
 func (d *Deployer) Apply(ctx context.Context, app *model.App, image string) (model.Address, error) {
+	// Before anything is created, for the same reason a build checks its push
+	// credential first: a pod that names a Secret which is not there does not
+	// start, and the app reports ImagePullBackOff rather than anything about the
+	// Secret. Naming it here puts the real cause in the deploy's own error.
+	if err := d.checkImagePullSecret(ctx, app.Namespace); err != nil {
+		return model.Address{}, err
+	}
 	if err := d.applyDeployment(ctx, app, image); err != nil {
 		return model.Address{}, err
 	}
@@ -136,6 +143,27 @@ func (d *Deployer) Apply(ctx context.Context, app *model.App, image string) (mod
 		return model.Address{}, err
 	}
 	return addr, nil
+}
+
+// checkImagePullSecret reports whether the registry credential an app's pods
+// will pull with is actually there.
+//
+// Only when one is configured: a cluster-local registry needs no credential, and
+// demanding one would refuse a deploy that would have worked.
+func (d *Deployer) checkImagePullSecret(ctx context.Context, namespace string) error {
+	if d.cfg.ImagePullSecret == "" {
+		return nil
+	}
+
+	_, err := d.client.CoreV1().Secrets(namespace).Get(ctx, d.cfg.ImagePullSecret, metav1.GetOptions{})
+	if err == nil {
+		return nil
+	}
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("image pull credential %q is not in namespace %s: create it before installing applab (kubectl -n %s create secret docker-registry %s --docker-server=... --docker-username=... --docker-password=...), or clear deploy.imagePullSecret if this registry needs no authentication",
+			d.cfg.ImagePullSecret, namespace, namespace, d.cfg.ImagePullSecret)
+	}
+	return fmt.Errorf("read image pull credential %q in %s: %w", d.cfg.ImagePullSecret, namespace, err)
 }
 
 // appLabels are the labels every object of an app carries.

@@ -9,20 +9,42 @@ command.
 
 ## Quick start
 
+Three steps, and the order matters: the registry credential has to exist before
+AppLab does, because a build reads it from the namespace AppLab runs in.
+
+**1. The namespace, and the registry credential**
+
+```bash
+kubectl create namespace ops-system
+
+kubectl -n ops-system create secret docker-registry regcred \
+  --docker-server=registry.example.com \
+  --docker-username=<user> \
+  --docker-password=<password>
+```
+
+Skip the Secret if the registry needs no credentials — a cluster-local one
+usually does not. The namespace is created here rather than by
+`--create-namespace` below, because the Secret has to be in it first.
+
+**2. AppLab**
+
 ```bash
 helm repo add applab https://www.chenshaowen.com/applab
 helm repo update
 
 helm install applab applab/applab \
   --version 0.1.0-dev \
-  --namespace ops-system --create-namespace \
+  --namespace ops-system \
   --set auth.key="$(openssl rand -hex 32)" \
   --set objectStore.endpoint=https://s3.us-east-1.amazonaws.com \
   --set objectStore.bucket=applab \
   --set objectStore.accessKey=... --set objectStore.secretKey=... \
   --set ingress.host=applab.example.com \
   --set deploy.gateway=istio-system/istio-ingressgateway \
-  --set build.registry=registry.example.com/apps
+  --set build.registry=registry.example.com/apps \
+  --set build.pushSecret=regcred \
+  --set deploy.imagePullSecret=regcred
 ```
 
 The bucket is not optional and has no default. AppLab keeps everything in it —
@@ -32,13 +54,20 @@ server checks the same thing at startup, because a chart is not the only way thi
 runs. Create the bucket first; AppLab does not create one, because a bucket's
 name, region and lifecycle policy belong to whoever runs the platform.
 
+The two Secret settings are separate because pushing and pulling can need
+different credentials: a registry open to pull but not to push needs only
+`build.pushSecret`. Both name a Secret in the namespace above — apps run there
+too, so nothing is copied anywhere. See [A registry the cluster can push to and
+pull from](#1-a-registry-the-cluster-can-push-to-and-pull-from) for what happens
+when one is named and missing.
+
 `--version` is not optional yet, and leaving it out fails with `chart "applab"
 matching  not found in applab index` — which reads like a typo or a stale index
 and is neither. See [Installing a development
 build](#installing-a-development-build) for why, and for what changes when a
 release is tagged.
 
-Then, from any project:
+**3. Use it**, from any project:
 
 ```bash
 export APPLAB_URL=https://applab.example.com
@@ -128,7 +157,8 @@ Either way the tag names the commit, which is what lets a rollback reuse an imag
 rather than rebuild it.
 
 If the registry needs credentials, create a `docker-registry` Secret **in the
-namespace AppLab runs in** and name it:
+namespace AppLab runs in** and name it. Do this before installing — see step 1 of
+the quick start:
 
 ```bash
 kubectl -n ops-system create secret docker-registry regcred \
@@ -147,8 +177,15 @@ build one.
 
 Both names refer to a Secret in the release namespace. Apps run in that same
 namespace, so there is no boundary for the credential to cross and nothing is
-copied. A Secret named here and missing is discovered at the first build or
-deploy rather than at install.
+copied.
+
+A Secret named here and **missing** is refused before anything is created: the
+build or the deploy fails and says which Secret and namespace it looked in,
+rather than starting a pod that cannot come up. The reason that matters is what
+the pod-level failure looks like — a container whose Secret is not there never
+starts, so the build sits at `pending` with an empty log, and the app reports
+`ImagePullBackOff` naming the image rather than the credential. Both readings
+point away from the actual cause.
 
 A registry that is only reachable over plain HTTP, or with a self-signed
 certificate, needs `build.insecureRegistry=true` — which is a deliberate weakening

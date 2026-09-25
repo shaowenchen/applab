@@ -1299,3 +1299,59 @@ func configHashOf(t *testing.T, client *fake.Clientset, app *model.App) string {
 	t.Helper()
 	return deploymentFor(t, client, app).Spec.Template.Annotations["applab.io/config-hash"]
 }
+
+// TestApplyRefusesAMissingImagePullSecret asserts a deploy that cannot pull is
+// refused before anything is created for it.
+//
+// The mirror of the build's push-credential check, and the same failure: a pod
+// naming a Secret that is not there never starts, so the app reports
+// ImagePullBackOff — which names the image, not the missing credential. Naming it
+// here says what is actually wrong.
+func TestApplyRefusesAMissingImagePullSecret(t *testing.T) {
+	cfg := Config{BaseDomain: "apps.example.com", ImagePullSecret: "regpull"}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+	app := testApp()
+
+	_, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc")
+	if err == nil {
+		t.Fatal("an app deployed with an image pull credential that does not exist")
+	}
+	for _, want := range []string{"regpull", app.Namespace} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q: %v", want, err)
+		}
+	}
+
+	// Nothing was created. A Deployment that exists and cannot pull is worse
+	// than none: it holds the app's name and shows as a running app that is
+	// serving nothing.
+	deployments, err := client.AppsV1().Deployments(app.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list deployments: %v", err)
+	}
+	if len(deployments.Items) != 0 {
+		t.Errorf("a Deployment was created for an app that could not pull: %v", deployments.Items[0].Name)
+	}
+}
+
+// TestApplyAcceptsAnExistingImagePullSecret is the other half, so the check is
+// not a wall: with the Secret present the same deploy proceeds.
+func TestApplyAcceptsAnExistingImagePullSecret(t *testing.T) {
+	cfg := Config{BaseDomain: "apps.example.com", ImagePullSecret: "regpull"}
+	d, client := newTestDeployer(t, cfg)
+	ctx := context.Background()
+	app := testApp()
+
+	if _, err := client.CoreV1().Secrets(app.Namespace).Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "regpull", Namespace: app.Namespace},
+		Type:       corev1.SecretTypeDockerConfigJson,
+		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte("{}")},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create secret: %v", err)
+	}
+
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		t.Fatalf("a deploy was refused with the credential present: %v", err)
+	}
+}

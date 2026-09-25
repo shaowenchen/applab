@@ -235,7 +235,8 @@ type Build struct {
 	// build Job so BuildKit can push. Empty means the registry needs none.
 	//
 	// Not copied anywhere: apps run in AppLab's own namespace, so the Job reads
-	// it where it already is.
+	// it where it already is. A name that does not resolve is refused before the
+	// Job is created — see build.Engine.Start.
 	PushSecret string `yaml:"push_secret"`
 
 	// Rootless runs BuildKit unprivileged. Defaults to true; see the chart

@@ -241,6 +241,20 @@ func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, 
 	jobName := e.JobNameFor(app.ID, buildID)
 	image := e.ImageFor(app.ID, commitSHA)
 
+	// Checked before the Job exists, so a missing credential is a failed build
+	// with a reason rather than a Job that never starts.
+	//
+	// The failure it prevents is a silent one. A pod that mounts a Secret which
+	// is not there does not start — the container runtime refuses — so the
+	// build sits at "pending", its log is empty because the container a log
+	// would come from never ran, and the explanation is on the pod rather than
+	// anywhere a caller of this API would look. Naming it here puts it in the
+	// build's own record, which is where someone whose build is not working is
+	// already looking.
+	if err := e.checkPushSecret(ctx, namespace); err != nil {
+		return "", err
+	}
+
 	job := e.jobSpec(app, jobName, buildID, commitSHA, image, sourceToken)
 
 	if _, err := e.client.BatchV1().Jobs(namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
@@ -254,6 +268,27 @@ func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, 
 	}
 
 	return jobName, nil
+}
+
+// checkPushSecret reports whether the registry credential a build will mount is
+// actually there.
+//
+// Only when one is configured: a cluster-local registry needs no credential, and
+// demanding one would refuse a build that would have worked.
+func (e *Engine) checkPushSecret(ctx context.Context, namespace string) error {
+	if e.cfg.PushSecret == "" {
+		return nil
+	}
+
+	_, err := e.client.CoreV1().Secrets(namespace).Get(ctx, e.cfg.PushSecret, metav1.GetOptions{})
+	if err == nil {
+		return nil
+	}
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("registry credential %q is not in namespace %s: create it before installing applab (kubectl -n %s create secret docker-registry %s --docker-server=... --docker-username=... --docker-password=...), or clear build.pushSecret if this registry needs no authentication",
+			e.cfg.PushSecret, namespace, namespace, e.cfg.PushSecret)
+	}
+	return fmt.Errorf("read registry credential %q in %s: %w", e.cfg.PushSecret, namespace, err)
 }
 
 // jobSpec builds the Job.
