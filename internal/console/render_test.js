@@ -179,6 +179,13 @@ const sandbox = {
   // script guards, but it is not the case these checks are about, and without it
   // the copy path would silently take the fallback branch every time.
   navigator: { language: "en", clipboard: null },
+  // Used by the log panels, which are the only part of the console that streams.
+  // A browser has all three; leaving them out makes startLogs throw before it
+  // sends anything, so a check of it would fail for a reason that has nothing to
+  // do with what it is checking.
+  AbortController,
+  TextDecoder,
+  URLSearchParams,
   setTimeout,
   clearTimeout,
   Promise,
@@ -752,6 +759,83 @@ async function render(apps) {
       gitURL.startsWith("https://applab.example.com/git/"),
       false
     );
+  }
+
+  // The platform log panel.
+  //
+  // AppLab's own log is served by a different route from an app's — no app in the
+  // path, because it is not about one — and the two panels share one reader
+  // keyed by name. So the thing worth checking is that the name reaches the right
+  // URL: a copy-paste that left the app route in place would ask for the log of
+  // whichever app happened to be open, or of no app at all, and the panel would
+  // look like it worked while showing the wrong container's output.
+  {
+    // A context whose fetch records what it was asked for and then ends the
+    // stream immediately, so startLogs returns rather than following forever.
+    const logContext = async (status, payload) => {
+      const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+      ctx.globalThis = ctx;
+      ctx.requests = [];
+      ctx.fetch = async (url) => {
+        ctx.requests.push(url);
+        if (status !== 200) {
+          return {
+            ok: false,
+            status,
+            statusText: status === 501 ? "Not Implemented" : "Error",
+            headers: { get: () => "application/json" },
+            text: async () => JSON.stringify(payload || {}),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: { get: () => "text/plain" },
+          body: {
+            getReader: () => ({
+              read: async () => ({ done: true, value: undefined }),
+            }),
+          },
+        };
+      };
+      // The script first, because `state` is a const at its top level and only
+      // exists in this context once the script has run. The key and address are
+      // normally set at sign-in; startLogs sends both.
+      vm.runInContext(source, ctx, { filename: "console.js" });
+      vm.runInContext('state.url = "https://applab.example.com"; state.key = "k"', ctx);
+      await vm.runInContext("startLogs", ctx)("platform");
+      return ctx;
+    };
+
+    {
+      const ctx = await logContext(200);
+      const asked = ctx.requests[0] || "";
+      check(
+        "the platform panel reads the platform's log",
+        asked.startsWith("https://applab.example.com/api/v1/platform/logs?"),
+        true
+      );
+      check("and does not name an app", asked.includes("/apps/"), false);
+    }
+
+    {
+      // No cluster client: a legitimate way to run, not a fault, so the panel
+      // says which it is instead of sending someone after a bug that is not
+      // there. Same 501 the branch control treats as "not configured".
+      await logContext(501, { error: "this deployment cannot observe" });
+      const text = elements.get("platform-logs").textContent || "";
+      check("no cluster client is reported as such", text.includes("no cluster client"), true);
+      check("and not as a failed read", text.includes("Could not read the log"), false);
+    }
+
+    {
+      // Any other failure is a real one and keeps the generic wording, so the
+      // 501 branch above is a distinction rather than a blanket rewrite.
+      await logContext(500, { error: "boom" });
+      const text = elements.get("platform-logs").textContent || "";
+      check("any other failure is reported as a failed read", text.includes("Could not read the log"), true);
+    }
   }
 
   if (failures > 0) {

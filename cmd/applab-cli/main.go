@@ -77,6 +77,7 @@ Point them at a deployment and these commands are everything needed to ship:
     applab status            what is running, and where
     applab logs --follow     watch it
     applab diagnose          why it is not working
+    applab platform logs     why *AppLab* is not working
     applab rollback          go back to the previous upload
 
 There are two kinds of key, and which one is in APPLAB_KEY decides what these
@@ -124,6 +125,7 @@ with "applab keys <app>".`,
 		buildsCommand(&urlFlag, &keyFlag),
 		commitsCommand(&urlFlag, &keyFlag),
 		podsCommand(&urlFlag, &keyFlag),
+		platformCommand(&urlFlag, &keyFlag),
 		eventsCommand(&urlFlag, &keyFlag),
 		updateCommand(&urlFlag, &keyFlag),
 		restartCommand(&urlFlag, &keyFlag),

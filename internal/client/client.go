@@ -905,6 +905,39 @@ type LogOptions struct {
 
 // Logs streams an app's pod log to w.
 func (c *Client) Logs(ctx context.Context, appID string, opts LogOptions, w io.Writer, follow bool) error {
+	return c.streamLogs(ctx, "/api/v1/apps/"+appID+"/logs", opts, w, follow)
+}
+
+// SelfPods lists AppLab's own pods — the deployment this client is talking to,
+// as opposed to the apps it manages.
+//
+// The two are the same kind of thing from a caller's side, which is why the
+// answer is a PodList rather than a shape of its own. What differs is where it
+// comes from: an app's pods are the app's, and these are the control plane's.
+func (c *Client) SelfPods(ctx context.Context) (*PodList, error) {
+	var out PodList
+	if err := c.do(ctx, http.MethodGet, "/api/v1/platform/pods", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SelfLogs streams AppLab's own log to w.
+//
+// The reason it exists is the case where nothing else helps: a build that never
+// starts, a deploy that does nothing. An app's log says nothing about either,
+// because the control plane is what failed.
+func (c *Client) SelfLogs(ctx context.Context, opts LogOptions, w io.Writer, follow bool) error {
+	return c.streamLogs(ctx, "/api/v1/platform/logs", opts, w, follow)
+}
+
+// streamLogs reads a log endpoint, which is one of two by path and identical
+// otherwise — same query, same streaming, same text/plain body.
+//
+// Shared rather than written twice because the streaming half is where the
+// subtle mistakes live (an unflushed buffer, a body that is never closed), and a
+// second copy is a second place for them.
+func (c *Client) streamLogs(ctx context.Context, path string, opts LogOptions, w io.Writer, follow bool) error {
 	params := []string{}
 	if opts.Pod != "" {
 		params = append(params, "pod="+urlQueryEscape(opts.Pod))
@@ -925,7 +958,6 @@ func (c *Client) Logs(ctx context.Context, appID string, opts LogOptions, w io.W
 		params = append(params, "follow=false")
 	}
 
-	path := "/api/v1/apps/" + appID + "/logs"
 	if len(params) > 0 {
 		path += "?" + strings.Join(params, "&")
 	}

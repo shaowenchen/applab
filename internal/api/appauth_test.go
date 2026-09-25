@@ -229,6 +229,12 @@ func TestAppKeyIsRefusedTheAdminSurface(t *testing.T) {
 		{http.MethodGet, "/api/v1/overview"},
 		// Creating apps is how the set of apps is changed.
 		{http.MethodPost, "/api/v1/apps"},
+		// The control plane's own pods and log. It runs in the same namespace
+		// as every app, and its log names them, their commits and their
+		// failures — so an app key reaching it would read past its own app
+		// through a route with no {app} to scope against.
+		{http.MethodGet, "/api/v1/platform/pods"},
+		{http.MethodGet, "/api/v1/platform/logs"},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			rec := withKey(t, h, tc.method, tc.path, key, map[string]any{"id": "sneaky"})

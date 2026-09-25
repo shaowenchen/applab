@@ -403,6 +403,10 @@ func TestObservabilityWithoutClusterIs501(t *testing.T) {
 		"/api/v1/apps/shop/logs",
 		"/api/v1/apps/shop/events",
 		"/api/v1/apps/shop/diagnose",
+		// The platform's own, which answer the same way: there is no cluster to
+		// read, and that is a way to run AppLab rather than a fault.
+		"/api/v1/platform/pods",
+		"/api/v1/platform/logs",
 	} {
 		rec := doRequest(t, h, http.MethodGet, path, nil)
 		if rec.Code != http.StatusNotImplemented {
@@ -512,6 +516,95 @@ func TestMetricsExcludesItself(t *testing.T) {
 
 	if !strings.Contains(rec.Body.String(), "applab_requests_total 0") {
 		t.Errorf("scraping /metrics counted itself as traffic:\n%s", firstLines(rec.Body.String(), 30))
+	}
+}
+
+// TestPlatformPodsEndpointReportsAppLabsOwn is the endpoint's whole reason: it
+// is how the console lists the deployment serving it, and it must not list an
+// app's pods — the fake cluster holds both, in one namespace, as a real one does.
+func TestPlatformPodsEndpointReportsAppLabsOwn(t *testing.T) {
+	srv, client := newObserveServer(t)
+	h := srv.Handler()
+	createAppForObserve(t, h, "shop")
+
+	ctx := context.Background()
+	createNamespaceForTest(t, client, "ops-system")
+
+	for _, pod := range []*corev1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "applab-6b9f7-abc",
+				Namespace: "ops-system",
+				Labels:    map[string]string{"app.kubernetes.io/part-of": "applab"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "applab", Image: "applab:abc"}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "app-shop-1",
+				Namespace: "ops-system",
+				Labels:    map[string]string{"applab.io/app": "shop"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "shop:abc"}}},
+		},
+	} {
+		if _, err := client.CoreV1().Pods("ops-system").Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create pod %s: %v", pod.Name, err)
+		}
+	}
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/platform/pods", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("platform pods: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		Namespace string `json:"namespace"`
+		Count     int    `json:"count"`
+		Pods      []struct {
+			Name string `json:"name"`
+		} `json:"pods"`
+	}
+	decodeData(t, rec, &result)
+
+	if result.Count != 1 {
+		t.Fatalf("count = %d, want only the control plane's (%s)", result.Count, rec.Body.String())
+	}
+	if result.Pods[0].Name != "applab-6b9f7-abc" {
+		t.Errorf("pod = %q, want applab's own", result.Pods[0].Name)
+	}
+	if result.Namespace != "ops-system" {
+		t.Errorf("namespace = %q, want the one it looked in", result.Namespace)
+	}
+}
+
+// TestPlatformLogsEndpointServesText asserts the shape the console reads: a
+// text/plain body, so a client that can read an app's log can read this one with
+// nothing new to learn.
+func TestPlatformLogsEndpointServesText(t *testing.T) {
+	srv, client := newObserveServer(t)
+	h := srv.Handler()
+
+	ctx := context.Background()
+	createNamespaceForTest(t, client, "ops-system")
+	if _, err := client.CoreV1().Pods("ops-system").Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "applab-6b9f7-abc",
+			Namespace: "ops-system",
+			Labels:    map[string]string{"app.kubernetes.io/part-of": "applab"},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "applab", Image: "applab:abc"}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	// follow=false, so this reads what exists and returns rather than streaming.
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/platform/logs?follow=false", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("platform logs: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
 	}
 }
 

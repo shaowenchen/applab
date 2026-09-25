@@ -410,6 +410,15 @@ type Observer interface {
 
 	// Events returns recent Kubernetes events concerning one app.
 	Events(ctx context.Context, namespace, appID string, limit int) ([]observe.Event, error)
+
+	// SelfPods lists AppLab's own pods.
+	SelfPods(ctx context.Context, namespace string, limit int) ([]observe.Pod, error)
+
+	// SelfLogs returns one of AppLab's own containers' logs.
+	SelfLogs(ctx context.Context, namespace string, opts observe.LogOptions) (string, error)
+
+	// StreamSelfLogs follows one of AppLab's own containers' logs.
+	StreamSelfLogs(ctx context.Context, namespace string, opts observe.LogOptions, w io.Writer, flush func()) error
 }
 
 // WithObserver attaches the observability half.
@@ -477,6 +486,30 @@ func (s *Server) listEvents(ctx context.Context, namespace, appID string, limit 
 		return nil, fmt.Errorf("this deployment cannot observe")
 	}
 	return s.observer.Events(ctx, namespace, appID, limit)
+}
+
+// listSelfPods reads AppLab's own pods.
+func (s *Server) listSelfPods(ctx context.Context, limit int) ([]observe.Pod, error) {
+	if s.observer == nil {
+		return nil, fmt.Errorf("this deployment cannot observe")
+	}
+	return s.observer.SelfPods(ctx, s.cfg.Namespace, limit)
+}
+
+// selfLogs reads one of AppLab's own containers' logs.
+func (s *Server) selfLogs(ctx context.Context, opts observe.LogOptions) (string, error) {
+	if s.observer == nil {
+		return "", fmt.Errorf("this deployment cannot observe")
+	}
+	return s.observer.SelfLogs(ctx, s.cfg.Namespace, opts)
+}
+
+// streamSelfLogs follows one of AppLab's own containers' logs.
+func (s *Server) streamSelfLogs(ctx context.Context, opts observe.LogOptions, w io.Writer, flush func()) error {
+	if s.observer == nil {
+		return fmt.Errorf("this deployment cannot observe")
+	}
+	return s.observer.StreamSelfLogs(ctx, s.cfg.Namespace, opts, w, flush)
 }
 
 // route is one endpoint: how it is matched, whether it is protected, and
@@ -609,6 +642,28 @@ func (s *Server) routes() []route {
 			Auth:    true,
 			Doc:     "The platform at a glance: app counts by status, build counts and the most recent builds across every app, whether the cluster is configured and reachable, and this deployment's self-description. Counts exclude deleted apps.",
 			Handler: s.handleOverview,
+		},
+		{
+			// Admin key only, like the overview above and for the same reason:
+			// the control plane runs in the same namespace as every app but is
+			// not any app's, so there is no app for an app key to be scoped
+			// against. Plain Auth rather than AppAuth+AppAdminOnly, because that
+			// pair *accepts* an app key and then refuses it — the right shape for
+			// a route that has an {app} to scope, and the wrong one here.
+			Pattern: "GET /api/v1/platform/pods",
+			Auth:    true,
+			Doc:     "AppLab's own pods, newest first — the deployment that serves this API, not the apps it manages. `?limit=` (default 100). Admin key only: an app key reaches one app and this is not it.",
+			Handler: s.handleListSelfPods,
+		},
+		{
+			// The reason this exists: diagnosing AppLab itself used to mean
+			// shelling into the cluster for its log. Admin key only, for the same
+			// reason as its pods — the control plane's log names other apps, their
+			// commits and their failures.
+			Pattern: "GET /api/v1/platform/logs",
+			Auth:    true,
+			Doc:     "AppLab's own log as `text/plain`, following by default; `?follow=false` returns what exists and closes. `?pod=` and `?container=` narrow it (default: the newest AppLab pod). `?previous=true` reads the previous container instance, which is where a crash loop's reason is written. `?tail=` (default 500, max 10000), `?since=` a duration such as `5m`. Admin key only.",
+			Handler: s.handleSelfLogs,
 		},
 		{
 			// The orientation call, and the only one an agent needs to be given:

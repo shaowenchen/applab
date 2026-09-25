@@ -562,3 +562,159 @@ func TestPodsLimitIsApplied(t *testing.T) {
 		t.Errorf("got %d pods, want the requested 3", len(pods))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// AppLab's own pods and logs
+//
+// The control plane runs in the same namespace as every app, so "AppLab's pods"
+// is a selection that has to exclude the apps — and "not an app's pod" is the
+// boundary that keeps `?pod=` from naming any pod in the namespace and reading
+// its log. Both directions are checked below.
+// ---------------------------------------------------------------------------
+
+// selfPod builds a pod carrying the chart's own labels.
+func selfPod(name string, created time.Time, containers ...string) *corev1.Pod {
+	spec := make([]corev1.Container, 0, len(containers))
+	for _, c := range containers {
+		spec = append(spec, corev1.Container{Name: c})
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         "ops-system",
+			Labels:            map[string]string{"app.kubernetes.io/part-of": "applab"},
+			CreationTimestamp: metav1.NewTime(created),
+		},
+		Spec: corev1.PodSpec{Containers: spec},
+	}
+}
+
+// TestSelfPodsExcludesApps is the whole point of the selector. AppLab and every
+// app it manages share a namespace, so a selector that matched too much would
+// report an app's pod as part of the control plane — and this is the list someone
+// reads to find out whether the control plane itself is up.
+func TestSelfPodsExcludesApps(t *testing.T) {
+	o, _ := newTestObserver(t,
+		selfPod("applab-6b9f7-abc", time.Now(), "applab"),
+		appPod("app-shop-1", corev1.PodRunning, true),
+	)
+
+	pods, err := o.SelfPods(context.Background(), "ops-system", 10)
+	if err != nil {
+		t.Fatalf("SelfPods: %v", err)
+	}
+	if len(pods) != 1 {
+		t.Fatalf("got %d pods, want only the control plane's", len(pods))
+	}
+	if pods[0].Name != "applab-6b9f7-abc" {
+		t.Errorf("pod = %q, want applab's own", pods[0].Name)
+	}
+}
+
+// TestSelfPodsNewestFirst asserts the order a reader scans in: the pod that is
+// running now is the one whose log they will want, and during a rollout it is the
+// only one that has anything to say.
+func TestSelfPodsNewestFirst(t *testing.T) {
+	o, _ := newTestObserver(t,
+		selfPod("applab-old", time.Now().Add(-time.Hour), "applab"),
+		selfPod("applab-new", time.Now(), "applab"),
+	)
+
+	pods, err := o.SelfPods(context.Background(), "ops-system", 10)
+	if err != nil {
+		t.Fatalf("SelfPods: %v", err)
+	}
+	if len(pods) != 2 || pods[0].Name != "applab-new" {
+		got := make([]string, 0, len(pods))
+		for _, p := range pods {
+			got = append(got, p.Name)
+		}
+		t.Errorf("got %v, want the newest first", got)
+	}
+}
+
+// TestSelfLogsRefusesAnAppsPod is the mirror of TestLogsRefusesAPodOfAnotherApp,
+// and the reason `?pod=` is not a way to read any log in the namespace.
+func TestSelfLogsRefusesAnAppsPod(t *testing.T) {
+	o, _ := newTestObserver(t, appPod("app-shop-1", corev1.PodRunning, true))
+
+	_, err := o.SelfLogs(context.Background(), "ops-system", LogOptions{Pod: "app-shop-1"})
+	if err == nil {
+		t.Fatal("the platform log read an app's pod")
+	}
+	if !strings.Contains(err.Error(), "not part of the AppLab deployment") {
+		t.Errorf("the error should say the pod is not AppLab's, got: %v", err)
+	}
+}
+
+// TestSelfLogsOnADeploymentWithNoPodsIsClear asserts the failure names the likely
+// cause. A mid-rollout deployment really does have no pods for a moment, and
+// "connection refused" would not say so.
+func TestSelfLogsOnADeploymentWithNoPodsIsClear(t *testing.T) {
+	o, _ := newTestObserver(t)
+
+	_, err := o.SelfLogs(context.Background(), "ops-system", LogOptions{})
+	if err == nil {
+		t.Fatal("reading the platform log with no pods succeeded")
+	}
+	if !strings.Contains(err.Error(), "no pods") {
+		t.Errorf("the error should say there are no pods, got: %v", err)
+	}
+}
+
+// TestSelfLogsPicksTheNewestPod asserts the default target, which is the pod the
+// reader means when they ask for "the" log.
+func TestSelfLogsPicksTheNewestPod(t *testing.T) {
+	o, _ := newTestObserver(t,
+		selfPod("applab-old", time.Now().Add(-time.Hour), "applab"),
+		selfPod("applab-new", time.Now(), "applab"),
+	)
+
+	name, container, err := o.resolveSelfPod(context.Background(), "ops-system", LogOptions{})
+	if err != nil {
+		t.Fatalf("resolveSelfPod: %v", err)
+	}
+	if name != "applab-new" {
+		t.Errorf("pod = %q, want the newest", name)
+	}
+	if container != "applab" {
+		t.Errorf("container = %q, want applab", container)
+	}
+}
+
+// TestCopyLinesStopsWhenTheContextEnds asserts a cancelled request ends the copy.
+//
+// A container that has gone quiet leaves the read blocked, so without the check
+// between reads the goroutine would outlive the request by however long the app
+// took to log again — which for a healthy app is indefinitely.
+func TestCopyLinesStopsWhenTheContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// A reader that never ends, which is what a followed stream looks like.
+	endless := &blockingReader{}
+
+	var out strings.Builder
+	done := make(chan error, 1)
+	go func() { done <- copyLines(ctx, endless, &out, nil) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("copyLines: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("copyLines did not return after the context was cancelled")
+	}
+}
+
+// blockingReader hands back one line and then blocks forever.
+type blockingReader struct{ sent bool }
+
+func (r *blockingReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, "first line\n"), nil
+	}
+	select {}
+}

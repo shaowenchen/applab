@@ -201,40 +201,17 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      # Run the image before it is pushed, because "it built" is not "it runs".
+      # The image is built once, below, and not run here. `hack/image-smoke.sh`
+      # still exists and still does what its header describes — it runs the
+      # container against a real object store and checks that it serves — but it
+      # is not part of this workflow: it needs docker-in-docker and a second
+      # container to talk to, which is a lot of machinery in front of every
+      # build. Run it by hand when the image is what changed.
       #
-      # Everything that differs between a built image and a running one was
-      # unverified by this workflow, and two defects reached a cluster that way:
-      # a chmod on the data directory that fails for a process that does not own
-      # the mounted volume, and git-http-backend missing from the image because
-      # Alpine ships it in a separate package. The Go tests run against a working
-      # copy on a machine where both problems are absent; helm-check.sh asserts
-      # what the chart renders, not what the image contains. Running it is the
-      # only check that can see either.
-      #
-      # Single-architecture and loaded locally, because the smoke test starts a
-      # container — the multi-arch build below produces a manifest that cannot be
-      # run. Built before the push so a failure stops the image from going out.
-      - name: Build for the smoke test
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: applab-smoke:local
-          build-args: |
-            VERSION=${{ github.ref_name }}
-            COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          provenance: false
-          sbom: false
-
-      # The image is built here and not run. `hack/image-smoke.sh` still exists
-      # and still does what its header describes — it runs the container against
-      # a real object store and checks that it serves — but it is not part of
-      # this workflow: it needs docker-in-docker and a second container to talk
-      # to, which is a lot of machinery to put in front of every build. Run it by
-      # hand when the image is what changed.
+      # There used to be a second, single-architecture build here that loaded a
+      # `applab-smoke:local` tag for that test to run. With the test gone the tag
+      # had no consumer, and it was a whole extra image build plus an
+      # uncached-layer write on every push.
 
       # The tags are derived from the git ref rather than taken on trust, and the
       # version stamped into the binary is the same string a user sees on the

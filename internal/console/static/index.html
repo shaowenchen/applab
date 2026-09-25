@@ -588,6 +588,32 @@
         <span data-i18n="No builds yet. Push an app with">No builds yet. Push an app with</span> <span class="mono">applab push &lt;app&gt;</span>.
       </div>
     </div>
+
+    <!-- AppLab's own log, on the overview because it is a fact about the
+         deployment this page is served by rather than about any app. It is the
+         same stream an app's log panel shows, and it belongs here for the
+         mirror-image reason: when an app misbehaves the app's log says why, and
+         when the *platform* misbehaves — a build that never starts, a deploy
+         that does nothing — this is the only place that says why. Without it,
+         reading it means a shell and `kubectl logs`, which is precisely what
+         whoever is looking at this page does not have.
+
+         It sits below the build list rather than beside the cluster panel
+         because it is the tallest thing here, and a failing platform is read by
+         scrolling not by scanning a number.
+
+         Not admin-gated in this markup beyond the view itself: the overview is
+         already admin-only on the server, and an app key never reaches it. -->
+    <div class="card">
+      <div class="card-head">
+        <h2 data-i18n="Platform log">Platform log</h2>
+        <label class="muted" style="font-size:13px">
+          <input type="checkbox" id="platform-logs-previous"> <span data-i18n="previous instance">previous instance</span>
+        </label>
+        <button id="platform-logs-toggle" data-i18n="Follow">Follow</button>
+      </div>
+      <pre id="platform-logs" style="margin:0" data-i18n="(not started)">(not started)</pre>
+    </div>
   </section>
 
   <section id="apps-view" class="hidden">
@@ -870,7 +896,13 @@ const state = {
   // Which view is showing, so openApp can return to where it was called from.
   view: "overview",
   cameFrom: "apps",
+  // The one log stream that can be running, and which panel owns it. There are
+  // two panels — the open app's and the platform's — and only one view is ever
+  // on screen, so one slot describes the situation without a map: leaving a view
+  // stops its panel's stream, and a stream that outlived its panel would keep
+  // reading a body nobody is going to render.
   logAbort: null,
+  logPanel: "",
   logFollowing: false,
 };
 
@@ -950,6 +982,8 @@ const ZH = {
   "Capabilities": "能力",
   "Cluster": "集群",
   "Recent builds": "最近构建",
+  "Platform log": "平台日志",
+  "This deployment cannot read logs: no cluster client is configured.": "这个部署无法读取日志：没有配置集群客户端。",
   "No builds yet. Push an app with": "还没有构建。用这个命令推送一个应用：",
   "Needs attention": "需要处理",
   "In progress": "进行中",
@@ -1649,6 +1683,11 @@ async function showOverview() {
   state.app = "";
   navTo("overview");
   await loadOverview();
+  // Followed from the moment the view opens, like an app's log: the panel is
+  // there to be read while something is going wrong, and asking someone to press
+  // Follow first means the lines they wanted are the ones that scrolled past
+  // before they did.
+  startLogs("platform");
 }
 
 async function showApps() {
@@ -2270,7 +2309,7 @@ async function openApp(id) {
     loadRepository(),
     loadBranches(),
   ]);
-  startLogs();
+  startLogs("app");
 
   // The build log panel belongs to the app that was open, so it goes with it.
   // Left as it was, the next app's page would open showing the previous app's
@@ -2785,37 +2824,83 @@ async function remove() {
 // end up in access logs and history.
 // ---------------------------------------------------------------------------
 
+// The two log panels are one mechanism with two addresses.
+//
+// An app's log and AppLab's own log are the same kind of thing — a stream of
+// lines from one container — and the server serves them the same way (text/plain,
+// following until the client goes away). So the client has one reader and two
+// descriptions of what to read. Writing it twice would mean two places to fix
+// every streaming bug, and the second one would be found later.
+
+// The panels, by the view they belong to. `path` is the resource; the query is
+// assembled because both routes take the same one.
+const LOG_PANELS = {
+  app: {
+    // The open app's log: which app is state.app, read at call time.
+    path: () => "/api/v1/apps/" + state.app + "/logs",
+    output: "logs",
+    toggle: "logs-toggle",
+    previous: "logs-previous",
+  },
+  platform: {
+    // AppLab's own log: the deployment serving this page. No app in the path,
+    // because it is not about one.
+    path: () => "/api/v1/platform/logs",
+    output: "platform-logs",
+    toggle: "platform-logs-toggle",
+    previous: "platform-logs-previous",
+  },
+};
+
 function stopLogs() {
   if (state.logAbort) {
     state.logAbort.abort();
     state.logAbort = null;
   }
   state.logFollowing = false;
-  const toggle = $("logs-toggle");
-  if (toggle) toggle.textContent = t("Follow");
+  // Only the panel that owns the stream needs putting back; the other is not
+  // following anything, and its button already says so.
+  const panel = LOG_PANELS[state.logPanel];
+  if (panel) {
+    const toggle = $(panel.toggle);
+    if (toggle) toggle.textContent = t("Follow");
+  }
+  state.logPanel = "";
 }
 
-async function startLogs() {
+async function startLogs(name) {
   stopLogs();
 
-  const el = $("logs");
+  const panel = LOG_PANELS[name];
+  if (!panel) return;
+
+  const el = $(panel.output);
   el.textContent = "";
 
   const controller = new AbortController();
   state.logAbort = controller;
+  state.logPanel = name;
   state.logFollowing = true;
-  $("logs-toggle").textContent = t("Stop");
+  $(panel.toggle).textContent = t("Stop");
 
   const params = new URLSearchParams({ follow: "false", tail: "500" });
-  if ($("logs-previous").checked) params.set("previous", "true");
+  if ($(panel.previous).checked) params.set("previous", "true");
 
   try {
     const response = await fetch(
-      state.url + "/api/v1/apps/" + state.app + "/logs?" + params.toString(),
+      state.url + panel.path() + "?" + params.toString(),
       { headers: { "Authorization": "Bearer " + state.key }, signal: controller.signal }
     );
 
     if (!response.ok) {
+      // 501 is the one answer that is not a failure of the log itself: a
+      // deployment with no cluster client attached cannot observe anything, which
+      // is a way AppLab is meant to run rather than something broken. Saying
+      // "could not read the log" would send someone looking for a fault.
+      if (response.status === 501) {
+        el.textContent = t("This deployment cannot read logs: no cluster client is configured.");
+        return;
+      }
       const text = await response.text();
       let message = response.status + " " + response.statusText;
       try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
@@ -2837,8 +2922,9 @@ async function startLogs() {
   } finally {
     if (state.logAbort === controller) {
       state.logAbort = null;
+      state.logPanel = "";
       state.logFollowing = false;
-      $("logs-toggle").textContent = t("Follow");
+      $(panel.toggle).textContent = t("Follow");
     }
   }
 }
@@ -3043,11 +3129,17 @@ $("config-env-set").onclick = () => {
   $("config-env-value").value = "";
 };
 
-$("logs-toggle").onclick = () => {
-  if (state.logFollowing) stopLogs();
-  else startLogs();
-};
-$("logs-previous").onchange = () => { if (state.logFollowing) startLogs(); };
+// Both panels' controls, wired the same way. The toggle is per panel but the
+// stream is not, so a panel's Follow stops whatever is running — which is that
+// panel's own stream, since only one view is ever on screen.
+for (const [name, panel] of Object.entries(LOG_PANELS)) {
+  $(panel.toggle).onclick = () => {
+    if (state.logFollowing) stopLogs();
+    else startLogs(name);
+  };
+  // Re-reads to apply the new setting, rather than reopening a second stream.
+  $(panel.previous).onchange = () => { if (state.logFollowing) startLogs(name); };
+}
 
 // On boot: work out the deployment's address from this page, and use a saved key
 // if there is one.

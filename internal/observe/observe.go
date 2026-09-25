@@ -440,32 +440,10 @@ func (o *Observer) StreamLogs(ctx context.Context, namespace, appID string, opts
 	}
 	defer stream.Close()
 
-	reader := bufio.NewReader(stream)
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			if _, writeErr := io.WriteString(w, line); writeErr != nil {
-				// The client went away. Not an error worth reporting: it is the
-				// normal way a stream ends.
-				return nil
-			}
-			if flush != nil {
-				flush()
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return fmt.Errorf("stream logs for pod %s: %w", podName, err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
+	if err := copyLines(ctx, stream, w, flush); err != nil {
+		return fmt.Errorf("stream logs for pod %s: %w", podName, err)
 	}
+	return nil
 }
 
 // resolvePod picks the pod and container a log request refers to.
@@ -520,6 +498,197 @@ func (o *Observer) resolvePod(ctx context.Context, namespace, appID string, opts
 // belongsToApp reports whether a pod carries the app's label.
 func belongsToApp(pod *corev1.Pod, appID string) bool {
 	return pod.Labels["applab.io/app"] == appID
+}
+
+// ---------------------------------------------------------------------------
+// AppLab's own pods
+//
+// The same reads as above, addressed to the deployment itself rather than to an
+// app it manages. They exist because the alternative is `kubectl logs` — which
+// is fine for whoever already has cluster access and useless to everyone else,
+// including whoever is debugging through the console.
+//
+// These are found by the chart's own labels rather than by the app label, which
+// is what keeps them from ever returning an app's pod: an app carries
+// applab.io/app and no app.kubernetes.io/name, and AppLab carries the reverse.
+// ---------------------------------------------------------------------------
+
+// selfSelector matches the pods the chart installs: AppLab and its
+// ServiceMonitor, but no app.
+const selfSelector = "app.kubernetes.io/part-of=applab"
+
+// SelfPods lists AppLab's own pods, newest first.
+func (o *Observer) SelfPods(ctx context.Context, namespace string, limit int) ([]Pod, error) {
+	pods, err := o.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selfSelector,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list applab's pods in %s: %w", namespace, err)
+	}
+
+	out := make([]Pod, 0, len(pods.Items))
+	for i := range pods.Items {
+		out = append(out, toPod(&pods.Items[i]))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
+
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// SelfLogs returns one of AppLab's own containers' logs.
+//
+// The target resolves like an app's — newest pod, and the caller may name one —
+// with one difference: pickContainer prefers a container called "app", which is
+// what the deployer names an app's, and AppLab's own is "applab". So the default
+// here is the pod's first container rather than a name that will never match.
+func (o *Observer) SelfLogs(ctx context.Context, namespace string, opts LogOptions) (string, error) {
+	podName, container, err := o.resolveSelfPod(ctx, namespace, opts)
+	if err != nil {
+		return "", err
+	}
+
+	logOpts := &corev1.PodLogOptions{
+		Container: container,
+		Previous:  opts.Previous,
+	}
+	if opts.TailLines > 0 {
+		logOpts.TailLines = &opts.TailLines
+	}
+	if opts.Since > 0 {
+		seconds := int64(opts.Since.Seconds())
+		logOpts.SinceSeconds = &seconds
+	}
+
+	stream, err := o.client.CoreV1().Pods(namespace).GetLogs(podName, logOpts).Stream(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read logs for pod %s: %w", podName, err)
+	}
+	defer stream.Close()
+
+	return readCapped(stream, o.maxLogBytes)
+}
+
+// StreamSelfLogs follows one of AppLab's own containers' logs.
+func (o *Observer) StreamSelfLogs(ctx context.Context, namespace string, opts LogOptions, w io.Writer, flush func()) error {
+	podName, container, err := o.resolveSelfPod(ctx, namespace, opts)
+	if err != nil {
+		return err
+	}
+
+	logOpts := &corev1.PodLogOptions{
+		Container: container,
+		Follow:    true,
+		Previous:  opts.Previous,
+	}
+	if opts.TailLines > 0 {
+		logOpts.TailLines = &opts.TailLines
+	} else {
+		tail := int64(200)
+		logOpts.TailLines = &tail
+	}
+	if opts.Since > 0 {
+		seconds := int64(opts.Since.Seconds())
+		logOpts.SinceSeconds = &seconds
+	}
+
+	stream, err := o.client.CoreV1().Pods(namespace).GetLogs(podName, logOpts).Stream(ctx)
+	if err != nil {
+		return fmt.Errorf("follow logs for pod %s: %w", podName, err)
+	}
+	defer stream.Close()
+
+	if err := copyLines(ctx, stream, w, flush); err != nil {
+		return fmt.Errorf("follow logs for pod %s: %w", podName, err)
+	}
+	return nil
+}
+
+// resolveSelfPod picks which of AppLab's pods and containers a request refers to.
+func (o *Observer) resolveSelfPod(ctx context.Context, namespace string, opts LogOptions) (string, string, error) {
+	if opts.Pod != "" {
+		pod, err := o.client.CoreV1().Pods(namespace).Get(ctx, opts.Pod, metav1.GetOptions{})
+		if err != nil {
+			return "", "", fmt.Errorf("read pod %s: %w", opts.Pod, err)
+		}
+		if !isAppLabPod(pod) {
+			// The same boundary an app's logs have, from the other side: naming
+			// a pod here must not reach an app's pod, or this endpoint would be
+			// a way to read any log in the namespace by name.
+			return "", "", fmt.Errorf("pod %s is not part of the AppLab deployment", opts.Pod)
+		}
+		container, err := pickContainer(pod, opts.Container)
+		if err != nil {
+			return "", "", err
+		}
+		return pod.Name, container, nil
+	}
+
+	pods, err := o.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selfSelector,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("list applab's pods in %s: %w", namespace, err)
+	}
+	if len(pods.Items) == 0 {
+		return "", "", fmt.Errorf("applab has no pods in %s; it may be mid-rollout, or the namespace is wrong", namespace)
+	}
+
+	newest := pods.Items[0]
+	for _, candidate := range pods.Items[1:] {
+		if candidate.CreationTimestamp.After(newest.CreationTimestamp.Time) {
+			newest = candidate
+		}
+	}
+
+	container, err := pickContainer(&newest, opts.Container)
+	if err != nil {
+		return "", "", err
+	}
+	return newest.Name, container, nil
+}
+
+// isAppLabPod reports whether a pod is part of the deployment rather than an app.
+func isAppLabPod(pod *corev1.Pod) bool {
+	return pod.Labels["app.kubernetes.io/part-of"] == "applab"
+}
+
+// copyLines writes r to w a line at a time, flushing after each, and stops when
+// the context ends.
+//
+// The context check is between reads rather than passed to the reader: a
+// container that stops producing output leaves the read blocked, so a stream
+// whose request has gone would otherwise hold the goroutine until the pod
+// stopped. Checking here is what lets a cancelled request end the copy — the
+// read itself is unblocked by closing the stream, which is the caller's defer.
+func copyLines(ctx context.Context, r io.Reader, w io.Writer, flush func()) error {
+	reader := bufio.NewReader(r)
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			if _, writeErr := io.WriteString(w, line); writeErr != nil {
+				// The client went away, which is the normal way a stream ends.
+				return nil
+			}
+			if flush != nil {
+				flush()
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+	}
 }
 
 // pickContainer chooses a container from a pod.
