@@ -256,21 +256,38 @@ echo "  ok: it reports the git capability"
 # creates its repository — and clones it through git's HTTP transport, so the
 # opinion is checked against the thing it is about.
 #
-# A freshly created repository is empty, so the clone succeeds with git's "you
-# appear to have cloned an empty repository" warning. That is the expected
-# outcome here and not a silent skip: what is under test is that the request
-# reaches git-http-backend and is answered, which is exactly what fails when the
-# backend is absent, and the empty-clone path exercises the same CGI invocation a
-# clone with content does. Cloning is used rather than a push because it needs no
-# credentials beyond the key already in play, and no local commit.
-docker exec "$name" /usr/local/bin/applab-cli create smoke --port 8080 >/dev/null \
-  || fail "the API refused to create an app, so no repository was made"
+# The clone brings back the opening commit AppLab writes when an app is created:
+# the two files that tell a caller how to work with this app. So this is not the
+# empty-repository case, and a clone that returns nothing is a failure rather
+# than git's "you appear to have cloned an empty repository" being expected — the
+# check below asserts the seed file arrives, which also proves the clone
+# transferred an object rather than merely reaching the backend.
+#
+# Cloning is used rather than a push because it needs no credentials beyond the
+# key already in play, and no local commit.
+docker exec "$name" /usr/local/bin/applab-cli create smoke --port 8080 >/dev/null || {
+  # The server's log is printed here, not just the CLI's error. The API hides a
+  # 5xx cause on purpose — its text can name a bucket, a path or another caller's
+  # data — and the log is where that cause goes. Without it this failure reads as
+  # "internal error" and the one piece of evidence is thrown away.
+  logs
+  fail "the API refused to create an app, so no repository was made"
+}
 
 if ! docker exec -w /tmp "$name" git \
       -c http.extraHeader="Authorization: Bearer smoke-test-key" \
       clone http://127.0.0.1:8080/applab/git/smoke.git cloned 2>&1; then
   logs
   fail "cloning an app's repository over HTTP failed; this is the path git-http-backend serves"
+fi
+
+# The clone has to have carried the opening commit, not merely connected. A
+# backend that answered with an empty advertisement would satisfy the clone and
+# fail every caller who then expected the app's guidance files.
+if ! docker exec "$name" test -f /tmp/cloned/applab.sh; then
+  docker exec "$name" ls -a /tmp/cloned >&2 2>&1 || true
+  logs
+  fail "the clone returned no opening commit; an app's seeded files are what a caller clones for"
 fi
 echo "  ok: an app's repository clones over HTTP inside the image"
 
