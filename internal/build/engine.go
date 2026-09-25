@@ -42,8 +42,8 @@ type Config struct {
 	// on, running `buildkitd` itself. It must contain both.
 	BuilderImage string
 
-	// FetcherImage is the image the init container runs. It needs a shell, curl
-	// and tar — nothing more, since it only downloads and unpacks.
+	// FetcherImage is the image the init container runs. It needs a shell, wget
+	// and tar. Empty disables building.
 	FetcherImage string
 
 	// Registry is the prefix an app's image is pushed under, e.g.
@@ -366,7 +366,7 @@ func (e *Engine) registryVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
 
 // fetchContainer downloads the commit's source into the shared workspace.
 //
-// It is a POSIX shell over curl and tar, rather than a purpose-built binary,
+// It is a POSIX shell over wget and tar, rather than a purpose-built binary,
 // because that is all the step is: one authenticated GET, piped into tar. Keeping
 // it minimal means the init image is small and its behaviour is inspectable from
 // the Job spec.
@@ -387,16 +387,47 @@ url="${APPLAB_URL}/api/v1/apps/${APPLAB_APP}/source/archive/${APPLAB_COMMIT}"
 
 echo "fetching source for ${APPLAB_APP} at ${APPLAB_COMMIT}"
 
-# --fail so an HTTP error is a failure rather than an HTML error page written
-# into the tar stream, which would fail later with a confusing message.
-curl --fail --silent --show-error --location \
-  -H "Authorization: Bearer ${token}" \
-  -o /workspace/source.tar.gz \
+# Everything below is busybox or POSIX shell. Saying so out loud, and saying
+# which tool is missing, is what turns a bare exit 127 into something a reader
+# can act on: this container ran under an image with no wget and reported
+#
+#   init fetch-source exited 127 (Error)
+#
+# for a build that had not sent a single request — which reads as a broken
+# build rather than as an image that lacks a binary. The image is configurable,
+# so this cannot be a compile-time guarantee; it can be a legible failure.
+for tool in wget tar; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "the fetcher image has no '$tool'; it needs a shell, wget and tar" >&2
+    exit 1
+  fi
+done
+
+# wget rather than curl, and the choice is not a preference.
+#
+# The default fetcher image is alpine, whose busybox provides wget and no curl
+# at all. A script calling curl there dies with exit 127 before it has sent
+# anything, and the failure reads as a broken build rather than a missing
+# binary — so this asks for the one tool the image is guaranteed to have.
+#
+# Busybox wget does not retry a connection error, which is where the server's
+# Retry-After matters most: the source store is a bucket, and a 503 from it is
+# normal and brief. Without this a blip fails the whole build.
+wget --tries=3 --header="Authorization: Bearer ${token}" -O /workspace/source.tar.gz \
   "${url}"
 
-# -C /workspace so the archive's own relative paths land in the workspace and
-# cannot be interpreted relative to the root.
-tar -xzf /workspace/source.tar.gz -C /workspace/source
+# wget does not fail on an HTTP error, unlike curl's --fail: a 404 or a 500 is
+# written to the output file and wget exits 0, so this would otherwise surface
+# as tar failing with "not in gzip format" — which names gzip and not the thing
+# that went wrong.
+if ! tar -xzf /workspace/source.tar.gz -C /workspace/source; then
+  echo "could not read the source archive from ${url}" >&2
+  # The body it wrote is a JSON error, and it says what actually happened: a
+  # token that expired, or a commit that is not there.
+  head -c 512 /workspace/source.tar.gz >&2 || true
+  echo >&2
+  exit 1
+fi
 
 rm -f /workspace/source.tar.gz
 
@@ -505,6 +536,17 @@ func (e *Engine) buildContainer(app *model.App, jobName, buildID, commitSHA, ima
 		script = `
 set -eu
 
+# Checked rather than assumed, for the same reason the fetcher's tools are: a
+# missing binary here is exit 127, and the container's log would end there with
+# nothing to say which one. buildctl is checked in both modes; rootlesskit only
+# where it is what starts the daemon.
+for tool in buildctl rootlesskit buildkitd; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "the builder image has no '$tool'; it must provide buildctl and buildkitd, and rootlesskit in rootless mode" >&2
+    exit 1
+  fi
+done
+
 mkdir -p /home/user/.local/share/buildkit /run/buildkit
 
 rootlesskit --state-dir=/run/buildkit/rootlesskit --net=host --mtu=65520 \
@@ -526,6 +568,14 @@ buildctl --addr unix:///run/buildkit/buildkitd.sock "$@"
 		// Privileged: buildkitd can run directly as root.
 		script = `
 set -eu
+
+# Checked rather than assumed — see the rootless branch above.
+for tool in buildctl buildkitd; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "the builder image has no '$tool'; it must provide buildctl and buildkitd" >&2
+    exit 1
+  fi
+done
 
 mkdir -p /run/buildkit
 

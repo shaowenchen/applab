@@ -175,7 +175,8 @@ build:
   # moving tag would change a build's behaviour without AppLab changing.
   builderImage: "moby/buildkit:v0.19.0"
 
-  # The init container's image. It needs a shell, curl and tar.
+  # The init container's image. It needs a shell, wget and tar — wget rather
+  # than curl, because alpine's busybox has the first and not the second.
   fetcherImage: "alpine:3.21"
 
   # Run BuildKit as an unprivileged user. Recommended, and the default.

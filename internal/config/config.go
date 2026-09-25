@@ -226,7 +226,9 @@ type Build struct {
 	BuilderImage string `yaml:"builder_image"`
 
 	// FetcherImage runs the init container that downloads the source. It needs a
-	// shell, curl and tar.
+	// shell, wget and tar — wget rather than curl, because the default is alpine
+	// and busybox provides the first and not the second. See the fetch script in
+	// internal/build for why that is not a free choice.
 	FetcherImage string `yaml:"fetcher_image"`
 
 	// PushSecret names a Secret holding registry credentials, copied into each

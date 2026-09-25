@@ -887,3 +887,124 @@ func TestFailureWithoutAPodIsStillReadable(t *testing.T) {
 		t.Errorf("the job's own message did not survive a missing pod: %q", reason)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// What the containers actually shell out to
+//
+// The fetcher image is configurable, so nothing at compile time can stop it
+// being an image with the wrong tools in it — and the default *was* one. It was
+// `alpine:3.21`, whose busybox provides wget and no curl, while the fetch script
+// called curl: every build died at exit 127 before it sent a single request, and
+// reported only "init fetch-source exited 127".
+//
+// So the scripts are asserted rather than assumed. These read the rendered Job
+// spec, which is the artefact the cluster runs.
+// ---------------------------------------------------------------------------
+
+// TestFetchScriptUsesToolsTheFetcherImageHas asserts the fetch container shells
+// out only to what the default image provides.
+//
+// The image is alpine, whose busybox has wget and tar and no curl. Anything
+// outside that set does not fail loudly — it fails as exit 127, which is the
+// number the shell gives for a command it could not find, and which reads as a
+// broken build rather than as a missing binary.
+func TestFetchScriptUsesToolsTheFetcherImageHas(t *testing.T) {
+	engine, _ := newTestEngine(t)
+
+	fetcher := engine.fetchContainer(testApp(), "build-job", strings.Repeat("a", 40), "workspace", "tok")
+
+	var script strings.Builder
+	script.WriteString(strings.Join(fetcher.Command, " "))
+	script.WriteString(" ")
+	script.WriteString(strings.Join(fetcher.Args, " "))
+	// Comments stripped before scanning, because the script's own explanation of
+	// this very bug names curl — and a check that reads prose would fail on the
+	// comment that documents why the code is right.
+	text := stripShellComments(script.String())
+
+	if strings.Contains(text, "curl") {
+		t.Error("the fetch script calls curl, which alpine does not have — it exits 127 having sent nothing")
+	}
+	if !strings.Contains(text, "wget") {
+		t.Error("the fetch script does not use wget, the one HTTP client the fetcher image is guaranteed to have")
+	}
+	if !strings.Contains(text, "tar") {
+		t.Error("the fetch script does not unpack the archive")
+	}
+	// The token goes in a header, never in the URL: a URL is what ends up in the
+	// server's access log, and the whole point of the token is that it is the
+	// only credential a build holds.
+	if !strings.Contains(text, "Authorization: Bearer ${token}") {
+		t.Error("the fetch script does not send the token as an Authorization header")
+	}
+}
+
+// TestFetchScriptFailsLegiblyWhenAToolIsMissing asserts the guard is in place.
+//
+// Without it a fetcher image missing wget is exit 127 and one line of nothing,
+// which is the failure that took this long to diagnose.
+func TestFetchScriptFailsLegiblyWhenAToolIsMissing(t *testing.T) {
+	engine, _ := newTestEngine(t)
+
+	fetcher := engine.fetchContainer(testApp(), "build-job", strings.Repeat("a", 40), "workspace", "tok")
+	script := strings.Join(fetcher.Args, "\n")
+
+	if !strings.Contains(script, "command -v") {
+		t.Error("the fetch script does not check that its tools exist; a missing one is an unexplained exit 127")
+	}
+	for _, tool := range []string{"wget", "tar"} {
+		if !strings.Contains(script, tool) {
+			t.Errorf("the fetch script does not name %s among the tools it needs", tool)
+		}
+	}
+}
+
+// TestBuildContainerFailsLegiblyWhenAToolIsMissing asserts the same for the
+// builder, whose binaries come from an image the operator also chooses: without
+// rootlesskit or buildkitd the container dies at exit 127 and its log says
+// nothing about which one was absent.
+func TestBuildContainerFailsLegiblyWhenAToolIsMissing(t *testing.T) {
+	for _, rootless := range []bool{true, false} {
+		name := "privileged"
+		if rootless {
+			name = "rootless"
+		}
+
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Rootless = rootless
+			engine := New(fake.NewSimpleClientset(), cfg)
+
+			container := engine.buildContainer(testApp(), "build-job", "buildid1",
+				strings.Repeat("a", 40), "registry.example.com/apps/shop:abc", "workspace")
+			script := strings.Join(container.Args, "\n")
+
+			if !strings.Contains(script, "command -v") {
+				t.Error("the build script does not check that its tools exist")
+			}
+			if !strings.Contains(script, "buildctl") {
+				t.Error("the build script does not check for buildctl")
+			}
+			// rootlesskit only starts the daemon in rootless mode, so demanding
+			// it of a privileged image would refuse an image that works.
+			if rootless && !strings.Contains(script, "rootlesskit") {
+				t.Error("the rootless build script does not check for rootlesskit")
+			}
+			if !rootless && strings.Contains(script, "rootlesskit") {
+				t.Error("the privileged build script demands rootlesskit, which it does not use")
+			}
+		})
+	}
+}
+
+// stripShellComments removes `#`-to-end-of-line from each line, so a check can
+// scan a script's commands without matching the prose around them.
+func stripShellComments(script string) string {
+	lines := strings.Split(script, "\n")
+	for i, line := range lines {
+		if at := strings.Index(line, "#"); at >= 0 {
+			lines[i] = line[:at]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
