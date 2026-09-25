@@ -248,12 +248,12 @@ HTTPS when the gateway has an HTTPS listener.
 
 An app is addressed one of two ways, and the deployment picks one:
 
-**A hostname per app** — the default. `apps.baseDomain` is what apps are served
+**A hostname per app** — the default. `ingress.host` is what apps are served
 under, so an app with id `shop` is at `shop.apps.example.com`. This needs a
 wildcard DNS record and a wildcard certificate.
 
 **One host, one path per app** — set `apps.pathPrefix`. Every app then shares
-`apps.baseDomain` and the path says which is meant, so `shop` is at
+`ingress.host` and the path says which is meant, so `shop` is at
 `apps.example.com/apps/shop`. One ordinary certificate covers any number of
 apps, and nothing has to be reissued as the deployment grows.
 

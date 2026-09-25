@@ -20,11 +20,11 @@ and this route only sees what nothing else claimed.
 
 Rendered only when there is no Ingress to use: an enabled Ingress is an explicit
 statement about where the console lives, and two front doors to one Service is
-one more than an installation needs. It also needs a base domain and a gateway —
-with no base domain there is no host to serve the console on, and with no
-gateway nothing would route it.
+one more than an installation needs. It also needs a host and a gateway —
+with no host there is nothing to serve the console on, and with no gateway
+nothing would route it.
 */}}
-{{- if and (not .Values.ingress.enabled) .Values.deploy.gateway .Values.apps.baseDomain }}
+{{- if and (not .Values.ingress.enabled) .Values.deploy.gateway .Values.ingress.host }}
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
@@ -34,7 +34,7 @@ metadata:
     {{- include "applab.labels" . | nindent 4 }}
 spec:
   hosts:
-    - {{ .Values.apps.baseDomain | quote }}
+    - {{ .Values.ingress.host | quote }}
   gateways:
     - {{ .Values.deploy.gateway }}
   http:

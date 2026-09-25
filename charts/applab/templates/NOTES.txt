@@ -8,7 +8,7 @@ Reach it at:
 
 {{ else -}}
 It is reachable only from inside the cluster: this release has no Ingress, and
-no apps.baseDomain to put the console on the gateway under. Forward a port:
+no ingress.host to put the console on the gateway under. Forward a port:
 
     kubectl -n {{ include "applab.namespace" . }} port-forward svc/{{ include "applab.fullname" . }} 8080:{{ .Values.service.port }}
 
@@ -23,26 +23,25 @@ Then, from any project:
     applab push myshop
 
 {{/*
-Whether the apps have hostnames depends on apps.baseDomain, not on whether
-AppLab itself has an Ingress: the two are separate settings, and an install can
-serve the console plainly while still giving apps hostnames, or the reverse.
+One host, and it is the whole of the address: the apps below and AppLab's own
+virtual host under.
 */}}
-{{ if .Values.apps.baseDomain -}}
+{{ if .Values.ingress.host -}}
 Apps are published through the Istio gateway {{ .Values.deploy.gateway }}. That
-gateway has to exist and have a listener for {{ .Values.apps.baseDomain }}; a
+gateway has to exist and have a listener for {{ .Values.ingress.host }}; a
 missing one shows up as an app that deploys and reports healthy but cannot be
 reached from outside the cluster.
 
 {{ if .Values.apps.pathPrefix -}}
 Apps share one host and are told apart by path: an app with id "shop" is served
-at {{ .Values.apps.baseDomain }}{{ .Values.apps.pathPrefix }}/shop.
+at {{ .Values.ingress.host }}{{ .Values.apps.pathPrefix }}/shop.
 {{ else -}}
 Each app takes its own subdomain: an app with id "shop" is served at
-shop.{{ .Values.apps.baseDomain }}.
+shop.{{ .Values.ingress.host }}.
 {{ end -}}
 {{ else -}}
-Note: apps.baseDomain is empty, so the apps you deploy are reachable only inside
-the cluster. Set apps.baseDomain to give them hostnames.
+Note: ingress.host is empty, so the apps you deploy are reachable only inside
+the cluster. Set ingress.host to give them hostnames.
 
 {{ end -}}
 {{ if .Values.build.enabled -}}

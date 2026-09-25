@@ -2,7 +2,7 @@
 #
 # AppLab deploys applications to Kubernetes. It is given a URL and a key, and it
 # stores source, builds images and runs the result. Read the notes on `build` and
-# `apps.baseDomain` before deploying: both have prerequisites that are easier to
+# `ingress.host` before deploying: both have prerequisites that are easier to
 # satisfy before the first install than after.
 
 # Override the chart's name, and the release name it is combined with.
@@ -81,17 +81,9 @@ auth:
 # Apps
 # ---------------------------------------------------------------------------
 apps:
-  # The domain apps are exposed under, so an app with id "shop" is served at
-  # shop.<baseDomain>.
-  #
-  # The certificate for this domain lives on the gateway, so it has to cover
-  # every host under here — in practice a wildcard. Leave this empty to keep apps
-  # reachable only inside the cluster.
-  baseDomain: ""
-
   # Serves every app from one host under one path, instead of giving each app
   # its own subdomain: with pathPrefix "/apps", an app with id "shop" is served
-  # at <baseDomain>/apps/shop.
+  # at <ingress.host>/apps/shop.
   #
   # The reason to want this is the certificate. A subdomain per app needs a
   # wildcard DNS record and a wildcard certificate, and both have to be reissued
@@ -243,8 +235,8 @@ deploy:
   #
   # The gateway is cluster infrastructure that already exists: it holds the
   # listeners and the certificate for the whole domain. AppLab attaches to it by
-  # name and never creates it. Required whenever apps.baseDomain is set, because
-  # a VirtualService with no gateway is reachable only from inside the mesh.
+  # name and never creates it. Required whenever ingress.host is set, because a
+  # VirtualService with no gateway is reachable only from inside the mesh.
   #
   # The default is the naming the official istio/gateway Helm chart produces:
   # release "istio-ingress" in namespace "istio-ingress". A cluster installed
@@ -282,19 +274,30 @@ deploy:
       memory: 2Gi
 
 # ---------------------------------------------------------------------------
-# How a person reaches AppLab itself
+# The domain this installation lives on
 #
-# This is a standard Kubernetes Ingress for the console and the API — separate
-# from how apps are published, which goes through the Istio gateway above. If
-# your cluster has no ingress controller, set enabled to false and AppLab
-# publishes the console through the Istio gateway instead, on the same host the
-# apps share: there is one way in either way, and a gateway that is serving apps
-# already has a listener for that host.
+# One hostname, and it is the whole of the address: AppLab's own console and API
+# are served under `path` below, the apps are served under it too, and the
+# gateway's certificate covers all of it. There is no second domain setting —
+# there used to be one for the apps and one for the console, which described one
+# host in two places and made every install repeat itself.
 #
-# The gateway route is the fallback rather than the default because a base
-# domain and a gateway are what it needs, and an installation can reasonably
-# have neither. Disabling the Ingress without them leaves AppLab reachable from
-# inside the cluster only, which the install notes say.
+# `ingress.host` is the base domain for the apps: with no apps.pathPrefix an app
+# called "shop" is at shop.<ingress.host>, and with a prefix it shares this host
+# instead. So this is the hostname the gateway needs a listener and a
+# certificate for, whether or not there is an Ingress.
+#
+# Where the console is reached depends on the cluster:
+#
+#   ingress.enabled            a plain Kubernetes Ingress on this host, at
+#                              `path` below — whatever ingress controller the
+#                              cluster already runs
+#   ingress.enabled=false      a VirtualService on the same host and gateway the
+#                              apps use, so the console sits beside them
+#
+# The gateway route is the fallback rather than the default because it needs the
+# gateway to exist, and an installation can reasonably have no ingress
+# controller but a gateway, or neither.
 # ---------------------------------------------------------------------------
 ingress:
   enabled: true
@@ -302,9 +305,14 @@ ingress:
   annotations: {}
     # cert-manager.io/cluster-issuer: letsencrypt
 
-  # The one hostname AppLab is reached at. One, not a list: AppLab is a single
-  # service, and every host it answered on would be the same service reached by
-  # another name — which is a redirect or a DNS alias, not a release setting.
+  # The one hostname this installation is reached at, and the domain its apps
+  # are published under. One, not a list: it is a single domain, and every host
+  # it answered on would be the same thing reached by another name — which is a
+  # redirect or a DNS alias, not a release setting.
+  #
+  # Empty means apps stay inside the cluster and there is no host for the
+  # console either, so the release is reachable by port-forward only, which the
+  # install notes say.
   host: applab.example.com
 
   # The path AppLab is served under on that host.

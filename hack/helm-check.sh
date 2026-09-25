@@ -32,7 +32,7 @@ trap 'rm -rf "$RUNTIME_DIR"' EXIT
 BASE=(
   --namespace "$NS"
   --set "auth.key=test-key-do-not-use"
-  --set "apps.baseDomain=apps.example.com"
+  --set "ingress.host=apps.example.com"
   --set "deploy.gateway=$NS/gateway"
   --set "build.registry=registry.example.com/apps"
   --set "build.pushSecret=regcred"
@@ -123,12 +123,12 @@ must_fail() {
     fail "expected a render failure: $desc"
   fi
 }
-must_fail "no API keys"       --set apps.baseDomain=a.example.com "${OK[@]}" --set "auth.key="
-must_fail "no registry"       --set apps.baseDomain=a.example.com --set "deploy.gateway=$NS/gateway" "${OK[@]}" --set "build.registry="
-must_fail "bad gateway"       --set "apps.baseDomain=a.example.com" --set "deploy.gateway=nope" "${OK[@]}"
+must_fail "no API keys"       --set ingress.host=a.example.com "${OK[@]}" --set "auth.key="
+must_fail "no registry"       --set ingress.host=a.example.com --set "deploy.gateway=$NS/gateway" "${OK[@]}" --set "build.registry="
+must_fail "bad gateway"       --set "ingress.host=a.example.com" --set "deploy.gateway=nope" "${OK[@]}"
 # deploy.gateway now has a default, so "unset" no longer produces an empty one;
 # these two blank it explicitly to reach the guard.
-must_fail "blanked gateway"   --set "apps.baseDomain=a.example.com" --set "deploy.gateway=" "${OK[@]}"
+must_fail "blanked gateway"   --set "ingress.host=a.example.com" --set "deploy.gateway=" "${OK[@]}"
 # A bucket is what the whole deployment is stored in, and the fallback when it
 # is unset is a directory in the pod's emptyDir — so this one is not a broken
 # deployment, it is one that works and then loses everything.
@@ -249,7 +249,7 @@ grep -q 'APPLAB_DEPLOY_GATEWAY: "ops-system/gateway"' <<<"$out" \
 # `--set deploy.gateway=` blanks it rather than restoring it.
 defaulted="$(helm template applab "$CHART" --namespace "$NS" \
   --set "auth.key=k" --set "build.registry=r.example.com/a" \
-  --set "apps.baseDomain=apps.example.com" \
+  --set "ingress.host=apps.example.com" \
   --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab")"
 grep -q 'APPLAB_DEPLOY_GATEWAY: "istio-ingress/istio-ingress"' <<<"$defaulted" \
   || fail "the default deploy.gateway does not reach the server"
@@ -313,7 +313,7 @@ fi
 if helm template applab "$CHART" --namespace "$NS" \
   --set "auth.key=k" --set "build.registry=r.example.com/a" \
   --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab" \
-  --set "apps.baseDomain=apps.example.com" --set "deploy.gateway=just-a-name" >/dev/null 2>&1; then
+  --set "ingress.host=apps.example.com" --set "deploy.gateway=just-a-name" >/dev/null 2>&1; then
   fail "a gateway without a namespace should be refused"
 fi
 
@@ -322,13 +322,17 @@ fi
 prefixed="$(render --set "apps.pathPrefix=/apps")"
 grep -q 'APPLAB_PATH_PREFIX: "/apps"' <<<"$prefixed" \
   || fail "apps.pathPrefix does not reach the server; apps would be routed by subdomain"
-# A prefix with no domain cannot route: the prefix is the only thing telling one
+# A prefix with no host cannot route: the prefix is the only thing telling one
 # app from another on a shared host, so every app would be unreachable.
+#
+# The host has to be blanked explicitly. It defaults to a placeholder, because
+# the Ingress needs one to render at all — so a release only has no host when
+# someone sets it to nothing, which is the documented way to run internal-only.
 if helm template applab "$CHART" --namespace "$NS" \
   --set "auth.key=k" --set "build.registry=r.example.com/a" \
   --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab" \
-  --set "apps.pathPrefix=/apps" >/dev/null 2>&1; then
-  fail "a path prefix without a base domain should be refused"
+  --set "ingress.host=" --set "apps.pathPrefix=/apps" >/dev/null 2>&1; then
+  fail "a path prefix without a host should be refused"
 fi
 
 helm lint "$CHART" "${BASE[@]}" >/dev/null || fail "helm lint reported a problem"
@@ -408,10 +412,10 @@ PY
 # rendered for it: a VirtualService with an empty host is one Istio cannot
 # match. The release is internal-only instead, which the notes explain, and it
 # still has to be a working Deployment rather than a render failure.
-internal="$(render --set ingress.enabled=false --set apps.baseDomain=)"
+internal="$(render --set ingress.enabled=false --set ingress.host=)"
 grep -q 'kind: Deployment' <<<"$internal" \
   || fail "an Ingress-less internal release does not render a Deployment"
-if console_vs --set ingress.enabled=false --set apps.baseDomain= | grep -q found; then
+if console_vs --set ingress.enabled=false --set ingress.host= | grep -q found; then
   fail "the console VirtualService is rendered with no base domain, so it would have no host to match"
 fi
 
@@ -441,8 +445,8 @@ rules = ingresses[0]["spec"]["rules"]
 if len(rules) != 1:
     print(f"expected one rule, found {len(rules)}", file=sys.stderr)
     sys.exit(1)
-if rules[0]["host"] != "applab.example.com":
-    print(f"host is {rules[0]['host']}, not the default", file=sys.stderr)
+if rules[0]["host"] != "apps.example.com":
+    print(f"host is {rules[0]['host']}, not the one the release was given", file=sys.stderr)
     sys.exit(1)
 
 paths = rules[0]["http"]["paths"]

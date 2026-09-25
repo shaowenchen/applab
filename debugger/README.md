@@ -97,7 +97,7 @@ with `imagePullPolicy: Always`.
 ### The domain, and the named tunnel it needs
 
 `domain` defaults to `applab.chenshaowen.com`, and it is used as given: it becomes
-`apps.baseDomain`, so the apps are served under it and the console's own route
+`ingress.host`, so the apps are served under it and the console's own route
 matches it too.
 
 This is app configuration, not tunnel configuration. Nothing is passed to

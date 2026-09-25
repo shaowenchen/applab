@@ -14,7 +14,7 @@ data:
   APPLAB_LISTEN: {{ printf ":%v" .Values.service.targetPort | quote }}
 
   APPLAB_NAMESPACE: {{ include "applab.namespace" . | quote }}
-  APPLAB_BASE_DOMAIN: {{ .Values.apps.baseDomain | quote }}
+  APPLAB_BASE_DOMAIN: {{ .Values.ingress.host | quote }}
   APPLAB_PATH_PREFIX: {{ .Values.apps.pathPrefix | quote }}
   APPLAB_BASE_URL: {{ include "applab.internalURL" . | quote }}
 
@@ -24,7 +24,7 @@ data:
   # an Ingress routes on a path and cannot strip one, so a request for
   # /applab/api/v1/... arrives with the prefix intact and the server has to
   # match it. Empty when there is no Ingress — the console is then on the Istio
-  # gateway at the root of apps.baseDomain, which is what console-virtualservice
+  # gateway at the root of ingress.host, which is what console-virtualservice
   # serves.
   APPLAB_BASE_PATH: {{ if and .Values.ingress.enabled (ne .Values.ingress.path "/") }}{{ .Values.ingress.path | quote }}{{ else }}{{ "" | quote }}{{ end }}
 

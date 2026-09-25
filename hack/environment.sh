@@ -27,7 +27,7 @@
 #
 # The order below is load-bearing and the reason it is a script rather than a
 # list of workflow steps. The hostname has to be settled first, because it
-# becomes apps.baseDomain and that cannot be set after AppLab is installed — but
+# becomes ingress.host and that cannot be set after AppLab is installed — but
 # settling it is not the same as starting a tunnel, and the tunnel only has to be
 # started early when it is the one thing that knows the name. Otherwise it comes
 # up last, once there is something behind it to publish.
@@ -241,7 +241,7 @@ find_public_host() {
 # resolve_host settles on the hostname the environment is served under.
 #
 # It does not start anything. The hostname has to be known before AppLab is
-# installed, because it becomes apps.baseDomain — but knowing it is not the same
+# installed, because it becomes ingress.host — but knowing it is not the same
 # as publishing it, and for every case except a quick tunnel the name is settled
 # without a tunnel running at all. The agent is started later, by publish().
 #
@@ -256,7 +256,7 @@ find_public_host() {
 # APPLAB_DOMAIN names the domain apps are served under. It is not tunnel
 # configuration — a named Cloudflare tunnel keeps its hostname in its ingress, and
 # the connector is never told it, and nothing has to be passed to cloudflared. It
-# is what AppLab needs: apps.baseDomain, which is both where the apps are served
+# is what AppLab needs: ingress.host, which is both where the apps are served
 # and the host the console's own route matches.
 resolve_host() {
   # The one case with nothing to publish: the caller has a name, and there is no
@@ -668,12 +668,12 @@ kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
 # ingress.enabled=false, because a kind cluster has no ingress controller and
 # installing one would be a moving part added for nothing. The chart then
 # publishes the console through the Istio gateway instead — one VirtualService on
-# the base domain, which is the same host the apps are already served on, so the
-# whole environment is reachable through the one address the tunnel publishes.
+# the same host the apps are already served on, so the whole environment is
+# reachable through the one address the tunnel publishes.
 if ! helm install applab "$REPO_ROOT/charts/applab" \
   --namespace "$APPLAB_NAMESPACE" \
   --set auth.existingSecret=applab-keys \
-  --set "apps.baseDomain=${TUNNEL_HOST}" \
+  --set "ingress.host=${TUNNEL_HOST}" \
   --set "apps.pathPrefix=${APPLAB_PATH_PREFIX}" \
   --set deploy.gateway=istio-system/istio-ingressgateway \
   --set "build.registry=${APPLAB_REGISTRY}" \

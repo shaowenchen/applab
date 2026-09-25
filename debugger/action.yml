@@ -37,7 +37,7 @@ inputs:
       The domain apps are served under, without a scheme. Not tunnel
       configuration: a named Cloudflare tunnel keeps its hostname in its ingress
       and cannot report it, and this is what applab needs — it becomes
-      apps.baseDomain, which is both where the apps are served and the host the
+      ingress.host, which is both where the apps are served and the host the
       console's own route matches. Point the ingress at the tunnel first;
       nothing here can create it.
     required: false
