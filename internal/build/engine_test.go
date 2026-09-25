@@ -720,3 +720,170 @@ func errForbidden() error {
 		corev1.Resource("jobs"), "build-job", nil,
 	)
 }
+
+// ---------------------------------------------------------------------------
+// Why a build failed
+//
+// The Job's own condition is written for `kubectl describe` and names the count
+// rather than the cause: "BackoffLimitExceeded: Job has reached the specified
+// backoff limit" is what a person pastes into a chat when they have nothing
+// else. The cause is on the pod, so the pod is what these check.
+// ---------------------------------------------------------------------------
+
+// buildPod builds a pod carrying the Job's label, which is what the failure
+// readers select on.
+func buildPod(name string, status corev1.PodStatus) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "applab-shop",
+			Labels:    map[string]string{"job-name": "build-job"},
+		},
+		Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{{Name: "fetch-source"}},
+			Containers:     []corev1.Container{{Name: "build"}},
+		},
+		Status: status,
+	}
+}
+
+// TestBackoffLimitFailureNamesWhatThePodDid is the case that prompted this: a
+// build that exhausts its retries, where the Job's message is the whole story
+// unless the pod is asked.
+func TestBackoffLimitFailureNamesWhatThePodDid(t *testing.T) {
+	job := jobWithStatus(batchv1.JobStatus{
+		Conditions: []batchv1.JobCondition{{
+			Type:    batchv1.JobFailed,
+			Status:  corev1.ConditionTrue,
+			Reason:  "BackoffLimitExceeded",
+			Message: "Job has reached the specified backoff limit",
+		}},
+	})
+
+	pod := buildPod("build-job-abc", corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		InitContainerStatuses: []corev1.ContainerStatus{{
+			Name: "fetch-source",
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				ExitCode: 1,
+				Reason:   "Error",
+			}},
+		}},
+	})
+
+	engine := New(fake.NewSimpleClientset(job, pod), testConfig())
+
+	status, reason, err := engine.Status(context.Background(), "applab-shop", "build-job")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status != model.BuildStatusFailed {
+		t.Fatalf("status = %q, want failed", status)
+	}
+
+	// The Job's own words are kept — the pod may be gone by the time this runs,
+	// and this string has to survive on its own.
+	if !strings.Contains(reason, "BackoffLimitExceeded") {
+		t.Errorf("the job's own reason was dropped: %q", reason)
+	}
+	// And the pod's, which is the part that was missing.
+	if !strings.Contains(reason, "fetch-source") {
+		t.Errorf("the reason does not say which container failed: %q", reason)
+	}
+	if !strings.Contains(reason, "exited 1") {
+		t.Errorf("the reason does not report the exit code: %q", reason)
+	}
+}
+
+// TestFailureReasonReportsAnEvictedPod asserts the pod-level reason is read:
+// an eviction is not a container's failure, and the container statuses are empty
+// in exactly that case.
+func TestFailureReasonReportsAnEvictedPod(t *testing.T) {
+	job := jobWithStatus(batchv1.JobStatus{
+		Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+			Reason: "BackoffLimitExceeded", Message: "Job has reached the specified backoff limit",
+		}},
+	})
+	pod := buildPod("build-job-abc", corev1.PodStatus{
+		Phase:   corev1.PodFailed,
+		Reason:  "Evicted",
+		Message: "The node was low on resource: ephemeral-storage.",
+	})
+
+	engine := New(fake.NewSimpleClientset(job, pod), testConfig())
+
+	_, reason, err := engine.Status(context.Background(), "applab-shop", "build-job")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !strings.Contains(reason, "Evicted") {
+		t.Errorf("an evicted pod's reason is missing: %q", reason)
+	}
+	if !strings.Contains(reason, "ephemeral-storage") {
+		t.Errorf("the eviction message is missing: %q", reason)
+	}
+}
+
+// TestFailureReasonPrefersTheInstanceThatFailed asserts a crash loop reports the
+// cause rather than the state: the live container is Waiting with
+// CrashLoopBackOff, and "Error" with its exit code is on the one that died.
+func TestFailureReasonPrefersTheInstanceThatFailed(t *testing.T) {
+	job := jobWithStatus(batchv1.JobStatus{
+		Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded",
+		}},
+	})
+	pod := buildPod("build-job-abc", corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name:         "build",
+			RestartCount: 3,
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+				Reason: "CrashLoopBackOff",
+			}},
+			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				ExitCode: 137,
+				Reason:   "OOMKilled",
+			}},
+		}},
+	})
+
+	engine := New(fake.NewSimpleClientset(job, pod), testConfig())
+
+	_, reason, err := engine.Status(context.Background(), "applab-shop", "build-job")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !strings.Contains(reason, "OOMKilled") {
+		t.Errorf("the cause of the crash loop is missing: %q", reason)
+	}
+	if strings.Contains(reason, "CrashLoopBackOff") {
+		t.Errorf("the reason reports the state rather than the cause: %q", reason)
+	}
+}
+
+// TestFailureWithoutAPodIsStillReadable asserts the pod read is best-effort. The
+// Job's TTL collects the pod, and a failure reported after that must not become
+// an error or an empty reason.
+func TestFailureWithoutAPodIsStillReadable(t *testing.T) {
+	job := jobWithStatus(batchv1.JobStatus{
+		Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+			Reason: "BackoffLimitExceeded", Message: "Job has reached the specified backoff limit",
+		}},
+	})
+
+	engine := New(fake.NewSimpleClientset(job), testConfig())
+
+	status, reason, err := engine.Status(context.Background(), "applab-shop", "build-job")
+	if err != nil {
+		t.Fatalf("Status with no pod: %v", err)
+	}
+	if status != model.BuildStatusFailed {
+		t.Errorf("status = %q, want failed", status)
+	}
+	if !strings.Contains(reason, "BackoffLimitExceeded") {
+		t.Errorf("the job's own message did not survive a missing pod: %q", reason)
+	}
+}

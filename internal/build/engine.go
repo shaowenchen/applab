@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -632,7 +633,7 @@ func (e *Engine) Status(ctx context.Context, namespace, jobName string) (model.B
 		case batchv1.JobComplete:
 			return model.BuildStatusSucceeded, condition.Message, nil
 		case batchv1.JobFailed:
-			return model.BuildStatusFailed, condition.Reason + ": " + condition.Message, nil
+			return model.BuildStatusFailed, e.failureReason(ctx, namespace, jobName, condition), nil
 		}
 	}
 
@@ -643,6 +644,116 @@ func (e *Engine) Status(ctx context.Context, namespace, jobName string) (model.B
 	// No condition and nothing active: the Job was created but its pod has not
 	// started yet.
 	return model.BuildStatusPending, "", nil
+}
+
+// failureReason says why a build failed, in as much detail as the cluster can
+// still be asked for.
+//
+// The Job's own message is written for an operator reading `kubectl describe`,
+// and for the failure that matters most it says almost nothing: a build whose
+// first attempt is evicted or fails to start reads exactly as
+//
+//	BackoffLimitExceeded: Job has reached the specified backoff limit
+//
+// which names the count, not the cause. The cause is on the pod — an eviction in
+// its status, a failed image pull on its container, a non-zero exit on the
+// container that ran — and so is the one line of the log that usually explains
+// it outright.
+//
+// So the pod is consulted, and the result is the Job's message with what was
+// found appended. Appending rather than replacing is deliberate: the pod may be
+// gone by the time this runs (the Job's TTL collects it), and the Job's message
+// is then the whole answer, so it has to stay readable on its own.
+func (e *Engine) failureReason(ctx context.Context, namespace, jobName string, condition batchv1.JobCondition) string {
+	base := strings.TrimSpace(condition.Reason + ": " + condition.Message)
+
+	detail := e.podFailureDetail(ctx, namespace, jobName)
+	if detail == "" {
+		return base
+	}
+	return base + " — " + detail
+}
+
+// podFailureDetail describes why the build's pod stopped.
+//
+// Every read here is best-effort: this runs while a failure is being reported,
+// and a cluster that will not answer is not a second failure worth surfacing —
+// the caller gets the Job's own message, which is what it would have got before
+// this existed.
+func (e *Engine) podFailureDetail(ctx context.Context, namespace, jobName string) string {
+	pods, err := e.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "job-name=" + jobName,
+	})
+	if err != nil || len(pods.Items) == 0 {
+		return ""
+	}
+
+	// The most recent pod, for the same reason Logs reads the most recent one: a
+	// Job that exhausted its backoff ran several, and the later attempt is the
+	// one nearer the cause. (The first attempt's own reason is repeated on the
+	// Job's message when that is what happened, so nothing is lost.)
+	sort.Slice(pods.Items, func(i, j int) bool {
+		return pods.Items[i].CreationTimestamp.Before(&pods.Items[j].CreationTimestamp)
+	})
+	pod := &pods.Items[len(pods.Items)-1]
+
+	// A pod that never ran says why on itself — an eviction, a scheduling
+	// failure, a node that went away.
+	if pod.Status.Reason != "" {
+		return pod.Name + ": " + pod.Status.Reason + ": " + pod.Status.Message
+	}
+
+	var parts []string
+	for _, status := range pod.Status.InitContainerStatuses {
+		if line := containerFailure(status); line != "" {
+			parts = append(parts, "init "+line)
+		}
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		if line := containerFailure(status); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return pod.Name + " ended: " + strings.Join(parts, "; ")
+}
+
+// containerFailure describes how one container ended, preferring the instance
+// that failed over the one that is merely waiting.
+//
+// A container in a crash loop is Waiting with "CrashLoopBackOff", which is the
+// state and not the cause; the cause is on the previous instance — "Error", exit
+// code 1, "OOMKilled". That ordering is the same one internal/observe uses for
+// an app's pods, and for the same reason.
+func containerFailure(status corev1.ContainerStatus) string {
+	if status.State.Terminated != nil {
+		return describeTermination(status.Name, status.State.Terminated)
+	}
+	if status.LastTerminationState.Terminated != nil {
+		return describeTermination(status.Name, status.LastTerminationState.Terminated)
+	}
+	if status.State.Waiting != nil {
+		line := status.Name + " is waiting: " + status.State.Waiting.Reason
+		if status.State.Waiting.Message != "" {
+			line += ": " + status.State.Waiting.Message
+		}
+		return line
+	}
+	return ""
+}
+
+// describeTermination renders one container's exit.
+func describeTermination(name string, term *corev1.ContainerStateTerminated) string {
+	line := name + " exited " + fmt.Sprintf("%d", term.ExitCode)
+	if term.Reason != "" {
+		line += " (" + term.Reason + ")"
+	}
+	if term.Message != "" {
+		line += ": " + term.Message
+	}
+	return line
 }
 
 // Logs returns the build's log output.
@@ -670,22 +781,88 @@ func (e *Engine) Logs(ctx context.Context, namespace, jobName string, tailLines 
 		}
 	}
 
-	options := &corev1.PodLogOptions{Timestamps: false}
-	if tailLines > 0 {
-		options.TailLines = &tailLines
+	// Both containers, in the order they run, under headings naming which is
+	// which.
+	//
+	// A build has two, and the one that explains a failure is usually the init
+	// container: it fetches the source, so a revoked token, an unreachable
+	// AppLab or a truncated download fails there — and that container's output
+	// was simply not being read. An empty main-container result would then look
+	// like a build that produced nothing, when the fetch never finished.
+	//
+	// The headings are load-bearing: two streams concatenated without them read
+	// as one, and "failed to fetch source" followed by buildkit's startup banner
+	// is a sequence nobody can interpret.
+	var out strings.Builder
+	for _, container := range buildContainers(&pod) {
+		text, err := e.containerLog(ctx, namespace, pod.Name, container, tailLines)
+		if err != nil {
+			// One container's log being unavailable does not discard the other's,
+			// which is the half most likely to be readable.
+			fmt.Fprintf(&out, "=== %s ===\n[could not read this container's log: %v]\n", container, err)
+			continue
+		}
+		fmt.Fprintf(&out, "=== %s ===\n%s\n", container, strings.TrimRight(text, "\n"))
+	}
+	return out.String(), nil
+}
+
+// buildContainers names the containers to read, in order, from what the pod
+// actually declares.
+//
+// From the pod rather than from the Job spec: this runs against a pod that
+// exists, and a Job whose spec has since been edited would otherwise have this
+// ask for a container that is not there.
+func buildContainers(pod *corev1.Pod) []string {
+	names := make([]string, 0, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
+	for _, c := range pod.Spec.InitContainers {
+		names = append(names, c.Name)
+	}
+	for _, c := range pod.Spec.Containers {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// containerLog reads one container's output, falling back to the previous
+// instance when the current one has not written anything.
+//
+// The fallback is what makes a crash loop readable. A container that is being
+// restarted has an empty current log and its cause in the instance that died —
+// the same reason internal/observe reads previous for an app's pods.
+func (e *Engine) containerLog(ctx context.Context, namespace, podName, container string, tailLines int64) (string, error) {
+	read := func(previous bool) (string, error) {
+		options := &corev1.PodLogOptions{Container: container, Previous: previous}
+		if tailLines > 0 {
+			options.TailLines = &tailLines
+		}
+		stream, err := e.client.CoreV1().Pods(namespace).GetLogs(podName, options).Stream(ctx)
+		if err != nil {
+			return "", err
+		}
+		defer stream.Close()
+
+		var buf strings.Builder
+		if _, err := copyToBuilder(&buf, stream); err != nil {
+			return buf.String(), err
+		}
+		return buf.String(), nil
 	}
 
-	stream, err := e.client.CoreV1().Pods(namespace).GetLogs(pod.Name, options).Stream(ctx)
+	text, err := read(false)
 	if err != nil {
-		return "", fmt.Errorf("read logs for build job %s: %w", jobName, err)
+		return "", err
 	}
-	defer stream.Close()
-
-	var buf strings.Builder
-	if _, err := copyToBuilder(&buf, stream); err != nil {
-		return buf.String(), fmt.Errorf("read logs for build job %s: %w", jobName, err)
+	if strings.TrimSpace(text) != "" {
+		return text, nil
 	}
-	return buf.String(), nil
+	// Nothing this time round. If there is a previous instance, its output is
+	// what explains the restart; if there is not, the empty current log is the
+	// honest answer and this returns it.
+	if previous, prevErr := read(true); prevErr == nil && strings.TrimSpace(previous) != "" {
+		return "[the current instance has written nothing; this is the previous instance]\n" + previous, nil
+	}
+	return text, nil
 }
 
 // Cancel deletes a build Job, stopping the build.
