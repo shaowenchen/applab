@@ -258,6 +258,12 @@ async function render(apps) {
     check("path-prefixed apps show their own path", text.includes("/apps/shop"), true);
     check("and the other app's too", text.includes("/apps/blog"), true);
     check("neither row shows a bare host", /www\.example\.com(?!\/apps)/.test(text), false);
+    // The scheme is part of the address shown, not just of the link target. The
+    // column is read as an address — it is what someone copies — and the app
+    // detail's own row shows the full URL, so a list that showed the two without
+    // a scheme would disagree with the page it links to about what an app's
+    // address is.
+    check("and the address is shown with its scheme", text.includes("https://www.example.com/apps/shop"), true);
   }
 
   // A subdomain per app: no path, and the host is the whole address.
@@ -268,6 +274,7 @@ async function render(apps) {
     const text = body.allText();
     check("subdomain apps show their host", text.includes("shop.apps.example.com"), true);
     check("and no stray path", text.includes("undefined"), false);
+    check("with their scheme", text.includes("https://shop.apps.example.com"), true);
   }
 
   // Not deployed: the app has no `url` from the API yet, but its address is

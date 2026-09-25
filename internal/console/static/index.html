@@ -2016,17 +2016,19 @@ async function loadApps() {
     // still the honest answer to "where will this be"; a plain-text address that
     // turns into a link on first deploy teaches nothing.
     //
-    // Hostname and path are the two halves of that address, and with a shared
-    // prefix the host alone belongs to the deployment rather than to the app — so
-    // they are joined rather than the host being shown by itself.
-    const address = (app.hostname || "") + (app.path || "");
-    const href = appURL(app);
-    if (!href) {
+    // The whole address is shown, scheme included, because that is what the app
+    // detail's own row shows and what can be pasted somewhere else. It is derived
+    // the same way in both places — appURL, which prefers the URL the API reports
+    // for a deployed app and otherwise composes one from the host and path with
+    // the scheme this page was served over — so the two cannot disagree about
+    // what an app's address is.
+    const address = appURL(app);
+    if (!address) {
       where.className = "muted";
       where.textContent = "—";
     } else {
       const link = document.createElement("a");
-      link.href = href;
+      link.href = address;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       link.textContent = address;
