@@ -562,25 +562,32 @@ git commit -m "first"
 git push origin main
 ```
 
-A push stores the source and nothing else — it does not build. That is deliberate
-(`git push` is how you get code in, not how you ask for a deploy), so the next
-step is explicit.
+That is the whole deployment. The push stores the source, and AppLab then builds it
+and deploys the result on its own — `git push` returns as soon as git is done, so
+the build runs in the background and the app goes live when it succeeds.
 
-### 5. Build and deploy
+### 5. Watch it come up
+
+Nothing needs calling, so this step is only about seeing where it got to:
+
+```bash
+applab status shop         # what AppLab recorded and what the cluster actually has
+applab logs shop -f        # the running app's output
+applab builds shop --logs  # the build's output, if it did not get that far
+```
+
+`applab status` is the first thing to read when something is wrong: it reports
+AppLab's own record beside the cluster's, and the difference between the two is
+the information. `applab diagnose shop` walks the same checks in order and reports
+the first that fails.
+
+If you would rather drive it by hand — to build a specific commit, or to rebuild
+something without pushing:
 
 ```bash
 applab build shop          # build the newest commit into an image
 applab deploy shop         # run that image
-
-# Or both, following the log until it is serving:
-applab deploy shop --build
 ```
-
-When it finishes, `applab deploy` prints the URL the app is served at. If it does
-not come up, `applab status shop` says what AppLab recorded and what the cluster
-actually has — the two side by side, because the difference between them is the
-information — and `applab diagnose shop` is the first thing to read: it walks the
-same checks in order and reports the first that fails.
 
 ### The same thing with curl
 
@@ -599,7 +606,17 @@ curl -sS "$APPLAB_URL/api/v1/apps/shop/key" \
 ```
 
 Steps 3 and 4 are git itself, unchanged — the clone URL above works the same
-either way. Step 5, as one call rather than two:
+either way, and the push is what starts the build.
+
+Step 5 is a read, since the build and the deploy were already started:
+
+```bash
+curl -sS "$APPLAB_URL/api/v1/apps/shop/status" \
+  -H "Authorization: Bearer $APPLAB_APP_KEY"
+```
+
+To build and deploy a commit without pushing one — a rebuild, or a commit built
+from another machine:
 
 ```bash
 curl -sS -X POST "$APPLAB_URL/api/v1/apps/shop/deploy" \

@@ -96,6 +96,22 @@ type Transport struct {
 	//
 	// Nil means the repository is used exactly as it was downloaded.
 	prepare func(ctx context.Context, repoPath string) error
+
+	// afterPush runs once a push has been stored, with the app and branch that
+	// were pushed.
+	//
+	// It is a hook rather than something this package does because what should
+	// follow a push — building it, deploying it — is policy the transport has no
+	// business knowing. What the transport knows, and is the whole reason the
+	// hook is here rather than in the caller, is *when*: after the store has
+	// accepted the new objects, not before. A build started any earlier would
+	// clone a commit that is not there yet.
+	//
+	// It runs on the request's goroutine, so it must not block: see
+	// api.StartPushBuild, which returns as soon as it has started the work.
+	//
+	// Nil means a push is only stored.
+	afterPush func(ctx context.Context, appID, branch string)
 }
 
 // Sessions is how a repository is made available to git for one request.
@@ -128,6 +144,15 @@ func (t *Transport) WithSessions(s Sessions) *Transport {
 // prepared is disclosing that the app exists.
 func (t *Transport) WithPrepare(fn func(ctx context.Context, repoPath string) error) *Transport {
 	t.prepare = fn
+	return t
+}
+
+// WithAfterPush attaches what runs once a push has been stored.
+//
+// A failure to store is not followed by this: nothing was pushed, so there is
+// nothing to build, and the pusher has already been told the push failed.
+func (t *Transport) WithAfterPush(fn func(ctx context.Context, appID, branch string)) *Transport {
+	t.afterPush = fn
 	return t
 }
 
@@ -360,6 +385,17 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
+
+		// After the response, so the pusher is not held behind it.
+		//
+		// This is reached by any push whose objects were stored, which includes
+		// one git refused at the application level — a non-fast-forward, a ref
+		// rejected by a hook. Those leave the repository as it was, so the hook
+		// runs against an unchanged tip; its own "this commit already has an
+		// image" check is what makes that a no-op rather than a rebuild.
+		if t.afterPush != nil {
+			t.afterPush(r.Context(), repoName, branch)
+		}
 		return
 	}
 

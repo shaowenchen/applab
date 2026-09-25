@@ -138,6 +138,76 @@ func TestPushOverHTTP(t *testing.T) {
 	}
 }
 
+// TestAPushRunsTheAfterPushHook asserts the hook fires once a push has been
+// stored, with the app and branch that were pushed — and that it does not fire
+// for a fetch.
+//
+// This is what makes a push build and deploy. The transport knows *when* a push
+// has landed and nothing about what should follow it, so the hook is where that
+// decision is handed off; a hook that fired on a clone, or before the objects
+// were stored, would start a build against a commit that is not there.
+func TestAPushRunsTheAfterPushHook(t *testing.T) {
+	tr, store := newTestTransport(t, "shop")
+	ctx := context.Background()
+
+	archive := buildTar(t, map[string]string{"a.txt": "one\n"})
+	if _, err := store.Ingest(ctx, "shop", model.DefaultBranch, bytes.NewReader(archive), "initial", "", source.DefaultIngestLimits); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	type pushEvent struct{ app, branch string }
+	events := make(chan pushEvent, 4)
+	tr.WithAfterPush(func(_ context.Context, appID, branch string) {
+		events <- pushEvent{appID, branch}
+	})
+
+	srv := httptest.NewServer(tr)
+	defer srv.Close()
+
+	// A clone is not a push, and nothing should follow it.
+	runGit(t, "", "clone", srv.URL+"/shop.git", filepath.Join(t.TempDir(), "clone"))
+	select {
+	case e := <-events:
+		t.Fatalf("cloning ran the after-push hook with %+v; a fetch writes nothing", e)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	workDir := filepath.Join(t.TempDir(), "work")
+	runGit(t, "", "clone", srv.URL+"/shop.git", workDir)
+	runGit(t, workDir, "config", "user.email", "test@example.com")
+	runGit(t, workDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(workDir, "b.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, workDir, "add", ".")
+	runGit(t, workDir, "commit", "-m", "push it")
+	runGit(t, workDir, "push", "origin", "main")
+
+	select {
+	case e := <-events:
+		if e.app != "shop" {
+			t.Errorf("the hook ran for app %q, want shop", e.app)
+		}
+		if e.branch != model.DefaultBranch {
+			t.Errorf("the hook ran for branch %q, want %q", e.branch, model.DefaultBranch)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pushing did not run the after-push hook")
+	}
+
+	// The hook has to run with the objects already stored, or a build it starts
+	// would clone a commit that is not there yet. The push above is durable by
+	// the time the hook fires, so the tip is the committed subject.
+	head, err := store.HeadCommit(ctx, "shop", model.DefaultBranch)
+	if err != nil {
+		t.Fatalf("HeadCommit: %v", err)
+	}
+	subject := strings.TrimSpace(runGit(t, filepath.Join(t.TempDir()), "--git-dir", mustRepoPath(t, store, "shop"), "log", "-1", "--format=%s", head))
+	if subject != "push it" {
+		t.Errorf("head commit subject = %q, want %q: the hook ran before the push was stored", subject, "push it")
+	}
+}
+
 // TestPathTraversalIsRefused is the security test for the transport boundary. A
 // request that tries to address a repository outside the root must not be served.
 func TestPathTraversalIsRefused(t *testing.T) {

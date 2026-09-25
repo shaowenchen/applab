@@ -176,6 +176,30 @@ git push "https://x:$APPLAB_KEY@<host>/git/shop@dev.git" HEAD:dev
 Cloning a branch that does not exist fails with "repository not found", exactly as
 cloning an app that does not exist does.
 
+**A push builds and deploys what was pushed.** `git push` returns as soon as git
+has stored the objects; the build starts right after, on its own, and the deploy
+follows when the build succeeds. So the whole of shipping a change is:
+
+```bash
+git commit -am "fix the header"
+git push origin main
+```
+
+Nothing else needs calling. The app's status — `applab status shop`, or
+`GET /api/v1/apps/shop/status` — is where the build and the rollout show up, and
+`applab logs shop -f` follows the running result.
+
+Two things about it are worth knowing:
+
+- **Only the active branch deploys.** Pushing any branch stores it and builds it;
+  whether the result is deployed is decided when the build finishes, against what
+  the app is on *then*. Push `dev`, switch the app to something else while it
+  builds, and the finished image is left in the registry rather than put live.
+- **A commit that was already built is not rebuilt.** Images are tagged by commit,
+  so an unchanged commit is an unchanged image; the push deploys the image that
+  exists. That is what makes pushing an unchanged branch cheap, and it is also how
+  a commit that was built but never deployed gets deployed.
+
 **Each branch is stored as a repository of its own**, so an app with three live
 branches holds three copies of the history it can reach from each. That is the
 cost of a branch being a directory in the bucket — listable and deletable on its

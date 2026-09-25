@@ -113,6 +113,11 @@ type Server struct {
 	// console serves the web console. Nil means this deployment does not serve
 	// one.
 	console http.Handler
+
+	// pushJobs tracks the build-and-deploy jobs a git push started. They outlive
+	// the push, so something has to know they are still running when the process
+	// is asked to stop — see WaitForPushBuilds.
+	pushJobs *pushJobs
 }
 
 // BuildEngine is the build half of the pipeline.
@@ -178,6 +183,11 @@ func New(cfg config.Config, st *store.Store, a *auth.Authenticator) *Server {
 		store:   st,
 		auth:    a,
 		appKeys: appkey.New(st),
+
+		// Attached here rather than by a With call because every deployment that
+		// can receive a push wants it, and a deployment that cannot never starts
+		// a job to track.
+		pushJobs:  &pushJobs{},
 		appConfig: appconfig.New(st),
 	}
 }

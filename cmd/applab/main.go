@@ -185,10 +185,16 @@ func run() error {
 	// repository and handing it to git: the repository's config has to be pinned
 	// before receive-pack can spawn the background maintenance that races the
 	// upload. See source.Store.applyDeterministicConfig.
+	//
+	// AfterPush is what makes a push build and deploy. It is attached here
+	// rather than being a method on the transport for the same reason as the
+	// other two: the transport serves a repository and knows nothing about what
+	// a commit is for.
 	gitTransport.
 		Authorize(srv.AuthorizeGitRepo).
 		WithActiveBranch(srv.ActiveBranch).
-		WithPrepare(src.Prepare)
+		WithPrepare(src.Prepare).
+		WithAfterPush(srv.AfterGitPush)
 	srv.WithGit(gitTransport)
 
 	// The console is a client of the same public API, so it holds no privileges
@@ -332,6 +338,16 @@ func run() error {
 		// know the drain was cut short rather than see a clean exit.
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+
+	// A push starts a build and a deploy that outlive the request it came in on,
+	// so Shutdown's draining — which covers in-flight requests and nothing else —
+	// does not wait for them. Without this a restart seconds after a push leaves
+	// its build running in the cluster with nothing left to deploy it.
+	//
+	// Bounded by what is left of shutdownCtx, and so by the pod's own termination
+	// grace period. A build takes minutes, so this only ever helps the one that
+	// was about to finish; anything longer would be waiting for a SIGKILL.
+	srv.WaitForPushBuilds(shutdownCtx)
 
 	slog.Info("stopped")
 	return nil
