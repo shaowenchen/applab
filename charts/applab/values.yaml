@@ -116,13 +116,19 @@ apps:
   #
   # Changes take effect on the next deploy.
 
-  # The public address of this AppLab installation, used by build jobs to fetch
-  # source and reported to clients as api_base_url.
+  # The public address of this AppLab installation, used by build jobs to clone
+  # source from and reported to clients as api_base_url.
   #
   # Leave empty to use the in-cluster Service, which is correct when builds run
   # in the same cluster and the ingress is not reachable from inside it — the
-  # usual case. Set it when a build must reach AppLab through an external
-  # address.
+  # usual case. The Ingress path is appended to it, so that a deployment served
+  # under one has a build address that names the same path the server answers
+  # on; without that a build asks for /git/<app>.git at the root of a server
+  # that only serves /applab, and every clone fails with a 404.
+  #
+  # Set it when a build must reach AppLab through an external address. What is
+  # set here is then the whole address, path included — nothing is appended,
+  # since this is the operator saying what the address is.
   baseURL: ""
 
 # ---------------------------------------------------------------------------

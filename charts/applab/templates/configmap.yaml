@@ -16,6 +16,10 @@ data:
   APPLAB_NAMESPACE: {{ include "applab.namespace" . | quote }}
   APPLAB_BASE_DOMAIN: {{ .Values.ingress.host | quote }}
   APPLAB_PATH_PREFIX: {{ .Values.apps.pathPrefix | quote }}
+  # The address a build clones from, and the one reported to clients. Carries the
+  # base path below, because a URL without it addresses the root of a deployment
+  # that is not at the root — and a build that used one failed with a 404 the
+  # server wrote itself.
   APPLAB_BASE_URL: {{ include "applab.internalURL" . | quote }}
 
   # The path applab itself is served under, when it is not the root.
@@ -26,7 +30,7 @@ data:
   # match it. Empty when there is no Ingress — the console is then on the Istio
   # gateway at the root of ingress.host, which is what console-virtualservice
   # serves.
-  APPLAB_BASE_PATH: {{ if and .Values.ingress.enabled (ne .Values.ingress.path "/") }}{{ .Values.ingress.path | quote }}{{ else }}{{ "" | quote }}{{ end }}
+  APPLAB_BASE_PATH: {{ include "applab.basePath" . | quote }}
 
   # Upload limits, so a client can size its parts instead of discovering them by
   # being rejected.

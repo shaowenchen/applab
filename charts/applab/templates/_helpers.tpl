@@ -96,17 +96,49 @@ chart.
 {{- end }}
 
 {{/*
-The address a build job's init container uses to fetch its source.
+The path AppLab is served under, or the empty string for the root.
+
+It exists as its own definition because three things have to agree about it and
+they are computed in three places:
+
+  APPLAB_BASE_PATH   the server's own prefix, which it matches requests against
+                     and strips before routing
+  APPLAB_BASE_URL    the address a build clones from, which has to carry it
+  ingress.path       what the Ingress routes on, which is where all three come
+                     from — an Ingress cannot strip a prefix, so the server has
+                     to expect the one the Ingress sends
+
+Only the first used to be derived. The build's address was the Service host and
+nothing else, so a build asked for /git/<app>.git at the root of a server that
+only answers under /applab, and every clone failed with a 404 the server wrote
+itself. Deriving all three from this one definition is what keeps that from
+being a thing to remember.
+*/}}
+{{- define "applab.basePath" -}}
+{{- if and .Values.ingress.enabled (ne .Values.ingress.path "/") -}}
+{{- .Values.ingress.path -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The address a build clones its source from, and the one reported to clients as
+the API's base.
 
 Preferring an explicit public URL and falling back to the in-cluster Service
 means a build works either way: it does not depend on the ingress being
 reachable from inside the cluster, which it often is not.
+
+The base path is appended here rather than left to the caller, because a URL
+without it addresses the root of a deployment that is not at the root. An
+explicit apps.baseURL is taken as the whole address and gets nothing appended —
+it is the operator saying what the address is, and this is not in a position to
+disagree.
 */}}
 {{- define "applab.internalURL" -}}
 {{- if .Values.apps.baseURL }}
 {{- .Values.apps.baseURL }}
 {{- else }}
-{{- printf "http://%s.%s.svc:%d" (include "applab.fullname" .) (include "applab.namespace" .) (int .Values.service.port) }}
+{{- printf "http://%s.%s.svc:%d%s" (include "applab.fullname" .) (include "applab.namespace" .) (int .Values.service.port) (include "applab.basePath" .) }}
 {{- end }}
 {{- end }}
 

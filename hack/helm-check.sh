@@ -482,16 +482,27 @@ if seen != p["path"]:
     sys.exit(1)
 PY
 
-# Setting the path moves both together.
+# Setting the path moves all three together: the Ingress route, the prefix the
+# server expects, and the address in the URL it hands out.
 setpath="$(render --set "ingress.path=/platform")"
 grep -q 'path: "/platform"' <<<"$setpath" || fail "--set ingress.path=... does not set the Ingress path"
 grep -q 'APPLAB_BASE_PATH: "/platform"' <<<"$setpath" \
   || fail "--set ingress.path=... does not reach the server's base_path"
+grep -q "APPLAB_BASE_URL: \"http://applab.$NS.svc:80/platform\"" <<<"$setpath" \
+  || fail "--set ingress.path=... does not reach the address a build clones from, so every build would ask for a path the server does not serve"
 
 # "/" is the root, and the server must be told nothing rather than "/".
 rootpath="$(render --set "ingress.path=/")"
 grep -q 'APPLAB_BASE_PATH: ""' <<<"$rootpath" \
   || fail "ingress.path=/ does not clear the server's base_path; the server would look for every route under //"
+grep -q "APPLAB_BASE_URL: \"http://applab.$NS.svc:80\"" <<<"$rootpath" \
+  || fail "ingress.path=/ leaves a path on the address a build clones from"
+
+# An explicit apps.baseURL is the operator saying what the whole address is, so
+# nothing is appended to it — including this chart's own idea of the prefix.
+seturl="$(render --set "apps.baseURL=https://applab.example.com" --set "ingress.path=/platform")"
+grep -q 'APPLAB_BASE_URL: "https://applab.example.com"' <<<"$seturl" \
+  || fail "an explicit apps.baseURL had the Ingress path appended to it"
 
 # The host is one value, so `--set ingress.host=...` is the whole of it — the
 # spelling the README teaches, and the reason `hosts` stopped being a list.
