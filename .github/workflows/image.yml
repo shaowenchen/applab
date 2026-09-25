@@ -229,8 +229,12 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: The image runs
-        run: ./hack/image-smoke.sh applab-smoke:local
+      # The image is built here and not run. `hack/image-smoke.sh` still exists
+      # and still does what its header describes — it runs the container against
+      # a real object store and checks that it serves — but it is not part of
+      # this workflow: it needs docker-in-docker and a second container to talk
+      # to, which is a lot of machinery to put in front of every build. Run it by
+      # hand when the image is what changed.
 
       # The tags are derived from the git ref rather than taken on trust, and the
       # version stamped into the binary is the same string a user sees on the

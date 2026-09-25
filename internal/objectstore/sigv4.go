@@ -81,8 +81,25 @@ func (s *signer) sign(req *http.Request, payloadHash string) {
 	// The two x-amz headers are set here rather than by the caller: they are
 	// part of the signature, so a caller that forgot one would sign a request
 	// without it and the server would reject a request that looks correct.
+	//
+	// content-type is here for the same reason and was the one that got away. It
+	// is in the signed header set, and SigV4 requires every header named in
+	// SignedHeaders to be present in the request — so a GET, HEAD or DELETE,
+	// which sets no body type, signed a header it did not send. S3 answers that
+	// with a bare 400, and the failure is invisible to every test in this
+	// repository: the fake S3 server checks that an Authorization header exists
+	// and never verifies a signature, so nothing here had ever been checked
+	// against a real implementation of the protocol. It showed up the first time
+	// an image talked to MinIO.
+	//
+	// A caller that has a more specific type may set one before signing; this
+	// only fills in what is missing, rather than overwriting it.
 	for _, name := range headers {
 		switch name {
+		case "content-type":
+			if req.Header.Get("content-type") == "" {
+				req.Header.Set("content-type", "application/octet-stream")
+			}
 		case "x-amz-date":
 			req.Header.Set("x-amz-date", amzDate)
 		case "x-amz-content-sha256":
@@ -99,8 +116,7 @@ func (s *signer) sign(req *http.Request, payloadHash string) {
 	}
 
 	canonicalHeaders, headerList := canonicalHeaders(req, host, headers)
-	canonicalRequest := strings.Join([]string{
-		req.Method,
+	canonicalRequest := strings.Join([]string{req.Method,
 		canonicalURI(req.URL),
 		canonicalQuery(req.URL),
 		canonicalHeaders,

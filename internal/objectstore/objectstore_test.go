@@ -1,6 +1,7 @@
 package objectstore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -64,6 +65,108 @@ func TestTheSignatureMatchesThePublishedVector(t *testing.T) {
 
 	if got != want {
 		t.Errorf("the signature does not match the published vector\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestEverySignedHeaderIsOnTheRequest is the check that the signature covers
+// only headers the request actually carries.
+//
+// SigV4 requires every name in SignedHeaders to be present on the request, and a
+// header that is signed but not sent produces a request S3 rejects with a bare
+// 400. `content-type` is in this package's signed set, and only two of the four
+// operations set it — so GET, HEAD and DELETE all signed a header they did not
+// send, and every one of them failed against MinIO the first time the image
+// talked to a real server.
+//
+// Why nothing here caught it, which is the part worth keeping: the fake S3
+// server in this file checks that an Authorization header is *present* and never
+// verifies a signature, and the published vector covers only host and x-amz-date
+// — the two headers that cannot go missing, because the signer sets them itself.
+// So this asserts the property directly rather than through a signature, because
+// the property is the thing that was wrong.
+func TestEverySignedHeaderIsOnTheRequest(t *testing.T) {
+	// Every method this package issues, each built the way its own code builds
+	// it: the body-carrying ones set a content type, the others do not.
+	cases := []struct {
+		name string
+		req  func(t *testing.T) *http.Request
+	}{
+		{"GET", func(t *testing.T) *http.Request {
+			r, err := http.NewRequest(http.MethodGet, "https://s3.example.com/bucket/key", nil)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			return r
+		}},
+		{"HEAD", func(t *testing.T) *http.Request {
+			r, err := http.NewRequest(http.MethodHead, "https://s3.example.com/bucket/key", nil)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			return r
+		}},
+		{"DELETE", func(t *testing.T) *http.Request {
+			r, err := http.NewRequest(http.MethodDelete, "https://s3.example.com/bucket/key", nil)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			return r
+		}},
+		{"PUT", func(t *testing.T) *http.Request {
+			r, err := http.NewRequest(http.MethodPut, "https://s3.example.com/bucket/key",
+				bytes.NewReader([]byte("body")))
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			r.Header.Set("Content-Type", "application/octet-stream")
+			return r
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &signer{
+				accessKey: "key",
+				secretKey: "secret",
+				region:    "us-east-1",
+				service:   "s3",
+				now:       func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) },
+			}
+			req := tc.req(t)
+			s.sign(req, emptyPayloadHash)
+
+			auth := req.Header.Get("Authorization")
+			if auth == "" {
+				t.Fatal("the request was not signed")
+			}
+
+			// Pull the header list back out of the Authorization header, which is
+			// what the server will read — rather than comparing against the
+			// package's own slice, which would only prove it agrees with itself.
+			const marker = "SignedHeaders="
+			i := strings.Index(auth, marker)
+			if i < 0 {
+				t.Fatalf("the Authorization header names no signed headers: %s", auth)
+			}
+			rest := auth[i+len(marker):]
+			j := strings.Index(rest, ",")
+			if j < 0 {
+				t.Fatalf("the signed header list has no terminator: %s", rest)
+			}
+			names := strings.Split(rest[:j], ";")
+
+			for _, name := range names {
+				if name == "host" {
+					// net/http writes this from the URL rather than from Header,
+					// and the signer computes it the same way.
+					continue
+				}
+				if req.Header.Get(name) == "" {
+					t.Errorf("the signature covers %q but the request does not send it; "+
+						"S3 rejects that with a bare 400", name)
+				}
+			}
+		})
 	}
 }
 
