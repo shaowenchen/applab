@@ -116,6 +116,26 @@ func (s *Store) SetBuildStatus(ctx context.Context, appID, id string, status mod
 	return s.putJSON(ctx, buildKey(appID, id), build)
 }
 
+// SetBuildJob records the Job a build created.
+//
+// It is a call of its own rather than something SetBuildStatus carries, because
+// the two are known at different moments: the record is written before the Job
+// exists, so that a Job which exists always has a record naming it, and the name
+// only arrives once the Job has been created.
+//
+// This is what makes a finished build readable. The Job is deleted after a
+// while, and the name is the only way to reach its logs and its pod state
+// afterwards — so a name that is not written down is a build whose output is
+// gone as soon as the Job is collected.
+func (s *Store) SetBuildJob(ctx context.Context, appID, id, jobName string) error {
+	build, err := s.GetBuild(ctx, appID, id)
+	if err != nil {
+		return err
+	}
+	build.JobName = jobName
+	return s.putJSON(ctx, buildKey(appID, id), build)
+}
+
 // SetBuildImage records the image a build produced, once the build has pushed
 // it and reported the digest back.
 func (s *Store) SetBuildImage(ctx context.Context, appID, id, image string) error {

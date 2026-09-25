@@ -36,12 +36,19 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 	slog.Info("reconciling builds left unfinished by a restart", "count", len(builds))
 
 	for _, b := range builds {
-		// A build with no Job name never got as far as creating one, so there is
-		// nothing in the cluster to consult. It is failed rather than retried:
-		// retrying on every restart would loop, and the caller can ask again.
+		// A build with no Job name never got as far as recording one, so there is
+		// nothing in the cluster this can look up. It is failed rather than
+		// retried: retrying on every restart would loop, and the caller can ask
+		// again.
+		//
+		// The window that leaves is between the record being written and the Job's
+		// name being recorded against it — two writes, so a crash in between
+		// leaves a running Job whose name nothing knows. The Job's own TTL
+		// collects it, and the build reads as failed rather than as running
+		// forever, which is the safer of the two ways to be wrong.
 		if b.JobName == "" {
 			s.setBuildStatus(ctx, b.AppID, b.ID, model.BuildStatusFailed,
-				"applab restarted before the build job was created")
+				"applab restarted before the build job was started")
 			s.setAppStatus(ctx, b.AppID, model.AppStatusBuildFailed, "applab restarted during the build")
 			continue
 		}

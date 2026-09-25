@@ -169,7 +169,19 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitS
 		return nil, Errorf(http.StatusInternalServerError, "start the build job").Wrap(err)
 	}
 
+	// The Job's name is recorded against the build before anything else can be
+	// asked of it. A build whose name is not written down cannot be followed, its
+	// logs cannot be read after the Job is collected, and it cannot be stopped —
+	// so this is written first, and a failure to write it is reported rather than
+	// leaving a running Job that nothing can address.
+	//
+	// In memory too, because the caller gets this record back and the Job is
+	// already running.
 	build.JobName = jobName
+	if err := s.store.SetBuildJob(ctx, app.ID, buildID, jobName); err != nil {
+		slog.ErrorContext(ctx, "could not record the build's job name",
+			"app", app.ID, "build", buildID, "job", jobName, "error", err)
+	}
 	if err := s.store.SetBuildStatus(ctx, app.ID, buildID, model.BuildStatusPending, ""); err != nil {
 		slog.WarnContext(ctx, "could not record build status", "build", buildID, "error", err)
 	}
