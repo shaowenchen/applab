@@ -1,0 +1,81 @@
+{{- if .Values.cleanup.onUninstall }}
+{{/*
+Removing what applab created, before the release itself goes.
+
+`helm uninstall` deletes the objects the chart created and nothing besides. Every
+app — its Deployment, Service and VirtualService — and every build Job was created
+by AppLab at runtime, through the Kubernetes API, so Helm has never seen any of
+it. Left alone it outlives the installation: the apps keep serving, and each
+build Job's pod keeps an app key in an environment variable that anything with
+`get pods` in the namespace can read.
+
+It is a pre-delete hook and not a post-delete one, and that is forced rather than
+chosen. The hook runs the AppLab image with the release's own ServiceAccount, and
+that ServiceAccount's Role is an ordinary resource of this release — Helm deletes
+it with everything else. A post-delete hook would therefore start with no
+permission to delete anything. Pre-delete runs while the release's RBAC is still
+in place.
+
+The hook runs `applab cleanup` rather than a script over kubectl, because AppLab
+is the component that knows what it created: the label it puts on every object,
+the kinds it writes, and which of them hold a credential. A shell pipeline would
+be a second copy of that knowledge, and it would be the copy that goes stale.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "applab.fullname" . }}-cleanup
+  namespace: {{ include "applab.namespace" . }}
+  labels:
+    {{- include "applab.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    # Before anything else this release deletes, so the objects it removes are
+    # gone while the RBAC above them still exists.
+    "helm.sh/hook-weight": "-10"
+    # hook-succeeded, because this is the one thing a cleanup must not leave
+    # behind: a completed Job is not itself in the way, but not deleting it would
+    # mean every install/uninstall cycle leaves another one in the namespace.
+    #
+    # A failure is kept, and that is the point of the pair. The log is the only
+    # place the reason appears, and Helm reports a failed hook by name without
+    # reproducing it — so the Job survives so it can be read.
+    #
+    # before-hook-creation as well, so a Job left by a previous failed uninstall
+    # is replaced rather than making this one fail with "already exists".
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+spec:
+  # One attempt. A cleanup that half-ran and failed is not improved by running it
+  # again — the Retry would re-list what is already gone — and a hook that
+  # retries for six minutes holds the uninstall open for no gain.
+  backoffLimit: 0
+  # Bounded so a hung cluster cannot hold `helm uninstall` open forever. Shorter
+  # than cleanup.timeout, which is Helm's own bound on the hook: this one has to
+  # fire first, or the Job is killed with no chance to report why.
+  activeDeadlineSeconds: {{ sub .Values.cleanup.timeout 20 }}
+  # Collected after a while, so repeated install/uninstall cycles do not
+  # accumulate completed Jobs. Long enough to read the log of one that failed.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "applab.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "applab.serviceAccountName" . }}
+      restartPolicy: Never
+      containers:
+        - name: cleanup
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.Version }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["cleanup"]
+          envFrom:
+            # The namespace, and nothing else that matters. The keys and the
+            # bucket are deliberately not here: both may legitimately be gone by
+            # the time this runs, and cleanup needs neither.
+            - configMapRef:
+                name: {{ include "applab.fullname" . }}-config
+          resources:
+            {{- toYaml .Values.cleanup.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+{{- end }}

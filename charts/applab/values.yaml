@@ -132,6 +132,40 @@ apps:
   baseURL: ""
 
 # ---------------------------------------------------------------------------
+# Uninstall
+#
+# `helm uninstall` deletes the objects the chart created and nothing else. The
+# apps and the build Jobs were created by AppLab at runtime, through the
+# Kubernetes API, so Helm has never seen them — without this they outlive the
+# uninstall, still serving, with an app's key in every build Job's pod
+# environment.
+# ---------------------------------------------------------------------------
+cleanup:
+  # Remove them before the release goes. Runs as a pre-delete hook, because the
+  # hook needs the release's own ServiceAccount and Role and Helm deletes those
+  # along with everything else — a post-delete hook would find itself with no
+  # permission to remove anything.
+  #
+  # Set false only if you mean to keep the apps running after removing AppLab;
+  # there is then nothing left that knows how to remove them, and every one has
+  # to be deleted by hand.
+  onUninstall: true
+
+  # How long the hook may take before Helm gives up on it. Deletion is
+  # asynchronous, so the hook waits for the apps' pods to stop rather than
+  # returning as soon as the deletes are issued.
+  timeout: 120
+
+  # The hook's resource bounds. It lists and deletes; it does not build anything.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
 # Build pipeline
 #
 # AppLab can run without this: source storage, the API and the console all work,

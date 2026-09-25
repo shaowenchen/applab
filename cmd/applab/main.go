@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +61,21 @@ func handleFlags(args []string) (done bool, err error) {
 	return false, nil
 }
 
+// subcommand returns the first non-flag argument, or "" when there is none.
+//
+// Only one is recognized (see runSubcommand), and an unrecognized one is an
+// error rather than a server start: this binary runs in a container where a
+// mistyped argument is invisible, and silently serving when asked to do
+// something else makes it look like the argument worked.
+func subcommand(args []string) string {
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			return arg
+		}
+	}
+	return ""
+}
+
 const usage = `Run the AppLab control plane.
 
 Configuration comes from the environment, not from arguments. The ones that
@@ -89,9 +105,27 @@ in the Helm chart's values.yaml.
 
   --help, -h     Show this.
   --version, -v  Show the build version.
+
+  cleanup        Remove every object applab created at runtime — the apps'
+                 Deployments, Services and VirtualServices, and every build Job —
+                 and wait for them to stop. Run before an uninstall: helm removes
+                 only what it created, and none of the above was, so without this
+                 the apps keep running and each build Job's pod keeps an app key
+                 in its environment. Needs no API key and no object store.
 `
 
 func run() error {
+	// Before the flags, because handleFlags rejects an argument it does not know
+	// — which is every subcommand — and would answer "unknown argument" for one.
+	//
+	// A subcommand rather than another flag because it does not start a server
+	// and shares none of the checks below: cleanup runs at uninstall, when the
+	// API key and the object store may both be gone, and config.Load refuses a
+	// deployment without either.
+	if cmd := subcommand(os.Args[1:]); cmd != "" {
+		return runSubcommand(cmd)
+	}
+
 	if done, err := handleFlags(os.Args[1:]); done {
 		return err
 	}

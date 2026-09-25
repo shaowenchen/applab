@@ -232,6 +232,45 @@ if render --set build.enabled=false 2>/dev/null | grep -q 'builds run as root'; 
   fail "the build-runs-as-root note appears with build.enabled=false"
 fi
 
+# The uninstall cleanup has to be there, and has to be a pre-delete hook.
+#
+# `helm uninstall` removes what the chart created; every app and every build Job
+# was created by applab at runtime, so without this they outlive the installation
+# — still serving, with an app key in each build pod's environment.
+#
+# Pre-delete rather than post-delete is forced: the hook runs with the release's
+# ServiceAccount, and its Role is an ordinary resource of the release, so a
+# post-delete hook would start with no permission to delete anything.
+hook="$(render)"
+if ! grep -q '"helm.sh/hook": pre-delete' <<<"$hook"; then
+  fail "the uninstall cleanup is not a pre-delete hook; a post-delete one would run after the release's own Role was deleted and could remove nothing"
+fi
+grep -q 'name: applab-cleanup' <<<"$hook" \
+  || fail "no cleanup Job is rendered, so uninstalling leaves every app and build Job behind"
+# The hook deletes itself when it succeeds and is kept when it fails — the log of
+# a failed cleanup is the only place its reason appears.
+grep -q 'helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"' <<<"$hook" \
+  || fail "the cleanup Job is not deleted after a successful uninstall, or a failed one is not kept for its log"
+# It runs the applab image, because applab is what knows which label it put on
+# what. A kubectl pipeline would be a second copy of that knowledge.
+grep -q '"applab-cleanup"' <<<"$hook" || true
+grep -q 'args: \["cleanup"\]' <<<"$hook" \
+  || fail "the cleanup hook does not run the cleanup subcommand"
+if render --set cleanup.onUninstall=false | grep -q 'name: applab-cleanup'; then
+  fail "cleanup.onUninstall=false still renders the cleanup Job"
+fi
+
+# The labels the cleanup selects on are spelled in three places — the Go
+# constants, the chart's helper, and this check — and a sweep that used a label
+# nothing carries would delete nothing while reporting success.
+grep -q 'applab.io/app' internal/k8s/client.go \
+  || fail "the app label constant is gone; the cleanup's selector would match nothing"
+grep -q 'applab.io/build' internal/k8s/client.go \
+  || fail "the build label constant is gone; the build-job sweep would match nothing"
+if grep -q 'applab.io/app' <<<"$(render --set apps.pathPrefix= --set ingress.host=)"; then
+  fail "a chart object carries applab.io/app; the cleanup sweep would delete it as though it were an app"
+fi
+
 # RBAC is a Role, not a ClusterRole: AppLab keeps everything in one namespace,
 # so it has no business holding any permission outside it. A ClusterRole
 # reappearing here would silently undo the point of that.

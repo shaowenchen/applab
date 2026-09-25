@@ -38,6 +38,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/model"
 )
 
@@ -309,10 +310,13 @@ func (e *Engine) jobSpec(app *model.App, jobName, branch, buildID, commitSHA, im
 	deadline := int64(e.cfg.ActiveDeadline.Seconds())
 	backoff := int32(1)
 
+	// The two labels are the constants rather than literals because something
+	// else now finds build Jobs by them: the uninstall sweep selects on both, and
+	// a literal that drifted from the constant would silently stop matching.
 	labels := map[string]string{
 		"app.kubernetes.io/managed-by": "applab",
-		"applab.io/app":                app.ID,
-		"applab.io/build":              buildID,
+		k8s.LabelApp:                   app.ID,
+		k8s.LabelBuild:                 buildID,
 	}
 
 	// No shared workspace volume, unlike the two-container Job this replaces.

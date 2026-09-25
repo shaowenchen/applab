@@ -51,6 +51,26 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+The label every object AppLab creates at runtime carries, and the way it is
+found again.
+
+applab.io/app holds the app id, so one selector finds everything belonging to one
+app: its Deployment, its Service, its VirtualService, its build Jobs. Nothing
+AppLab creates is without it, and nothing it did not create has it — which is
+what makes a label-based sweep safe, and why the code that deletes an app
+verifies the label on every object it is about to remove rather than trusting the
+selector (see k8s.Client.checkAppLabels).
+
+The key is spelled out here rather than taken from the Go constant it mirrors,
+because a template cannot import one. The two are asserted equal by
+hack/helm-check.sh, so a rename in either place fails the build rather than
+silently producing a label nothing matches.
+*/}}
+{{- define "applab.appLabel" -}}
+applab.io/app
+{{- end }}
+
+{{/*
 The namespace AppLab runs in.
 */}}
 {{- define "applab.namespace" -}}

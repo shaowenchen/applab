@@ -25,6 +25,8 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -37,6 +39,13 @@ import (
 // shared namespace, so every object AppLab creates carries it and every query
 // that could return another app's object filters by it.
 const LabelApp = "applab.io/app"
+
+// LabelBuild identifies the build a Job belongs to.
+//
+// It is what tells a build Job from an app's Deployment, which carries LabelApp
+// too — so a sweep for build Jobs needs both, and one that tested only for the
+// app label would delete the running app.
+const LabelBuild = "applab.io/build"
 
 // Client wraps the Kubernetes clientset with the few conveniences AppLab needs.
 type Client struct {
@@ -183,13 +192,37 @@ func (c *Client) OwnsNamespace(namespace string) bool {
 // over-broad selector deletes things nobody asked to delete, and a second read
 // is a cheap price for noticing that first.
 func (c *Client) DeleteAppObjects(ctx context.Context, appID string) error {
-	namespace := c.Namespace(appID)
-	if !c.OwnsNamespace(namespace) {
-		return fmt.Errorf("refusing to delete app %q's objects in namespace %q: it is not this installation's namespace %q",
-			appID, namespace, c.namespace)
-	}
+	return c.deleteLabeledObjects(ctx, appID, LabelApp+"="+appID)
+}
 
-	selector := LabelApp + "=" + appID
+// DeleteEveryAppObject removes every object AppLab created for any app.
+//
+// It is DeleteAppObjects with the app left out of the selector, and it exists for
+// uninstall: `helm uninstall` deletes what Helm created and nothing besides, so
+// without this the apps keep serving and every build Job's pod keeps an app key
+// in an environment variable after AppLab itself is gone.
+//
+// Everything labeled with LabelApp is AppLab's — the chart does not put that
+// label on its own objects, and nothing else in the namespace should carry it
+// (asserted by hack/helm-check.sh). That is what makes one sweep safe here where
+// it would not be when deleting a single app: there is no other app's objects to
+// confuse with these, because every app is going.
+func (c *Client) DeleteEveryAppObject(ctx context.Context) error {
+	return c.deleteLabeledObjects(ctx, "", LabelApp)
+}
+
+// deleteLabeledObjects removes everything matching selector, and nothing else.
+//
+// appID is what the objects are expected to belong to. It is empty for a sweep
+// that covers every app, in which case the check is that the label is present
+// rather than that it has a particular value — an object without it is not
+// AppLab's to delete.
+func (c *Client) deleteLabeledObjects(ctx context.Context, appID, selector string) error {
+	namespace := c.namespace
+	if !c.OwnsNamespace(namespace) {
+		return fmt.Errorf("refusing to delete objects in namespace %q: it is not this installation's namespace %q",
+			namespace, c.namespace)
+	}
 
 	// Everything the app owns is labeled, so a single selector identifies all of
 	// it. Listed per kind rather than deleted blind so the assertion below can
@@ -197,6 +230,14 @@ func (c *Client) DeleteAppObjects(ctx context.Context, appID string) error {
 	deployments, err := c.clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return fmt.Errorf("list deployments for app %s: %w", appID, err)
+	}
+	// Istio's VirtualService is not in client-go, so it is listed through the
+	// dynamic client and comes back unstructured. It is the object that actually
+	// publishes the app, and it is the one thing here that is not in the
+	// clientset — which is exactly why it was the one kind that got left behind.
+	virtualServices, err := c.listVirtualServices(ctx, namespace, selector)
+	if err != nil {
+		return fmt.Errorf("list virtualservices for app %s: %w", appID, err)
 	}
 	services, err := c.clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
@@ -225,6 +266,7 @@ func (c *Client) DeleteAppObjects(ctx context.Context, appID string) error {
 		{"deployment", deploymentObjects(deployments.Items)},
 		{"service", serviceObjects(services.Items)},
 		{"ingress", ingressObjects(ingresses.Items)},
+		{"virtualservice", virtualServiceObjects(virtualServices)},
 		{"job", jobObjects(jobs.Items)},
 		{"secret", secretObjects(secrets.Items)},
 	} {
@@ -262,6 +304,18 @@ func (c *Client) DeleteAppObjects(ctx context.Context, appID string) error {
 			return fmt.Errorf("delete ingress %s for app %s: %w", name, appID, err)
 		}
 	}
+	// The VirtualService goes with the objects above rather than being left for
+	// the deployer: an app deleted through the API has its Deployment removed
+	// here, and a VirtualService naming a Service that no longer exists is a
+	// route to nothing. Istio would keep advertising the host.
+	if c.dynamic != nil {
+		for i := range virtualServices {
+			name := virtualServices[i].GetName()
+			if err := c.dynamic.Resource(virtualServiceGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("delete virtualservice %s for app %s: %w", name, appID, err)
+			}
+		}
+	}
 	// Secrets last. A build token secret is mounted by a Job, so removing it
 	// before the Job is gone would leave a pod referencing a secret that no
 	// longer exists.
@@ -293,12 +347,53 @@ func (c *Client) Ready(ctx context.Context) bool {
 // finding out from a deleted object that belonged to someone else.
 func checkAppLabels(kind, appID, namespace string, objects []metav1.Object) error {
 	for _, obj := range objects {
-		if got := obj.GetLabels()[LabelApp]; got != appID {
+		got := obj.GetLabels()[LabelApp]
+		if appID == "" {
+			// A sweep for everything: the requirement is that the label is there
+			// at all, since that is what says the object is AppLab's.
+			if got == "" {
+				return fmt.Errorf("refusing to delete %s %s in namespace %s: it does not carry label %s, so it is not applab's",
+					kind, obj.GetName(), namespace, LabelApp)
+			}
+			continue
+		}
+		if got != appID {
 			return fmt.Errorf("refusing to delete app %q: %s %s in namespace %s carries label %s=%q, which belongs to another app",
 				appID, kind, obj.GetName(), namespace, LabelApp, got)
 		}
 	}
 	return nil
+}
+
+// virtualServiceGVR names Istio's VirtualService for the dynamic client.
+//
+// Istio's own API package is not a dependency here: AppLab writes one resource
+// of one kind, and taking on the module to say so would be several hundred
+// kilobytes of types to describe a handful of fields. The group, version and
+// resource are all the dynamic client needs.
+var virtualServiceGVR = schema.GroupVersionResource{
+	Group:    "networking.istio.io",
+	Version:  "v1",
+	Resource: "virtualservices",
+}
+
+// listVirtualServices returns the VirtualServices matching a selector.
+//
+// A nil dynamic client means this Client was built without Istio support, which
+// is a deployment that publishes no apps through a gateway — there is nothing to
+// list and nothing to delete, so it is an empty result rather than an error.
+func (c *Client) listVirtualServices(ctx context.Context, namespace, selector string) ([]unstructured.Unstructured, error) {
+	if c.dynamic == nil {
+		return nil, nil
+	}
+
+	list, err := c.dynamic.Resource(virtualServiceGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
 }
 
 // The list types produced by a typed client do not satisfy a common interface,
@@ -329,6 +424,17 @@ func ingressObjects(items []networkingv1.Ingress) []metav1.Object {
 }
 
 func jobObjects(items []batchv1.Job) []metav1.Object {
+	out := make([]metav1.Object, 0, len(items))
+	for i := range items {
+		out = append(out, &items[i])
+	}
+	return out
+}
+
+// virtualServiceObjects widens the dynamic client's unstructured items. They
+// already carry the metadata the label check reads, so nothing has to be
+// converted — only typed so the caller's loop sees one shape.
+func virtualServiceObjects(items []unstructured.Unstructured) []metav1.Object {
 	out := make([]metav1.Object, 0, len(items))
 	for i := range items {
 		out = append(out, &items[i])

@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/model"
 )
 
@@ -174,7 +175,7 @@ func appLabels(app *model.App) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": "applab",
 		"app.kubernetes.io/name":       app.ID,
-		"applab.io/app":                app.ID,
+		k8s.LabelApp:                   app.ID,
 	}
 }
 
@@ -185,7 +186,7 @@ func appLabels(app *model.App) map[string]string {
 // its own pods. The image tag is carried on the pod template as a separate
 // label for that reason.
 func selectorLabels(app *model.App) map[string]string {
-	return map[string]string{"applab.io/app": app.ID}
+	return map[string]string{k8s.LabelApp: app.ID}
 }
 
 // ObjectName is the name shared by an app's Deployment, Service and Ingress.

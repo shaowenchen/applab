@@ -38,7 +38,10 @@ rules:
     resources: ["virtualservices"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
 
-  # One Job per build.
+  # One Job per build, and the same permission is what the pre-delete cleanup
+  # uses to remove them when the release is uninstalled. A Job's pod carries an
+  # app key in its environment, so a build Job left behind by an uninstall is a
+  # credential left behind with it.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "get", "list", "watch", "delete"]
