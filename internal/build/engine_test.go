@@ -19,10 +19,8 @@ import (
 
 func testConfig() Config {
 	return Config{
-		BuilderImage:    "moby/buildkit:v0.19.0",
-		FetcherImage:    "alpine:3.21",
+		KanikoImage:     "ghcr.io/osscontainertools/kaniko:v1.26.2",
 		Registry:        "registry.example.com/apps",
-		Rootless:        true,
 		AppLabURL:       "https://applab.example.com",
 		CacheRepoPrefix: "registry.example.com/cache",
 	}
@@ -50,31 +48,24 @@ func newTestEngine(t *testing.T, tweak ...func(*Config)) (*Engine, *fake.Clients
 	return New(client, cfg), client
 }
 
-// TestStartCreatesJobWithTheSourceToken asserts a build creates the Job it
-// needs and hands the token to the one container entitled to it.
+const testCommit = "abc123def456789012345678901234567890abcd"
+
+// TestStartCreatesAJobThatClonesWithTheAppKey asserts the one credential a build
+// holds reaches the one container that needs it.
 //
-// The token used to travel in a Secret beside the Job, so that no credential
-// appeared in the pod spec. AppLab no longer uses Secret objects, which makes
-// the question this test asks a different one: not "is it out of the spec" —
-// it is in the spec now, by construction — but "did it reach only the fetcher".
-// The fetch container authenticates one GET; the build container runs arbitrary
-// code from the uploaded Dockerfile, so a credential there is a credential
-// handed to whoever wrote that Dockerfile.
-func TestStartCreatesJobWithTheSourceToken(t *testing.T) {
+// It used to be a single-use token, issued for one commit and consumed by one
+// request — because the fetch step was an HTTP GET for a tarball. Kaniko clones
+// the repository over git, and a clone is many authenticated requests, so a
+// credential that dies on the first one cannot work. What the Job carries now is
+// the app's own key: the same one its owner pushes with, reaching that app's
+// repository and no other.
+func TestStartCreatesAJobThatClonesWithTheAppKey(t *testing.T) {
 	engine, client := newTestEngine(t)
 	ctx := context.Background()
 	app := testApp()
+	createNamespace(t, client, app.Namespace)
 
-	// The namespace has to exist before a Job can be created in it; in the real
-	// flow AppLab creates it, so the fake must have it too.
-	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: app.Namespace},
-	}, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create namespace: %v", err)
-	}
-
-	const commit = "abc123def456789012345678901234567890abcd"
-	jobName, err := engine.Start(ctx, app, "buildid1", commit, "tok-123")
+	jobName, err := engine.Start(ctx, app, "main", "buildid1", testCommit, "app-key-123")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -87,33 +78,56 @@ func TestStartCreatesJobWithTheSourceToken(t *testing.T) {
 		t.Fatalf("get job: %v", err)
 	}
 
-	// No Secret objects at all: the token is an environment variable, so there
-	// is nothing beside the Job to leak or to clean up.
+	// No Secret objects at all: the key is an environment variable, so there is
+	// nothing beside the Job to leak or to clean up.
 	secrets, err := client.CoreV1().Secrets(app.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("list secrets: %v", err)
 	}
 	if len(secrets.Items) != 0 {
-		t.Errorf("the build left %d Secrets behind; AppLab keeps the token on the Job", len(secrets.Items))
+		t.Errorf("the build left %d Secrets behind; the key belongs on the Job", len(secrets.Items))
 	}
 
-	// The fetcher is the container that must have it.
-	fetcher := findContainer(t, job, "fetch-source")
-	if got := envValue(fetcher, "APPLAB_SOURCE_TOKEN"); got != "tok-123" {
-		t.Errorf("APPLAB_SOURCE_TOKEN on the fetch container = %q, want the token that was passed", got)
-	}
-
-	// The build container must NOT: it runs arbitrary code from the uploaded
-	// Dockerfile, so giving it the token would hand it AppLab's source access.
 	builder := findContainer(t, job, "build")
-	if got := envValue(builder, "APPLAB_SOURCE_TOKEN"); got != "" {
-		t.Errorf("the build container carries the source token (%q); a build must not hold a credential it can exfiltrate", got)
+	if got := envValue(builder, "GIT_PASSWORD"); got != "app-key-123" {
+		t.Errorf("GIT_PASSWORD = %q, want the app key that was passed", got)
 	}
-	if specText := jobSpecText(t, job); !strings.Contains(specText, "APPLAB_SOURCE_TOKEN") {
-		// The fetcher was found by name above, so this only guards the helper
-		// staying honest: if jobSpecText stopped rendering env, the assertion
-		// above would pass for the wrong reason.
-		t.Error("the rendered Job spec does not mention the token variable at all")
+	// Kaniko sends a Basic credential only when there is a username in it, and
+	// AppLab reads the password and ignores the username. Something has to be in
+	// the username for the header to exist at all.
+	if got := envValue(builder, "GIT_USERNAME"); got == "" {
+		t.Error("GIT_USERNAME is empty, so kaniko sends no credential and the clone of a private repository fails")
+	}
+}
+
+// TestJobIsASingleContainer asserts the shape that replacing buildkit with
+// kaniko exists to produce.
+//
+// The old Job was two containers: an init container fetched a tarball because
+// buildkit cannot reach a repository itself, and a shared emptyDir was what
+// carried the tree from one to the other. Kaniko clones its own context, so both
+// the fetch step and the volume it needed are gone — and a regression that
+// reintroduced either would be a volume nobody writes and a container nobody
+// waits for.
+func TestJobIsASingleContainer(t *testing.T) {
+	engine, _ := newTestEngine(t)
+
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+
+	pod := job.Spec.Template.Spec
+	if len(pod.InitContainers) != 0 {
+		t.Errorf("the build job has %d init containers; kaniko needs none", len(pod.InitContainers))
+	}
+	if len(pod.Containers) != 1 {
+		t.Fatalf("the build job has %d containers, want one", len(pod.Containers))
+	}
+	if got := pod.Containers[0].Name; got != "build" {
+		t.Errorf("the container is named %q, want build", got)
+	}
+	for _, v := range pod.Volumes {
+		if v.EmptyDir != nil {
+			t.Errorf("the build job declares an emptyDir (%s); kaniko's context lives in the container, not in a volume", v.Name)
+		}
 	}
 }
 
@@ -131,7 +145,7 @@ func TestJobSecurityContext(t *testing.T) {
 		app := testApp()
 		createNamespace(t, client, app.Namespace)
 
-		jobName, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok")
+		jobName, err := engine.Start(ctx, app, "main", "b1", testCommit, "app-key")
 		if err != nil {
 			t.Fatalf("Start: %v", err)
 		}
@@ -149,13 +163,19 @@ func TestJobSecurityContext(t *testing.T) {
 		}
 	})
 
-	t.Run("rootless is unprivileged", func(t *testing.T) {
+	t.Run("the build container is not privileged", func(t *testing.T) {
+		// Kaniko runs as root — it unpacks the base image into its own root
+		// filesystem and runs each Dockerfile step there — but root inside a
+		// container is not the same thing as privilege. Nothing here needs
+		// privileged mode, host namespaces or a host path, and granting any of
+		// them would turn a build from arbitrary code in a container into
+		// arbitrary code on the node.
 		engine, client := newTestEngine(t)
 		ctx := context.Background()
 		app := testApp()
 		createNamespace(t, client, app.Namespace)
 
-		jobName, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok")
+		jobName, err := engine.Start(ctx, app, "main", "b1", testCommit, "app-key")
 		if err != nil {
 			t.Fatalf("Start: %v", err)
 		}
@@ -170,73 +190,32 @@ func TestJobSecurityContext(t *testing.T) {
 			t.Fatal("the build container has no security context")
 		}
 		if sc.Privileged != nil && *sc.Privileged {
-			t.Error("a rootless build must not be privileged; that is the whole point of the mode")
+			t.Error("the build container is privileged; it must not be")
 		}
-		if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
-			t.Error("a rootless build must run as a non-root user")
+		if sc.RunAsNonRoot != nil && *sc.RunAsNonRoot {
+			t.Error("the build container is asked to run as non-root, which kaniko cannot do: it unpacks into its own root filesystem")
 		}
-		// RootlessKit needs to create a user namespace, which the default seccomp
-		// profile blocks. Without this the build fails with a permissions error
-		// that says nothing about the cause.
-		if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeUnconfined {
-			t.Error("a rootless build needs an unconfined seccomp profile to create its user namespace")
+		if sc.ReadOnlyRootFilesystem != nil && *sc.ReadOnlyRootFilesystem {
+			t.Error("the build container's root filesystem is read-only, so kaniko cannot unpack the image it is building")
 		}
 	})
 
-	t.Run("privileged is opted into explicitly", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.Rootless = false
-		client := fake.NewSimpleClientset()
-		engine := New(client, cfg)
-
-		ctx := context.Background()
-		app := testApp()
-		createNamespace(t, client, app.Namespace)
-
-		jobName, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok")
-		if err != nil {
-			t.Fatalf("Start: %v", err)
-		}
-		job, _ := client.BatchV1().Jobs(app.Namespace).Get(ctx, jobName, metav1.GetOptions{})
-
-		builder := findContainer(t, job, "build")
-		if builder.SecurityContext == nil || builder.SecurityContext.Privileged == nil || !*builder.SecurityContext.Privileged {
-			t.Error("the privileged escape hatch did not produced a privileged container")
-		}
-	})
-
-	t.Run("the fetch container is always unprivileged", func(t *testing.T) {
-		// The fetcher downloads and unpacks untrusted input; it never needs
-		// privilege, so it must never have any, whichever mode the build is in.
-		for _, rootless := range []bool{true, false} {
-			cfg := testConfig()
-			cfg.Rootless = rootless
-			client := fake.NewSimpleClientset()
-			engine := New(client, cfg)
-
-			ctx := context.Background()
-			app := testApp()
-			createNamespace(t, client, app.Namespace)
-
-			jobName, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok")
-			if err != nil {
-				t.Fatalf("Start: %v", err)
-			}
-			job, _ := client.BatchV1().Jobs(app.Namespace).Get(ctx, jobName, metav1.GetOptions{})
-
-			fetcher := findContainer(t, job, "fetch-source")
-			sc := fetcher.SecurityContext
-			if sc == nil {
-				t.Fatal("the fetch container has no security context")
-			}
-			if sc.Privileged != nil && *sc.Privileged {
-				t.Errorf("rootless=%v: the fetch container is privileged; it never needs to be", rootless)
-			}
-			if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
-				t.Errorf("rootless=%v: the fetch container allows privilege escalation", rootless)
+	t.Run("the build pod mounts nothing from the node", func(t *testing.T) {
+		for _, v := range engineVolumeList(t) {
+			if v.HostPath != nil {
+				t.Errorf("the build pod mounts %s from the node; a build runs untrusted code and must not reach the host", v.Name)
 			}
 		}
 	})
+}
+
+// engineVolumeList is the volumes a default-configured build job declares.
+func engineVolumeList(t *testing.T) []corev1.Volume {
+	t.Helper()
+
+	engine, _ := newTestEngine(t)
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+	return job.Spec.Template.Spec.Volumes
 }
 
 // TestImageTagIsTheCommit asserts the image tag names the source, which is what
@@ -244,8 +223,7 @@ func TestJobSecurityContext(t *testing.T) {
 func TestImageTagIsTheCommit(t *testing.T) {
 	engine, _ := newTestEngine(t)
 
-	commit := "abc123def456789012345678901234567890abcd"
-	image := engine.ImageFor("shop", commit)
+	image := engine.ImageFor("shop", testCommit)
 
 	if !strings.HasPrefix(image, "registry.example.com/apps/shop:") {
 		t.Errorf("image = %q, want it under the configured registry", image)
@@ -287,12 +265,11 @@ func TestImageRef(t *testing.T) {
 		{"trailing slash", "shaowenchen/applab/", "demo", "shaowenchen/applab", "demo-"},
 	}
 
-	commit := "abc123def456789012345678901234567890abcd"
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			engine, _ := newTestEngine(t, func(c *Config) { c.Registry = tc.registry })
 
-			image := engine.ImageFor(tc.appID, commit)
+			image := engine.ImageFor(tc.appID, testCommit)
 			want := tc.wantRepo + ":" + tc.wantTag + "abc123def456"
 			if image != want {
 				t.Errorf("ImageFor(%q, ...) = %q, want %q", tc.appID, image, want)
@@ -311,9 +288,8 @@ func TestImageRefKeepsAppsApart(t *testing.T) {
 		t.Run(registry, func(t *testing.T) {
 			engine, _ := newTestEngine(t, func(c *Config) { c.Registry = registry })
 
-			commit := "abc123def456789012345678901234567890abcd"
-			shop := engine.ImageFor("shop", commit)
-			blog := engine.ImageFor("blog", commit)
+			shop := engine.ImageFor("shop", testCommit)
+			blog := engine.ImageFor("blog", testCommit)
 
 			if shop == blog {
 				t.Errorf("apps shop and blog both resolve to %q under registry %q", shop, registry)
@@ -326,17 +302,17 @@ func TestImageRefKeepsAppsApart(t *testing.T) {
 // the image is.
 //
 // A cache reference under a registry too deep to hold it would be rejected by
-// the registry, and because the export is not best-effort that fails the build
-// rather than quietly skipping the cache.
+// the registry, and a rejected cache reference fails the build rather than
+// quietly skipping the cache.
 func TestCacheRefFollowsTheImage(t *testing.T) {
 	cases := []struct {
 		registry  string
 		cachePath string
 		want      string
 	}{
-		{"registry.example.com/apps", "cache.example.com", "cache.example.com/shop:buildcache"},
-		{"shaowenchen", "cache", "cache/shop:buildcache"},
-		{"shaowenchen/applab", "shaowenchen/cache", "shaowenchen/cache:shop-buildcache"},
+		{"registry.example.com/apps", "cache.example.com", "cache.example.com/shop"},
+		{"shaowenchen", "cache", "cache/shop"},
+		{"shaowenchen/applab", "shaowenchen/cache", "shaowenchen/cache"},
 	}
 
 	for _, tc := range cases {
@@ -346,11 +322,11 @@ func TestCacheRefFollowsTheImage(t *testing.T) {
 				c.CacheRepoPrefix = tc.cachePath
 			})
 
-			job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
-			args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+			job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+			args := strings.Join(findContainer(t, job, "build").Args, " ")
 
-			if !strings.Contains(args, tc.want) {
-				t.Errorf("the build args do not contain %q:\n%s", tc.want, args)
+			if !strings.Contains(args, "--cache-repo="+tc.want) {
+				t.Errorf("the build args do not name the cache repository %q:\n%s", tc.want, args)
 			}
 		})
 	}
@@ -429,10 +405,9 @@ func TestStatusReadsJobConditions(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			client := fake.NewSimpleClientset(tc.job)
-			engine := New(client, testConfig())
+			engine := New(fake.NewSimpleClientset(tc.job), testConfig())
 
-			status, _, err := engine.Status(ctx, "applab-shop", tc.job.Name)
+			status, _, err := engine.Status(ctx, "applab-shop", "build-job")
 			if err != nil {
 				t.Fatalf("Status: %v", err)
 			}
@@ -466,8 +441,8 @@ func TestStatusOfMissingJobIsNotAFailure(t *testing.T) {
 // TestStartLeavesNothingBehindWhenJobCreationFails asserts a failed start is a
 // no-op.
 //
-// It used to guard a rollback: the token was a Secret created before the Job and
-// deleted again if the Job was refused. With the token on the Job there is
+// It used to guard a rollback: the credential was a Secret created before the
+// Job and deleted again if the Job was refused. With the key on the Job there is
 // nothing to roll back, and the assertion is what keeps that true — a future
 // change that reintroduced an object beside the Job would have to clean it up
 // here or fail this test.
@@ -482,7 +457,7 @@ func TestStartLeavesNothingBehindWhenJobCreationFails(t *testing.T) {
 	app := testApp()
 	createNamespace(t, client, app.Namespace)
 
-	if _, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok"); err == nil {
+	if _, err := engine.Start(ctx, app, "main", "b1", testCommit, "app-key"); err == nil {
 		t.Fatal("Start succeeded despite the job creation failing")
 	}
 
@@ -497,14 +472,14 @@ func TestStartLeavesNothingBehindWhenJobCreationFails(t *testing.T) {
 }
 
 // TestCancelStopsTheBuild asserts cancelling removes the Job, which is the whole
-// of stopping a build now: the token lives on the Job and goes with it.
+// of stopping a build now: the credential lives on the Job and goes with it.
 func TestCancelStopsTheBuild(t *testing.T) {
 	engine, client := newTestEngine(t)
 	ctx := context.Background()
 	app := testApp()
 	createNamespace(t, client, app.Namespace)
 
-	jobName, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok")
+	jobName, err := engine.Start(ctx, app, "main", "b1", testCommit, "app-key")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -532,9 +507,9 @@ func TestReadyRequiresConfiguration(t *testing.T) {
 		want bool
 	}{
 		{"fully configured", testConfig(), true},
-		{"no registry", Config{BuilderImage: "b", FetcherImage: "f", AppLabURL: "u"}, false},
-		{"no builder image", Config{Registry: "r", FetcherImage: "f", AppLabURL: "u"}, false},
-		{"no applab url", Config{Registry: "r", BuilderImage: "b", FetcherImage: "f"}, false},
+		{"no registry", Config{KanikoImage: "k", AppLabURL: "u"}, false},
+		{"no kaniko image", Config{Registry: "r", AppLabURL: "u"}, false},
+		{"no applab url", Config{Registry: "r", KanikoImage: "k"}, false},
 		{"nothing", Config{}, false},
 	}
 
@@ -548,24 +523,19 @@ func TestReadyRequiresConfiguration(t *testing.T) {
 	}
 }
 
-// TestCacheIsImportedAndExported asserts the registry-side cache is wired up
-// when configured. Without both flags a Job has no persistent disk, so every
-// build would start from nothing — which is the difference between a one-minute
-// and a ten-minute rebuild.
-func TestCacheIsImportedAndExported(t *testing.T) {
+// TestCacheIsEnabledWhenConfigured asserts the registry-side cache is wired up,
+// since a Job has no persistent disk and every rebuild would otherwise start
+// from nothing.
+func TestCacheIsEnabledWhenConfigured(t *testing.T) {
 	engine, _ := newTestEngine(t)
-	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
 
-	builder := findContainer(t, job, "build")
-	args := strings.Join(builder.Args, " ")
+	args := strings.Join(findContainer(t, job, "build").Args, " ")
 
-	if !strings.Contains(args, "--export-cache") {
-		t.Error("the build does not export a cache, so no rebuild can reuse its layers")
+	if !strings.Contains(args, "--cache=true") {
+		t.Error("the build does not use a cache, so no rebuild can reuse its layers")
 	}
-	if !strings.Contains(args, "--import-cache") {
-		t.Error("the build does not import a cache")
-	}
-	if !strings.Contains(args, "shop:buildcache") {
+	if !strings.Contains(args, "--cache-repo=registry.example.com/cache/shop") {
 		t.Errorf("the cache reference does not name the app:\n%s", args)
 	}
 }
@@ -577,29 +547,31 @@ func TestNoCacheWhenUnconfigured(t *testing.T) {
 	cfg.CacheRepoPrefix = ""
 	engine := New(fake.NewSimpleClientset(), cfg)
 
-	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
-	builder := findContainer(t, job, "build")
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+	args := strings.Join(findContainer(t, job, "build").Args, " ")
 
-	args := strings.Join(builder.Args, " ")
-	if strings.Contains(args, "buildcache") {
+	if strings.Contains(args, "--cache") {
 		t.Errorf("a cache flag was emitted with no cache prefix configured:\n%s", args)
 	}
 }
 
-// TestDockerfilePathIsPassed asserts the app's Dockerfile path reaches buildctl,
+// TestDockerfilePathIsPassed asserts the app's Dockerfile path reaches kaniko,
 // since an app may keep it somewhere other than the root.
+//
+// The path is relative to the checkout, because that is what kaniko resolves it
+// against: an absolute path would be looked for on the container's own
+// filesystem, where the app's source is not.
 func TestDockerfilePathIsPassed(t *testing.T) {
 	engine, _ := newTestEngine(t)
 
 	app := testApp()
 	app.Dockerfile = "build/Dockerfile.prod"
 
-	job := engine.jobSpec(app, "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
-	builder := findContainer(t, job, "build")
+	job := engine.jobSpec(app, "job", "main", "b1", testCommit, "image:tag", "app-key")
+	args := strings.Join(findContainer(t, job, "build").Args, " ")
 
-	args := strings.Join(builder.Args, " ")
-	if !strings.Contains(args, "filename=build/Dockerfile.prod") {
-		t.Errorf("the Dockerfile path was not passed to buildctl:\n%s", args)
+	if !strings.Contains(args, "--dockerfile build/Dockerfile.prod") {
+		t.Errorf("the Dockerfile path was not passed to kaniko:\n%s", args)
 	}
 }
 
@@ -609,7 +581,7 @@ func TestDeadlineBoundsTheBuild(t *testing.T) {
 	cfg.ActiveDeadline = 15 * time.Minute
 	engine := New(fake.NewSimpleClientset(), cfg)
 
-	job := engine.jobSpec(testApp(), "job", "b1", strings.Repeat("a", 40), "image:tag", "tok")
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
 
 	if job.Spec.ActiveDeadlineSeconds == nil {
 		t.Fatal("the build job has no deadline; a hung build would occupy a slot forever")
@@ -620,6 +592,194 @@ func TestDeadlineBoundsTheBuild(t *testing.T) {
 	// The Job must be kept long enough to read why it failed.
 	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished == 0 {
 		t.Error("the finished job is deleted immediately, so a failure could not be diagnosed")
+	}
+}
+
+// TestContextNamesTheRepositoryTheBranchAndTheCommit asserts what kaniko is
+// pointed at, since every part of that string is load-bearing.
+//
+// The three "#"-separated parts are kaniko's own syntax. The commit is what makes
+// a build reproducible: a build is started for a recorded commit, and by the time
+// the Job runs the branch may have moved. The full ref is what keeps a branch
+// called "v1" from being resolved as a tag of the same name.
+func TestContextNamesTheRepositoryTheBranchAndTheCommit(t *testing.T) {
+	engine, _ := newTestEngine(t)
+
+	app := testApp()
+
+	job := engine.jobSpec(app, "job", "dev", "b1", testCommit, "image:tag", "app-key")
+	args := strings.Join(findContainer(t, job, "build").Args, " ")
+
+	want := "--context git://applab.example.com/git/shop.git#refs/heads/dev#" + testCommit
+	if !strings.Contains(args, want) {
+		t.Errorf("the build context is not %q:\n%s", want, args)
+	}
+
+	// And the app's own branch field is not consulted. A caller can deploy a
+	// branch without switching the app to it, so a build that read ActiveBranch
+	// here would clone whichever branch is live instead of the one being built —
+	// and for a commit that exists only on the branch being built, would fail
+	// outright.
+	app.Branch = "main"
+	job = engine.jobSpec(app, "job", "dev", "b1", testCommit, "image:tag", "app-key")
+	args = strings.Join(findContainer(t, job, "build").Args, " ")
+
+	if !strings.Contains(args, want) {
+		t.Errorf("the build context followed the app's active branch rather than the branch it was given:\n%s", args)
+	}
+}
+
+// TestContextFollowsTheAddressAppLabIsReachedAt asserts the clone scheme comes
+// from AppLab's own address rather than being assumed.
+//
+// Kaniko derives the scheme from GIT_PULL_METHOD, which knows only "http" and
+// "https" — anything else silently becomes https. An AppLab reached over http
+// in-cluster is the cluster-local case the chart already supports, and a build
+// that assumed https against it would fail with a TLS error that names neither
+// the setting nor the reason.
+func TestContextFollowsTheAddressAppLabIsReachedAt(t *testing.T) {
+	cases := []struct {
+		name       string
+		appLabURL  string
+		wantHost   string
+		wantMethod string
+	}{
+		{"https", "https://applab.example.com", "applab.example.com", "https"},
+		{"http in cluster", "http://applab.ops-system.svc:8080", "applab.ops-system.svc:8080", "http"},
+		// base_url is typed by hand in the chart, and a trailing slash is the
+		// same address. Left in, it would produce "//git/shop.git", which
+		// kaniko's clone reads as a URL with an empty first path segment.
+		{"a trailing slash", "https://applab.example.com/", "applab.example.com", "https"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, _ := newTestEngine(t, func(c *Config) { c.AppLabURL = tc.appLabURL })
+
+			job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+			builder := findContainer(t, job, "build")
+			args := strings.Join(builder.Args, " ")
+
+			want := "--context git://" + tc.wantHost + "/git/shop.git#"
+			if !strings.Contains(args, want) {
+				t.Errorf("the build context is not rooted at %q:\n%s", want, args)
+			}
+			if got := envValue(builder, "GIT_PULL_METHOD"); got != tc.wantMethod {
+				t.Errorf("GIT_PULL_METHOD = %q, want %q: the method and the URL have to agree", got, tc.wantMethod)
+			}
+		})
+	}
+}
+
+// TestBuildContainerRunsTheConfiguredImage asserts the image is the one the
+// deployment named, and that the credential mount lands where kaniko looks for
+// it.
+//
+// Kaniko reads its registry credentials from DOCKER_CONFIG, which its own image
+// sets to /kaniko/.docker. The mount has to be there rather than somewhere that
+// merely looks conventional, or the push is unauthenticated and the failure
+// reads as a registry that rejected the image.
+func TestBuildContainerRunsTheConfiguredImage(t *testing.T) {
+	engine, _ := newTestEngine(t, func(c *Config) { c.Secret = "applab-registry" })
+
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+	builder := findContainer(t, job, "build")
+
+	if builder.Image != "ghcr.io/osscontainertools/kaniko:v1.26.2" {
+		t.Errorf("the build runs %q, want the configured kaniko image", builder.Image)
+	}
+	if !mountsSecretFor(builder, registryVolumeName) {
+		t.Fatalf("the build does not mount the registry credential")
+	}
+	for _, m := range builder.VolumeMounts {
+		if m.Name == registryVolumeName && m.MountPath != kanikoDockerConfigDir {
+			t.Errorf("the registry credential is mounted at %q, want %q", m.MountPath, kanikoDockerConfigDir)
+		}
+	}
+	// The mount path is the image's own DOCKER_CONFIG, so overriding the
+	// variable would have to track it — two things that can drift apart.
+	if got := envValue(builder, "DOCKER_CONFIG"); got != "" {
+		t.Errorf("DOCKER_CONFIG is overridden to %q; the image's default is the path the mount uses", got)
+	}
+
+	// And the volume the mount reads is actually declared. A mount without a
+	// volume is a pod that never starts, and the error names neither.
+	declared := false
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == registryVolumeName {
+			declared = true
+			if v.Secret == nil || v.Secret.SecretName != "applab-registry" {
+				t.Errorf("the credential volume does not read Secret %q", "applab-registry")
+			}
+		}
+	}
+	if !declared {
+		t.Error("the credential is mounted but no volume is declared for it")
+	}
+}
+
+// TestNoCredentialMountWhenTheRegistryNeedsNone asserts a cluster-local registry
+// is not handed a volume it has no Secret for.
+func TestNoCredentialMountWhenTheRegistryNeedsNone(t *testing.T) {
+	engine, _ := newTestEngine(t) // testConfig has no Secret
+
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+
+	if vols := job.Spec.Template.Spec.Volumes; len(vols) != 0 {
+		t.Errorf("a build with no configured credential declares %d volumes", len(vols))
+	}
+	if mountsSecretFor(findContainer(t, job, "build"), registryVolumeName) {
+		t.Error("a build with no configured credential mounts one anyway")
+	}
+}
+
+// TestInsecureRegistryCoversBothDirections asserts the opt-in reaches the pull
+// as well as the push.
+//
+// Kaniko has separate flags for each, and a registry that is reachable one way
+// and not the other fails in the middle of a build rather than at the start —
+// after the clone, which is the slowest part to redo.
+func TestInsecureRegistryCoversBothDirections(t *testing.T) {
+	engine, _ := newTestEngine(t, func(c *Config) { c.InsecureRegistry = true })
+
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+	args := strings.Join(findContainer(t, job, "build").Args, " ")
+
+	for _, flag := range []string{"--insecure", "--insecure-pull", "--skip-tls-verify", "--skip-tls-verify-pull"} {
+		if !strings.Contains(args, flag) {
+			t.Errorf("insecureRegistry is set but %s is not passed:\n%s", flag, args)
+		}
+	}
+}
+
+// TestSecureRegistryPassesNoInsecureFlags is the other half: the default must not
+// silently weaken the guarantee that the image that arrived is the image that was
+// pushed.
+func TestSecureRegistryPassesNoInsecureFlags(t *testing.T) {
+	engine, _ := newTestEngine(t)
+
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+	args := strings.Join(findContainer(t, job, "build").Args, " ")
+
+	if strings.Contains(args, "insecure") || strings.Contains(args, "skip-tls-verify") {
+		t.Errorf("the default build passes a flag that disables a verification:\n%s", args)
+	}
+}
+
+// TestLogFormatIsReadable asserts the output is something a log viewer can read.
+//
+// Kaniko's default is a redrawing terminal UI: escape codes, cursor movement and
+// carriage returns. That is the right output for a person watching a build in a
+// terminal and the wrong output for a log AppLab stores and a person reads back
+// later.
+func TestLogFormatIsReadable(t *testing.T) {
+	engine, _ := newTestEngine(t)
+
+	job := engine.jobSpec(testApp(), "job", "main", "b1", testCommit, "image:tag", "app-key")
+	args := strings.Join(findContainer(t, job, "build").Args, " ")
+
+	if !strings.Contains(args, "--log-format text") {
+		t.Errorf("the build does not ask kaniko for plain text output:\n%s", args)
 	}
 }
 
@@ -679,27 +839,6 @@ func envValue(c corev1.Container, name string) string {
 	return ""
 }
 
-// jobSpecText renders a Job to text, for asserting that a value does not appear
-// anywhere in it.
-func jobSpecText(t *testing.T, job *batchv1.Job) string {
-	t.Helper()
-
-	var b strings.Builder
-	for _, c := range job.Spec.Template.Spec.Containers {
-		b.WriteString(c.Name + " " + strings.Join(c.Args, " ") + " " + strings.Join(c.Command, " "))
-		for _, e := range c.Env {
-			b.WriteString(" " + e.Name + "=" + e.Value)
-		}
-	}
-	for _, c := range job.Spec.Template.Spec.InitContainers {
-		b.WriteString(c.Name + " " + strings.Join(c.Args, " ") + " " + strings.Join(c.Command, " "))
-		for _, e := range c.Env {
-			b.WriteString(" " + e.Name + "=" + e.Value)
-		}
-	}
-	return b.String()
-}
-
 // isDNS1123Subdomain is the rule Kubernetes applies to a Job name.
 func isDNS1123Subdomain(s string) bool {
 	if s == "" || len(s) > 253 {
@@ -740,8 +879,7 @@ func buildPod(name string, status corev1.PodStatus) *corev1.Pod {
 			Labels:    map[string]string{"job-name": "build-job"},
 		},
 		Spec: corev1.PodSpec{
-			InitContainers: []corev1.Container{{Name: "fetch-source"}},
-			Containers:     []corev1.Container{{Name: "build"}},
+			Containers: []corev1.Container{{Name: "build"}},
 		},
 		Status: status,
 	}
@@ -762,8 +900,8 @@ func TestBackoffLimitFailureNamesWhatThePodDid(t *testing.T) {
 
 	pod := buildPod("build-job-abc", corev1.PodStatus{
 		Phase: corev1.PodFailed,
-		InitContainerStatuses: []corev1.ContainerStatus{{
-			Name: "fetch-source",
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name: "build",
 			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
 				ExitCode: 1,
 				Reason:   "Error",
@@ -787,7 +925,7 @@ func TestBackoffLimitFailureNamesWhatThePodDid(t *testing.T) {
 		t.Errorf("the job's own reason was dropped: %q", reason)
 	}
 	// And the pod's, which is the part that was missing.
-	if !strings.Contains(reason, "fetch-source") {
+	if !strings.Contains(reason, "build") {
 		t.Errorf("the reason does not say which container failed: %q", reason)
 	}
 	if !strings.Contains(reason, "exited 1") {
@@ -888,127 +1026,6 @@ func TestFailureWithoutAPodIsStillReadable(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// What the containers actually shell out to
-//
-// The fetcher image is configurable, so nothing at compile time can stop it
-// being an image with the wrong tools in it — and the default *was* one. It was
-// `alpine:3.21`, whose busybox provides wget and no curl, while the fetch script
-// called curl: every build died at exit 127 before it sent a single request, and
-// reported only "init fetch-source exited 127".
-//
-// So the scripts are asserted rather than assumed. These read the rendered Job
-// spec, which is the artefact the cluster runs.
-// ---------------------------------------------------------------------------
-
-// TestFetchScriptUsesToolsTheFetcherImageHas asserts the fetch container shells
-// out only to what the default image provides.
-//
-// The image is alpine, whose busybox has wget and tar and no curl. Anything
-// outside that set does not fail loudly — it fails as exit 127, which is the
-// number the shell gives for a command it could not find, and which reads as a
-// broken build rather than as a missing binary.
-func TestFetchScriptUsesToolsTheFetcherImageHas(t *testing.T) {
-	engine, _ := newTestEngine(t)
-
-	fetcher := engine.fetchContainer(testApp(), "build-job", strings.Repeat("a", 40), "workspace", "tok")
-
-	var script strings.Builder
-	script.WriteString(strings.Join(fetcher.Command, " "))
-	script.WriteString(" ")
-	script.WriteString(strings.Join(fetcher.Args, " "))
-	// Comments stripped before scanning, because the script's own explanation of
-	// this very bug names curl — and a check that reads prose would fail on the
-	// comment that documents why the code is right.
-	text := stripShellComments(script.String())
-
-	if strings.Contains(text, "curl") {
-		t.Error("the fetch script calls curl, which alpine does not have — it exits 127 having sent nothing")
-	}
-	if !strings.Contains(text, "wget") {
-		t.Error("the fetch script does not use wget, the one HTTP client the fetcher image is guaranteed to have")
-	}
-	if !strings.Contains(text, "tar") {
-		t.Error("the fetch script does not unpack the archive")
-	}
-	// The token goes in a header, never in the URL: a URL is what ends up in the
-	// server's access log, and the whole point of the token is that it is the
-	// only credential a build holds.
-	if !strings.Contains(text, "Authorization: Bearer ${token}") {
-		t.Error("the fetch script does not send the token as an Authorization header")
-	}
-}
-
-// TestFetchScriptFailsLegiblyWhenAToolIsMissing asserts the guard is in place.
-//
-// Without it a fetcher image missing wget is exit 127 and one line of nothing,
-// which is the failure that took this long to diagnose.
-func TestFetchScriptFailsLegiblyWhenAToolIsMissing(t *testing.T) {
-	engine, _ := newTestEngine(t)
-
-	fetcher := engine.fetchContainer(testApp(), "build-job", strings.Repeat("a", 40), "workspace", "tok")
-	script := strings.Join(fetcher.Args, "\n")
-
-	if !strings.Contains(script, "command -v") {
-		t.Error("the fetch script does not check that its tools exist; a missing one is an unexplained exit 127")
-	}
-	for _, tool := range []string{"wget", "tar"} {
-		if !strings.Contains(script, tool) {
-			t.Errorf("the fetch script does not name %s among the tools it needs", tool)
-		}
-	}
-}
-
-// TestBuildContainerFailsLegiblyWhenAToolIsMissing asserts the same for the
-// builder, whose binaries come from an image the operator also chooses: without
-// rootlesskit or buildkitd the container dies at exit 127 and its log says
-// nothing about which one was absent.
-func TestBuildContainerFailsLegiblyWhenAToolIsMissing(t *testing.T) {
-	for _, rootless := range []bool{true, false} {
-		name := "privileged"
-		if rootless {
-			name = "rootless"
-		}
-
-		t.Run(name, func(t *testing.T) {
-			cfg := testConfig()
-			cfg.Rootless = rootless
-			engine := New(fake.NewSimpleClientset(), cfg)
-
-			container := engine.buildContainer(testApp(), "build-job", "buildid1",
-				strings.Repeat("a", 40), "registry.example.com/apps/shop:abc", "workspace")
-			script := strings.Join(container.Args, "\n")
-
-			if !strings.Contains(script, "command -v") {
-				t.Error("the build script does not check that its tools exist")
-			}
-			if !strings.Contains(script, "buildctl") {
-				t.Error("the build script does not check for buildctl")
-			}
-			// rootlesskit only starts the daemon in rootless mode, so demanding
-			// it of a privileged image would refuse an image that works.
-			if rootless && !strings.Contains(script, "rootlesskit") {
-				t.Error("the rootless build script does not check for rootlesskit")
-			}
-			if !rootless && strings.Contains(script, "rootlesskit") {
-				t.Error("the privileged build script demands rootlesskit, which it does not use")
-			}
-		})
-	}
-}
-
-// stripShellComments removes `#`-to-end-of-line from each line, so a check can
-// scan a script's commands without matching the prose around them.
-func stripShellComments(script string) string {
-	lines := strings.Split(script, "\n")
-	for i, line := range lines {
-		if at := strings.Index(line, "#"); at >= 0 {
-			lines[i] = line[:at]
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
 // TestStartRefusesAMissingSecret asserts a build that cannot push is
 // refused before a Job is created for it.
 //
@@ -1022,7 +1039,7 @@ func TestStartRefusesAMissingSecret(t *testing.T) {
 	app := testApp()
 	createNamespace(t, client, app.Namespace)
 
-	_, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok")
+	_, err := engine.Start(ctx, app, "main", "b1", testCommit, "app-key")
 	if err == nil {
 		t.Fatal("a build started with a registry credential that does not exist")
 	}
@@ -1063,7 +1080,7 @@ func TestStartAcceptsAnExistingSecret(t *testing.T) {
 		t.Fatalf("create secret: %v", err)
 	}
 
-	if _, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok"); err != nil {
+	if _, err := engine.Start(ctx, app, "main", "b1", testCommit, "app-key"); err != nil {
 		t.Fatalf("a build was refused with the credential present: %v", err)
 	}
 }
@@ -1077,7 +1094,7 @@ func TestStartWithoutASecretDoesNotLookForOne(t *testing.T) {
 	app := testApp()
 	createNamespace(t, client, app.Namespace)
 
-	if _, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok"); err != nil {
+	if _, err := engine.Start(ctx, app, "main", "b1", testCommit, "app-key"); err != nil {
 		t.Fatalf("a build with no configured credential was refused: %v", err)
 	}
 }

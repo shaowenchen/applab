@@ -187,16 +187,23 @@ not available here: it separates a worktree's refs but not its object database.
 ### A build is a Job, not a daemon
 
 Each build runs as a one-shot Kubernetes Job: AppLab operates no build service,
-and a build's resources are released the moment it ends. The Job has two
-containers — an init container that downloads one commit's source, and a builder
-that runs BuildKit rootless over it — and **the builder never sees a credential**.
-The fetch uses a single-use token scoped to one commit, because a build runs
-arbitrary code from the uploaded Dockerfile and must not hold anything worth
-stealing.
+and a build's resources are released the moment it ends. The Job has one
+container — **kaniko**, which clones the app's repository at the commit being
+built, runs its Dockerfile and pushes the image. There is no daemon beside it,
+nothing is privileged, and it mounts no host path.
 
-Layers are cached in the registry (`<cache-prefix>/<app>:buildcache`). A Job has
-no persistent disk, so without a registry-side cache every rebuild would start
-from nothing.
+It does run as root: kaniko unpacks the base image into its own root filesystem
+and runs each Dockerfile step there, and it has no unprivileged mode. What it
+holds is the app's own key, which reaches that app's repository — every branch
+and commit of it — and no other app. That is a wider credential than the
+single-use, single-commit token a fetched tarball needed, and it is the
+deliberate price of cloning over git: a clone is many requests, and a credential
+consumed by the first one cannot work. It is the same key the app's owner pushes
+with.
+
+Layers are cached in the registry, one repository per app under
+`build.cacheRepoPrefix`. A Job has no persistent disk, so without this every
+rebuild would start from nothing.
 
 ### Commits are what you deploy
 
@@ -233,8 +240,8 @@ Deployment, which shares the namespace and carries no app label.
 (`automountServiceAccountToken: false`). A token can read every Secret in its
 namespace, which here means the API keys and the registry credentials, and an
 app is arbitrary code from whoever pushed the source. Nothing AppLab runs needs
-to reach the API server: a build fetches its source over HTTP with a single-use
-token, and an app just serves traffic.
+to reach the API server: a build clones its source over git with the app's own
+key, and an app just serves traffic.
 
 ### How apps are published
 

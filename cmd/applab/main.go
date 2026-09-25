@@ -23,7 +23,6 @@ import (
 	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
-	"github.com/shaowenchen/applab/internal/sourcetoken"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
@@ -206,8 +205,6 @@ func run() error {
 	// this binary is developed. Configuration problems are reported and the
 	// deployment continues without the capability rather than refusing to start,
 	// since the source half is independently useful.
-	sourceTokens := sourcetoken.NewIssuer(sourcetoken.DefaultTTL)
-	srv.WithSourceTokens(sourceTokens)
 	srv.WithMetrics(api.NewMetrics())
 
 	if client, err := k8s.New(k8s.Options{
@@ -224,12 +221,10 @@ func run() error {
 
 		if cfg.Build.Enabled() {
 			engine := build.New(client.Clientset(), build.Config{
-				BuilderImage:       cfg.Build.BuilderImage,
-				FetcherImage:       cfg.Build.FetcherImage,
+				KanikoImage:        cfg.Build.KanikoImage,
 				Registry:           cfg.Build.Registry,
 				Secret:             cfg.Build.Secret,
 				InsecureRegistry:   cfg.Build.InsecureRegistry,
-				Rootless:           cfg.Build.RootlessBuild(),
 				AppLabURL:          cfg.BaseURL,
 				CacheRepoPrefix:    cfg.Build.CacheRepoPrefix,
 				BuildCPURequest:    cfg.Build.CPURequest,
@@ -243,9 +238,9 @@ func run() error {
 			srv.WithBuild(engine)
 			slog.Info("build pipeline enabled",
 				"registry", cfg.Build.Registry,
-				"rootless", cfg.Build.RootlessBuild())
+				"kaniko", cfg.Build.KanikoImage)
 		} else {
-			slog.Info("build pipeline disabled: no registry, builder image or fetcher image configured")
+			slog.Info("build pipeline disabled: no registry or kaniko image configured")
 		}
 
 		// The observability half reads the same cluster, so it comes with it.
@@ -337,6 +332,7 @@ func run() error {
 		// know the drain was cut short rather than see a clean exit.
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+
 	slog.Info("stopped")
 	return nil
 }

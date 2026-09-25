@@ -24,4 +24,4 @@ keywords:
   - idp
   - kubernetes
   - gitops
-  - buildkit
+  - kaniko

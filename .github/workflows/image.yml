@@ -127,14 +127,10 @@ jobs:
           supplied = {f'APPLAB_{name.upper()}' for name in declared}
           # Set from the workflow or the script's own context, not from an input.
           #
-          # APPLAB_VERSION and APPLAB_BUILD_ROOTLESS are here because they used to
-          # be inputs and are deliberately no longer: the image tag is always the
-          # published `latest`, and builds are always rootless. That is a
-          # deliberate loss of a knob — a host that refuses unprivileged user
-          # namespaces can no longer be worked around from the launch form, and
-          # the way out is `build.rootless=false` on the chart, which the chart's
-          # README documents. Named here so the check keeps failing for a variable
-          # nobody meant to fix, rather than being relaxed for the two that were.
+          # APPLAB_VERSION is here because it used to be an input and is
+          # deliberately no longer: the image tag is always the published
+          # `latest`. Named here so the check keeps failing for a variable
+          # nobody meant to fix, rather than being relaxed for the one that was.
           #
           # The object store's variables are here for the other reason. The
           # launcher starts MinIO itself, on the runner, and hands AppLab the
@@ -152,7 +148,7 @@ jobs:
                       'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME', 'APPLAB_REGISTRY_NAME',
                       'APPLAB_REGISTRY_PORT', 'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
                       'APPLAB_PUBLIC_HOST', 'APPLAB_INSTALL_TIMEOUT_SECONDS',
-                      'APPLAB_VERSION', 'APPLAB_BUILD_ROOTLESS',
+                      'APPLAB_VERSION',
                       # The object store: a container this script starts, on a
                       # port it picks, with a credential it generates.
                       'APPLAB_OBJECT_STORE_NAME', 'APPLAB_OBJECT_STORE_PORT',

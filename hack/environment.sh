@@ -56,7 +56,6 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 : "${APPLAB_SESSION_HOURS:=0}"
 : "${APPLAB_TUNNEL:=cloudflare}"
 : "${APPLAB_NAMESPACE:=ops-system}"
-: "${APPLAB_BUILD_ROOTLESS:=true}"
 : "${APPLAB_GATEWAY_NODEPORT:=30080}"
 : "${APPLAB_CLUSTER_NAME:=applab-debugger}"
 : "${APPLAB_PATH_PREFIX:=/apps}"
@@ -685,7 +684,6 @@ if ! helm install applab "$REPO_ROOT/charts/applab" \
   --set "build.registry=${APPLAB_REGISTRY}" \
   --set build.insecureRegistry=true \
   --set build.secret= \
-  --set "build.rootless=${APPLAB_BUILD_ROOTLESS}" \
   --set ingress.enabled=false \
   --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \
   --set "image.tag=${APPLAB_VERSION}" \

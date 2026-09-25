@@ -1,19 +1,21 @@
 {{- include "applab.validate" . -}}
-{{- if and .Values.build.enabled (not .Values.build.rootless) }}
+{{- if .Values.build.enabled }}
 {{/*
-The privileged-build escape hatch is called out on purpose: it is a real
-weakening of the deployment's security posture, and an operator who turned it on
-months ago should not have to remember that.
+Stated on the Deployment on purpose: it is a property of every build this
+installation runs, and an operator should not have to read the build engine's
+source to learn that a build executes its Dockerfile as root.
 
 This is emitted as a YAML comment rather than as bare text. Bare text lands at
 the top of the document and becomes a field of the Deployment — the manifest
 still parses as YAML, so the mistake is invisible until the API server rejects
 it for an unknown field.
 */}}
-# WARNING: build.rootless is false. Build containers run privileged, which means
-# a build — arbitrary code from whoever pushed the source — is a container
-# breakout away from the node. Set build.rootless=true unless the cluster cannot
-# run unprivileged user namespaces.
+# NOTE: build.enabled is true, so builds run as root in their own containers.
+# That is kaniko's design and it has no unprivileged mode: it unpacks the base
+# image into its own root filesystem and runs each Dockerfile step there. The
+# build is still one unprivileged container — no privileged flag, no host
+# mounts, no API token — but a build runs code from whoever pushed the source,
+# and that code is root within its own container.
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment

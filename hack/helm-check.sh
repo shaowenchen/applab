@@ -100,8 +100,8 @@ if [ -n "$missing" ]; then
 fi
 
 # build.enabled=false has to disable the pipeline. The server decides that from
-# the registry and the two images, so all three have to be emptied; blanking
-# only the registry would leave it enabled against the default builder.
+# the registry and the kaniko image, so both have to be emptied; blanking only
+# the registry would leave it enabled against the default image.
 #
 # The push Secret goes with them. It is the registry's credential, and it has a
 # non-empty default, so leaving it set on a deployment with no registry would send
@@ -109,7 +109,7 @@ fi
 # refuses a credential it cannot find, every deploy on that installation would
 # fail for a credential it never meant to use.
 off="$(render --set build.enabled=false)"
-for var in APPLAB_BUILD_REGISTRY APPLAB_BUILD_BUILDER_IMAGE APPLAB_BUILD_FETCHER_IMAGE APPLAB_BUILD_SECRET; do
+for var in APPLAB_BUILD_REGISTRY APPLAB_BUILD_KANIKO_IMAGE APPLAB_BUILD_SECRET; do
   grep -q "^  $var: \"\"" <<<"$off" \
     || fail "build.enabled=false leaves $var set, so the build pipeline still comes up"
 done
@@ -191,7 +191,7 @@ fi
 # field of the document, and the manifest still parses as YAML, so the mistake
 # survives every check that only asks whether the output is valid.
 if command -v python3 >/dev/null 2>&1; then
-  render --set build.rootless=false | python3 -c '
+  render | python3 -c '
 import sys, yaml
 
 # The fields a Kubernetes manifest may carry at the top level, across every kind
@@ -219,15 +219,17 @@ if bad:
 '
 fi
 
-# The privileged-build warning is the only signal an operator gets that the
-# escape hatch is on, so it has to actually appear. It is a YAML comment, so it
-# reaches the rendered manifest rather than stderr.
-warn="$(render --set build.rootless=false 2>/dev/null)"
-grep -q 'WARNING: build.rootless is false' <<<"$warn" \
-  || fail "build.rootless=false does not warn that builds run privileged"
-# And it must not appear when the default is left alone.
-if render 2>/dev/null | grep -q 'WARNING: build.rootless is false'; then
-  fail "the privileged-build warning appears with build.rootless=true"
+# A build runs the Dockerfile of whoever pushed the source, as root — kaniko has
+# no unprivileged mode. That is the one thing an operator cannot learn from the
+# values file without reading the engine, so the Deployment says it. It is a YAML
+# comment, so it reaches the rendered manifest rather than stderr.
+build_note="$(render 2>/dev/null)"
+grep -q 'builds run as root' <<<"$build_note" \
+  || fail "build.enabled=true does not say that builds run as root"
+# And it must not appear when the pipeline is off, where there is nothing to warn
+# about — a note that is always there is one nobody reads.
+if render --set build.enabled=false 2>/dev/null | grep -q 'builds run as root'; then
+  fail "the build-runs-as-root note appears with build.enabled=false"
 fi
 
 # RBAC is a Role, not a ClusterRole: AppLab keeps everything in one namespace,

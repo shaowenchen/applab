@@ -99,11 +99,6 @@ type describeEndpoint struct {
 type describeBuild struct {
 	Enabled  bool   `json:"enabled"`
 	Registry string `json:"registry,omitempty"`
-
-	// Rootless is the security posture of a build. Reported because a build
-	// that fails on a node without unprivileged user namespaces fails with a
-	// permissions error that does not name the setting.
-	Rootless bool `json:"rootless"`
 }
 
 // describeDeploy is where apps are published and how they are addressed.
@@ -236,7 +231,6 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		Build: describeBuild{
 			Enabled:  cfg.Capabilities["build"],
 			Registry: registryFor(s.cfg, identity),
-			Rootless: s.cfg.Build.Rootless == nil || *s.cfg.Build.Rootless,
 		},
 		Deploy: describeDeploy{
 			Enabled:        cfg.Capabilities["deploy"],

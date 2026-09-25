@@ -132,10 +132,10 @@ apps:
 # and apps can be deployed from images built elsewhere. With it, pushing source
 # builds an image in the cluster.
 #
-# Builds run as a Job per build, with BuildKit rootless over a fetched source
-# tree. Rootless needs the node to permit unprivileged user namespaces — see the
-# README's prerequisites. `privileged` is the escape hatch for a cluster that
-# does not, at the cost of running builds with full privileges.
+# Builds run as a Job per build: kaniko clones the app's repository at one
+# commit, runs its Dockerfile, and pushes the image. There is no daemon and no
+# privileged helper — but kaniko has no unprivileged mode, so a build runs as
+# root inside its container. See the README's prerequisites.
 # ---------------------------------------------------------------------------
 build:
   enabled: true
@@ -156,35 +156,36 @@ build:
   # a hosted one needs credentials, see build.secret.
   registry: ""
 
-  # Registry-side layer cache, under <prefix>/<app>:buildcache. A Job has no
-  # persistent disk, so without this every build starts from nothing.
+  # Registry-side layer cache, as a repository per app under <prefix>. A Job has
+  # no persistent disk, so without this every build starts from nothing.
   #
   # Costs one extra image per app in the registry, and repays it on the second
   # build of anything with more than a trivial Dockerfile. Empty disables it.
   cacheRepoPrefix: ""
 
-  # The image providing buildctl and buildkitd. Pinned rather than "latest": a
-  # moving tag would change a build's behaviour without AppLab changing.
-  builderImage: "moby/buildkit:v0.19.0"
-
-  # The init container's image. It needs a shell, wget and tar — wget rather
-  # than curl, because alpine's busybox has the first and not the second.
-  fetcherImage: "alpine:3.21"
-
-  # Run BuildKit as an unprivileged user. Recommended, and the default.
+  # The kaniko image a build runs. Pinned rather than "latest": a moving tag
+  # would change a build's behaviour without AppLab changing.
   #
-  # Requires the node to allow unprivileged user namespaces and an unconfined
-  # seccomp profile — see the README. Set false only when the cluster cannot
-  # satisfy that; it makes every build a container breakout away from the node,
-  # and a build runs code from whoever pushed the source.
-  rootless: true
-
-  # Let BuildKit talk to a registry over plain HTTP, and skip TLS verification.
+  # This is the maintained community build of kaniko — Google's
+  # GoogleContainerTools/kaniko was archived in June 2025 and its images are no
+  # longer published. It is the same executor, and it is published for amd64 and
+  # arm64.
   #
-  # This is BuildKit's own `registry.insecure=true` option on the build, and it
-  # exists for a cluster-local registry: one served over HTTP, or with a
+  # The node pulls this image, so a cluster that cannot reach ghcr.io needs it
+  # mirrored and this set to the mirror. The `-debug` tag of the same version
+  # additionally carries a shell, which makes a failed build inspectable; the
+  # plain tag is a smaller image for the same executor.
+  kanikoImage: "ghcr.io/osscontainertools/kaniko:v1.26.2"
+
+  # Let the build talk to a registry over plain HTTP, and skip TLS verification.
+  #
+  # It exists for a cluster-local registry: one served over HTTP, or with a
   # self-signed certificate no node trusts. Those are exactly the registries a
   # test environment uses, and the ones a public one never is.
+  #
+  # It covers both directions — pulling the base images and pushing the result —
+  # because a registry reachable only one way would fail in the middle of a build
+  # rather than at the start.
   #
   # Off by default because it disables the verification that makes a push
   # trustworthy — the image that arrives can no longer be proven to be the image
@@ -215,9 +216,10 @@ build:
   # pending.
   secret: "applab-registry"
 
-  # Resource bounds for a build container and for the ephemeral volume the
-  # source and BuildKit's intermediate state share. Builds are bursty and
-  # unbounded by nature; without limits a runaway build can evict its neighbours.
+  # Resource bounds for a build container, and for the ephemeral storage it
+  # holds: the cloned source plus the image kaniko is assembling, unpacked. A
+  # build is bursty and unbounded by nature, so without limits a runaway one can
+  # evict its neighbours.
   resources:
     requests:
       cpu: 500m

@@ -17,7 +17,6 @@ import (
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
-	"github.com/shaowenchen/applab/internal/sourcetoken"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
@@ -63,12 +62,6 @@ type Server struct {
 	// branch's repository.
 	resolveCommit func(ctx context.Context, appID, branch, revision string) (string, error)
 
-	// sourceArchive writes a commit's source tree as a tar.gz.
-	sourceArchive func(ctx context.Context, appID, branch, sha string, w io.Writer) error
-
-	// sourceArchiveSize reports the archive's byte length.
-	sourceArchiveSize func(ctx context.Context, appID, branch, sha string) (int64, error)
-
 	// sourceBranches lists the branches an app has a repository for.
 	sourceBranches func(ctx context.Context, appID string) ([]string, error)
 
@@ -82,10 +75,6 @@ type Server struct {
 
 	// build implements the build half. Nil means this deployment cannot build.
 	build BuildEngine
-
-	// sourceTokens mints the single-use credentials a build Job fetches its
-	// source with.
-	sourceTokens *sourcetoken.Issuer
 
 	// observer reads an app's runtime state. Nil means this deployment cannot
 	// observe.
@@ -137,7 +126,7 @@ type BuildEngine interface {
 	Ready() bool
 
 	// Start creates the build Job for a commit and returns its name.
-	Start(ctx context.Context, app *model.App, buildID, commitSHA, sourceToken string) (string, error)
+	Start(ctx context.Context, app *model.App, branch, buildID, commitSHA, appKey string) (string, error)
 
 	// Status reads a Job's state. An empty status means the Job is gone.
 	Status(ctx context.Context, namespace, jobName string) (model.BuildStatus, string, error)
@@ -185,10 +174,10 @@ type Deployer interface {
 // console.
 func New(cfg config.Config, st *store.Store, a *auth.Authenticator) *Server {
 	return &Server{
-		cfg:       cfg,
-		store:     st,
-		auth:      a,
-		appKeys:   appkey.New(st),
+		cfg:     cfg,
+		store:   st,
+		auth:    a,
+		appKeys: appkey.New(st),
 		appConfig: appconfig.New(st),
 	}
 }
@@ -205,8 +194,6 @@ func (s *Server) WithSource(store *source.Store) *Server {
 	s.headCommit = store.HeadCommit
 	s.resolveCommit = store.ResolveCommit
 	s.sourceLog = store.Log
-	s.sourceArchive = store.Archive
-	s.sourceArchiveSize = store.ArchiveSize
 	s.sourceBranches = store.Branches
 	s.sourceIngest = func(ctx context.Context, appID, branch string, archive io.Reader, message, parent string) (*source.IngestResult, error) {
 		return store.Ingest(ctx, appID, branch, archive, message, parent, source.DefaultIngestLimits)
@@ -243,13 +230,6 @@ func (s *Server) WithConsole(h http.Handler) *Server { s.console = h; return s }
 // WithBuild attaches a build engine.
 func (s *Server) WithBuild(engine BuildEngine) *Server { s.build = engine; return s }
 
-// WithSourceTokens attaches the issuer that mints single-use source tokens for
-// build Jobs.
-func (s *Server) WithSourceTokens(issuer *sourcetoken.Issuer) *Server {
-	s.sourceTokens = issuer
-	return s
-}
-
 // WithAppObjectsDeleter attaches the teardown that removes everything AppLab
 // created for an app, used when deleting it.
 func (s *Server) WithAppObjectsDeleter(fn func(ctx context.Context, appID string) error) *Server {
@@ -264,28 +244,12 @@ func (s *Server) WithClusterStatus(ready func(ctx context.Context) bool) *Server
 	return s
 }
 
-// issueSourceToken mints a single-use token granting access to one commit.
-//
-// It is a method on Server so the build handlers do not each have to know
-// whether an issuer is configured, and so the failure mode — no issuer — is one
-// clear error where it happens.
-func (s *Server) issueSourceToken(appID, branch, commitSHA string) (string, error) {
-	if s.sourceTokens == nil {
-		return "", fmt.Errorf("no source token issuer is configured; a build job cannot fetch its source")
-	}
-	token, err := s.sourceTokens.Issue(appID, branch, commitSHA)
-	if err != nil {
-		return "", err
-	}
-	return token.Value, nil
-}
-
 // startBuildJob creates the build Job.
-func (s *Server) startBuildJob(ctx context.Context, app *model.App, buildID, commitSHA, token string) (string, error) {
+func (s *Server) startBuildJob(ctx context.Context, app *model.App, branch, buildID, commitSHA, appKey string) (string, error) {
 	if s.build == nil {
 		return "", fmt.Errorf("this deployment cannot build")
 	}
-	return s.build.Start(ctx, app, buildID, commitSHA, token)
+	return s.build.Start(ctx, app, branch, buildID, commitSHA, appKey)
 }
 
 // buildStatus reads a build Job's state from the cluster.
@@ -572,18 +536,6 @@ type route struct {
 	// anyone. A test asserts the set of routes that are open, so this cannot be
 	// added to one by accident.
 	IdentifyOnly bool
-
-	// TokenAuth requires a single-use source token instead of an API key.
-	//
-	// It exists for the one route a build Job calls. A build runs in the app's
-	// own namespace and executes code from whoever pushed the source, so giving
-	// it an API key — which can delete every app this installation manages —
-	// would make every build a route to total control. A source token reaches
-	// exactly one commit of one app.
-	//
-	// A route sets exactly one of Auth and TokenAuth; a test enforces that no
-	// route sets neither.
-	TokenAuth bool
 
 	// Doc describes the route in one line for the endpoint list GET /api/v1/describe
 	// returns. Empty means the route
@@ -975,19 +927,6 @@ func (s *Server) routes() []route {
 			Doc:     "Why the app is not working, in one call: pods, events and the relevant log, ordered so the most likely cause comes first. Use this before reading the other four endpoints.",
 			Handler: s.handleDiagnose,
 		},
-
-		// -- Source archive (for build jobs) ------------------------------
-		{
-			// Documented as an internal endpoint: a build Job's init container
-			// calls it with a single-use token, not with the API key, so it is
-			// authenticated differently from everything else here. A caller with
-			// the API key never needs it — the git endpoint is the way to read a
-			// repository.
-			Pattern:   "GET /api/v1/apps/{app}/source/archive/{sha}",
-			TokenAuth: true,
-			Doc:       "Internal. Download a commit's source as a tar.gz. Authenticated with a single-use source token (issued when a build starts) rather than the API key, so a build job holds no credential that reaches beyond its own commit.",
-			Handler:   s.handleSourceArchive,
-		},
 	}
 }
 
@@ -1024,14 +963,9 @@ func (s *Server) RouteReference() []describeEndpoint {
 //
 // It is finer-grained than a boolean because the tiers are not interchangeable
 // and a caller that confuses them gets a 403 it cannot explain: an app key is
-// not a lesser admin key, it is a key that reaches one app, and a source token
-// reaches one commit of one app and cannot be obtained by a caller at all.
+// not a lesser admin key, it is a key that reaches one app.
 func routeKeyTier(r route) string {
 	switch {
-	case r.TokenAuth:
-		// Minted by the server when a build starts and handed to the build Job.
-		// No client of this API holds one.
-		return "token"
 	case r.AppAuth || r.AppListScope:
 		// Either tier, with the handler narrowing what an app key reaches.
 		return "app"
@@ -1066,7 +1000,7 @@ func (s *Server) PatternRequiresAuth(pattern string) bool {
 			// genuinely open; claiming otherwise would let a route be reachable
 			// anonymously while passing the test that exists to catch exactly
 			// that.
-			return r.Auth || r.TokenAuth || r.AppListScope || r.AppAuth
+			return r.Auth || r.AppListScope || r.AppAuth
 		}
 	}
 	return true
@@ -1080,7 +1014,7 @@ func (s *Server) PatternRequiresAuth(pattern string) bool {
 func (s *Server) UnauthenticatedPatterns() []string {
 	var out []string
 	for _, r := range s.routes() {
-		if !r.Auth && !r.TokenAuth && !r.AppListScope && !r.AppAuth {
+		if !r.Auth && !r.AppListScope && !r.AppAuth {
 			out = append(out, r.Pattern)
 		}
 	}
@@ -1179,8 +1113,6 @@ func (s *Server) Handler() http.Handler {
 			// Wrapped so a refusal is counted: a steady rate of rejections is the
 			// one signal that distinguishes probing from a misconfigured client.
 			h = s.countAuthRejections(s.auth.Middleware(h))
-		case r.TokenAuth:
-			h = s.tokenAuthMiddleware(h)
 		}
 		mux.Handle(r.Pattern, h)
 	}

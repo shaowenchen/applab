@@ -124,9 +124,9 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 // has something that knows about it. The reverse order would leave a running
 // build nothing is tracking if the second call failed.
 //
-// The branch is what the build's source token is issued for, and it is how the
-// fetch finds the right repository once the build runs: a commit can be reachable
-// from more than one branch, so app and commit alone no longer name one.
+// The branch is what the build clones. A commit can be reachable from more than
+// one branch, and each branch is stored as its own repository, so app and commit
+// alone do not name one.
 func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitSHA string) (*model.Build, *apiError) {
 	buildID, err := model.NewID()
 	if err != nil {
@@ -144,19 +144,26 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitS
 		Status:    model.BuildStatusPending,
 	}
 
-	// The token is issued before the record is written so a failure to issue one
-	// costs nothing. It grants access to exactly this commit and is consumed by
-	// the fetch.
-	token, err := s.issueSourceToken(app.ID, branch, commitSHA)
+	// The build clones with the app's own key, read here because the Job is
+	// created a few lines below and a key that could not be read is a build that
+	// fails after it has already been recorded.
+	//
+	// It is the app's key rather than something minted for the build. A build
+	// used to be handed a single-use token scoped to one commit, which is what
+	// the fetch step wanted when it was one authenticated HTTP GET; the clone is
+	// a git clone, which is many authenticated requests, and a credential
+	// consumed by the first one cannot work. The reach is therefore the app's
+	// repository — every branch and commit of it — and no other app.
+	appKey, err := s.appKeys.Get(ctx, app.ID)
 	if err != nil {
-		return nil, Errorf(http.StatusInternalServerError, "issue a source token for the build").Wrap(err)
+		return nil, Errorf(http.StatusInternalServerError, "read the app's key, which the build clones with").Wrap(err)
 	}
 
 	if err := s.store.CreateBuild(ctx, build); err != nil {
 		return nil, Errorf(http.StatusInternalServerError, "record the build").Wrap(err)
 	}
 
-	jobName, err := s.startBuildJob(ctx, app, buildID, commitSHA, token)
+	jobName, err := s.startBuildJob(ctx, app, branch, buildID, commitSHA, appKey)
 	if s.metrics != nil {
 		s.metrics.ObserveBuild(err != nil)
 	}
@@ -455,7 +462,7 @@ func (s *Server) streamBuildLog(ctx context.Context, w http.ResponseWriter, flus
 	}
 
 	// Follow the build to completion, re-reading the log each time it grows.
-	// BuildKit writes progress continuously and there is no streaming API in the
+	// A build writes progress continuously and there is no streaming API in the
 	// Kubernetes client for a container that may not exist yet, so the log is
 	// polled and the delta written. The alternative — one read at the end —
 	// would make the endpoint useless for its purpose, which is watching a build

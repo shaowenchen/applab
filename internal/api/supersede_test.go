@@ -7,11 +7,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/model"
-	"github.com/shaowenchen/applab/internal/sourcetoken"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
@@ -27,7 +25,7 @@ type fakeBuildEngine struct {
 
 func (f *fakeBuildEngine) Ready() bool { return true }
 
-func (f *fakeBuildEngine) Start(ctx context.Context, app *model.App, buildID, commitSHA, sourceToken string) (string, error) {
+func (f *fakeBuildEngine) Start(ctx context.Context, app *model.App, branch, buildID, commitSHA, appKey string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	name := "job-" + buildID
@@ -70,9 +68,7 @@ func newSupersedeServer(t *testing.T) (*api.Server, *fakeBuildEngine, *store.Sto
 
 	srv, _, st := newDeployServerWithSource(t)
 	engine := &fakeBuildEngine{}
-	// A build cannot start without a source token — the Job fetches its source
-	// with one — so the issuer the real server attaches is attached here too.
-	srv.WithBuild(engine).WithSourceTokens(sourcetoken.NewIssuer(time.Minute))
+	srv.WithBuild(engine)
 	return srv, engine, st
 }
 

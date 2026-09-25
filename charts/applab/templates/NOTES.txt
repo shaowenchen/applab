@@ -45,10 +45,9 @@ the cluster. Set ingress.host to give them hostnames.
 
 {{ end -}}
 {{ if .Values.build.enabled -}}
-Builds run as Kubernetes Jobs with BuildKit rootless. That needs the cluster's
-nodes to permit unprivileged user namespaces; if builds fail immediately with a
-permissions error, see the chart README's prerequisites. `build.rootless=false`
-is the fallback, at the cost of running builds privileged.
+Builds run as Kubernetes Jobs running kaniko, which clones the app's repository
+at one commit, builds its Dockerfile and pushes the image. See the chart
+README's prerequisites for what a cluster has to allow.
 
 Images are pushed to: {{ .Values.build.registry }}
 

@@ -135,7 +135,7 @@ func runPush(ctx context.Context, c *client.Client, opts *pushOptions) error {
 	// uploaded source to one that cannot build would report success and change
 	// nothing. Saying so here is more useful than a later failure.
 	if !opts.noDeploy && !cfg.Capabilities["build"] {
-		return fmt.Errorf("this deployment cannot build (no registry or builder configured); upload with --no-deploy, or ask the operator to enable the build pipeline")
+		return fmt.Errorf("this deployment cannot build (no registry or kaniko image configured); upload with --no-deploy, or ask the operator to enable the build pipeline")
 	}
 
 	if err := uploadDirectory(ctx, c, opts, cfg); err != nil {

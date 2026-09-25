@@ -7,15 +7,20 @@
 // it ends. Build capacity scales with the cluster rather than with a
 // configuration AppLab has to manage.
 //
-// The Job has two containers, and the split is what keeps source out of the
-// builder:
+// The Job has one container:
 //
-//	init  fetch-source   downloads one commit's tree into an emptyDir
-//	main  build          runs buildkitd rootless and builds inside that tree
+//	build   clones the app's repository at one commit, runs its Dockerfile, and
+//	        pushes the resulting image
 //
-// The fetch step uses a single-use token (see internal/sourcetoken) rather than
-// AppLab's own API key, so a build holds no credential that reaches beyond the
-// one commit it was started for.
+// It is kaniko, which is what makes a single container possible: it clones its
+// own build context and unpacks the image it is assembling into its own root,
+// so there is no fetched tarball to hand it and no shared volume to hand it
+// through. The cost is that it runs as root, which is where buildkit rootless
+// was stronger.
+//
+// The clone uses the app's own key, so a build holds a credential that reaches
+// that app's repository — every branch and commit of it. It reaches no other
+// app, and it is the same key its owner pushes with.
 package build
 
 import (
@@ -38,13 +43,13 @@ import (
 
 // Config describes one deployment's build environment.
 type Config struct {
-	// BuilderImage is the image providing `buildctl` and, when rootless mode is
-	// on, running `buildkitd` itself. It must contain both.
-	BuilderImage string
-
-	// FetcherImage is the image the init container runs. It needs a shell, wget
-	// and tar. Empty disables building.
-	FetcherImage string
+	// KanikoImage is the image providing the kaniko executor. Empty disables
+	// building.
+	//
+	// Kaniko builds an image from a Dockerfile inside a container and pushes the
+	// result, with no daemon and no privileged helpers — it unpacks the base
+	// image into its own root and runs each build step in userspace.
+	KanikoImage string
 
 	// Registry is the prefix an app's image is pushed under, e.g.
 	// "registry.example.com/apps". The image name is "<registry>/<app>".
@@ -69,23 +74,8 @@ type Config struct {
 	// deliberately.
 	InsecureRegistry bool
 
-	// BuildKitImage is the image whose `buildkitd` runs, when RootlessBuildKit is
-	// on. Kept separate from BuilderImage because the daemon and the client are
-	// conventionally different images, though they may be the same one.
-	BuildKitImage string
-
-	// Rootless runs BuildKit as an unprivileged user.
-	//
-	// This is the default and the recommended mode, for the reason git's own
-	// Kubernetes examples give: a privileged build container is a container
-	// breakout away from the node, and a build runs arbitrary code from whoever
-	// pushed the source. Rootless needs kernel support for unprivileged user
-	// namespaces (see the chart's README for the prerequisites); Privileged is
-	// the escape hatch for a cluster that does not have it.
-	Rootless bool
-
-	// AppLabURL is the base URL of the AppLab API, which the init container
-	// fetches source from.
+	// AppLabURL is the base URL of the AppLab API, which the build clones its
+	// source from.
 	AppLabURL string
 
 	// CacheRepoPrefix enables registry-side layer caching. When set, the build
@@ -134,9 +124,11 @@ func New(client kubernetes.Interface, cfg Config) *Engine {
 		cfg.TTLAfterFinished = 24 * time.Hour
 	}
 	if cfg.WorkspaceSizeLimit == "" {
-		// A source tree plus BuildKit's intermediate state. Generous, but bounded:
-		// without a limit a build that expands something enormous fills the node's
-		// disk and takes other workloads down with it.
+		// Kaniko unpacks the base image and every intermediate layer and filesystem
+		// it modifies into its own root filesystem, so this is not the source tree
+		// — it is the source tree plus the whole image being built, twice over.
+		// Generous, but bounded: without a limit a build that expands something
+		// enormous fills the node's disk and takes other workloads down with it.
 		cfg.WorkspaceSizeLimit = "10Gi"
 	}
 	return &Engine{client: client, cfg: cfg}
@@ -144,7 +136,7 @@ func New(client kubernetes.Interface, cfg Config) *Engine {
 
 // Ready reports whether the build half is configured well enough to run.
 func (e *Engine) Ready() bool {
-	return e.cfg.BuilderImage != "" && e.cfg.Registry != "" && e.cfg.AppLabURL != ""
+	return e.cfg.KanikoImage != "" && e.cfg.Registry != "" && e.cfg.AppLabURL != ""
 }
 
 // ImageFor returns the image name an app's builds push to.
@@ -229,13 +221,25 @@ func (e *Engine) JobNameFor(appID, buildID string) string {
 
 // Start creates the build Job for a commit.
 //
-// sourceToken grants the init container access to exactly that commit. It is
-// passed as an environment variable rather than as a container argument, because
-// arguments appear in the process listing of the running container and in the
-// Job's own description.
-func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, sourceToken string) (string, error) {
+// appKey is the app's own API key, and it is what the build clones its source
+// with. It replaces a single-use token scoped to one commit, which was what the
+// fetch step needed when AppLab downloaded a tarball; kaniko clones the
+// repository over git instead, and a git clone is many requests, so a credential
+// that is consumed by the first one cannot work.
+//
+// The reach is therefore the app's repository — every branch and every commit of
+// it — rather than one commit. That is the app's own key, the same one its owner
+// pushes with, and it reaches no other app; see the chart README's "Keys".
+//
+// branch is what is cloned, and it is passed in rather than read from the app.
+// Each branch is stored as its own repository, so the branch decides *which*
+// repository the commit is looked for in — reading the app's active branch here
+// would clone the wrong one, and for a commit that only exists on the branch
+// being built it would fail outright. A caller can deploy a branch without
+// switching the app to it, so the app's own field is not the answer.
+func (e *Engine) Start(ctx context.Context, app *model.App, branch, buildID, commitSHA, appKey string) (string, error) {
 	if !e.Ready() {
-		return "", fmt.Errorf("build is not configured: builder image, registry and applab URL are all required")
+		return "", fmt.Errorf("build is not configured: kaniko image, registry and applab URL are all required")
 	}
 
 	namespace := app.Namespace
@@ -256,12 +260,12 @@ func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, 
 		return "", err
 	}
 
-	job := e.jobSpec(app, jobName, buildID, commitSHA, image, sourceToken)
+	job := e.jobSpec(app, jobName, branch, buildID, commitSHA, image, appKey)
 
 	if _, err := e.client.BatchV1().Jobs(namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
-		// Nothing to roll back: the token is an environment variable on the Job
-		// rather than an object beside it, so a start that fails leaves nothing
-		// behind.
+		// Nothing to roll back: the credential is an environment variable on the
+		// Job rather than an object beside it, so a start that fails leaves
+		// nothing behind.
 		if apierrors.IsAlreadyExists(err) {
 			return "", fmt.Errorf("a build job named %s already exists", jobName)
 		}
@@ -297,9 +301,8 @@ func (e *Engine) checkSecret(ctx context.Context, namespace string) error {
 // It is separated from Start so it can be rendered and inspected in a test
 // without a cluster, which is the only way to check the security context and
 // volume wiring on a laptop.
-func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image, sourceToken string) *batchv1.Job {
+func (e *Engine) jobSpec(app *model.App, jobName, branch, buildID, commitSHA, image, appKey string) *batchv1.Job {
 	namespace := app.Namespace
-	workspace := "workspace"
 
 	ttl := int32(e.cfg.TTLAfterFinished.Seconds())
 	deadline := int64(e.cfg.ActiveDeadline.Seconds())
@@ -311,18 +314,14 @@ func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image, sou
 		"applab.io/build":              buildID,
 	}
 
-	volumes := []corev1.Volume{
-		{
-			Name: workspace,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{
-					SizeLimit: ptr(resourcePtr(e.cfg.WorkspaceSizeLimit)),
-				},
-			},
-		},
-	}
-	registryVolumes, _ := e.registryVolumes()
-	volumes = append(volumes, registryVolumes...)
+	// No shared workspace volume, unlike the two-container Job this replaces.
+	// Kaniko clones its own context and unpacks the image it is building into its
+	// own root filesystem, so there is nothing for a second container to hand it
+	// and nothing for an emptyDir to hold. What kaniko does need is scratch space
+	// that grows with the image, which is the writable layer the container runtime
+	// gives it — bounded by the pod's ephemeral-storage limit below rather than by
+	// a volume this code declares.
+	volumes := e.registryVolumes()
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -349,23 +348,17 @@ func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image, sou
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					// No API token. A build runs arbitrary code from the uploaded
-					// Dockerfile, and Kubernetes mounts a service account token
-					// into every pod by default, which in this namespace is read
-					// access to whatever AppLab's Role grants. Nothing in this Job
-					// needs to talk to the API server: the init container fetches
-					// its source over HTTP with a single-use token, and the
-					// builder only pushes to a registry.
+					// Dockerfile, and Kubernetes mounts a service account token into
+					// every pod by default, which in this namespace is read access to
+					// whatever AppLab's Role grants. Nothing in this Job needs to talk
+					// to the API server: kaniko clones its source over git with the
+					// app's own key and pushes to a registry.
 					AutomountServiceAccountToken: ptr(false),
 					RestartPolicy:                corev1.RestartPolicyNever,
-					SecurityContext: &corev1.PodSecurityContext{
-						// BuildKit's rootless mode needs a user namespace with a
-						// subuid range. fsGroup makes the shared workspace writable
-						// by whichever uid the containers run as.
-						FSGroup: ptr(int64(1000)),
+					Containers: []corev1.Container{
+						e.buildContainer(app, branch, commitSHA, image, appKey),
 					},
-					InitContainers: []corev1.Container{e.fetchContainer(app, jobName, commitSHA, workspace, sourceToken)},
-					Containers:     []corev1.Container{e.buildContainer(app, jobName, buildID, commitSHA, image, workspace)},
-					Volumes:        volumes,
+					Volumes: volumes,
 				},
 			},
 		},
@@ -374,331 +367,221 @@ func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image, sou
 
 // registryVolumes returns the volumes needed to authenticate to the registry.
 //
-// It lives apart from jobSpec so the mount in buildContainer and the declaration
-// here cannot drift: a mount without a volume is a pod that never starts, and the
-// error names neither.
-func (e *Engine) registryVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
+// Only the volume is declared here; the mount that reads it belongs to the
+// container that needs it, in buildContainer. The two are named by the constants
+// beside this so they cannot drift: a mount whose volume is not declared is a pod
+// that never starts, and the error names neither.
+//
+// No volume at all when no credential is configured, which is normal for a
+// cluster-local registry — demanding one would refuse a build that would have
+// worked.
+func (e *Engine) registryVolumes() []corev1.Volume {
 	if e.cfg.Secret == "" {
-		return nil, nil
+		return nil
 	}
 
-	volume := corev1.Volume{
-		Name: "docker-config",
+	return []corev1.Volume{{
+		Name: registryVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
 				SecretName: e.cfg.Secret,
 				Items: []corev1.KeyToPath{
+					// A docker-registry Secret holds the config under this key,
+					// and kaniko reads it as config.json.
 					{Key: ".dockerconfigjson", Path: "config.json"},
 				},
 			},
 		},
-	}
-	// BuildKit reads the standard Docker config location, so the secret's
-	// .dockerconfigjson is projected as config.json and DOCKER_CONFIG points at
-	// the directory.
-	mount := corev1.VolumeMount{
-		Name:      "docker-config",
-		MountPath: "/home/user/.docker",
-		ReadOnly:  true,
-	}
-	return []corev1.Volume{volume}, []corev1.VolumeMount{mount}
+	}}
 }
 
-// fetchContainer downloads the commit's source into the shared workspace.
-//
-// It is a POSIX shell over wget and tar, rather than a purpose-built binary,
-// because that is all the step is: one authenticated GET, piped into tar. Keeping
-// it minimal means the init image is small and its behaviour is inspectable from
-// the Job spec.
-func (e *Engine) fetchContainer(app *model.App, jobName, commitSHA, workspace, token string) corev1.Container {
-	// The token arrives as an environment variable, so it is not in the Job's
-	// arguments — which are the thing that ends up in a process listing and in
-	// the shell history of anything that copied the command.
+const (
+	// registryVolumeName is the volume holding the registry credential, and the
+	// name buildContainer mounts it under.
+	registryVolumeName = "docker-config"
+
+	// kanikoDockerConfigDir is where kaniko looks for a Docker config.
 	//
-	// It used to arrive as a mounted Secret, so that no value appeared in the
-	// pod spec at all. AppLab no longer uses Secret objects, and the exposure
-	// this leaves is small by construction: the token is single-use, names one
-	// commit, and expires in a minute.
-	script := `
-set -eu
+	// It is the image's own DOCKER_CONFIG, which the chart's documentation and
+	// kaniko's Dockerfile both name: /kaniko/.docker. Overriding it would mean
+	// carrying a variable that has to agree with a mount path, and the image's
+	// default is the one thing about the path that is not AppLab's to choose.
+	//
+	// The alternative — the standard /root/.docker, since kaniko runs as root —
+	// would put a registry credential in a directory the build's own Dockerfile
+	// can read, which is the same exposure the mount already carries and one more
+	// place for it to be.
+	kanikoDockerConfigDir = "/kaniko/.docker"
+)
 
-token="${APPLAB_SOURCE_TOKEN}"
-url="${APPLAB_URL}/api/v1/apps/${APPLAB_APP}/source/archive/${APPLAB_COMMIT}"
+// buildContainer builds the image with kaniko and pushes it.
+//
+// One container, where this was two. The previous shape needed an init container
+// to fetch a tarball and unpack it into a shared volume, because buildkit has no
+// way to reach a repository itself; kaniko clones the git context directly, so
+// the fetch step and the volume it fed both have nothing left to do.
+//
+// The clone is over the app's own git URL with the app's own key — see Start for
+// why a single-use credential cannot work against a git clone.
+func (e *Engine) buildContainer(app *model.App, branch, commitSHA, image, appKey string) corev1.Container {
+	context, pullMethod := e.gitContext(app, branch, commitSHA)
 
-echo "fetching source for ${APPLAB_APP} at ${APPLAB_COMMIT}"
-
-# Everything below is busybox or POSIX shell. Saying so out loud, and saying
-# which tool is missing, is what turns a bare exit 127 into something a reader
-# can act on: this container ran under an image with no wget and reported
-#
-#   init fetch-source exited 127 (Error)
-#
-# for a build that had not sent a single request — which reads as a broken
-# build rather than as an image that lacks a binary. The image is configurable,
-# so this cannot be a compile-time guarantee; it can be a legible failure.
-for tool in wget tar; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "the fetcher image has no '$tool'; it needs a shell, wget and tar" >&2
-    exit 1
-  fi
-done
-
-# wget rather than curl, and the choice is not a preference.
-#
-# The default fetcher image is alpine, whose busybox provides wget and no curl
-# at all. A script calling curl there dies with exit 127 before it has sent
-# anything, and the failure reads as a broken build rather than a missing
-# binary — so this asks for the one tool the image is guaranteed to have.
-#
-# Busybox wget does not retry a connection error, which is where the server's
-# Retry-After matters most: the source store is a bucket, and a 503 from it is
-# normal and brief. Without this a blip fails the whole build.
-wget --tries=3 --header="Authorization: Bearer ${token}" -O /workspace/source.tar.gz \
-  "${url}"
-
-# wget does not fail on an HTTP error, unlike curl's --fail: a 404 or a 500 is
-# written to the output file and wget exits 0, so this would otherwise surface
-# as tar failing with "not in gzip format" — which names gzip and not the thing
-# that went wrong.
-if ! tar -xzf /workspace/source.tar.gz -C /workspace/source; then
-  echo "could not read the source archive from ${url}" >&2
-  # The body it wrote is a JSON error, and it says what actually happened: a
-  # token that expired, or a commit that is not there.
-  head -c 512 /workspace/source.tar.gz >&2 || true
-  echo >&2
-  exit 1
-fi
-
-rm -f /workspace/source.tar.gz
-
-# An archive with no Dockerfile is a build that cannot start. Failing here names
-# the actual problem, where letting it through would surface as an obscure
-# buildctl error.
-if [ ! -f "/workspace/source/${APPLAB_DOCKERFILE}" ]; then
-  echo "no Dockerfile at '${APPLAB_DOCKERFILE}' in the uploaded source" >&2
-  exit 1
-fi
-
-echo "source ready: $(find /workspace/source -type f | wc -l) files"
-`
-
-	return corev1.Container{
-		Name:    "fetch-source",
-		Image:   e.cfg.FetcherImage,
-		Command: []string{"/bin/sh", "-c"},
-		Args:    []string{script},
-		Env: []corev1.EnvVar{
-			{Name: "APPLAB_URL", Value: e.cfg.AppLabURL},
-			{Name: "APPLAB_APP", Value: app.ID},
-			{Name: "APPLAB_COMMIT", Value: commitSHA},
-			{Name: "APPLAB_DOCKERFILE", Value: app.Dockerfile},
-			{Name: "APPLAB_SOURCE_TOKEN", Value: token},
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: workspace, MountPath: "/workspace"},
-		},
-		SecurityContext: &corev1.SecurityContext{
-			RunAsNonRoot:             ptr(true),
-			RunAsUser:                ptr(int64(1000)),
-			AllowPrivilegeEscalation: ptr(false),
-			ReadOnlyRootFilesystem:   ptr(false),
-			Capabilities:             &corev1.Capabilities{},
-		},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resourcePtr("100m"),
-				corev1.ResourceMemory: resourcePtr("128Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resourcePtr("1"),
-				corev1.ResourceMemory: resourcePtr("512Mi"),
-			},
-		},
+	args := []string{
+		"--context", context,
+		"--dockerfile", app.Dockerfile,
+		"--destination", image,
 	}
-}
 
-// buildContainer runs buildkitd rootless and builds the image.
-func (e *Engine) buildContainer(app *model.App, jobName, buildID, commitSHA, image, workspace string) corev1.Container {
-	buildctlArgs := []string{
-		"build",
-		"--frontend", "dockerfile.v0",
-		"--local", "context=/workspace/source",
-		"--local", "dockerfile=/workspace/source",
-		"--opt", "filename=" + app.Dockerfile,
-		"--progress", "plain",
-	}
+	// A build is read as text by a person looking for what failed, and kaniko's
+	// default output is a redrawing terminal UI: escape codes, cursor movement,
+	// and — in the log AppLab keeps — nothing that reads as a line. Text format
+	// with timestamps is what a log viewer and a `grep` both want.
+	args = append(args,
+		"--log-format", "text",
+		"--log-timestamp",
+		"--verbosity", "info",
+	)
 
 	// A cluster-local registry commonly serves plain HTTP or uses a self-signed
 	// certificate. Both have to be asked for explicitly, and both weaken the
 	// guarantee that the image that arrives is the image that was pushed — which
 	// is why this is a deliberate opt-in rather than a default.
+	//
+	// Pull and push are separate flags in kaniko: the four below cover both
+	// directions, because the base images are pulled through the same registry
+	// the result is pushed to, and one insecure registry that only half worked
+	// would fail in the middle of a build rather than at the start.
 	if e.cfg.InsecureRegistry {
-		buildctlArgs = append(buildctlArgs,
-			"--opt", "registry.insecure=true",
-		)
+		args = append(args, "--insecure", "--insecure-pull", "--skip-tls-verify", "--skip-tls-verify-pull")
 	}
 
-	// The push output goes last so the insecure option, which is per-registry,
-	// is already in effect when it is parsed.
-	buildctlArgs = append(buildctlArgs, "--output", "type=image,name="+image+",push=true")
-
-	// Registry-side caching. Import is best-effort because the first build of an
-	// app has no cache to import, and a missing manifest is not a failure.
 	if e.cfg.CacheRepoPrefix != "" {
 		// The cache reference is worked out the same way the image is, so that a
 		// registry too deep to hold one repository per app does not get a cache
 		// reference it would reject — which would fail the build rather than
 		// merely skipping the cache.
-		cacheRepo, cacheTagPrefix := imageRef(e.cfg.CacheRepoPrefix, app.ID)
-		cacheRef := fmt.Sprintf("%s:%sbuildcache", cacheRepo, cacheTagPrefix)
-		buildctlArgs = append(buildctlArgs,
-			"--export-cache", "type=registry,ref="+cacheRef+",mode=max",
-			"--import-cache", "type=registry,ref="+cacheRef,
+		//
+		// Unlike buildkit's export/import pair, kaniko's cache is a repository of
+		// its own, so the app goes into the repository name where the image puts
+		// it in the tag.
+		cacheRepo, _ := imageRef(e.cfg.CacheRepoPrefix, app.ID)
+		args = append(args,
+			"--cache=true",
+			"--cache-repo="+cacheRepo,
 		)
 	}
 
-	// A rootless daemon listens on the rootless socket path; a privileged one on
-	// the default. Getting this wrong produces a "cannot connect" that says
-	// nothing about the cause, so it is derived from the mode rather than set
-	// independently.
-	buildkitHost := "unix:///run/buildkit/buildkitd.sock"
-	daemon := []string{
-		"buildkitd",
-		"--addr", "/run/buildkit/buildkitd.sock",
-		"--oci-worker-no-process-sandbox",
-	}
-
-	script := ""
-	if e.cfg.Rootless {
-		// RootlessKit is what provides the userns mapping buildkitd needs. It is
-		// started in the background and the build runs against the socket it
-		// creates.
-		script = `
-set -eu
-
-# Checked rather than assumed, for the same reason the fetcher's tools are: a
-# missing binary here is exit 127, and the container's log would end there with
-# nothing to say which one. buildctl is checked in both modes; rootlesskit only
-# where it is what starts the daemon.
-for tool in buildctl rootlesskit buildkitd; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "the builder image has no '$tool'; it must provide buildctl and buildkitd, and rootlesskit in rootless mode" >&2
-    exit 1
-  fi
-done
-
-mkdir -p /home/user/.local/share/buildkit /run/buildkit
-
-rootlesskit --state-dir=/run/buildkit/rootlesskit --net=host --mtu=65520 \
-  --copy-up=/etc --copy-up=/run --propagation=rslave \
-  buildkitd --addr /run/buildkit/buildkitd.sock --oci-worker-no-process-sandbox &
-
-for i in $(seq 1 60); do
-  if [ -S /run/buildkit/buildkitd.sock ]; then break; fi
-  sleep 1
-done
-if [ ! -S /run/buildkit/buildkitd.sock ]; then
-  echo "buildkitd did not start; see the prerequisites for rootless builds" >&2
-  exit 1
-fi
-
-buildctl --addr unix:///run/buildkit/buildkitd.sock "$@"
-`
-	} else {
-		// Privileged: buildkitd can run directly as root.
-		script = `
-set -eu
-
-# Checked rather than assumed — see the rootless branch above.
-for tool in buildctl buildkitd; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "the builder image has no '$tool'; it must provide buildctl and buildkitd" >&2
-    exit 1
-  fi
-done
-
-mkdir -p /run/buildkit
-
-buildkitd --addr /run/buildkit/buildkitd.sock &
-
-for i in $(seq 1 60); do
-  if [ -S /run/buildkit/buildkitd.sock ]; then break; fi
-  sleep 1
-done
-if [ ! -S /run/buildkit/buildkitd.sock ]; then
-  echo "buildkitd did not start" >&2
-  exit 1
-fi
-
-buildctl --addr unix:///run/buildkit/buildkitd.sock "$@"
-`
+	// The registry credential is mounted rather than passed as an argument, and
+	// the mount is only declared when there is one: a credential the registry
+	// does not need would otherwise be a volume that has to exist.
+	mounts := []corev1.VolumeMount{}
+	if e.cfg.Secret != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      registryVolumeName,
+			MountPath: kanikoDockerConfigDir,
+			ReadOnly:  true,
+		})
 	}
 
 	container := corev1.Container{
-		Name:    "build",
-		Image:   e.cfg.BuilderImage,
-		Command: []string{"/bin/sh", "-c"},
-		Args:    append([]string{script, "build"}, buildctlArgs...),
+		Name:  "build",
+		Image: e.cfg.KanikoImage,
+		Args:  args,
 		Env: []corev1.EnvVar{
-			{Name: "BUILDKIT_HOST", Value: buildkitHost},
-			// The build must not be able to read the token that fetched the
-			// source: the fetcher's job is done, and a build runs arbitrary code
-			// from the uploaded Dockerfile.
-			{Name: "HOME", Value: "/home/user"},
-			{Name: "BUILDKITD_FLAGS", Value: strings.Join(daemon, " ")},
+			// The app's own key, as the Basic password git sends.
+			//
+			// GIT_USERNAME is the app id rather than empty because a Basic
+			// credential with no username is not sent at all — AppLab reads the
+			// password and ignores the username, but something has to be in it
+			// for the header to exist. See internal/auth.
+			{Name: "GIT_USERNAME", Value: app.ID},
+			{Name: "GIT_PASSWORD", Value: appKey},
+			// Which scheme kaniko prepends to the context URL. It has to agree
+			// with the address the context was built from, so both come out of
+			// the same call below.
+			{Name: "GIT_PULL_METHOD", Value: pullMethod},
 		},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: workspace, MountPath: "/workspace"},
-		},
+		VolumeMounts: mounts,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resourcePtr(orDefault(e.cfg.BuildCPURequest, "500m")),
 				corev1.ResourceMemory: resourcePtr(orDefault(e.cfg.BuildMemoryRequest, "1Gi")),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resourcePtr(orDefault(e.cfg.BuildCPULimit, "4")),
-				corev1.ResourceMemory: resourcePtr(orDefault(e.cfg.BuildMemoryLimit, "8Gi")),
+				corev1.ResourceCPU:              resourcePtr(orDefault(e.cfg.BuildCPULimit, "4")),
+				corev1.ResourceMemory:           resourcePtr(orDefault(e.cfg.BuildMemoryLimit, "8Gi")),
+				corev1.ResourceEphemeralStorage: resourcePtr(orDefault(e.cfg.WorkspaceSizeLimit, "10Gi")),
 			},
 		},
 	}
 
-	if e.cfg.Rootless {
-		container.SecurityContext = &corev1.SecurityContext{
-			RunAsNonRoot: ptr(true),
-			RunAsUser:    ptr(int64(1000)),
-			RunAsGroup:   ptr(int64(1000)),
-
-			// RootlessKit has to create a user namespace and mount filesystems
-			// inside it, which the default seccomp and AppArmor profiles block.
-			// Unconfining them is what git's own rootless example does, and it is
-			// safe precisely because the container is not privileged and runs as a
-			// non-root user.
-			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
-			AppArmorProfile:          &corev1.AppArmorProfile{Type: corev1.AppArmorProfileTypeUnconfined},
-			AllowPrivilegeEscalation: ptr(true),
-			ProcMount:                ptr(corev1.UnmaskedProcMount),
-			ReadOnlyRootFilesystem:   ptr(false),
-		}
-	} else {
-		container.SecurityContext = &corev1.SecurityContext{
-			Privileged:               ptr(true),
-			AllowPrivilegeEscalation: ptr(true),
-			RunAsUser:                ptr(int64(0)),
-			ReadOnlyRootFilesystem:   ptr(false),
-		}
-	}
-
-	// Registry credentials, when the registry needs them. The mount comes from
-	// registryVolumes so it cannot disagree with the volume declared in jobSpec.
-	if _, mounts := e.registryVolumes(); len(mounts) > 0 {
-		container.VolumeMounts = append(container.VolumeMounts, mounts...)
-		container.Env = append(container.Env, corev1.EnvVar{
-			Name:  "DOCKER_CONFIG",
-			Value: "/home/user/.docker",
-		})
+	// Kaniko unpacks the base image and every layer it builds into its own root
+	// filesystem, and it runs the Dockerfile's RUN steps as root — there is no
+	// unprivileged mode, which is the one thing this change gives up. The
+	// container is therefore not given a runAsUser, and the chart's documentation
+	// says so where it used to promise rootless builds.
+	//
+	// The root filesystem is writable because kaniko unpacks into it, and the
+	// ephemeral-storage limit above is what bounds it: the writable layer grows
+	// with the image being built, and the limit is the ceiling that keeps one
+	// build from filling the node's disk.
+	container.SecurityContext = &corev1.SecurityContext{
+		ReadOnlyRootFilesystem: ptr(false),
 	}
 
 	return container
+}
+
+// gitContext renders the --context argument and the pull method that goes with
+// it: the app's repository, a branch, and exactly one commit.
+//
+// The three "#"-separated parts are kaniko's own syntax, read by
+// pkg/buildcontext/git.go. The first is a URL without a scheme — kaniko prepends
+// one from GIT_PULL_METHOD — and the second is what to clone.
+//
+// The clone names a full ref, "refs/heads/<branch>", rather than a bare branch
+// name, and the two are not the same thing to kaniko. A full ref is matched
+// literally, so a branch called "v1" is cloned as a branch and never confused
+// with a tag of the same name — kaniko resolves a bare name against branches
+// first and tags second, which is the ambiguity this avoids. A branch name that
+// is also a valid tag is not hypothetical, and a build that silently used the
+// tag would build the wrong source at the right commit SHA only by accident.
+//
+// The third part is the commit, and it is what makes the build reproducible: a
+// build is started for a recorded commit, and by the time it runs the branch may
+// have moved. kaniko clones the branch and then checks this commit out, so the
+// image that is built is the one that was asked for.
+//
+// The URL carries no scheme because kaniko reads the method from the
+// environment. It is derived from AppLab's own address rather than assumed:
+// GIT_PULL_METHOD only knows "http" and "https" — anything else silently becomes
+// https — and an AppLab reached over http in-cluster is the cluster-local case
+// the chart already supports, so the scheme it is reached at is the scheme the
+// build must use.
+func (e *Engine) gitContext(app *model.App, branch, commitSHA string) (context, pullMethod string) {
+	host := e.cfg.AppLabURL
+
+	pullMethod = "https"
+	if after, ok := strings.CutPrefix(host, "http://"); ok {
+		host, pullMethod = after, "http"
+	} else {
+		host = strings.TrimPrefix(host, "https://")
+	}
+
+	// Trailing slashes are trimmed rather than refused: base_url is configured by
+	// hand in the chart, and "https://example.com/" is the same address as
+	// "https://example.com". The path is then concatenated, so a leftover slash
+	// would produce "//git/...", which kaniko's clone would treat as a URL with an
+	// empty first path segment.
+	host = strings.TrimSuffix(host, "/")
+
+	// Returned rather than set as an environment variable here, so that the URL and
+	// the method it is fetched with cannot disagree: they are two halves of one
+	// answer, and a https URL fetched as http fails as a connection error that
+	// names neither.
+	return "git://" + host + "/git/" + app.ID + ".git" +
+		"#refs/heads/" + branch +
+		"#" + commitSHA, pullMethod
 }
 
 // Status reads a build Job's current state.
@@ -871,18 +754,13 @@ func (e *Engine) Logs(ctx context.Context, namespace, jobName string, tailLines 
 		}
 	}
 
-	// Both containers, in the order they run, under headings naming which is
-	// which.
+	// Every container the pod declares, under headings naming which is which.
 	//
-	// A build has two, and the one that explains a failure is usually the init
-	// container: it fetches the source, so a revoked token, an unreachable
-	// AppLab or a truncated download fails there — and that container's output
-	// was simply not being read. An empty main-container result would then look
-	// like a build that produced nothing, when the fetch never finished.
-	//
-	// The headings are load-bearing: two streams concatenated without them read
-	// as one, and "failed to fetch source" followed by buildkit's startup banner
-	// is a sequence nobody can interpret.
+	// A build is one container now — kaniko does the cloning and the building —
+	// so the headings are usually a single line. They are kept because the list
+	// comes from the pod rather than from this code's idea of a build: if the
+	// pod ever carries more than one container, the streams are separated rather
+	// than run together, and a reader is told which output came from where.
 	var out strings.Builder
 	for _, container := range buildContainers(&pod) {
 		text, err := e.containerLog(ctx, namespace, pod.Name, container, tailLines)

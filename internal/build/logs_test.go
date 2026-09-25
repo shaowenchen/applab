@@ -62,17 +62,20 @@ func engineWithLogs(t *testing.T, pods []corev1.Pod, logs map[string]string) *En
 	return New(client, testConfig())
 }
 
-// TestLogsReadsBothContainers is the defect this fixed: the init container
-// fetches the source, so a build that fails before buildkit starts fails there
-// — and only the main container's log was being read, which was empty. The
-// result looked like a build that produced no output rather than one whose
-// source never arrived.
-func TestLogsReadsBothContainers(t *testing.T) {
+// TestLogsReadsTheBuildContainer asserts the container that ran is the one read,
+// under a heading naming it.
+//
+// The heading was once load-bearing in a way it no longer is: a build used to
+// have two containers, a fetch that downloaded the source and a builder that
+// consumed it, and a fetch failure concatenated with a builder's startup banner
+// read as one stream nobody could interpret. Kaniko is one container, so the
+// heading is usually a single line — kept because the list comes from the pod,
+// and a pod with more than one container must still be readable.
+func TestLogsReadsTheBuildContainer(t *testing.T) {
 	pod := buildPod("build-job-abc", corev1.PodStatus{})
 
 	engine := engineWithLogs(t, []corev1.Pod{*pod}, map[string]string{
-		"fetch-source": "fetching source...\nfatal: repository not found\n",
-		"build":        "#1 building...\n#1 DONE\n",
+		"build": "#1 building...\n#1 DONE\n",
 	})
 
 	out, err := engine.Logs(context.Background(), "applab-shop", "build-job", 100)
@@ -80,18 +83,10 @@ func TestLogsReadsBothContainers(t *testing.T) {
 		t.Fatalf("Logs: %v", err)
 	}
 
-	// The heading is what makes two streams readable as two. Without it the
-	// fetch failure runs straight into buildkit's output and reads as one.
-	for _, want := range []string{"=== fetch-source ===", "repository not found", "=== build ===", "#1 DONE"} {
+	for _, want := range []string{"=== build ===", "#1 DONE"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the log is missing %q:\n%s", want, out)
 		}
-	}
-
-	// And in the order they ran: the fetch is what the build waits on, so a
-	// reader follows it top to bottom.
-	if strings.Index(out, "fetch-source") > strings.Index(out, "#1 DONE") {
-		t.Errorf("the containers are out of order:\n%s", out)
 	}
 }
 
@@ -103,16 +98,15 @@ func TestLogsFallsBackToThePreviousInstance(t *testing.T) {
 	pod := buildPod("build-job-abc", corev1.PodStatus{})
 
 	engine := engineWithLogs(t, []corev1.Pod{*pod}, map[string]string{
-		"fetch-source":          "",
-		"fetch-source:previous": "error: token expired\n",
-		"build":                 "#1 building...\n",
+		"build":          "",
+		"build:previous": "error: the app's key was rotated while this build was starting\n",
 	})
 
 	out, err := engine.Logs(context.Background(), "applab-shop", "build-job", 100)
 	if err != nil {
 		t.Fatalf("Logs: %v", err)
 	}
-	if !strings.Contains(out, "token expired") {
+	if !strings.Contains(out, "the app's key was rotated") {
 		t.Errorf("the previous instance's output is missing:\n%s", out)
 	}
 	// Said out loud, so nobody reads it as output from the run they just
@@ -122,25 +116,28 @@ func TestLogsFallsBackToThePreviousInstance(t *testing.T) {
 	}
 }
 
-// TestLogsKeepsTheReadableContainerWhenTheOtherFails asserts one container's log
-// being unavailable does not discard the other's.
+// TestLogsKeepsTheReadableContainerWhenAnotherFails asserts one container's log
+// being unavailable does not discard another's.
 //
 // Fetching a build's log is what someone does when the build broke, so a read
-// that returns nothing because the *other* container had no log is the worst
-// possible moment to give up.
-func TestLogsKeepsTheReadableContainerWhenTheOtherFails(t *testing.T) {
+// that returns nothing because a *different* container had no log is the worst
+// possible moment to give up. The pod is given an extra container here because
+// that is what the code has to survive, not because a build declares one.
+func TestLogsKeepsTheReadableContainerWhenAnotherFails(t *testing.T) {
 	pod := buildPod("build-job-abc", corev1.PodStatus{})
+	pod.Spec.InitContainers = []corev1.Container{{Name: "sidecar-of-the-past"}}
 
-	// No "build" key: the stub answers that container with an error.
+	// No "sidecar-of-the-past" key: the stub answers that container with an
+	// error, which is what the API does for a container that never started.
 	engine := engineWithLogs(t, []corev1.Pod{*pod}, map[string]string{
-		"fetch-source": "cloning into /workspace...\n",
+		"build": "cloning into /kaniko/buildcontext...\n",
 	})
 
 	out, err := engine.Logs(context.Background(), "applab-shop", "build-job", 100)
 	if err != nil {
 		t.Fatalf("Logs: %v", err)
 	}
-	if !strings.Contains(out, "cloning into /workspace") {
+	if !strings.Contains(out, "cloning into /kaniko/buildcontext") {
 		t.Errorf("the container that did have a log was dropped:\n%s", out)
 	}
 	if !strings.Contains(out, "could not read this container's log") {

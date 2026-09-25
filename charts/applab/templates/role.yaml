@@ -10,8 +10,8 @@ worst it can do is what it would do anyway.
 
 Each rule below is used; nothing is granted for future convenience:
   - Deployments, Services and VirtualServices are an app.
-  - Jobs are builds (their single-use source tokens are environment variables on
-    the Job, not objects of their own).
+  - Jobs are builds (the app key a build clones with is an environment variable
+    on the Job, not an object of its own).
   - Pods and pods/log are how a build's log and an app's log are read.
   - Events are what explain a pod that never started.
 */}}
@@ -44,9 +44,9 @@ rules:
     verbs: ["create", "get", "list", "watch", "delete"]
 
   # Deleting an app lists and removes everything carrying its label, and that
-  # sweep covers Secrets. applab no longer creates any — a build's source token
-  # is an environment variable on the Job, and an app's API key and its secrets
-  # live in the object store — but deletions still name the kind, so an
+  # sweep covers Secrets. applab no longer creates any — the key a build clones
+  # with is an environment variable on the Job, and an app's API key and its
+  # secrets live in the object store — but deletions still name the kind, so an
   # installation upgraded from a version that did create them has them removed
   # with the app rather than left behind as live credentials for an app that no
   # longer exists.

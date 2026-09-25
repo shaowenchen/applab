@@ -216,14 +216,15 @@ type Build struct {
 	// "registry.example.com/apps". Empty disables building.
 	Registry string `yaml:"registry"`
 
-	// BuilderImage provides buildctl and buildkitd. Empty disables building.
-	BuilderImage string `yaml:"builder_image"`
-
-	// FetcherImage runs the init container that downloads the source. It needs a
-	// shell, wget and tar — wget rather than curl, because the default is alpine
-	// and busybox provides the first and not the second. See the fetch script in
-	// internal/build for why that is not a free choice.
-	FetcherImage string `yaml:"fetcher_image"`
+	// KanikoImage provides the kaniko executor, which is what builds the image.
+	// Empty disables building.
+	//
+	// Kaniko builds from a Dockerfile inside a container with no daemon, no
+	// privileged helpers and nothing running beside it: it clones its build
+	// context, unpacks the base image into its own root, runs each step, and
+	// pushes the result. That is why a build here is one container rather than a
+	// builder plus a daemon.
+	KanikoImage string `yaml:"kaniko_image"`
 
 	// Secret names the registry credential: the build Job mounts it to push,
 	// and every app's Deployment references it to pull. One registry, one
@@ -240,17 +241,13 @@ type Build struct {
 	// Deployer.Apply.
 	Secret string `yaml:"secret"`
 
-	// Rootless runs BuildKit unprivileged. Defaults to true; see the chart
-	// README for the kernel prerequisites a cluster must meet.
-	Rootless *bool `yaml:"rootless"`
-
 	// InsecureRegistry allows pushing over plain HTTP without TLS verification.
 	// Off by default because it removes the guarantee that the image that
 	// arrived is the image that was pushed.
 	InsecureRegistry bool `yaml:"insecure_registry"`
 
 	// CacheRepoPrefix enables registry-side layer caching under
-	// "<prefix>/<app>:buildcache". Empty disables caching.
+	// "<prefix>/<app>". Empty disables caching.
 	CacheRepoPrefix string `yaml:"cache_repo_prefix"`
 
 	// Resource requests and limits for the build container.
@@ -259,8 +256,9 @@ type Build struct {
 	CPULimit      string `yaml:"cpu_limit"`
 	MemoryLimit   string `yaml:"memory_limit"`
 
-	// WorkspaceSizeLimit bounds the ephemeral volume the source and BuildKit's
-	// intermediate state share.
+	// WorkspaceSizeLimit bounds what the container's writable layer may hold:
+	// the cloned source, plus the image being assembled, which kaniko keeps
+	// unpacked as it builds.
 	WorkspaceSizeLimit string `yaml:"workspace_size_limit"`
 
 	// Timeout is how long a single build may run before it is killed.
@@ -273,18 +271,9 @@ type Build struct {
 	TTLAfterFinished time.Duration `yaml:"ttl_after_finished"`
 }
 
-// RootlessBuild reports whether builds should run unprivileged, defaulting to
-// yes.
-func (b Build) RootlessBuild() bool {
-	if b.Rootless == nil {
-		return true
-	}
-	return *b.Rootless
-}
-
 // Enabled reports whether the build pipeline is configured.
 func (b Build) Enabled() bool {
-	return b.Registry != "" && b.BuilderImage != "" && b.FetcherImage != ""
+	return b.Registry != "" && b.KanikoImage != ""
 }
 
 // Default returns the configuration used when nothing is set. It is a working
@@ -332,8 +321,7 @@ func Default() Config {
 			// Pinned rather than "latest": a moving tag would make a build's
 			// behaviour change without anything in AppLab changing, which is
 			// exactly the kind of surprise a build system must not have.
-			BuilderImage:  "moby/buildkit:v0.19.0",
-			FetcherImage:  "alpine:3.21",
+			KanikoImage:   "ghcr.io/osscontainertools/kaniko:v1.26.2",
 			CPURequest:    "500m",
 			MemoryRequest: "1Gi",
 			CPULimit:      "4",
@@ -348,7 +336,7 @@ func Default() Config {
 			// here.
 			Secret: "applab-registry",
 
-			// A source tree plus BuildKit's intermediate state. Generous, but
+			// A source tree plus the unpacked image being built. Generous, but
 			// bounded: an unbounded build can fill the node's disk and take
 			// other workloads down with it.
 			WorkspaceSizeLimit: "10Gi",
@@ -414,8 +402,7 @@ func applyEnv(cfg *Config) {
 	setInt64(&cfg.MaxChunkBytes, "APPLAB_MAX_CHUNK_BYTES")
 
 	setString(&cfg.Build.Registry, "APPLAB_BUILD_REGISTRY")
-	setString(&cfg.Build.BuilderImage, "APPLAB_BUILD_BUILDER_IMAGE")
-	setString(&cfg.Build.FetcherImage, "APPLAB_BUILD_FETCHER_IMAGE")
+	setString(&cfg.Build.KanikoImage, "APPLAB_BUILD_KANIKO_IMAGE")
 	setString(&cfg.Build.Secret, "APPLAB_BUILD_SECRET")
 	setString(&cfg.Build.CacheRepoPrefix, "APPLAB_BUILD_CACHE_REPO_PREFIX")
 	setString(&cfg.Build.CPURequest, "APPLAB_BUILD_CPU_REQUEST")
@@ -424,7 +411,6 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.Build.MemoryLimit, "APPLAB_BUILD_MEMORY_LIMIT")
 	setString(&cfg.Build.WorkspaceSizeLimit, "APPLAB_BUILD_WORKSPACE_SIZE_LIMIT")
 	setBool(&cfg.Build.InsecureRegistry, "APPLAB_BUILD_INSECURE_REGISTRY")
-	setBoolPtr(&cfg.Build.Rootless, "APPLAB_BUILD_ROOTLESS")
 	setDuration(&cfg.Build.Timeout, "APPLAB_BUILD_TIMEOUT")
 	setDuration(&cfg.Build.TTLAfterFinished, "APPLAB_BUILD_TTL_AFTER_FINISHED")
 
@@ -479,28 +465,6 @@ func setBool(dst *bool, env string) {
 		slog.Warn("ignoring invalid boolean environment variable; keeping the default",
 			"name", env, "value", v)
 	}
-}
-
-// setBoolPtr applies a boolean to a pointer field, so an unset variable leaves
-// the field nil and a default applies downstream. That distinction matters for
-// rootless builds: nil means "use the default", not "false".
-func setBoolPtr(dst **bool, env string) {
-	v, ok := os.LookupEnv(env)
-	if !ok || strings.TrimSpace(v) == "" {
-		return
-	}
-	var b bool
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
-		b = true
-	case "0", "false", "no", "off":
-		b = false
-	default:
-		slog.Warn("ignoring invalid boolean environment variable; keeping the default",
-			"name", env, "value", v)
-		return
-	}
-	*dst = &b
 }
 
 // setDuration applies a Go duration string such as "30m" or "90s".

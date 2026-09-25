@@ -148,9 +148,8 @@ runs:
     - name: Start the environment
       shell: bash
       env:
-        # APPLAB_VERSION and APPLAB_BUILD_ROOTLESS are deliberately not set here.
-        # The script then falls through to its own defaults: the published
-        # `latest`, and a rootless build.
+        # APPLAB_VERSION is deliberately not set here, so the script falls
+        # through to its own default: the published `latest`.
         APPLAB_API_KEY: ${{ inputs.api_key }}
         APPLAB_SESSION_HOURS: ${{ inputs.session_hours }}
         APPLAB_TUNNEL: ${{ inputs.tunnel }}

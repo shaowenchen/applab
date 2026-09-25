@@ -52,16 +52,14 @@ data:
   # Build. The build-job settings are read by applab itself, which creates the
   # Jobs — the Job pulls its own images, so they must be pullable from the node.
   #
-  # With build.enabled false the three values that decide whether the pipeline
-  # is available at all are emptied, which is what the server reads as "cannot
+  # With build.enabled false the values that decide whether the pipeline is
+  # available at all are emptied, which is what the server reads as "cannot
   # build". Blanking them rather than omitting them is deliberate: an omitted
   # variable keeps its compiled-in default, so the pipeline would come up
-  # enabled pointing at the default builder image.
+  # enabled pointing at the default kaniko image.
   # ---------------------------------------------------------------------------
   APPLAB_BUILD_REGISTRY: {{ if .Values.build.enabled }}{{ .Values.build.registry | quote }}{{ else }}""{{ end }}
-  APPLAB_BUILD_BUILDER_IMAGE: {{ if .Values.build.enabled }}{{ .Values.build.builderImage | quote }}{{ else }}""{{ end }}
-  APPLAB_BUILD_FETCHER_IMAGE: {{ if .Values.build.enabled }}{{ .Values.build.fetcherImage | quote }}{{ else }}""{{ end }}
-  APPLAB_BUILD_ROOTLESS: {{ .Values.build.rootless | quote }}
+  APPLAB_BUILD_KANIKO_IMAGE: {{ if .Values.build.enabled }}{{ .Values.build.kanikoImage | quote }}{{ else }}""{{ end }}
   APPLAB_BUILD_INSECURE_REGISTRY: {{ .Values.build.insecureRegistry | quote }}
   APPLAB_BUILD_CACHE_REPO_PREFIX: {{ .Values.build.cacheRepoPrefix | quote }}
   # Emptied with the registry above, because it is the registry's credential and

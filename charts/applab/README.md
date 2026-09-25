@@ -287,38 +287,28 @@ The chart fails at render time rather than letting these reach a cluster:
 
 ### 3. Whether the cluster can build
 
-This is the one to check before installing, because a build that cannot run fails
-in a way that looks like nothing is happening.
+A build runs as a Kubernetes Job whose one container is **kaniko**. It clones the
+app's repository at the commit being built, runs its Dockerfile, and pushes the
+image. There is no daemon beside it, nothing is privileged, it mounts no host
+path, and it holds no API token — the credential it carries is the app's own key,
+which reaches that app's repository and nothing else.
 
-Builds run as a Kubernetes Job per build, with **BuildKit in rootless mode**. That
-is the default because a build executes code from whoever pushed the source, and a
-privileged build container is a container breakout away from the node.
+Two things are worth knowing before installing, because both are properties of
+kaniko rather than of this chart:
 
-Rootless BuildKit needs the nodes to permit **unprivileged user namespaces**. The
-requirements, from BuildKit's own documentation:
+**A build runs as root, inside its own container.** Kaniko unpacks the base image
+into its container's root filesystem and runs each Dockerfile step there; there is
+no unprivileged mode. A build executes code from whoever pushed the source, so
+that code is root within the build container. It is one container and it can reach
+nothing the pod spec does not give it — but "unprivileged" would be the wrong word
+for it, and the Deployment carries a note saying so.
 
-| Requirement | Why |
-|---|---|
-| `user.max_user_namespaces` > 0 on the node | RootlessKit creates a user namespace; with this at 0 it cannot |
-| seccomp **unconfined** for the build container | The default seccomp profile blocks the `unshare` and `mount` syscalls the namespace needs |
-| AppArmor **unconfined** for the build container | AppArmor blocks the mounts RootlessKit performs |
-| Kernel ≥ 5.11, or `fuse-overlayfs` + `/dev/fuse` | Overlayfs in a user namespace needs a recent kernel; older ones fall back |
-| On Ubuntu 24.04+: `kernel.apparmor_restrict_unprivileged_userns=0` | Ubuntu restricts unprivileged user namespaces by default |
-
-The chart sets the seccomp and AppArmor profiles already. The node-level settings
-are yours.
-
-**To check before installing**, on any node:
-
-```bash
-sysctl user.max_user_namespaces
-# 0 means rootless builds cannot work on this node
-```
-
-**If the cluster cannot satisfy this**, set `build.rootless=false`. Build
-containers then run privileged. It works everywhere, and it means a build — which
-is arbitrary code from whoever pushed the source — has the run of the node. Prefer
-fixing the node setting.
+**The node pulls the kaniko image.** The default is
+`ghcr.io/osscontainertools/kaniko`, the maintained community build — Google
+archived `GoogleContainerTools/kaniko` in June 2025 and its images are no longer
+published. A cluster that cannot reach ghcr.io needs that image mirrored, with
+`build.kanikoImage` set to the mirror. Nothing else about a build needs the
+internet beyond the base images the Dockerfile itself names.
 
 **Or** set `build.enabled=false` and run AppLab without the build pipeline. Source
 storage, the API and the console all still work, and you can deploy images built
@@ -394,7 +384,7 @@ does and why it defaults the way it does. The ones that matter most:
 | `deploy.gateway` | `istio-ingress/istio-ingress` | **Required with a host.** `<namespace>/<name>` |
 | `build.enabled` | `true` | `false` runs AppLab without building |
 | `build.registry` | `""` | Required when `build.enabled` |
-| `build.rootless` | `true` | See the prerequisites above |
+| `build.kanikoImage` | `ghcr.io/osscontainertools/kaniko:v1.26.2` | The executor every build runs; mirror it for a cluster that cannot reach ghcr.io |
 | `build.cacheRepoPrefix` | `""` | Registry-side layer cache; a Job has no persistent disk |
 | `build.secret` | `applab-registry` | The registry credential: pushes the image and pulls it. `""` for a registry needing none, and ignored when `build.enabled=false` |
 | `deploy.appResources` | 2 CPU / 2Gi | Applied to every app AppLab deploys |
