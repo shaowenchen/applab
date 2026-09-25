@@ -350,23 +350,24 @@ code, only to check the chart. It renders the chart and asserts what the
 rendering has to contain — a chart whose templates are wrong still renders, so
 "it rendered" is not evidence of anything.
 
-The cluster-backed pieces — app keys, app secrets, the deployer — are tested
-against `k8s.io/client-go/kubernetes/fake`, which is a real object tracker rather
-than a stub. It is close enough to take the label selectors and create/update
-semantics seriously, with one divergence worth knowing: a real API server folds a
-Secret's `StringData` into `Data` on the way in and the fake does not, so
-anything writing a Secret writes `Data` directly and a test asserts that.
+The cluster-backed pieces — the deployer and the observer — are tested against
+`k8s.io/client-go/kubernetes/fake`, which is a real object tracker rather than a
+stub. It is close enough to take the label selectors and create/update semantics
+seriously, which is what those tests lean on.
 
 Two claims are asserted against the object the code produces rather than a
 summary of it, because they are the ones a plausible-looking implementation can
 still get wrong:
 
-- **a secret's value never appears in the generated Deployment**, checked by
-  searching the whole object, so a leak into a label or an annotation is caught
-  as well as one into the env list;
-- **the migration brings a version-1 database forward without losing it**, since
-  every database already in the field is at version 1 and a fresh-database test
-  would never exercise that.
+- **a secret's value reaches the Deployment**, asserted by searching the whole
+  object for the value rather than for one env entry. This is a claim about
+  *where* the value is, not that it is hidden — AppLab has no Secret objects, so
+  the value is in the Deployment in the clear, and that is the deliberate trade
+  the section above describes. A test asserting that plainly is what keeps the
+  loss visible: the equivalent test used to assert the value appeared nowhere,
+  and it was replaced rather than deleted when the mechanism went;
+- **deleting an app removes its objects and nothing else**, including AppLab's own
+  Deployment, which shares the namespace and carries no app label.
 
 ### A whole platform on a runner
 
@@ -557,7 +558,7 @@ bucket is not touched either, and it holds every app's source: an uninstall that
 emptied it would be one that deleted the source of every app.
 
 [The chart's README](charts/applab) has the full teardown, including how to
-remove the apps and the volume along with the installation.
+remove the apps along with the installation.
 
 ## License
 

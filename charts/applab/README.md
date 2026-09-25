@@ -455,40 +455,25 @@ helm upgrade applab applab/applab \
 builds are published: Helm does not resolve a prerelease unless it is asked for
 by name. An upgrade without it fails the same way an install does.
 
-There is no schema to migrate: everything AppLab remembers is objects in the
-bucket, written and read by this version. An upgrade is therefore a rollout, and
-rolling the image back with the chart is the whole of a revert — with two
-exceptions, both of which are about the *shape* of what is already in the bucket.
+An upgrade is a rollout, and that is the whole of it. AppLab holds no state:
+every app, every repository, every commit, every build and every key is an object
+in the bucket you pointed it at. There is nothing inside the deployment to carry
+forward, no schema to migrate, and rolling the image back with the chart is the
+whole of a revert.
 
-**App keys and configuration held in Kubernetes Secrets are not carried across.**
-An app that had a key reads as having none until `applab keys <app> --rotate`
-mints one, so read the old value before upgrading if anything depends on it; and
-secrets have to be set again with `applab env`. The old Secret objects are inert —
-nothing reads them any more — and deleting an app removes them along with its
-other objects.
+That is also why the chart mounts no volume. Replacing a pod, losing a node, or
+running three replicas changes nothing, because no replica is the only copy of
+anything — the bucket is, which is what makes backing it up the one piece of
+upkeep this installation needs.
 
-**A repository written by a version before branches moved.** This version stores
-each branch at `apps/<id>/repo/branches/<branch>/`; earlier versions stored one
-repository, flat, at `apps/<id>/repo/`. The old location is not read, so after an
-upgrade every app reads as having no branches and no commits until you move the
-repository — a copy, not a re-push, and it takes one command per bucket layout:
-
-```bash
-# MinIO / mc — move the flat repository to the default branch's directory.
-mc mv --recursive myminio/applab/apps/shop/repo/ \
-                myminio/applab/apps/shop/repo/branches/main/
-
-# AWS CLI — the same move, plus removing the empty source of the copy.
-aws s3 cp s3://applab/apps/shop/repo/ s3://applab/apps/shop/repo/branches/main/ \
-  --recursive
-aws s3 rm s3://applab/apps/shop/repo/ --recursive \
-  --exclude "branches/*"
-```
-
-Do the copy before upgrading, or the app is briefly unreadable; do it with AppLab
-stopped, or a push arriving mid-copy is a push into the old location. Apps that
-were only ever deployed — nothing pushed through AppLab — are unaffected, since
-they have no repository to move.
+Nothing is released yet: the chart is published only as a prerelease built from
+each commit, and the bucket's layout has changed more than once across those
+builds. Those changes are not migrated on the way in — each is read by the
+version that wrote it, and an app whose history predates one simply reads as
+having no commits until it is pushed again. That is the ordinary cost of running
+a pre-release, and it is why the shape of the bucket is not something this
+document walks you through: it is not part of the contract until there is a
+release to break.
 
 ## Uninstalling
 
@@ -511,10 +496,15 @@ To remove an installation completely:
 
 ```bash
 kubectl -n ops-system get deployments,services -l applab.io/app   # what it deployed
-kubectl -n ops-system delete deployments,services,jobs,secrets -l applab.io/app
+kubectl -n ops-system delete deployments,services,jobs -l applab.io/app
 kubectl -n ops-system delete virtualservices.networking.istio.io -l applab.io/app
 # and the source, which is whatever you pointed objectStore at
 ```
+
+There are no Secrets to remove with them: AppLab keeps keys and configuration in
+the bucket, so an app owns no Secret of its own. The chart's own
+`applab-auth` and object-store Secrets belong to the release and go with the
+uninstall.
 
 The namespace itself is yours rather than AppLab's — it is where AppLab was
 installed, and it may hold other things. AppLab never deletes it.
