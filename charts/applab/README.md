@@ -22,16 +22,17 @@ Then the Secret, if the registry needs one — a cluster-local registry usually
 does not, in which case skip to step 2 and set `--set build.secret=` there.
 
 ```bash
-kubectl -n ops-system create secret docker-registry applab \
+kubectl -n ops-system create secret docker-registry applab-registry \
   --docker-server=registry.example.com \
   --docker-username=<user> \
   --docker-password=<password>
 ```
 
 The namespace is created here rather than by `--create-namespace` on the install,
-because the Secret has to be in it first. The name matters: `applab` is what the
-chart expects, so call the Secret that and the install needs to say nothing more
-about it. A Secret by another name is passed to the install in step 2.
+because the Secret has to be in it first. The name matters: `applab-registry` is
+what the chart expects, so call the Secret that and the install needs to say
+nothing more about it. A Secret by another name is passed to the install in step
+2.
 
 **2. AppLab**
 
@@ -49,13 +50,14 @@ helm install applab applab/applab \
   --set ingress.host=applab.example.com \
   --set deploy.gateway=istio-system/istio-ingressgateway \
   --set build.registry=registry.example.com/apps \
-  --set build.secret=applab
+  --set build.secret=applab-registry
 ```
 
 `build.secret` is the registry credential — the one thing that reaches the
 private registry in `build.registry`, used both to push the built image and for
 the app to pull it. It is shown here at its default, so the line can simply be
-deleted: the value is the name of the Secret from step 1, and `applab` is what
+deleted: the value is the name of the Secret from step 1, and `applab-registry`
+is what
 the chart looks for when nothing is set. Change it to reach a Secret by another
 name, or set it to `""` when the registry needs no credentials at all.
 
@@ -170,7 +172,7 @@ namespace AppLab runs in** and name it. Do this before installing — see step 1
 the quick start:
 
 ```bash
-kubectl -n ops-system create secret docker-registry applab \
+kubectl -n ops-system create secret docker-registry applab-registry \
   --docker-server=registry.example.com \
   --docker-username=<user> \
   --docker-password=<password>
@@ -394,7 +396,7 @@ does and why it defaults the way it does. The ones that matter most:
 | `build.registry` | `""` | Required when `build.enabled` |
 | `build.rootless` | `true` | See the prerequisites above |
 | `build.cacheRepoPrefix` | `""` | Registry-side layer cache; a Job has no persistent disk |
-| `build.secret` | `applab` | The registry credential: pushes the image and pulls it. `""` for a registry needing none, and ignored when `build.enabled=false` |
+| `build.secret` | `applab-registry` | The registry credential: pushes the image and pulls it. `""` for a registry needing none, and ignored when `build.enabled=false` |
 | `deploy.appResources` | 2 CPU / 2Gi | Applied to every app AppLab deploys |
 | `ingress.host` | `applab.example.com` | **The whole address.** The console, the API and every app. Empty runs internal-only |
 | `ingress.path` | `/applab` | The path under it; the server is told the same one |

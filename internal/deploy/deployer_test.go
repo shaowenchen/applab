@@ -1312,7 +1312,7 @@ func configHashOf(t *testing.T, client *fake.Clientset, app *model.App) string {
 // told its name rather than reading it from the build's configuration, so this
 // exercises the check rather than the wiring.
 func TestApplyRefusesAMissingImagePullSecret(t *testing.T) {
-	cfg := Config{BaseDomain: "apps.example.com", ImagePullSecret: "applab"}
+	cfg := Config{BaseDomain: "apps.example.com", ImagePullSecret: "applab-registry"}
 	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
 	app := testApp()
@@ -1321,7 +1321,7 @@ func TestApplyRefusesAMissingImagePullSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("an app deployed with an image pull credential that does not exist")
 	}
-	for _, want := range []string{"applab", app.Namespace} {
+	for _, want := range []string{"applab-registry", app.Namespace} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error does not mention %q: %v", want, err)
 		}
@@ -1342,13 +1342,13 @@ func TestApplyRefusesAMissingImagePullSecret(t *testing.T) {
 // TestApplyAcceptsAnExistingImagePullSecret is the other half, so the check is
 // not a wall: with the Secret present the same deploy proceeds.
 func TestApplyAcceptsAnExistingImagePullSecret(t *testing.T) {
-	cfg := Config{BaseDomain: "apps.example.com", ImagePullSecret: "applab"}
+	cfg := Config{BaseDomain: "apps.example.com", ImagePullSecret: "applab-registry"}
 	d, client := newTestDeployer(t, cfg)
 	ctx := context.Background()
 	app := testApp()
 
 	if _, err := client.CoreV1().Secrets(app.Namespace).Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "applab", Namespace: app.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "applab-registry", Namespace: app.Namespace},
 		Type:       corev1.SecretTypeDockerConfigJson,
 		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte("{}")},
 	}, metav1.CreateOptions{}); err != nil {

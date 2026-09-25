@@ -196,11 +196,11 @@ build:
   # build.registry, both to push the image it builds and for the app to pull it
   # again. One registry, one Secret, one name.
   #
-  # It defaults to "applab", so an install that creates a Secret by that name
+  # It defaults to "applab-registry", so an install that creates a Secret by that name
   # needs no --set for this at all. Create it before installing AppLab, in
   # AppLab's own namespace:
   #
-  #   kubectl -n ops-system create secret docker-registry applab \
+  #   kubectl -n ops-system create secret docker-registry applab-registry \
   #     --docker-server=registry.example.com \
   #     --docker-username=<user> --docker-password=<password>
   #
@@ -213,7 +213,7 @@ build:
   # anything is created, naming the Secret and the namespace — a Job that exists
   # but cannot start is worse, because it holds the build's name and shows as
   # pending.
-  secret: "applab"
+  secret: "applab-registry"
 
   # Resource bounds for a build container and for the ephemeral volume the
   # source and BuildKit's intermediate state share. Builds are bursty and

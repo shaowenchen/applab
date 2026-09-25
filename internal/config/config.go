@@ -229,9 +229,10 @@ type Build struct {
 	// and every app's Deployment references it to pull. One registry, one
 	// credential, one name.
 	//
-	// Defaults to "applab", which is what the chart creates. An installation
-	// that brings its own Secret sets this; an empty value means the registry
-	// needs no authentication, which is normal for a cluster-local one.
+	// Defaults to "applab-registry", which is what the chart creates. An
+	// installation that brings its own Secret sets this; an empty value means
+	// the registry needs no authentication, which is normal for a cluster-local
+	// one.
 	//
 	// Not copied anywhere: apps run in AppLab's own namespace, so both readers
 	// find it where it already is. A name that does not resolve is refused
@@ -338,11 +339,14 @@ func Default() Config {
 			CPULimit:      "4",
 			MemoryLimit:   "8Gi",
 
-			// The default registry credential, named after the platform because
-			// that is the only name it could have that an operator does not have
-			// to be told. The chart creates it when one is configured; an
-			// installation that brings its own Secret names it here.
-			Secret: "applab",
+			// The default registry credential. Named for what it holds rather
+			// than for the platform, so it reads as a registry credential beside
+			// an installation named applab — the chart's own Secret is applab-auth
+			// and the release's objects are applab-*, which "applab" alone would
+			// have sat ambiguously among. The chart creates it when one is
+			// configured; an installation that brings its own Secret names it
+			// here.
+			Secret: "applab-registry",
 
 			// A source tree plus BuildKit's intermediate state. Generous, but
 			// bounded: an unbounded build can fill the node's disk and take
