@@ -16,20 +16,22 @@ AppLab does, because a build reads it from the namespace AppLab runs in.
 
 ```bash
 kubectl create namespace ops-system
+```
 
+Then the Secret, if the registry needs one — a cluster-local registry usually
+does not, in which case skip to step 2 and set `--set build.pushSecret=` there.
+
+```bash
 kubectl -n ops-system create secret docker-registry applab \
   --docker-server=registry.example.com \
   --docker-username=<user> \
   --docker-password=<password>
 ```
 
-The Secret is named `applab`, which is what the chart expects by default, so it
-does not have to be mentioned again below. Skip it entirely if the registry needs
-no credentials — a cluster-local one usually does not, and then set
-`--set build.pushSecret=` to say so.
-
 The namespace is created here rather than by `--create-namespace` on the install,
-because the Secret has to be in it first.
+because the Secret has to be in it first. The name matters: `applab` is what the
+chart expects, so call the Secret that and the install needs to say nothing more
+about it. A Secret by another name is passed to the install in step 2.
 
 **2. AppLab**
 
@@ -46,8 +48,16 @@ helm install applab applab/applab \
   --set objectStore.accessKey=... --set objectStore.secretKey=... \
   --set ingress.host=applab.example.com \
   --set deploy.gateway=istio-system/istio-ingressgateway \
-  --set build.registry=registry.example.com/apps
+  --set build.registry=registry.example.com/apps \
+  --set build.pushSecret=applab
 ```
+
+`build.pushSecret` is the registry credential — the one thing that reaches the
+private registry in `build.registry`, used both to push the built image and for
+the app to pull it. It is shown here at its default, so the line can simply be
+deleted: the value is the name of the Secret from step 1, and `applab` is what
+the chart looks for when nothing is set. Change it to reach a Secret by another
+name, or set it to `""` when the registry needs no credentials at all.
 
 The bucket is not optional and has no default. AppLab keeps everything in it —
 every app, every repository, every commit and every key — so there is nothing for
@@ -56,12 +66,9 @@ server checks the same thing at startup, because a chart is not the only way thi
 runs. Create the bucket first; AppLab does not create one, because a bucket's
 name, region and lifecycle policy belong to whoever runs the platform.
 
-There is one registry credential, and it is the Secret created above:
-`build.pushSecret` names it unless you have a Secret by another name. The same
-one is used to push the built image and for the app to pull it, because that is
-one registry. See [A registry the cluster can push to and pull
+See [A registry the cluster can push to and pull
 from](#1-a-registry-the-cluster-can-push-to-and-pull-from) for what happens when
-it is named and missing.
+the Secret is named and missing.
 
 `--version` is not optional yet, and leaving it out fails with `chart "applab"
 matching  not found in applab index` — which reads like a typo or a stale index
@@ -315,6 +322,10 @@ fixing the node setting.
 storage, the API and the console all still work, and you can deploy images built
 elsewhere. `applab push` will say clearly that this deployment cannot build.
 
+With the pipeline off there is no registry to authenticate to either, so the
+registry credential is ignored: `build.pushSecret` is emptied along with
+`build.registry`, and no Secret has to exist for an app to deploy.
+
 ## What gets installed
 
 | Resource | Why |
@@ -383,7 +394,7 @@ does and why it defaults the way it does. The ones that matter most:
 | `build.registry` | `""` | Required when `build.enabled` |
 | `build.rootless` | `true` | See the prerequisites above |
 | `build.cacheRepoPrefix` | `""` | Registry-side layer cache; a Job has no persistent disk |
-| `build.pushSecret` | `applab` | The registry credential: pushes the image and pulls it. `""` for a registry needing none |
+| `build.pushSecret` | `applab` | The registry credential: pushes the image and pulls it. `""` for a registry needing none, and ignored when `build.enabled=false` |
 | `deploy.appResources` | 2 CPU / 2Gi | Applied to every app AppLab deploys |
 | `ingress.host` | `applab.example.com` | **The whole address.** The console, the API and every app. Empty runs internal-only |
 | `ingress.path` | `/applab` | The path under it; the server is told the same one |

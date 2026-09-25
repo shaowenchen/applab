@@ -101,8 +101,14 @@ fi
 # build.enabled=false has to disable the pipeline. The server decides that from
 # the registry and the two images, so all three have to be emptied; blanking
 # only the registry would leave it enabled against the default builder.
+#
+# The push Secret goes with them. It is the registry's credential, and it has a
+# non-empty default, so leaving it set on a deployment with no registry would send
+# the deployer looking for a Secret nothing created — and since the deploy path
+# refuses a credential it cannot find, every deploy on that installation would
+# fail for a credential it never meant to use.
 off="$(render --set build.enabled=false)"
-for var in APPLAB_BUILD_REGISTRY APPLAB_BUILD_BUILDER_IMAGE APPLAB_BUILD_FETCHER_IMAGE; do
+for var in APPLAB_BUILD_REGISTRY APPLAB_BUILD_BUILDER_IMAGE APPLAB_BUILD_FETCHER_IMAGE APPLAB_BUILD_PUSH_SECRET; do
   grep -q "^  $var: \"\"" <<<"$off" \
     || fail "build.enabled=false leaves $var set, so the build pipeline still comes up"
 done

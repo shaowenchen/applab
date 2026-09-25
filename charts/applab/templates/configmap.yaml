@@ -64,7 +64,12 @@ data:
   APPLAB_BUILD_ROOTLESS: {{ .Values.build.rootless | quote }}
   APPLAB_BUILD_INSECURE_REGISTRY: {{ .Values.build.insecureRegistry | quote }}
   APPLAB_BUILD_CACHE_REPO_PREFIX: {{ .Values.build.cacheRepoPrefix | quote }}
-  APPLAB_BUILD_PUSH_SECRET: {{ .Values.build.pushSecret | quote }}
+  # Emptied with the registry above, because it is the registry's credential and
+  # a deployment with no build pipeline has no registry to authenticate to. Left
+  # set, its default name would send the deployer looking for a Secret nothing
+  # created, and every deploy would be refused for a credential that was never
+  # meant to be used.
+  APPLAB_BUILD_PUSH_SECRET: {{ if .Values.build.enabled }}{{ .Values.build.pushSecret | quote }}{{ else }}""{{ end }}
   APPLAB_BUILD_CPU_REQUEST: {{ .Values.build.resources.requests.cpu | quote }}
   APPLAB_BUILD_MEMORY_REQUEST: {{ .Values.build.resources.requests.memory | quote }}
   APPLAB_BUILD_CPU_LIMIT: {{ .Values.build.resources.limits.cpu | quote }}
