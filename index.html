@@ -709,6 +709,11 @@ git push origin main
 <p>That is the whole deployment. The push stores the source, and AppLab then builds it
 and deploys the result on its own — <code>git push</code> returns as soon as git is done, so
 the build runs in the background and the app goes live when it succeeds.</p>
+<p>To release by hand instead, turn that off for the app: <code>applab update shop --auto-deploy=false</code>, or the &quot;Deploy on push&quot; box on the app's page. A push then
+stores the source and stops, and <code>applab deploy shop</code> ships it. Either way the
+app's address is live from the moment it is created — the gateway is routed to it
+before it has ever been deployed, so the URL the console shows is the one it will
+serve at.</p>
 <h3 id="5-watch-it-come-up">5. Watch it come up</h3>
 <p>Nothing needs calling, so this step is only about seeing where it got to:</p>
 <pre><code class="language-bash">applab status shop         # what AppLab recorded and what the cluster actually has
