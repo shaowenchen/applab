@@ -82,6 +82,20 @@ type Transport struct {
 	// Nil means an unresolved branch is a request for nothing, which is what a
 	// caller with no such state should get rather than a guess.
 	activeBranch func(ctx context.Context, appID string) string
+
+	// prepare makes a materialised repository safe to hand to git, and is where
+	// the repository's own config is pinned.
+	//
+	// It is a hook rather than something this package does itself because the
+	// settings are this package's problem and not its knowledge: see
+	// source.Store.applyDeterministicConfig for what they are. What matters here
+	// is *when* it runs — after the repository is materialised and before
+	// git http-backend is started — because the one that bit is `gc.auto`, which
+	// has to be off before receive-pack can spawn the maintenance that races the
+	// upload.
+	//
+	// Nil means the repository is used exactly as it was downloaded.
+	prepare func(ctx context.Context, repoPath string) error
 }
 
 // Sessions is how a repository is made available to git for one request.
@@ -103,6 +117,17 @@ type Sessions interface {
 // deployment whose source storage was not configured.
 func (t *Transport) WithSessions(s Sessions) *Transport {
 	t.sessions = s
+	return t
+}
+
+// WithPrepare attaches the step that makes a materialised repository safe to
+// serve.
+//
+// A failure is answered as "repository not found" rather than as an error: the
+// caller cannot act on it, and disclosing that an app's storage could not be
+// prepared is disclosing that the app exists.
+func (t *Transport) WithPrepare(fn func(ctx context.Context, repoPath string) error) *Transport {
+	t.prepare = fn
 	return t
 }
 
@@ -224,14 +249,31 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "repository not found", http.StatusNotFound)
 		return
 	}
-	// Deferred rather than called inline: every path out of this handler has to
-	// upload a push, including the ones that return early on a write error.
-	defer func() {
+	// Called from every path out of this handler, because the upload is what
+	// makes a push durable and skipping it to report a different error would
+	// trade a lost push for a tidier log line.
+	//
+	// Not before git runs: this uploads the working copy and then removes it, so
+	// it is the last thing done with repoPath. For a push that is also why the
+	// response is buffered — the answer git produced is held until the outcome of
+	// this is known, since a response already streamed cannot be taken back.
+	stored := func() bool {
 		if err := done(); err != nil {
 			slog.ErrorContext(r.Context(), "could not store the repository after serving it",
 				"app", repoName, "branch", branch, "error", err)
+			return false
 		}
-	}()
+		return true
+	}
+
+	// Before git is started, so receive-pack inherits the settings rather than
+	// discovering them part-way through a push.
+	if t.prepare != nil {
+		if err := t.prepare(r.Context(), repoPath); err != nil {
+			http.Error(w, "repository not found", http.StatusNotFound)
+			return
+		}
+	}
 
 	// The backend resolves PATH_INFO against GIT_PROJECT_ROOT, so both are built
 	// from where the repository actually is rather than from the configured root:
@@ -271,7 +313,53 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
+		_ = stored()
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// A push is small and a fetch is not, and the difference decides how the
+	// response is written.
+	//
+	// git's push response is buffered. Everything that can fail after it has been
+	// produced — the upload below — is only knowable once it is complete, and a
+	// response already streamed cannot be taken back. Holding it is what lets a
+	// failed upload reach the pusher as a failure, instead of as "ok" and a line
+	// in a log the pusher will never read. This is not theoretical: it is how a
+	// push that git accepted and that object storage rejected reported success
+	// while leaving the app with no commit.
+	//
+	// A fetch is streamed as it always was. It writes nothing, so there is no
+	// later failure to report, and buffering a pack would hold a whole repository
+	// in memory before the client saw its first byte.
+	if isPush(r) {
+		// The headers are copied before anything is decided. They are already
+		// accurate — git's answer was produced against the push it accepted — and
+		// git's client needs Content-Type to read the ref advertisement at all.
+		reader, status, headerErr := readCGIHeaders(w, stdout)
+
+		var body []byte
+		bodyErr := headerErr
+		if bodyErr == nil {
+			body, bodyErr = io.ReadAll(reader)
+		}
+		waitErr := cmd.Wait()
+		ok := stored()
+
+		if bodyErr != nil || waitErr != nil {
+			// git itself did not answer. Reporting this as a storage failure
+			// would name the wrong fault, and the headers are already committed —
+			// so this is the one case where the status has to be corrected after
+			// the fact rather than chosen.
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.Error(w, "the push was received but could not be stored; push again", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
 		return
 	}
 
@@ -282,9 +370,25 @@ func (t *Transport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// stop, since the status line is long gone. A dangling error here is
 		// usually a client that disconnected mid-clone, which is not a failure
 		// worth surfacing to anyone.
+		_ = stored()
 		return
 	}
+	_ = stored()
 	_ = writeErr
+}
+
+// isPush reports whether a request belongs to a push — git's receive-pack, the
+// half that writes.
+//
+// Read from the request rather than from the response: receive-pack is a POST to
+// /git-receive-pack, and the ref advertisement that precedes it asks for that
+// service with `?service=git-receive-pack`. Between the two, every request of a
+// push is recognised.
+func isPush(r *http.Request) bool {
+	if strings.Contains(r.URL.Path, "git-receive-pack") {
+		return true
+	}
+	return r.URL.Query().Get("service") == "git-receive-pack"
 }
 
 // cgiEnv builds the environment git http-backend expects.
@@ -341,12 +445,36 @@ func (t *Transport) cgiEnv(r *http.Request, projectRoot, projectPath, query, git
 // copyCGIResponse reads the CGI response from the backend and writes it to the
 // client.
 //
+// Split in two because the halves are needed at different times: a fetch writes
+// the headers and streams the body straight through, while a push has to know
+// the outcome of the upload before it commits to either — see writePushResponse.
+func (t *Transport) copyCGIResponse(w http.ResponseWriter, stdout io.Reader) error {
+	reader, status, err := readCGIHeaders(w, stdout)
+	if err != nil {
+		return err
+	}
+
+	// Flushed as it is read rather than buffered: a clone streams a pack that
+	// can be large, and buffering it would hold the whole thing in memory and
+	// delay the first byte until the backend finished.
+	w.WriteHeader(status)
+	_, err = io.Copy(&flushWriter{w: w}, reader)
+	return err
+}
+
+// readCGIHeaders consumes the CGI header block, copying every header it carries
+// onto w, and returns a reader positioned at the body along with the status.
+//
 // The CGI format is a header block terminated by a blank line, followed by the
 // body. The only header with a meaning beyond HTTP is `Status:`, which a backend
 // uses when it needs a status other than 200 — without translating it a failed
 // fetch would arrive as a 200 with an error in the body, and git clients would
 // report a confusing protocol error instead of the real one.
-func (t *Transport) copyCGIResponse(w http.ResponseWriter, stdout io.Reader) error {
+//
+// `Content-Type` is among the copied headers and is not decoration: git's client
+// decides whether a ref advertisement is a ref advertisement by it, and without
+// it `git push` refuses with "not valid: is this a git repository?".
+func readCGIHeaders(w http.ResponseWriter, stdout io.Reader) (*bufio.Reader, int, error) {
 	reader := bufio.NewReader(stdout)
 	header := w.Header()
 
@@ -357,7 +485,7 @@ func (t *Transport) copyCGIResponse(w http.ResponseWriter, stdout io.Reader) err
 			if err == io.EOF {
 				break
 			}
-			return err
+			return reader, status, err
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
@@ -388,13 +516,7 @@ func (t *Transport) copyCGIResponse(w http.ResponseWriter, stdout io.Reader) err
 	// it lets net/http frame the response itself, which is always correct.
 	header.Del("Content-Length")
 
-	w.WriteHeader(status)
-
-	// Flushed as it is read rather than buffered: a clone streams a pack that
-	// can be large, and buffering it would hold the whole thing in memory and
-	// delay the first byte until the backend finished.
-	_, err := io.Copy(&flushWriter{w: w}, reader)
-	return err
+	return reader, status, nil
 }
 
 // flushWriter flushes after each write so a streaming response reaches the

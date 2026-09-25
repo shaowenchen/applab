@@ -181,9 +181,15 @@ func run() error {
 	// because it is app state: "/git/shop.git" is whatever branch shop is on, and
 	// the transport has no way to know that. Both are closures over srv so a
 	// request reads the server's state as it is when the request arrives.
+	//
+	// Prepare is the source store's, and it runs between materialising a
+	// repository and handing it to git: the repository's config has to be pinned
+	// before receive-pack can spawn the background maintenance that races the
+	// upload. See source.Store.applyDeterministicConfig.
 	gitTransport.
 		Authorize(srv.AuthorizeGitRepo).
-		WithActiveBranch(srv.ActiveBranch)
+		WithActiveBranch(srv.ActiveBranch).
+		WithPrepare(src.Prepare)
 	srv.WithGit(gitTransport)
 
 	// The console is a client of the same public API, so it holds no privileges

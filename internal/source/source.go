@@ -268,6 +268,12 @@ func (s *Store) initEmpty(ctx context.Context, repoPath, branch string) error {
 	if _, err := s.run(ctx, "", "init", "--bare", "--initial-branch="+branch, repoPath); err != nil {
 		return fmt.Errorf("initialise an empty repository: %w", err)
 	}
+	// An empty repository that lacks these gains them every time it serves a
+	// request, and each write is a file the upload has to decide about.
+	// deterministicGitEnv explains why they are never content.
+	if err := s.applyDeterministicConfig(ctx, repoPath); err != nil {
+		return err
+	}
 	if _, err := s.run(ctx, repoPath, "symbolic-ref", "HEAD", branchRef(branch)); err != nil {
 		return fmt.Errorf("point HEAD at %s: %w", branch, err)
 	}
@@ -493,6 +499,69 @@ func isEmptyRepoError(err error) bool {
 		strings.Contains(msg, "unknown revision or path not in the working tree") ||
 		strings.Contains(msg, "bad revision") ||
 		strings.Contains(msg, "Needed a single revision")
+}
+
+// Prepare makes a materialised repository safe to hand to git.
+//
+// It is the exported half of applyDeterministicConfig, called by the git
+// transport on every request: a repository written before these settings existed
+// acquires them the first time it is served, which is also the first moment they
+// could matter.
+func (s *Store) Prepare(ctx context.Context, repoPath string) error {
+	return s.applyDeterministicConfig(ctx, repoPath)
+}
+
+// applyDeterministicConfig pins the repository config that must not depend on
+// the git running.
+//
+// Two unrelated problems, one setting each.
+//
+// **gc.auto=0 — the repository must not be packed while it is being read.**
+// `git receive-pack` runs `git maintenance run --auto` in the background after
+// every push unless this is off, and maintenance packs loose objects and prunes
+// what it considers unreachable. AppLab's upload walks the working copy *after*
+// the push has been answered, so the two race: a repack that lands mid-walk
+// moves the objects out from under it, the walk sees files vanish, and the
+// upload fails. The upload is what makes a push durable, so a push the client
+// was told succeeded is then lost — and the symptom is a bare
+// "stat objects/maintenance.lock: no such file or directory" in the log, which
+// names neither the race nor the consequence.
+//
+// Disabling it costs nothing here. Packing is a size optimisation, and each
+// repository is small, downloaded per request and uploaded again — there is no
+// long-lived repository for a repack to benefit, and no reader that would
+// notice if one happened.
+//
+// **repositoryformatversion=0 and filemode=false — the format must not depend
+// on the writer's git.** `git init` records the writing git's default object
+// format, so a repository created by a git configured for sha256 is one that a
+// default git cannot read at all. Zero is the oldest and universally readable
+// format, which is the property that matters for a repository read by whichever
+// node a build lands on. `filemode` is left off because the executable bit is
+// not preserved through the bucket anyway, so a repository that records it would
+// report every pull as a change.
+//
+// Written by git rather than by hand so the file stays in a format git itself
+// recognises, and applied by both the creator and the transport: a repository
+// that predates this setting acquires it the first time it is served, which is
+// also the first moment it could matter.
+func (s *Store) applyDeterministicConfig(ctx context.Context, repoPath string) error {
+	settings := [][2]string{
+		{"gc.auto", "0"},
+		{"maintenance.auto", "false"},
+		// Prefixed: these two live under [core], and an unprefixed name writes a
+		// top-level key that git ignores entirely — which git will do without
+		// complaint, so the setting silently does nothing.
+		{"core.repositoryformatversion", "0"},
+		{"core.filemode", "false"},
+	}
+
+	for _, setting := range settings {
+		if _, err := s.run(ctx, repoPath, "config", setting[0], setting[1]); err != nil {
+			return fmt.Errorf("set %s on the repository: %w", setting[0], err)
+		}
+	}
+	return nil
 }
 
 // run executes a git command in dir (or the process's directory when dir is

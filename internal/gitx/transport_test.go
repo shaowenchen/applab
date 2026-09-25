@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"github.com/shaowenchen/applab/internal/model"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,7 +56,13 @@ func newTestTransport(t *testing.T, appIDs ...string) (*Transport, *source.Store
 	}
 	return tr.
 		WithSessions(store).
-		WithActiveBranch(func(context.Context, string) string { return model.DefaultBranch }), store
+		WithActiveBranch(func(context.Context, string) string { return model.DefaultBranch }).
+		// Attached the way main.go attaches it. Without it a repository served
+		// here keeps git's default configuration, including the automatic
+		// maintenance that races the upload — which is exactly the flakiness the
+		// production wiring exists to prevent, so a test that omitted it would
+		// not be testing the configuration that ships.
+		WithPrepare(store.Prepare), store
 }
 
 // TestCloneOverHTTP is the end-to-end proof that the transport works: a real git
@@ -337,4 +345,145 @@ func gitTestEnv() []string {
 		"GIT_TERMINAL_PROMPT=0",
 		"LC_ALL=C",
 	)
+}
+
+// ---------------------------------------------------------------------------
+// The repository must not be maintained while it is being uploaded
+// ---------------------------------------------------------------------------
+
+// TestServingPinsTheRepositoryConfig asserts the settings a repository needs
+// before git is allowed near it.
+//
+// The one that matters is gc.auto. `git receive-pack` spawns `git maintenance
+// run --auto` in the background after a push and does not wait for it, while
+// AppLab walks the working copy to upload it — so a repack that lands mid-walk
+// moves the objects out from under it and the upload fails. The push has already
+// been answered by then, so the failure is a push the client was told succeeded
+// and which was then lost.
+//
+// The settings are read back with git, from the materialised repository, rather
+// than from the code — the setting working is the whole assertion.
+//
+// Checked inside the hook, because that is where the repository is legitimately
+// open: the session holds a per-app lock for the length of the request, so
+// opening the same app again from the test would wait for a request that is
+// itself waiting on this goroutine.
+func TestServingPinsTheRepositoryConfig(t *testing.T) {
+	tr, store := newTestTransport(t, "shop")
+
+	// Collected in the hook and asserted in the test goroutine: the hook runs on
+	// the server's goroutine, where t.Fatalf would kill the handler rather than
+	// the test — which is how the first version of this failed with a bare EOF.
+	got := map[string]string{}
+
+	tr = tr.WithPrepare(func(ctx context.Context, repoPath string) error {
+		err := store.Prepare(ctx, repoPath)
+		for _, setting := range []string{"gc.auto", "maintenance.auto", "core.repositoryformatversion", "core.filemode"} {
+			out, _ := exec.Command("git", "--git-dir", repoPath, "config", "--get", setting).Output()
+			got[setting] = strings.TrimSpace(string(out))
+		}
+		return err
+	})
+
+	srv := httptest.NewServer(tr)
+	defer srv.Close()
+
+	// One request is what materialises a repository and runs the hook.
+	resp, err := http.Get(srv.URL + "/shop.git/info/refs?service=git-upload-pack")
+	if err != nil {
+		t.Fatalf("GET info/refs: %v", err)
+	}
+	// Read to the end before closing: a body left unread leaves the handler mid-
+	// write, and with it the app's lock held — which is what made this test hang
+	// rather than fail when it was first written.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	for setting, want := range map[string]string{
+		"gc.auto":                      "0",
+		"maintenance.auto":             "false",
+		"core.repositoryformatversion": "0",
+		"core.filemode":                "false",
+	} {
+		if got[setting] != want {
+			t.Errorf("%s = %q, want %q; git may maintain this repository while it is being uploaded",
+				setting, got[setting], want)
+		}
+	}
+}
+
+// TestPushFailureIsReportedToThePusher asserts a push whose upload fails is not
+// reported as success.
+//
+// The upload is what makes a push durable, and it happens after git has
+// answered. Before this the failure was logged and dropped: `git push` printed
+// "ok", the objects never reached the bucket, and the only trace was a line in
+// AppLab's own log. The bug that prompted it — a repack racing the walk — showed
+// up as a flaky test and, in a real deployment, as a push that vanished.
+//
+// The failure is injected through the sessions hook, which is the seam that
+// makes this observable at all.
+func TestPushFailureIsReportedToThePusher(t *testing.T) {
+	tr, store := newTestTransport(t, "shop")
+	ctx := context.Background()
+
+	archive := buildTar(t, map[string]string{"a.txt": "one\n"})
+	if _, err := store.Ingest(ctx, "shop", model.DefaultBranch, bytes.NewReader(archive), "initial", "", source.DefaultIngestLimits); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// A source store whose upload always fails, wrapping the real one so
+	// everything else behaves.
+	failing := &failingUploads{Store: store}
+	tr = tr.WithSessions(failing)
+
+	srv := httptest.NewServer(tr)
+	defer srv.Close()
+
+	workDir := filepath.Join(t.TempDir(), "work")
+	runGit(t, "", "clone", srv.URL+"/shop.git", workDir)
+	runGit(t, workDir, "config", "user.email", "test@example.com")
+	runGit(t, workDir, "config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(workDir, "b.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, workDir, "add", ".")
+	runGit(t, workDir, "commit", "-m", "pushed directly")
+
+	cmd := exec.Command("git", "push", "origin", "main")
+	cmd.Dir = workDir
+	cmd.Env = gitTestEnv()
+	raw, err := cmd.CombinedOutput()
+	out := string(raw)
+	if err == nil {
+		t.Fatalf("the push reported success while the upload failed; git said:\n%s", out)
+	}
+	// The pusher has to be told it was the *storage*, not the push: a rejected
+	// push and a push that could not be saved are different problems, and the
+	// second one is safe to simply repeat.
+	if !strings.Contains(out, "could not be stored") {
+		t.Errorf("the payload was not explained to the pusher:\n%s", out)
+	}
+}
+
+// failingUploads wraps a source store so every session's upload fails.
+//
+// It is the only seam that makes this testable: the real failure needs a
+// concurrent repack, which cannot be scheduled from a test.
+type failingUploads struct {
+	*source.Store
+}
+
+func (f *failingUploads) Open(ctx context.Context, appID, branch string) (string, func() error, error) {
+	path, done, err := f.Store.Open(ctx, appID, branch)
+	if err != nil {
+		return path, done, err
+	}
+	return path, func() error {
+		// The real Done still runs, so the working copy is cleaned up and the
+		// lock released; only the outcome is replaced.
+		_ = done()
+		return errors.New("injected: the repository could not be stored")
+	}, nil
 }
