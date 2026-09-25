@@ -77,7 +77,6 @@ data:
   # Deploy
   # ---------------------------------------------------------------------------
   APPLAB_DEPLOY_GATEWAY: {{ .Values.deploy.gateway | quote }}
-  APPLAB_DEPLOY_IMAGE_PULL_SECRET: {{ .Values.deploy.imagePullSecret | quote }}
 
   # Applied to every app applab deploys. An uploaded app cannot be trusted to
   # declare sane limits for itself, and one with none can take its node down.

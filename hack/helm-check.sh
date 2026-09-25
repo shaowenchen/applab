@@ -36,7 +36,6 @@ BASE=(
   --set "deploy.gateway=$NS/gateway"
   --set "build.registry=registry.example.com/apps"
   --set "build.pushSecret=regcred"
-  --set "deploy.imagePullSecret=regpull"
   # A bucket is required now, and the reason is worth stating where it is
   # exercised: without one the server falls back to ./data/objects, which in
   # this chart is an emptyDir — so a deployment that omitted it would render,
@@ -76,16 +75,15 @@ grep -q 'APPLAB_MAX_CHUNK_BYTES: "33554432"' <<<"$out" \
 # reached the server as nothing at all.
 grep -q 'APPLAB_BUILD_PUSH_SECRET: "regcred"' <<<"$out" \
   || fail "build.pushSecret is not passed to the server; builds cannot push"
+
+# There is one registry credential, not two. A deploy.imagePullSecret would be a
+# second name for the same Secret, which every install set to the same value —
+# the shape that lets the two disagree.
+if grep -q 'APPLAB_DEPLOY_IMAGE_PULL_SECRET' <<<"$out"; then
+  fail "APPLAB_DEPLOY_IMAGE_PULL_SECRET is rendered again; the pull credential is the push credential"
+fi
 grep -q 'APPLAB_BUILD_TTL_AFTER_FINISHED: "24h"' <<<"$out" \
   || fail "build.ttlAfterFinished is not passed to the server"
-grep -q 'APPLAB_DEPLOY_IMAGE_PULL_SECRET: "regpull"' <<<"$out" \
-  || fail "deploy.imagePullSecret is not passed to the server"
-
-# deploy.imagePullSecret and build.pushSecret are different credentials for
-# different jobs; wiring one to both would look right and be wrong.
-if grep -q 'APPLAB_DEPLOY_IMAGE_PULL_SECRET: "regcred"' <<<"$out"; then
-  fail "deploy.imagePullSecret is being fed build.pushSecret"
-fi
 
 # Every environment variable the server reads must appear in the rendered
 # ConfigMap or Secret. This is the check that would have caught the two settings

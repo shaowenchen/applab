@@ -192,19 +192,28 @@ build:
   # to.
   insecureRegistry: false
 
-  # A Secret holding registry credentials, so the build job can push. It must be
-  # a docker-registry Secret in AppLab's own namespace — for example created
-  # from a docker login:
+  # The name of the registry credential: how AppLab authenticates to
+  # build.registry, both to push the image it builds and for the app to pull it
+  # again. One registry, one Secret, one name.
   #
-  #   kubectl -n ops-system create secret docker-registry regcred \
+  # It defaults to "applab", so an install that creates a Secret by that name
+  # needs no --set for this at all. Create it before installing AppLab, in
+  # AppLab's own namespace:
+  #
+  #   kubectl -n ops-system create secret docker-registry applab \
   #     --docker-server=registry.example.com \
   #     --docker-username=<user> --docker-password=<password>
   #
-  # Nothing is copied: apps run in that same namespace, so the Job reads the
-  # Secret where it is. A name that does not exist is refused before the Job is
-  # created, naming the Secret and the namespace — a Job that exists but cannot
-  # start is worse, because it holds the build's name and shows as pending.
-  pushSecret: ""
+  # Set this to a different name to use a Secret you already have. Set it to ""
+  # when the registry needs no authentication — a cluster-local one usually does
+  # not — which is the only case that has to say so.
+  #
+  # Nothing is copied: apps run in the same namespace as the build Job, so both
+  # read the Secret where it is. A name that does not exist is refused before
+  # anything is created, naming the Secret and the namespace — a Job that exists
+  # but cannot start is worse, because it holds the build's name and shows as
+  # pending.
+  pushSecret: "applab"
 
   # Resource bounds for a build container and for the ephemeral volume the
   # source and BuildKit's intermediate state share. Builds are bursty and
@@ -251,19 +260,6 @@ deploy:
   # TLS is not configured here. An app is served over HTTPS when the gateway has
   # an HTTPS listener, with no per-app setting involved.
   gateway: "istio-ingress/istio-ingress"
-
-  # A docker-registry Secret for pulling an app's image. Empty means the registry
-  # needs no authentication to read from, which is the case for a cluster-local
-  # one.
-  #
-  # This is separate from build.pushSecret on purpose: pushing and pulling can
-  # need different credentials, and a registry that is open to pull but not to
-  # push only needs the build one.
-  #
-  # The Secret must already exist in AppLab's own namespace — for example created
-  # from a docker login. It is referenced directly rather than copied, because
-  # apps run in that same namespace.
-  imagePullSecret: ""
 
   # Annotations added to every app's VirtualService, for Istio specifics that
   # vary by cluster.

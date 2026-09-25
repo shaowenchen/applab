@@ -193,12 +193,6 @@ type Deploy struct {
 	// when the gateway has an HTTPS listener, without any per-app setting.
 	Gateway string `yaml:"gateway"`
 
-	// ImagePullSecret names a Secret, in AppLab's own namespace, holding
-	// registry credentials for pulling the built image. It is referenced
-	// directly: apps run in the same namespace as AppLab, so there is no
-	// boundary for the credential to cross.
-	ImagePullSecret string `yaml:"image_pull_secret"`
-
 	// Annotations are added to every app VirtualService, for Istio specifics
 	// that vary by cluster.
 	Annotations map[string]string `yaml:"annotations"`
@@ -231,12 +225,18 @@ type Build struct {
 	// internal/build for why that is not a free choice.
 	FetcherImage string `yaml:"fetcher_image"`
 
-	// PushSecret names a Secret holding registry credentials, mounted into a
-	// build Job so BuildKit can push. Empty means the registry needs none.
+	// PushSecret names a Secret holding registry credentials: the build Job
+	// mounts it to push, and every app's Deployment references it to pull. One
+	// registry, one credential.
 	//
-	// Not copied anywhere: apps run in AppLab's own namespace, so the Job reads
-	// it where it already is. A name that does not resolve is refused before the
-	// Job is created — see build.Engine.Start.
+	// Defaults to "applab", which is what the chart creates. An installation
+	// that brings its own Secret sets this; an empty value means the registry
+	// needs no authentication, which is normal for a cluster-local one.
+	//
+	// Not copied anywhere: apps run in AppLab's own namespace, so both readers
+	// find it where it already is. A name that does not resolve is refused
+	// before the Job or the Deployment is created — see build.Engine.Start and
+	// Deployer.Apply.
 	PushSecret string `yaml:"push_secret"`
 
 	// Rootless runs BuildKit unprivileged. Defaults to true; see the chart
@@ -338,6 +338,12 @@ func Default() Config {
 			CPULimit:      "4",
 			MemoryLimit:   "8Gi",
 
+			// The default registry credential, named after the platform because
+			// that is the only name it could have that an operator does not have
+			// to be told. The chart creates it when one is configured; an
+			// installation that brings its own Secret names it here.
+			PushSecret: "applab",
+
 			// A source tree plus BuildKit's intermediate state. Generous, but
 			// bounded: an unbounded build can fill the node's disk and take
 			// other workloads down with it.
@@ -419,7 +425,6 @@ func applyEnv(cfg *Config) {
 	setDuration(&cfg.Build.TTLAfterFinished, "APPLAB_BUILD_TTL_AFTER_FINISHED")
 
 	setString(&cfg.Deploy.Gateway, "APPLAB_DEPLOY_GATEWAY")
-	setString(&cfg.Deploy.ImagePullSecret, "APPLAB_DEPLOY_IMAGE_PULL_SECRET")
 	setString(&cfg.Deploy.AppCPURequest, "APPLAB_DEPLOY_APP_CPU_REQUEST")
 	setString(&cfg.Deploy.AppMemoryRequest, "APPLAB_DEPLOY_APP_MEMORY_REQUEST")
 	setString(&cfg.Deploy.AppCPULimit, "APPLAB_DEPLOY_APP_CPU_LIMIT")

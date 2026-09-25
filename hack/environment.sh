@@ -670,6 +670,12 @@ kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
 # publishes the console through the Istio gateway instead — one VirtualService on
 # the same host the apps are already served on, so the whole environment is
 # reachable through the one address the tunnel publishes.
+#
+# build.pushSecret is blanked because the registry here takes no credentials: it
+# is a plain registry:2 on the docker network. The chart's default name is a real
+# Secret in a real installation, and left in place it would be a name nothing
+# created — which the build now refuses before starting, so the environment would
+# come up and every build would fail.
 if ! helm install applab "$REPO_ROOT/charts/applab" \
   --namespace "$APPLAB_NAMESPACE" \
   --set auth.existingSecret=applab-keys \
@@ -678,6 +684,7 @@ if ! helm install applab "$REPO_ROOT/charts/applab" \
   --set deploy.gateway=istio-system/istio-ingressgateway \
   --set "build.registry=${APPLAB_REGISTRY}" \
   --set build.insecureRegistry=true \
+  --set build.pushSecret= \
   --set "build.rootless=${APPLAB_BUILD_ROOTLESS}" \
   --set ingress.enabled=false \
   --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \

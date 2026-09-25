@@ -17,15 +17,19 @@ AppLab does, because a build reads it from the namespace AppLab runs in.
 ```bash
 kubectl create namespace ops-system
 
-kubectl -n ops-system create secret docker-registry regcred \
+kubectl -n ops-system create secret docker-registry applab \
   --docker-server=registry.example.com \
   --docker-username=<user> \
   --docker-password=<password>
 ```
 
-Skip the Secret if the registry needs no credentials — a cluster-local one
-usually does not. The namespace is created here rather than by
-`--create-namespace` below, because the Secret has to be in it first.
+The Secret is named `applab`, which is what the chart expects by default, so it
+does not have to be mentioned again below. Skip it entirely if the registry needs
+no credentials — a cluster-local one usually does not, and then set
+`--set build.pushSecret=` to say so.
+
+The namespace is created here rather than by `--create-namespace` on the install,
+because the Secret has to be in it first.
 
 **2. AppLab**
 
@@ -42,9 +46,7 @@ helm install applab applab/applab \
   --set objectStore.accessKey=... --set objectStore.secretKey=... \
   --set ingress.host=applab.example.com \
   --set deploy.gateway=istio-system/istio-ingressgateway \
-  --set build.registry=registry.example.com/apps \
-  --set build.pushSecret=regcred \
-  --set deploy.imagePullSecret=regcred
+  --set build.registry=registry.example.com/apps
 ```
 
 The bucket is not optional and has no default. AppLab keeps everything in it —
@@ -54,12 +56,12 @@ server checks the same thing at startup, because a chart is not the only way thi
 runs. Create the bucket first; AppLab does not create one, because a bucket's
 name, region and lifecycle policy belong to whoever runs the platform.
 
-The two Secret settings are separate because pushing and pulling can need
-different credentials: a registry open to pull but not to push needs only
-`build.pushSecret`. Both name a Secret in the namespace above — apps run there
-too, so nothing is copied anywhere. See [A registry the cluster can push to and
-pull from](#1-a-registry-the-cluster-can-push-to-and-pull-from) for what happens
-when one is named and missing.
+There is one registry credential, and it is the Secret created above:
+`build.pushSecret` names it unless you have a Secret by another name. The same
+one is used to push the built image and for the app to pull it, because that is
+one registry. See [A registry the cluster can push to and pull
+from](#1-a-registry-the-cluster-can-push-to-and-pull-from) for what happens when
+it is named and missing.
 
 `--version` is not optional yet, and leaving it out fails with `chart "applab"
 matching  not found in applab index` — which reads like a typo or a stale index
@@ -161,23 +163,17 @@ namespace AppLab runs in** and name it. Do this before installing — see step 1
 the quick start:
 
 ```bash
-kubectl -n ops-system create secret docker-registry regcred \
+kubectl -n ops-system create secret docker-registry applab \
   --docker-server=registry.example.com \
   --docker-username=<user> \
   --docker-password=<password>
 ```
 
-```bash
---set build.pushSecret=regcred --set deploy.imagePullSecret=regcred
-```
-
-Two settings rather than one because pushing and pulling can need different
-credentials, and a registry that is open to pull but not to push only needs the
-build one.
-
-Both names refer to a Secret in the release namespace. Apps run in that same
-namespace, so there is no boundary for the credential to cross and nothing is
-copied.
+That name is the default, so an install needs nothing for it; use
+`--set build.pushSecret=<name>` for a Secret by another name. One credential for one
+registry — the build pushes with it and the app pulls with it. It lives in the
+release namespace, where apps run too, so there is no boundary for the credential
+to cross and nothing is copied.
 
 A Secret named here and **missing** is refused before anything is created: the
 build or the deploy fails and says which Secret and namespace it looked in,
@@ -387,8 +383,7 @@ does and why it defaults the way it does. The ones that matter most:
 | `build.registry` | `""` | Required when `build.enabled` |
 | `build.rootless` | `true` | See the prerequisites above |
 | `build.cacheRepoPrefix` | `""` | Registry-side layer cache; a Job has no persistent disk |
-| `build.pushSecret` | `""` | Registry credentials for the build Job to push with |
-| `deploy.imagePullSecret` | `""` | Registry credentials for the app to pull with |
+| `build.pushSecret` | `applab` | The registry credential: pushes the image and pulls it. `""` for a registry needing none |
 | `deploy.appResources` | 2 CPU / 2Gi | Applied to every app AppLab deploys |
 | `ingress.host` | `applab.example.com` | **The whole address.** The console, the API and every app. Empty runs internal-only |
 | `ingress.path` | `/applab` | The path under it; the server is told the same one |

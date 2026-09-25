@@ -266,8 +266,11 @@ func run() error {
 			// the deployer is what writes the VirtualService that serves it, so a
 			// prefix known to only one of them produces an address that does not
 			// route.
-			PathPrefix:       cfg.PathPrefix,
-			ImagePullSecret:  cfg.Deploy.ImagePullSecret,
+			PathPrefix: cfg.PathPrefix,
+			// The pull credential is the push credential: one registry, one
+			// Secret. There used to be a deploy.imagePullSecret for this that
+			// every install set to the same value.
+			ImagePullSecret:  cfg.Build.PushSecret,
 			Annotations:      cfg.Deploy.Annotations,
 			AppCPURequest:    cfg.Deploy.AppCPURequest,
 			AppMemoryRequest: cfg.Deploy.AppMemoryRequest,
