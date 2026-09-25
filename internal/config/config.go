@@ -225,9 +225,9 @@ type Build struct {
 	// internal/build for why that is not a free choice.
 	FetcherImage string `yaml:"fetcher_image"`
 
-	// PushSecret names a Secret holding registry credentials: the build Job
-	// mounts it to push, and every app's Deployment references it to pull. One
-	// registry, one credential.
+	// Secret names the registry credential: the build Job mounts it to push,
+	// and every app's Deployment references it to pull. One registry, one
+	// credential, one name.
 	//
 	// Defaults to "applab", which is what the chart creates. An installation
 	// that brings its own Secret sets this; an empty value means the registry
@@ -237,7 +237,7 @@ type Build struct {
 	// find it where it already is. A name that does not resolve is refused
 	// before the Job or the Deployment is created — see build.Engine.Start and
 	// Deployer.Apply.
-	PushSecret string `yaml:"push_secret"`
+	Secret string `yaml:"secret"`
 
 	// Rootless runs BuildKit unprivileged. Defaults to true; see the chart
 	// README for the kernel prerequisites a cluster must meet.
@@ -342,7 +342,7 @@ func Default() Config {
 			// that is the only name it could have that an operator does not have
 			// to be told. The chart creates it when one is configured; an
 			// installation that brings its own Secret names it here.
-			PushSecret: "applab",
+			Secret: "applab",
 
 			// A source tree plus BuildKit's intermediate state. Generous, but
 			// bounded: an unbounded build can fill the node's disk and take
@@ -412,7 +412,7 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.Build.Registry, "APPLAB_BUILD_REGISTRY")
 	setString(&cfg.Build.BuilderImage, "APPLAB_BUILD_BUILDER_IMAGE")
 	setString(&cfg.Build.FetcherImage, "APPLAB_BUILD_FETCHER_IMAGE")
-	setString(&cfg.Build.PushSecret, "APPLAB_BUILD_PUSH_SECRET")
+	setString(&cfg.Build.Secret, "APPLAB_BUILD_SECRET")
 	setString(&cfg.Build.CacheRepoPrefix, "APPLAB_BUILD_CACHE_REPO_PREFIX")
 	setString(&cfg.Build.CPURequest, "APPLAB_BUILD_CPU_REQUEST")
 	setString(&cfg.Build.MemoryRequest, "APPLAB_BUILD_MEMORY_REQUEST")

@@ -153,7 +153,7 @@ build:
   # With no path or one segment, an app gets a repository of its own under the
   # prefix; with two or more the path is already as deep as it can go, so the app
   # moves into the tag. A cluster-local registry (registry:2 in-cluster) works;
-  # a hosted one needs credentials, see pushSecret.
+  # a hosted one needs credentials, see build.secret.
   registry: ""
 
   # Registry-side layer cache, under <prefix>/<app>:buildcache. A Job has no
@@ -213,7 +213,7 @@ build:
   # anything is created, naming the Secret and the namespace — a Job that exists
   # but cannot start is worse, because it holds the build's name and shows as
   # pending.
-  pushSecret: "applab"
+  secret: "applab"
 
   # Resource bounds for a build container and for the ephemeral volume the
   # source and BuildKit's intermediate state share. Builds are bursty and

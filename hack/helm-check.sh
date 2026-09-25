@@ -35,7 +35,7 @@ BASE=(
   --set "ingress.host=apps.example.com"
   --set "deploy.gateway=$NS/gateway"
   --set "build.registry=registry.example.com/apps"
-  --set "build.pushSecret=regcred"
+  --set "build.secret=regcred"
   # A bucket is required now, and the reason is worth stating where it is
   # exercised: without one the server falls back to ./data/objects, which in
   # this chart is an emptyDir — so a deployment that omitted it would render,
@@ -73,14 +73,15 @@ grep -q 'APPLAB_MAX_CHUNK_BYTES: "33554432"' <<<"$out" \
 
 # These were absent from the ConfigMap entirely, so the settings they carry
 # reached the server as nothing at all.
-grep -q 'APPLAB_BUILD_PUSH_SECRET: "regcred"' <<<"$out" \
-  || fail "build.pushSecret is not passed to the server; builds cannot push"
+grep -q 'APPLAB_BUILD_SECRET: "regcred"' <<<"$out" \
+  || fail "build.secret is not passed to the server; builds cannot push and apps cannot pull"
 
 # There is one registry credential, not two. A deploy.imagePullSecret would be a
 # second name for the same Secret, which every install set to the same value —
-# the shape that lets the two disagree.
-if grep -q 'APPLAB_DEPLOY_IMAGE_PULL_SECRET' <<<"$out"; then
-  fail "APPLAB_DEPLOY_IMAGE_PULL_SECRET is rendered again; the pull credential is the push credential"
+# the shape that lets the two disagree. The variable is gone entirely, and so is
+# the name it had; either coming back means the split is coming back with it.
+if grep -qE 'APPLAB_(DEPLOY_IMAGE_PULL_SECRET|BUILD_PUSH_SECRET)' <<<"$out"; then
+  fail "a second registry-credential setting is rendered again; there is one Secret"
 fi
 grep -q 'APPLAB_BUILD_TTL_AFTER_FINISHED: "24h"' <<<"$out" \
   || fail "build.ttlAfterFinished is not passed to the server"
@@ -108,7 +109,7 @@ fi
 # refuses a credential it cannot find, every deploy on that installation would
 # fail for a credential it never meant to use.
 off="$(render --set build.enabled=false)"
-for var in APPLAB_BUILD_REGISTRY APPLAB_BUILD_BUILDER_IMAGE APPLAB_BUILD_FETCHER_IMAGE APPLAB_BUILD_PUSH_SECRET; do
+for var in APPLAB_BUILD_REGISTRY APPLAB_BUILD_BUILDER_IMAGE APPLAB_BUILD_FETCHER_IMAGE APPLAB_BUILD_SECRET; do
   grep -q "^  $var: \"\"" <<<"$off" \
     || fail "build.enabled=false leaves $var set, so the build pipeline still comes up"
 done

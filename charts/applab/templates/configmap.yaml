@@ -69,7 +69,7 @@ data:
   # set, its default name would send the deployer looking for a Secret nothing
   # created, and every deploy would be refused for a credential that was never
   # meant to be used.
-  APPLAB_BUILD_PUSH_SECRET: {{ if .Values.build.enabled }}{{ .Values.build.pushSecret | quote }}{{ else }}""{{ end }}
+  APPLAB_BUILD_SECRET: {{ if .Values.build.enabled }}{{ .Values.build.secret | quote }}{{ else }}""{{ end }}
   APPLAB_BUILD_CPU_REQUEST: {{ .Values.build.resources.requests.cpu | quote }}
   APPLAB_BUILD_MEMORY_REQUEST: {{ .Values.build.resources.requests.memory | quote }}
   APPLAB_BUILD_CPU_LIMIT: {{ .Values.build.resources.limits.cpu | quote }}

@@ -1009,22 +1009,22 @@ func stripShellComments(script string) string {
 	return strings.Join(lines, "\n")
 }
 
-// TestStartRefusesAMissingPushSecret asserts a build that cannot push is
+// TestStartRefusesAMissingSecret asserts a build that cannot push is
 // refused before a Job is created for it.
 //
 // A pod that mounts a Secret which is not there never starts, so the Job sits at
 // "pending" with an empty log — the container the log would come from never ran
 // — and the explanation lives on the pod, where nobody whose build is not working
 // is looking. This puts it in the build's own error instead.
-func TestStartRefusesAMissingPushSecret(t *testing.T) {
-	engine, client := newTestEngine(t, func(c *Config) { c.PushSecret = "regcred" })
+func TestStartRefusesAMissingSecret(t *testing.T) {
+	engine, client := newTestEngine(t, func(c *Config) { c.Secret = "regcred" })
 	ctx := context.Background()
 	app := testApp()
 	createNamespace(t, client, app.Namespace)
 
 	_, err := engine.Start(ctx, app, "b1", strings.Repeat("a", 40), "tok")
 	if err == nil {
-		t.Fatal("a build started with a push credential that does not exist")
+		t.Fatal("a build started with a registry credential that does not exist")
 	}
 	// The message has to name the Secret and the namespace, or the reader knows
 	// only that something is missing.
@@ -1046,11 +1046,11 @@ func TestStartRefusesAMissingPushSecret(t *testing.T) {
 	}
 }
 
-// TestStartAcceptsAnExistingPushSecret is the other half, and the one that keeps
+// TestStartAcceptsAnExistingSecret is the other half, and the one that keeps
 // the check from being a wall: the same configuration with the Secret present
 // must build normally.
-func TestStartAcceptsAnExistingPushSecret(t *testing.T) {
-	engine, client := newTestEngine(t, func(c *Config) { c.PushSecret = "regcred" })
+func TestStartAcceptsAnExistingSecret(t *testing.T) {
+	engine, client := newTestEngine(t, func(c *Config) { c.Secret = "regcred" })
 	ctx := context.Background()
 	app := testApp()
 	createNamespace(t, client, app.Namespace)
@@ -1068,11 +1068,11 @@ func TestStartAcceptsAnExistingPushSecret(t *testing.T) {
 	}
 }
 
-// TestStartWithoutAPushSecretDoesNotLookForOne asserts the check is skipped when
+// TestStartWithoutASecretDoesNotLookForOne asserts the check is skipped when
 // no credential is configured. A cluster-local registry needs none, and a build
 // must not be refused for a Secret it was never told to use.
-func TestStartWithoutAPushSecretDoesNotLookForOne(t *testing.T) {
-	engine, client := newTestEngine(t) // testConfig has no PushSecret
+func TestStartWithoutASecretDoesNotLookForOne(t *testing.T) {
+	engine, client := newTestEngine(t) // testConfig has no Secret
 	ctx := context.Background()
 	app := testApp()
 	createNamespace(t, client, app.Namespace)

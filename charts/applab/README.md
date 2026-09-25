@@ -19,7 +19,7 @@ kubectl create namespace ops-system
 ```
 
 Then the Secret, if the registry needs one — a cluster-local registry usually
-does not, in which case skip to step 2 and set `--set build.pushSecret=` there.
+does not, in which case skip to step 2 and set `--set build.secret=` there.
 
 ```bash
 kubectl -n ops-system create secret docker-registry applab \
@@ -49,10 +49,10 @@ helm install applab applab/applab \
   --set ingress.host=applab.example.com \
   --set deploy.gateway=istio-system/istio-ingressgateway \
   --set build.registry=registry.example.com/apps \
-  --set build.pushSecret=applab
+  --set build.secret=applab
 ```
 
-`build.pushSecret` is the registry credential — the one thing that reaches the
+`build.secret` is the registry credential — the one thing that reaches the
 private registry in `build.registry`, used both to push the built image and for
 the app to pull it. It is shown here at its default, so the line can simply be
 deleted: the value is the name of the Secret from step 1, and `applab` is what
@@ -177,7 +177,7 @@ kubectl -n ops-system create secret docker-registry applab \
 ```
 
 That name is the default, so an install needs nothing for it; use
-`--set build.pushSecret=<name>` for a Secret by another name. One credential for one
+`--set build.secret=<name>` for a Secret by another name. One credential for one
 registry — the build pushes with it and the app pulls with it. It lives in the
 release namespace, where apps run too, so there is no boundary for the credential
 to cross and nothing is copied.
@@ -323,7 +323,7 @@ storage, the API and the console all still work, and you can deploy images built
 elsewhere. `applab push` will say clearly that this deployment cannot build.
 
 With the pipeline off there is no registry to authenticate to either, so the
-registry credential is ignored: `build.pushSecret` is emptied along with
+registry credential is ignored: `build.secret` is emptied along with
 `build.registry`, and no Secret has to exist for an app to deploy.
 
 ## What gets installed
@@ -394,7 +394,7 @@ does and why it defaults the way it does. The ones that matter most:
 | `build.registry` | `""` | Required when `build.enabled` |
 | `build.rootless` | `true` | See the prerequisites above |
 | `build.cacheRepoPrefix` | `""` | Registry-side layer cache; a Job has no persistent disk |
-| `build.pushSecret` | `applab` | The registry credential: pushes the image and pulls it. `""` for a registry needing none, and ignored when `build.enabled=false` |
+| `build.secret` | `applab` | The registry credential: pushes the image and pulls it. `""` for a registry needing none, and ignored when `build.enabled=false` |
 | `deploy.appResources` | 2 CPU / 2Gi | Applied to every app AppLab deploys |
 | `ingress.host` | `applab.example.com` | **The whole address.** The console, the API and every app. Empty runs internal-only |
 | `ingress.path` | `/applab` | The path under it; the server is told the same one |

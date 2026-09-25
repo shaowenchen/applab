@@ -227,7 +227,7 @@ func run() error {
 				BuilderImage:       cfg.Build.BuilderImage,
 				FetcherImage:       cfg.Build.FetcherImage,
 				Registry:           cfg.Build.Registry,
-				PushSecret:         cfg.Build.PushSecret,
+				Secret:             cfg.Build.Secret,
 				InsecureRegistry:   cfg.Build.InsecureRegistry,
 				Rootless:           cfg.Build.RootlessBuild(),
 				AppLabURL:          cfg.BaseURL,
@@ -270,7 +270,7 @@ func run() error {
 			// The pull credential is the push credential: one registry, one
 			// Secret. There used to be a deploy.imagePullSecret for this that
 			// every install set to the same value.
-			ImagePullSecret:  cfg.Build.PushSecret,
+			ImagePullSecret:  cfg.Build.Secret,
 			Annotations:      cfg.Deploy.Annotations,
 			AppCPURequest:    cfg.Deploy.AppCPURequest,
 			AppMemoryRequest: cfg.Deploy.AppMemoryRequest,

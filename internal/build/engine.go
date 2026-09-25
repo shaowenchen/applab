@@ -50,14 +50,15 @@ type Config struct {
 	// "registry.example.com/apps". The image name is "<registry>/<app>".
 	Registry string
 
-	// PushSecret names a Secret holding a .dockerconfigjson for the registry.
+	// Secret names a Secret holding a .dockerconfigjson for the registry.
 	// Empty means the registry needs no credentials, which is normal for a
 	// cluster-local registry.
 	//
 	// It is read from whichever namespace the Job is created in, which is
 	// AppLab's own — apps run beside it rather than in namespaces of their own,
-	// so there is one Secret for every app rather than one per app.
-	PushSecret string
+	// so there is one Secret for every app rather than one per app. The app's
+	// own Deployments reference the same name to pull with; see Deployer.
+	Secret string
 
 	// InsecureRegistry allows pushing over plain HTTP and skipping TLS
 	// verification.
@@ -251,7 +252,7 @@ func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, 
 	// anywhere a caller of this API would look. Naming it here puts it in the
 	// build's own record, which is where someone whose build is not working is
 	// already looking.
-	if err := e.checkPushSecret(ctx, namespace); err != nil {
+	if err := e.checkSecret(ctx, namespace); err != nil {
 		return "", err
 	}
 
@@ -270,25 +271,25 @@ func (e *Engine) Start(ctx context.Context, app *model.App, buildID, commitSHA, 
 	return jobName, nil
 }
 
-// checkPushSecret reports whether the registry credential a build will mount is
+// checkSecret reports whether the registry credential a build will mount is
 // actually there.
 //
 // Only when one is configured: a cluster-local registry needs no credential, and
 // demanding one would refuse a build that would have worked.
-func (e *Engine) checkPushSecret(ctx context.Context, namespace string) error {
-	if e.cfg.PushSecret == "" {
+func (e *Engine) checkSecret(ctx context.Context, namespace string) error {
+	if e.cfg.Secret == "" {
 		return nil
 	}
 
-	_, err := e.client.CoreV1().Secrets(namespace).Get(ctx, e.cfg.PushSecret, metav1.GetOptions{})
+	_, err := e.client.CoreV1().Secrets(namespace).Get(ctx, e.cfg.Secret, metav1.GetOptions{})
 	if err == nil {
 		return nil
 	}
 	if apierrors.IsNotFound(err) {
-		return fmt.Errorf("registry credential %q is not in namespace %s: create it before installing applab (kubectl -n %s create secret docker-registry %s --docker-server=... --docker-username=... --docker-password=...), or clear build.pushSecret if this registry needs no authentication",
-			e.cfg.PushSecret, namespace, namespace, e.cfg.PushSecret)
+		return fmt.Errorf("registry credential %q is not in namespace %s: create it before installing applab (kubectl -n %s create secret docker-registry %s --docker-server=... --docker-username=... --docker-password=...), or set build.secret empty if this registry needs no authentication",
+			e.cfg.Secret, namespace, namespace, e.cfg.Secret)
 	}
-	return fmt.Errorf("read registry credential %q in %s: %w", e.cfg.PushSecret, namespace, err)
+	return fmt.Errorf("read registry credential %q in %s: %w", e.cfg.Secret, namespace, err)
 }
 
 // jobSpec builds the Job.
@@ -377,7 +378,7 @@ func (e *Engine) jobSpec(app *model.App, jobName, buildID, commitSHA, image, sou
 // here cannot drift: a mount without a volume is a pod that never starts, and the
 // error names neither.
 func (e *Engine) registryVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
-	if e.cfg.PushSecret == "" {
+	if e.cfg.Secret == "" {
 		return nil, nil
 	}
 
@@ -385,7 +386,7 @@ func (e *Engine) registryVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
 		Name: "docker-config",
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
-				SecretName: e.cfg.PushSecret,
+				SecretName: e.cfg.Secret,
 				Items: []corev1.KeyToPath{
 					{Key: ".dockerconfigjson", Path: "config.json"},
 				},
