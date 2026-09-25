@@ -13,11 +13,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/shaowenchen/applab/internal/client"
+	"github.com/shaowenchen/applab/internal/model"
 )
 
 // pushOptions are the flags shared by push and deploy.
 type pushOptions struct {
 	app        string
+	portSet    bool
 	message    string
 	dir        string
 	port       int32
@@ -60,6 +62,10 @@ output and version-control directories left out — see --skip.`,
 			if len(args) == 1 {
 				opts.app = args[0]
 			}
+			// Recorded here rather than inferred from a non-zero value: --port 0
+			// is a mistake worth refusing, and a zero that means "not given" and
+			// a zero that means "asked for port 0" are the same number.
+			opts.portSet = cmd.Flags().Changed("port")
 			return runPush(cmd.Context(), c, opts)
 		},
 	}
@@ -67,7 +73,7 @@ output and version-control directories left out — see --skip.`,
 	cmd.Flags().StringVar(&opts.app, "app", "", "app id (or pass it as an argument)")
 	cmd.Flags().StringVarP(&opts.message, "message", "m", "", "commit message (default: a generated one)")
 	cmd.Flags().StringVarP(&opts.dir, "dir", "C", ".", "directory to upload")
-	cmd.Flags().Int32Var(&opts.port, "port", 0, "port the app listens on (default 8080, or keep the existing value)")
+	cmd.Flags().Int32Var(&opts.port, "port", 0, "port the app listens on, 1-65535 (default 8080, or keep the existing value)")
 	cmd.Flags().Int32Var(&opts.replicas, "replicas", 0, "how many replicas to run")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile path within the source (default: Dockerfile)")
 	cmd.Flags().StringVar(&opts.domain, "domain", "", "hostname to serve the app at (default: <app>.<base domain>)")
@@ -115,7 +121,13 @@ func runPush(ctx context.Context, c *client.Client, opts *pushOptions) error {
 		}
 
 		req := client.CreateAppRequest{ID: opts.app, Dockerfile: opts.dockerfile, Domain: opts.domain}
-		if opts.port > 0 {
+		// Checked rather than tested for zero, so a mistyped --port 0 is refused
+		// rather than dropped: creating the app on a port the caller did not ask
+		// for, silently, is worse than saying no.
+		if opts.port > 0 || opts.portSet {
+			if err := model.ValidatePort(opts.port); err != nil {
+				return err
+			}
 			req.Port = &opts.port
 		}
 		if opts.replicas > 0 {
@@ -159,7 +171,10 @@ func applySettingsIfChanged(ctx context.Context, c *client.Client, app *client.A
 	req := client.UpdateAppRequest{}
 	changed := false
 
-	if opts.port > 0 && opts.port != app.Port {
+	if (opts.port > 0 || opts.portSet) && opts.port != app.Port {
+		if err := model.ValidatePort(opts.port); err != nil {
+			return err
+		}
 		req.Port = &opts.port
 		changed = true
 	}

@@ -331,6 +331,46 @@ var reservedIDs = map[string]struct{}{
 	"console": {}, "version": {}, "config": {}, "system": {}, "apps": {},
 }
 
+// The bounds on an app's port and replica count.
+//
+// They are exported because four places enforce them — the API, the console, the
+// CLI's create and the CLI's update — and a bound that lives in four copies is
+// one that drifts. The messages matter as much as the numbers: a person who
+// types --port 70000 in a terminal and one who types it into the console should
+// read the same sentence about why it was refused.
+const (
+	// MinPort and MaxPort bound the port the app's container listens on. The
+	// range is the TCP port range, and the Service targets whatever this is, so
+	// a value outside it is a pod nothing can reach.
+	MinPort = 1
+	MaxPort = 65535
+
+	// MaxReplicas bounds how many copies run. Zero is refused rather than
+	// treated as "stop": it reads as running to anything checking readiness,
+	// which is a trap rather than a feature, and stopping is the endpoint for
+	// that.
+	MaxReplicas = 50
+)
+
+// ValidatePort reports whether port is one an app may listen on.
+func ValidatePort(port int32) error {
+	if port < MinPort || port > MaxPort {
+		return fmt.Errorf("port %d must be a number between %d and %d", port, MinPort, MaxPort)
+	}
+	return nil
+}
+
+// ValidateReplicas reports whether n copies is a sensible number to run.
+func ValidateReplicas(n int32) error {
+	if n < 1 {
+		return fmt.Errorf("replicas must be at least 1, not %d; use the stop endpoint to scale an app down", n)
+	}
+	if n > MaxReplicas {
+		return fmt.Errorf("replicas %d exceeds the maximum of %d", n, MaxReplicas)
+	}
+	return nil
+}
+
 // ValidateAppID reports whether id may be used for a new app.
 func ValidateAppID(id string) error {
 	if id == "" {

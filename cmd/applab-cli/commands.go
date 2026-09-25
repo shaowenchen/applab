@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/shaowenchen/applab/internal/client"
+	"github.com/shaowenchen/applab/internal/model"
 )
 
 // configCommand shows what the deployment says about itself, which is also the
@@ -79,10 +80,21 @@ directory name.`,
 			}
 
 			req := client.CreateAppRequest{ID: args[0], Dockerfile: dockerfile, Domain: domain}
-			if port > 0 {
+
+			// Checked rather than tested for zero. `if port > 0` used to mean a
+			// mistyped --port 0 or --port -1 was silently dropped and the app
+			// created on the default — an app listening somewhere the caller
+			// did not ask for, with nothing said about it.
+			if cmd.Flags().Changed("port") {
+				if err := model.ValidatePort(port); err != nil {
+					return err
+				}
 				req.Port = &port
 			}
-			if replicas > 0 {
+			if cmd.Flags().Changed("replicas") {
+				if err := model.ValidateReplicas(replicas); err != nil {
+					return err
+				}
 				req.Replicas = &replicas
 			}
 
@@ -100,7 +112,7 @@ directory name.`,
 		},
 	}
 
-	cmd.Flags().Int32Var(&port, "port", 0, "port the app listens on")
+	cmd.Flags().Int32Var(&port, "port", 0, "port the app listens on (1-65535)")
 	cmd.Flags().Int32Var(&replicas, "replicas", 0, "how many replicas to run")
 	cmd.Flags().StringVar(&dockerfile, "dockerfile", "", "Dockerfile path within the source")
 	cmd.Flags().StringVar(&domain, "domain", "", "hostname to serve the app at")

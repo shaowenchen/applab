@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/shaowenchen/applab/internal/client"
+	"github.com/shaowenchen/applab/internal/model"
 )
 
 // overviewCommand reports the platform at a glance.
@@ -357,6 +358,12 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 				changed = true
 			}
 			if cmd.Flags().Changed("port") {
+				// The same check the API makes, from the same definition, so the
+				// answer arrives without a round trip and reads the same either
+				// way. See model.ValidatePort.
+				if err := model.ValidatePort(port); err != nil {
+					return err
+				}
 				req.Port = &port
 				changed = true
 			}
@@ -393,7 +400,7 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "a human label for the app")
-	cmd.Flags().Int32Var(&port, "port", 0, "port the app listens on")
+	cmd.Flags().Int32Var(&port, "port", 0, "port the app listens on (1-65535)")
 	cmd.Flags().Int32Var(&replicas, "replicas", 0, "how many replicas to run")
 	cmd.Flags().StringVar(&dockerfile, "dockerfile", "", "Dockerfile path within the source")
 	cmd.Flags().StringVar(&domain, "domain", "", "hostname to serve the app at (empty to use the deployment default)")

@@ -741,6 +741,25 @@
         </label>
         <span class="muted" style="font-size:12px" data-i18n="switching replaces what is running">switching replaces what is running</span>
       </div>
+
+      <!-- The port the container listens on. It belongs with the app's other
+           settings rather than with the instances: it is not a fact about how
+           many copies run, it is what the Service targets — so getting it wrong
+           makes every copy unreachable, which is a property of the app.
+
+           Said out loud that it takes effect on the next deploy, because
+           nothing here applies it: the deployer does, exactly as it applies
+           replicas and the image. `applab update --port` and PATCH
+           /api/v1/apps/{app} behave the same way, which is what keeps the three
+           surfaces telling the same story. -->
+      <div class="state-actions">
+        <label class="field">
+          <span data-i18n="Port">Port</span>
+          <input id="app-port" type="number" min="1" max="65535" size="5" style="width:88px">
+          <button id="app-port-set" data-i18n="Set">Set</button>
+        </label>
+        <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
+      </div>
     </div>
 
     <div class="card">
@@ -876,6 +895,15 @@
 // sign-in after it fails against a host that no longer serves this console, with
 // nothing on the page to suggest the saved address is the problem.
 // ---------------------------------------------------------------------------
+// The bounds the API enforces, mirrored here because this is a static file with
+// no build step and cannot import them. internal/console/bounds_test.go asserts
+// the two agree, so a change to either copy fails the build rather than showing
+// up as a field that accepts what the server then refuses.
+const MIN_PORT = 1;
+const MAX_PORT = 65535;
+const MIN_REPLICAS = 1;
+const MAX_REPLICAS = 50;
+
 const STORE_KEY = "applab.key";
 
 const state = {
@@ -1029,7 +1057,12 @@ const ZH = {
   "Cancel": "取消",
   "An app needs an id.": "请填写应用 ID。",
   "An environment variable needs a name.": "环境变量需要一个名称。",
-  "The port must be a number between 1 and 65535.": "端口必须是 1 到 65535 之间的数字。",
+  // The wording the API uses for the same refusal, built from the same bounds —
+  // see model.ValidatePort. The placeholders are the numbers, so the two cannot
+  // say different things about the same range.
+  "Port {port} must be a number between {min} and {max}.": "端口 {port} 必须是 {min} 到 {max} 之间的数字。",
+  "Replicas must be at least 1, not {n}; use the stop endpoint to scale an app down.": "副本数至少为 1，不能是 {n}；请使用 stop 接口缩容。",
+  "Replicas {n} exceeds the maximum of {max}.": "副本数 {n} 超过上限 {max}。",
   "Could not create {id}: {error}": "无法创建 {id}：{error}",
   "No apps yet. Push one with": "还没有应用。用这个命令推送一个，或者在这里创建一个：",
   "or create one here.": "",
@@ -1053,9 +1086,12 @@ const ZH = {
   "switching replaces what is running": "切换会替换当前运行的版本",
   "Switch {app} to {branch}? This replaces what is running.": "将 {app} 切换到 {branch}？这会替换当前运行的版本。",
   "Could not switch branch: {error}": "切换分支失败：{error}",
-  "Replicas must be a whole number between 1 and 50.": "副本数必须是 1 到 50 之间的整数。",
   "This app has no source yet. Upload some before building it.": "该应用还没有代码，请先上传。",
   "Could not set replicas: {error}": "设置副本数失败：{error}",
+  "Port": "端口",
+  // No entry for the port-range message: the create form already refuses a bad
+  // port with those exact words, so the string is translated once, above.
+  "Could not set port: {error}": "设置端口失败：{error}",
   "Could not start a build: {error}": "触发构建失败：{error}",
   "Could not deploy: {error}": "部署失败：{error}",
   "this app only": "本应用",
@@ -2092,8 +2128,8 @@ async function createApp() {
     return;
   }
   const port = parseInt($("apps-new-port").value.trim(), 10);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    problem.textContent = t("The port must be a number between 1 and 65535.");
+  if (!Number.isInteger(port) || port < MIN_PORT || port > MAX_PORT) {
+    problem.textContent = portProblem(port);
     show(problem, true);
     return;
   }
@@ -2429,6 +2465,11 @@ async function loadAppState() {
   if (app && typeof app.replicas === "number") {
     $("app-replicas").value = String(app.replicas);
   }
+  // The same read fills the port field, and for the same reason: the field
+  // should show what the app is set to rather than whatever was last typed.
+  if (app && typeof app.port === "number") {
+    $("app-port").value = String(app.port);
+  }
 
   let status;
   try {
@@ -2635,6 +2676,25 @@ async function loadCommits() {
 // Actions
 // ---------------------------------------------------------------------------
 
+// portProblem is the refusal a bad port gets, in the API's own words.
+//
+// The API's message is what a caller reads whatever they used — the console, the
+// CLI and curl all end up saying it — so this is built from the same numbers and
+// phrased the same way rather than invented here.
+function portProblem(port) {
+  return tf("Port {port} must be a number between {min} and {max}.", {
+    port, min: MIN_PORT, max: MAX_PORT,
+  });
+}
+
+// replicasProblem is the refusal a bad replica count gets, in the API's words.
+function replicasProblem(n) {
+  if (n < MIN_REPLICAS) {
+    return tf("Replicas must be at least 1, not {n}; use the stop endpoint to scale an app down.", { n });
+  }
+  return tf("Replicas {n} exceeds the maximum of {max}.", { n, max: MAX_REPLICAS });
+}
+
 // setReplicas changes how many copies of the app run.
 //
 // A PATCH rather than a deploy: the change is recorded on the app and takes
@@ -2646,8 +2706,8 @@ async function setReplicas() {
   // Checked here as well as on the server. The server refuses a bad value either
   // way, but "must be a whole number between 1 and 50" is a better answer than a
   // 400 that names a field, and the field is right here.
-  if (!Number.isInteger(wanted) || wanted < 1 || wanted > 50) {
-    setError(t("Replicas must be a whole number between 1 and 50."));
+  if (!Number.isInteger(wanted) || wanted < MIN_REPLICAS || wanted > MAX_REPLICAS) {
+    setError(replicasProblem(wanted));
     return;
   }
 
@@ -2662,6 +2722,34 @@ async function setReplicas() {
     return;
   }
   await Promise.all([loadAppState(), loadPods()]);
+}
+
+// setPort changes the port the app's container listens on.
+//
+// The validation here mirrors the server's, and the bounds are the same ones
+// the API enforces — a port outside 1-65535 is refused by both. Checking here
+// as well is not redundancy: "must be a number between 1 and 65535" is a better
+// answer than a 400 naming a field, and the field is right there.
+async function setPort() {
+  const field = $("app-port");
+  const wanted = Number(field.value);
+
+  if (!Number.isInteger(wanted) || wanted < MIN_PORT || wanted > MAX_PORT) {
+    setError(portProblem(wanted));
+    return;
+  }
+
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app, {
+      method: "PATCH",
+      body: JSON.stringify({ port: wanted }),
+    });
+  } catch (err) {
+    setError(tf("Could not set port: {error}", { error: err.message }));
+    return;
+  }
+  await loadAppState();
 }
 
 // buildLatest starts a build of the app's newest commit.
@@ -3087,6 +3175,8 @@ $("apps-new-id").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
 $("apps-new-port").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
 $("back").onclick = closeApp;
 $("app-restart").onclick = restart;
+$("app-port-set").onclick = setPort;
+$("app-port").onkeydown = (e) => { if (e.key === "Enter") setPort(); };
 $("app-replicas-set").onclick = setReplicas;
 $("app-replicas").onkeydown = (e) => { if (e.key === "Enter") setReplicas(); };
 $("app-build").onclick = buildLatest;

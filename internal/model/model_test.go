@@ -66,6 +66,61 @@ func TestValidateBranchName(t *testing.T) {
 	}
 }
 
+// TestValidatePortAndReplicas pins the bounds the four surfaces enforce.
+//
+// The API, the console, the CLI's create and the CLI's update all refuse these,
+// and they read the bounds from here so there is one definition. What this
+// asserts is that the definition is the one they were built against: a port is a
+// TCP port, and the replica ceiling is the number the API's own message names.
+func TestValidatePortAndReplicas(t *testing.T) {
+	ports := []struct {
+		port    int32
+		wantErr bool
+	}{
+		{1, false}, {80, false}, {8080, false}, {65535, false},
+		{0, true}, {-1, true}, {65536, true}, {70000, true},
+	}
+	for _, tc := range ports {
+		err := model.ValidatePort(tc.port)
+		if tc.wantErr && err == nil {
+			t.Errorf("ValidatePort(%d) = nil, want an error", tc.port)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("ValidatePort(%d) = %v, want nil", tc.port, err)
+		}
+	}
+
+	replicas := []struct {
+		n       int32
+		wantErr bool
+	}{
+		{1, false}, {3, false}, {model.MaxReplicas, false},
+		{0, true}, {-1, true}, {model.MaxReplicas + 1, true},
+	}
+	for _, tc := range replicas {
+		err := model.ValidateReplicas(tc.n)
+		if tc.wantErr && err == nil {
+			t.Errorf("ValidateReplicas(%d) = nil, want an error", tc.n)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("ValidateReplicas(%d) = %v, want nil", tc.n, err)
+		}
+	}
+
+	// The bounds themselves, so a change to one is a deliberate act rather than
+	// something that slips in with an unrelated edit — four surfaces accept what
+	// these say.
+	if model.MinPort != 1 || model.MaxPort != 65535 {
+		t.Errorf("the port bounds moved to %d-%d; every surface that sets a port reads these, "+
+			"and the console's copy is asserted against them in internal/console",
+			model.MinPort, model.MaxPort)
+	}
+	if model.MaxReplicas != 50 {
+		t.Errorf("the replica ceiling moved to %d; the API's own message and the console's both name it",
+			model.MaxReplicas)
+	}
+}
+
 // TestValidateBranchNameAgreesWithGit is the check that makes the rules above
 // verifiable rather than merely asserted.
 //

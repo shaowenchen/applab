@@ -512,17 +512,15 @@ func (s *Server) namespaceFor(appID string) string {
 // produces a Service that cannot route, and a replica count of zero produces a
 // Deployment that is "ready" while nothing runs.
 func validateAppSettings(app *model.App) *apiError {
-	if app.Port < 1 || app.Port > 65535 {
-		return BadRequest("port %d is not in the valid range 1-65535", app.Port)
+	// The bounds and their wording live in model, because three surfaces enforce
+	// them — this, the console and the CLI — and a person should read the same
+	// sentence about a bad port wherever they typed it. The API is the one that
+	// decides, so its answer is what the others mirror.
+	if err := model.ValidatePort(app.Port); err != nil {
+		return BadRequest("%s", err.Error())
 	}
-	if app.Replicas < 1 {
-		// Zero replicas is a legitimate way to park a deployment, but it reads
-		// as "running" to anything checking readiness, which makes it a trap
-		// rather than a feature. Stopping is what an idle app wants.
-		return BadRequest("replicas must be at least 1; use the stop endpoint to scale an app down")
-	}
-	if app.Replicas > 50 {
-		return BadRequest("replicas %d exceeds the maximum of 50", app.Replicas)
+	if err := model.ValidateReplicas(app.Replicas); err != nil {
+		return BadRequest("%s", err.Error())
 	}
 	if strings.ContainsAny(app.Dockerfile, "\x00") {
 		return BadRequest("dockerfile path contains a null byte")
