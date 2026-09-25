@@ -150,8 +150,8 @@ helm install applab applab/applab \
   --set objectStore.endpoint=https://s3.us-east-1.amazonaws.com \
   --set objectStore.bucket=applab \
   --set objectStore.accessKey=... --set objectStore.secretKey=... \
-  --set apps.baseDomain=apps.example.com \
   --set ingress.host=applab.example.com \
+  --set deploy.gateway=istio-system/istio-ingressgateway \
   --set build.registry=registry.example.com/apps
 </code></pre>
 <p>The bucket is not optional and has no default. AppLab keeps everything in it —
@@ -271,18 +271,19 @@ deploy rather than at install.</p>
 certificate, needs <code>build.insecureRegistry=true</code> — which is a deliberate weakening
 of the guarantee that the image that arrived is the image that was pushed, so it
 is off by default.</p>
-<h3>2. A domain, and a certificate for it</h3>
-<p><code>apps.baseDomain</code> is what apps are served under. Everything under it needs to
-resolve to the gateway.</p>
-<p>There are two ways to put an app on it:</p>
-<p><strong>A subdomain per app</strong> — the default. An app with id <code>shop</code> becomes
-<code>shop.apps.example.com</code>. The certificate has to cover every host under the
-domain, which in practice means a wildcard, and a wildcard DNS record to go with
-it.</p>
+<h3>2. A domain, a gateway, and a certificate</h3>
+<p><code>ingress.host</code> is the one hostname this installation lives on, and it does two
+jobs at once: AppLab's own console and API are served under it, and the apps are
+published under it too. There is no second domain setting — setting
+<code>ingress.host=applab.example.com</code> is the whole of the address.</p>
+<p>An app with id <code>shop</code> is published in one of two shapes:</p>
+<p><strong>A subdomain per app</strong> — the default. <code>shop</code> becomes <code>shop.applab.example.com</code>.
+The certificate has to cover every host under the domain, which in practice means
+a wildcard, and a wildcard DNS record to go with it.</p>
 <p><strong>One host, one path per app</strong> — set <code>apps.pathPrefix</code>. Every app then shares
-<code>apps.baseDomain</code> and the path says which is meant:</p>
-<pre><code class="language-bash">--set apps.baseDomain=apps.example.com --set apps.pathPrefix=/apps
-# shop is served at https://apps.example.com/apps/shop
+<code>ingress.host</code> and the path says which is meant:</p>
+<pre><code class="language-bash">--set ingress.host=applab.example.com --set apps.pathPrefix=/apps
+# shop is served at https://applab.example.com/apps/shop
 </code></pre>
 <p>The reason to want this is the certificate. One host needs one ordinary
 certificate, not a wildcard, and nothing has to be reissued as apps are added.
@@ -291,24 +292,51 @@ paths it would see at a root and needs no change to work under one; it also sets
 <code>X-Forwarded-Prefix</code> for an app that builds absolute links. The cost is a shared
 origin — browser connection limits and cookies are shared between apps, and two
 apps cannot both own <code>/</code>.</p>
-<p>TLS is configured on the <strong>gateway</strong>, not here. The gateway holds the listeners
-and the certificate for the whole domain, so an app is served over HTTPS when the
-gateway has an HTTPS listener, and there is no per-app certificate setting to get
-wrong.</p>
-<p>Set <code>deploy.gateway</code> to the gateway apps are published through, as
-<code>&lt;namespace&gt;/&lt;name&gt;</code>. It defaults to <code>istio-ingress/istio-ingress</code> — the naming
-the official <code>istio/gateway</code> chart produces. A cluster installed with
-<code>istioctl install</code> names it <code>istio-system/istio-ingressgateway</code> instead, and has
-to say so:</p>
+<p>Set <code>ingress.host=</code> (empty) to keep everything inside the cluster: no
+<code>VirtualService</code> is created for the apps and there is no host for the console
+either, so the release is reachable by <code>port-forward</code> only. The install notes
+say so, and print the command.</p>
+<h4>The gateway</h4>
+<p>Apps are published by attaching a <code>VirtualService</code> to an <strong>Istio gateway</strong>. The
+gateway is infrastructure you own — it holds the listeners and the certificate
+for the domain — and AppLab attaches to it by name and never creates or modifies
+it.</p>
 <pre><code class="language-bash">--set deploy.gateway=istio-system/istio-ingressgateway
 </code></pre>
-<p>AppLab attaches a <code>VirtualService</code> to that gateway and never creates or modifies
-it — the gateway is infrastructure you own.</p>
-<p>Setting <code>apps.baseDomain</code> without a gateway is refused at render time: it would
-produce a <code>VirtualService</code> whose empty gateway list Istio reads as mesh-internal
-only, so the app would deploy, report healthy and be unreachable from outside.
-So is setting <code>apps.pathPrefix</code> without a base domain, since the prefix is the
-only thing telling one app from another on that shared host.</p>
+<p>The value is <code>&lt;namespace&gt;/&lt;name&gt;</code>, which is how Istio resolves a gateway. The
+default is <code>istio-ingress/istio-ingress</code>, the naming the official <code>istio/gateway</code>
+Helm chart produces:</p>
+<pre><code class="language-bash">helm repo add istio https://istio-release.storage.googleapis.com/charts
+helm install istio-ingress istio/gateway -n istio-ingress --create-namespace
+</code></pre>
+<p>A cluster installed with <code>istioctl install</code> instead names it
+<code>istio-system/istio-ingressgateway</code>, which is the form the quick start above
+uses. Either way, <strong>the gateway has to exist before AppLab is installed</strong> and
+must already have a listener for <code>ingress.host</code>; a missing listener shows up as
+an app that deploys, reports healthy and cannot be reached from outside.</p>
+<p>TLS is configured on the gateway, not here — there is no per-app certificate
+setting to get wrong. An app is served over HTTPS when the gateway has an HTTPS
+listener whose certificate covers the host. For a subdomain-per-app install that
+certificate must be a wildcard (<code>*.applab.example.com</code>); for a <code>pathPrefix</code>
+install a single-host certificate is enough, which is the reason to prefer it.</p>
+<h4>When the console has its own Ingress</h4>
+<p>The console and API are reached through a plain Kubernetes Ingress by default
+(<code>ingress.path</code>, <code>/applab</code>), on whatever ingress controller the cluster runs.
+Apps are unaffected: they are always published through the gateway above.</p>
+<p>A cluster with no ingress controller sets <code>ingress.enabled=false</code> and gets the
+console on the gateway instead — a <code>VirtualService</code> on <code>ingress.host</code>, beside the
+apps' own. That is why this is one hostname rather than two: the console's
+fallback route and the apps' route are the same host, so the gateway only needs
+one listener and one certificate for both.</p>
+<h4>Configuration that is refused</h4>
+<p>The chart fails at render time rather than letting these reach a cluster:</p>
+<ul>
+<li><code>ingress.host</code> set with <code>deploy.gateway</code> empty — apps would get hostnames that
+nothing serves, and with no Ingress the console would have no route either.</li>
+<li><code>deploy.gateway</code> not in <code>&lt;namespace&gt;/&lt;name&gt;</code> form.</li>
+<li><code>apps.pathPrefix</code> set with <code>ingress.host</code> empty — the prefix is the only thing
+telling one app from another on that shared host.</li>
+</ul>
 <h3>3. Whether the cluster can build</h3>
 <p>This is the one to check before installing, because a build that cannot run fails
 in a way that looks like nothing is happening.</p>
@@ -453,11 +481,6 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <td>Preferred over <code>auth.key</code>: keeps the key out of the release, and carries more than one</td>
 </tr>
 <tr>
-<td><code>apps.baseDomain</code></td>
-<td><code>&quot;&quot;</code></td>
-<td>Domain apps are served under</td>
-</tr>
-<tr>
 <td><code>apps.pathPrefix</code></td>
 <td><code>&quot;&quot;</code></td>
 <td>Serves every app under one path on that host; needs no wildcard certificate</td>
@@ -465,7 +488,7 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <tr>
 <td><code>deploy.gateway</code></td>
 <td><code>istio-ingress/istio-ingress</code></td>
-<td><strong>Required with a base domain.</strong> <code>&lt;namespace&gt;/&lt;name&gt;</code></td>
+<td><strong>Required with a host.</strong> <code>&lt;namespace&gt;/&lt;name&gt;</code></td>
 </tr>
 <tr>
 <td><code>build.enabled</code></td>
@@ -505,7 +528,7 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <tr>
 <td><code>ingress.host</code></td>
 <td><code>applab.example.com</code></td>
-<td>The host the console and API are reached at</td>
+<td><strong>The whole address.</strong> The console, the API and every app. Empty runs internal-only</td>
 </tr>
 <tr>
 <td><code>ingress.path</code></td>
