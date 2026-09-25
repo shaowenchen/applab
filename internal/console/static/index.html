@@ -438,23 +438,6 @@
   .tile.attention .value { color: var(--bad); }
   .tile.ok .value { color: var(--ok); }
 
-  /* Capability chips: a named switch, on or off. The word is the signal; the
-     colour only reinforces it. */
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 10px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--bg-sunken);
-    font-size: 12px;
-    color: var(--text-muted);
-  }
-  .chip.on { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
-  .chip.off { opacity: 0.65; }
-
   /* A one-line state indicator used for the cluster. The dot is decorative; the
      sentence beside it is what says which state this is. */
   .state { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
@@ -468,9 +451,14 @@
   .state.warn .dot { background: var(--warn); }
   .state .detail { color: var(--text-muted); font-size: 13px; }
 
-  /* Two panels side by side on a wide screen, stacked on a narrow one. */
-  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
+  /* The cluster state, below the deployment's own rows in the same card. It is
+     a different kind of fact — what this deployment is, then whether it works —
+     so a rule separates them rather than leaving one list of six rows. */
+  #overview-cluster {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
 
   /* A phone. The header is a single row of controls carrying the theme and
      language switches, the nav, and sign-out; squeezed to a phone width the
@@ -555,23 +543,27 @@
          add nothing. -->
     <div class="tiles" id="overview-tiles"></div>
 
-    <div class="split">
-      <div class="card">
-        <h2 data-i18n="Deployment">Deployment</h2>
-        <dl class="grid-2" id="overview-deployment"></dl>
-        <div style="margin-top:12px">
-          <div class="muted" style="font-size:12px;margin-bottom:6px" data-i18n="Capabilities">Capabilities</div>
-          <div class="chips" id="overview-caps"></div>
-        </div>
-      </div>
+    <!-- What this deployment is, and whether it can do its job — one card, not
+         two. They were separate panels in a two-column split, which read as
+         peers when they are not: the cluster's state is the answer to "will a
+         build or a deploy actually happen", which is a fact about this
+         deployment like its namespace is, and the two together are the whole of
+         "what am I talking to and is it working". Side by side they were also
+         two columns of very different heights, since the identity half is four
+         short rows and the state half is a sentence.
 
-      <div class="card">
-        <h2 data-i18n="Cluster">Cluster</h2>
-        <!-- This gets its own panel because it is the answer to "why can I not
-             deploy anything", which is otherwise only discoverable from a
-             failure. The sentence carries the state; the dot only colours it. -->
-        <div id="overview-cluster"></div>
-      </div>
+         The capabilities row that used to sit under this is gone. It listed
+         source, git, build and deploy as four on/off chips, which on a healthy
+         deployment is four lines saying nothing is wrong — and when one is off,
+         this card's state line is what already says why. -->
+    <div class="card">
+      <h2 data-i18n="Deployment">Deployment</h2>
+      <dl class="grid-2" id="overview-deployment"></dl>
+      <!-- The cluster: three distinct states, because "not configured" and
+           "unreachable" mean different things and only one of them is a fault.
+           Set off from the rows above by a rule, the same way an app's state
+           card separates what is readable from what is actionable. -->
+      <div id="overview-cluster"></div>
     </div>
 
     <div class="card flush">
@@ -598,12 +590,18 @@
          reading it means a shell and `kubectl logs`, which is precisely what
          whoever is looking at this page does not have.
 
-         It sits below the build list rather than beside the cluster panel
+         It sits below the build list rather than up with the deployment card
          because it is the tallest thing here, and a failing platform is read by
-         scrolling not by scanning a number.
+         scrolling rather than by scanning a number beside a version.
 
          Not admin-gated in this markup beyond the view itself: the overview is
-         already admin-only on the server, and an app key never reaches it. -->
+         already admin-only on the server, and an app key never reaches it.
+
+         Shorter than the same panel on an app's page. There the log is the
+         reason the page was opened and wants the room; here it is one panel on
+         a dashboard whose job is to be read at a glance, and a 480px box pushed
+         the build list off the first screen. The lines scroll inside it, so
+         nothing is lost — only the amount visible without scrolling. -->
     <div class="card">
       <div class="card-head">
         <h2 data-i18n="Platform log">Platform log</h2>
@@ -612,7 +610,7 @@
         </label>
         <button id="platform-logs-toggle" data-i18n="Follow">Follow</button>
       </div>
-      <pre id="platform-logs" style="margin:0" data-i18n="(not started)">(not started)</pre>
+      <pre id="platform-logs" style="margin:0;max-height:240px" data-i18n="(not started)">(not started)</pre>
     </div>
   </section>
 
@@ -979,8 +977,6 @@ const ZH = {
   // -- Overview -------------------------------------------------------------
   "Refresh": "刷新",
   "Deployment": "部署",
-  "Capabilities": "能力",
-  "Cluster": "集群",
   "Recent builds": "最近构建",
   "Platform log": "平台日志",
   "This deployment cannot read logs: no cluster client is configured.": "这个部署无法读取日志：没有配置集群客户端。",
@@ -997,8 +993,6 @@ const ZH = {
   "api": "API",
   "namespace": "命名空间",
   "apps at": "应用地址",
-  "{name} on": "{name} 可用",
-  "{name} off": "{name} 不可用",
   "Not configured": "未配置",
   "Reachable": "可访问",
   "Unreachable": "不可访问",
@@ -1815,19 +1809,9 @@ async function loadOverview() {
   add(t("namespace"), d.namespace);
   add(t("apps at"), d.domain_template);
 
-  const caps = $("overview-caps");
-  caps.replaceChildren();
-  for (const name of ["source", "git", "build", "deploy"]) {
-    const on = !!(d.capabilities || {})[name];
-    const chip = document.createElement("span");
-    chip.className = "chip " + (on ? "on" : "off");
-    // The word is the signal; "on"/"off" is what carries it, not the colour.
-    chip.textContent = tf(on ? "{name} on" : "{name} off", { name: name });
-    caps.appendChild(chip);
-  }
-
-  // The cluster: three distinct states, because "not configured" and
-  // "unreachable" mean different things and only one of them is a fault.
+  // The cluster state, under the rows above it in the same card. It keeps a
+  // rule of its own because it is a different kind of fact: the rows say what
+  // this deployment is, and this says whether it works.
   const cluster = data.cluster || {};
   const box = $("overview-cluster");
   box.replaceChildren();

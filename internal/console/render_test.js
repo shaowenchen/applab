@@ -601,7 +601,7 @@ async function render(apps) {
     // because the static scan cannot see them; each is asserted reachable by the
     // pill and status checks elsewhere in this file.
     const viaVariable = new Set([
-      "nothing broken", "failed or build-failed", "{name} on", "{name} off",
+      "nothing broken", "failed or build-failed",
       "running", "failed", "build-failed", "building", "deploying", "created",
       "succeeded", "pending", "ready", "not ready", "deployed", "no image",
       // Reached as t(shown ? "Hide" : "Show") and t(copied ? "Copied" : "Copy"),
@@ -648,6 +648,30 @@ async function render(apps) {
       // counts, in the card below, not with the app's other settings.
       check("and does not carry app-replicas", card[0].includes('id="app-replicas"'), false);
     }
+  }
+
+  // The overview's deployment card. What it carries is the point: identity and
+  // reachability are one card, because "what am I talking to" and "does it work"
+  // are one question — and the cluster state sitting outside it is exactly the
+  // split this merged.
+  //
+  // The capabilities row is asserted *absent* rather than merely unrendered.
+  // It was four chips reading "on" on every healthy deployment, and the way it
+  // would come back is someone re-adding the markup while the render code stays
+  // gone, which renders nothing and passes every other check here.
+  {
+    const card = markup.match(/<h2 data-i18n="Deployment"[\s\S]*?<\/dl>[\s\S]*?<\/div>\s*<\/div>/);
+    check("the Deployment card exists", card !== null, true);
+    if (card) {
+      check("it carries the deployment rows", card[0].includes('id="overview-deployment"'), true);
+      check("and the cluster state with them", card[0].includes('id="overview-cluster"'), true);
+      check("but not a capabilities row", card[0].includes("overview-caps"), false);
+    }
+    check(
+      "and the capabilities row is gone from the page entirely",
+      markup.includes("overview-caps") || markup.includes('data-i18n="Capabilities"'),
+      false
+    );
   }
 
   // Replicas sits with the instances it counts, which is the card that lists
