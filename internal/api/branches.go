@@ -142,7 +142,14 @@ func (s *Server) handleSwitchBranch(w http.ResponseWriter, r *http.Request) {
 	// same image lookup, the same build-or-refuse, the same response. A branch
 	// switch that deployed by some other route would be a second implementation
 	// of deploying, and the two would differ first in the failure cases.
-	s.deployResolved(w, r, app, branch, head, false)
+	//
+	// build is true, unlike POST /deploy's default of false. The difference is
+	// what the caller is asking for: a deploy of a named commit is a request to
+	// run *that*, and being told to build it first is useful; a branch switch is
+	// a request to run whatever is on that branch, and a branch that was just
+	// pushed has no image yet — so refusing would make the ordinary case fail
+	// with advice the caller has already followed.
+	s.deployResolved(w, r, app, branch, head, true)
 }
 
 // branchExists reports whether an app has a repository for a branch.

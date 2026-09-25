@@ -6,6 +6,7 @@
 //	applab overview  the whole platform at a glance
 //	applab env       configure an app — variables and secrets
 //	applab keys      show an app's own key
+//	applab branch    which branches an app has, and switch between them
 //	applab logs      watch an app
 //	applab status    is it up, and where
 //	applab diagnose  why it is not working
@@ -72,6 +73,7 @@ Point them at a deployment and these commands are everything needed to ship:
     applab push              upload, build and deploy the current directory
     applab overview          the whole platform at a glance
     applab env               show an app's configuration
+    applab branch            which branch is running, and switch it
     applab status            what is running, and where
     applab logs --follow     watch it
     applab diagnose          why it is not working
@@ -109,6 +111,7 @@ with "applab keys <app>".`,
 		configCommand(&urlFlag, &keyFlag),
 		overviewCommand(&urlFlag, &keyFlag),
 		keysCommand(&urlFlag, &keyFlag),
+		branchCommand(&urlFlag, &keyFlag),
 		envCommand(&urlFlag, &keyFlag),
 		createCommand(&urlFlag, &keyFlag),
 		listCommand(&urlFlag, &keyFlag),

@@ -757,7 +757,7 @@ func (s *Server) routes() []route {
 			Pattern: "POST /api/v1/apps/{app}/source",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "Upload source as a tar or tar.gz and commit it. This is the main way to push code. Send the archive as the raw request body (`--data-binary @-`), or as `multipart/form-data` with a `file` field. `?message=` sets the commit message; `?parent=<sha>` commits onto a chosen commit instead of the current tip. A single wrapping directory is stripped, so `tar czf - myproject` lands with its contents at the root.",
+			Doc:     "Upload source as a tar or tar.gz and commit it. This is the main way to push code. Send the archive as the raw request body (`--data-binary @-`), or as `multipart/form-data` with a `file` field. `?message=` sets the commit message; `?parent=<sha>` commits onto a chosen commit instead of the current tip; `?branch=` commits to another branch (default: the app's active one, and a branch that does not exist yet is created — see `GET /api/v1/apps/{app}/branches`). A single wrapping directory is stripped, so `tar czf - myproject` lands with its contents at the root.",
 			Handler: s.handleUploadSource,
 		},
 		{

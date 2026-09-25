@@ -183,3 +183,20 @@ the key goes in as the password, any username works:
 
 That address is on the app's page in the console. Everything in the history is
 deployable, which is what makes a rollback possible.
+
+**There can be more than one branch, and one of them runs.** The URL above is the
+active branch, and another branch is the same URL with the branch after an `@`:
+
+    git push  "https://x:$APPLAB_KEY@<host>/git/{{APP}}@dev.git" HEAD:dev
+    git clone "https://x:$APPLAB_KEY@<host>/git/{{APP}}@dev.git"
+
+Pushing is what creates a branch — git's own rule — and cloning one that does not
+exist fails as "repository not found". Switching which branch runs is
+`./applab.sh branch use <name>`, and it **replaces what is serving**: one app runs
+one branch at a time, so this deploys the branch it switches to rather than
+adding a second thing.
+
+Each branch is stored as a repository of its own, so an app with several branches
+uses roughly that many times the storage. That is a platform-level cost, not
+something to work around from in here — just worth knowing before pushing a dozen
+branches of a large project.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -664,4 +665,221 @@ func runGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+// --- branches ---------------------------------------------------------------
+
+// TestEachBranchIsItsOwnRepository is the property the layout rests on.
+//
+// Two branches of one app do not see each other's commits: pushing to one does
+// not move the other, and reading one does not depend on the other existing. It
+// is what makes a branch a directory rather than a ref, and it is why the two
+// cannot share objects.
+func TestEachBranchIsItsOwnRepository(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// A branch that does not exist yet is created by being pushed to, which is
+	// how git behaves and how AppLab has to behave: there is no "create a
+	// branch" step anywhere.
+	if err := s.Create(ctx, "shop", "dev"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mainSHA := ingestOne(t, s, "shop", main, "on main")
+	devSHA := ingestOne(t, s, "shop", "dev", "on dev")
+
+	if mainSHA == devSHA {
+		t.Fatal("the two branches produced the same commit; they are not separate repositories")
+	}
+
+	// Each branch reads back what was pushed to it and nothing else.
+	head, err := s.HeadCommit(ctx, "shop", main)
+	if err != nil {
+		t.Fatalf("HeadCommit(main): %v", err)
+	}
+	if head != mainSHA {
+		t.Errorf("main's head is %s, want the commit pushed to main (%s)", head, mainSHA)
+	}
+	head, err = s.HeadCommit(ctx, "shop", "dev")
+	if err != nil {
+		t.Fatalf("HeadCommit(dev): %v", err)
+	}
+	if head != devSHA {
+		t.Errorf("dev's head is %s, want the commit pushed to dev (%s)", head, devSHA)
+	}
+
+	// And neither branch's history contains the other's commit.
+	for _, tc := range []struct{ branch, unwanted string }{
+		{main, devSHA},
+		{"dev", mainSHA},
+	} {
+		commits, err := s.Log(ctx, "shop", tc.branch, 50)
+		if err != nil {
+			t.Fatalf("Log(%s): %v", tc.branch, err)
+		}
+		for _, c := range commits {
+			if c.SHA == tc.unwanted {
+				t.Errorf("%s's history contains %s, which was pushed to another branch", tc.branch, c.SHA)
+			}
+		}
+	}
+}
+
+// TestBranchesListsWhatHasBeenPushedTo asserts the listing is the bucket's view.
+//
+// It is what the console and the CLI show, so it has to name every branch that
+// exists and no branch that does not.
+func TestBranchesListsWhatHasBeenPushedTo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.Create(ctx, "shop", "dev"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A nested name, because a branch may have a slash in it and the listing has
+	// to stop at the branch rather than at the segment.
+	if err := s.Create(ctx, "shop", "feature/x"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	branches, err := s.Branches(ctx, "shop")
+	if err != nil {
+		t.Fatalf("Branches: %v", err)
+	}
+	want := "dev,feature/x,main"
+	if strings.Join(branches, ",") != want {
+		t.Errorf("Branches = %v, want %s", branches, want)
+	}
+
+	// Sorted, so a caller listing them twice sees the same order.
+	if !sort.StringsAreSorted(branches) {
+		t.Errorf("Branches = %v, want them sorted", branches)
+	}
+}
+
+// TestBranchesIsEmptyForAnAppWithNone asserts the ordinary empty answer.
+func TestBranchesIsEmptyForAnAppWithNone(t *testing.T) {
+	s := newTestStore(t)
+
+	branches, err := s.Branches(context.Background(), "nothing")
+	if err != nil {
+		t.Fatalf("Branches: %v", err)
+	}
+	if len(branches) != 0 {
+		t.Errorf("Branches = %v, want none", branches)
+	}
+}
+
+// TestOneBranchsCommitIsNotAnothersArchive asserts the archive is read from the
+// branch it was asked for.
+//
+// A commit can be reachable from two branches — that is the normal case for a
+// branch cut from another — so the archive has to resolve within the branch
+// named rather than anywhere in the app.
+func TestOneBranchsCommitIsNotAnothersArchive(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sha := ingestOne(t, s, "shop", main, "only on main")
+
+	// The commit resolves on its own branch...
+	var buf bytes.Buffer
+	if err := s.Archive(ctx, "shop", main, sha, &buf); err != nil {
+		t.Fatalf("Archive on the branch it was pushed to: %v", err)
+	}
+
+	// ...and not on a branch that does not have it. The listing of a branch is
+	// the whole of its history, so a commit from another branch is simply not
+	// there.
+	if err := s.Create(ctx, "shop", "dev"); err != nil {
+		t.Fatalf("Create(dev): %v", err)
+	}
+	var other bytes.Buffer
+	err := s.Archive(ctx, "shop", "dev", sha, &other)
+	if err == nil {
+		t.Error("a commit pushed to main was archived from dev; branches do not share objects")
+	}
+}
+
+// TestRemoveTakesEveryBranch asserts an app's removal is app-wide.
+//
+// Exists is per branch and Remove is per app, and that pair is deliberate: an
+// app is removed as a whole, and one that kept a branch behind would be an app
+// whose source is half there.
+func TestRemoveTakesEveryBranch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.Create(ctx, "shop", "dev"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := s.Remove(ctx, "shop"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	for _, branch := range []string{main, "dev"} {
+		exists, err := s.Exists("shop", branch)
+		if err != nil {
+			t.Fatalf("Exists(%s): %v", branch, err)
+		}
+		if exists {
+			t.Errorf("branch %s survived the app's removal", branch)
+		}
+	}
+}
+
+// TestBranchNamesAreRefusedBeforeAnythingIsWritten asserts a malformed branch is
+// rejected at the operation rather than becoming a directory.
+func TestBranchNamesAreRefusedBeforeAnythingIsWritten(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, bad := range []string{"", "-dash", "has space", "a..b", "a//b", "trail/", "a.lock"} {
+		t.Run(bad, func(t *testing.T) {
+			if err := s.Create(ctx, "shop", bad); err == nil {
+				t.Errorf("Create accepted branch %q", bad)
+			}
+			if _, err := s.Log(ctx, "shop", bad, 10); err == nil {
+				t.Errorf("Log accepted branch %q", bad)
+			}
+			if _, err := s.HeadCommit(ctx, "shop", bad); err == nil {
+				t.Errorf("HeadCommit accepted branch %q", bad)
+			}
+		})
+	}
+
+	// And nothing was created under the app on the way to refusing.
+	branches, err := s.Branches(ctx, "shop")
+	if err != nil {
+		t.Fatalf("Branches: %v", err)
+	}
+	if len(branches) != 0 {
+		t.Errorf("a refused branch left something behind: %v", branches)
+	}
+}
+
+// ingestOne commits a tree with one file on a branch and returns its sha.
+func ingestOne(t *testing.T, s *Store, appID, branch, subject string) string {
+	t.Helper()
+
+	archive := buildTar(t, []tarEntry{{name: subject + ".txt", body: subject, mode: 0o644}})
+	result, err := s.Ingest(context.Background(), appID, branch, bytes.NewReader(archive), subject, "", DefaultIngestLimits)
+	if err != nil {
+		t.Fatalf("Ingest(%s): %v", branch, err)
+	}
+	return result.SHA
 }

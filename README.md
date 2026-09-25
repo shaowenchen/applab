@@ -71,6 +71,7 @@ applab overview           # the whole platform at a glance
 applab list               # what exists
 applab status myshop      # what is running, and where
 applab logs myshop -f     # watch it
+applab branch myshop      # which branches there are, and which one runs
 applab pods myshop        # the pods, and why one is not ready
 applab events myshop      # Kubernetes events, warnings first
 applab diagnose myshop    # why it is not working
@@ -118,6 +119,13 @@ Clone what you pushed:
 git clone "https://x:$APPLAB_KEY@${APPLAB_URL#http://}/git/shop.git"
 ```
 
+That URL is the app's active branch. Another branch is the same URL with the
+branch after an `@` — see [Branches](#branches):
+
+```bash
+git clone "https://x:$APPLAB_KEY@${APPLAB_URL#http://}/git/shop@dev.git"
+```
+
 If you would rather not put the key in the URL — it lands in shell history and in
 the repository's `config` on disk — send it as a header instead:
 
@@ -137,6 +145,44 @@ commit. You can clone it, diff two uploads, browse the history, and check out an
 earlier revision with ordinary git tools.
 
 The tarball is how the bytes travel. The commit is what is recorded.
+
+### Branches
+
+An app can hold several branches. One of them is **active** — the one that builds
+and deploys — and switching which one is active redeploys the app from it.
+
+```bash
+applab branch myshop              # what branches there are, and which is running
+applab branch use myshop dev      # switch to dev and deploy it
+```
+
+Every branch has its own address, so the same app is reachable at two URLs:
+
+```
+https://<host>/git/shop.git        the active branch
+https://<host>/git/shop@dev.git    the branch named dev
+```
+
+The default branch (`main`) is the one URL that omits the branch, which keeps an
+app's address stable as it gains branches.
+
+**A branch comes into being when something is pushed to it** — that is git's own
+rule, and there is no separate "create a branch" here:
+
+```bash
+git push "https://x:$APPLAB_KEY@<host>/git/shop@dev.git" HEAD:dev
+```
+
+Cloning a branch that does not exist fails with "repository not found", exactly as
+cloning an app that does not exist does.
+
+**Each branch is stored as a repository of its own**, so an app with three live
+branches holds three copies of the history it can reach from each. That is the
+cost of a branch being a directory in the bucket — listable and deletable on its
+own — and it is real: measured, a repository of 40 commits of 1 MB files is 39 MB
+with one branch and 78 MB once a second branch is pushed, even though that second
+branch held a single extra commit. Git's own answer to this, a shared worktree, is
+not available here: it separates a worktree's refs but not its object database.
 
 ### A build is a Job, not a daemon
 
@@ -493,9 +539,9 @@ leave different things behind.
 **A local run** is a process and a directory. Stopping `applab` ends the service;
 `APPLAB_DATA_DIR` — `./data` in the quick start — is scratch space, and the
 object store it was pointed at is the data. That store holds a git repository per
-app, so emptying it is the point of no return for all of them. Anything already
-deployed to a cluster keeps running, because AppLab put it there and does not own
-it.
+app per branch, so emptying it is the point of no return for all of them. Anything
+already deployed to a cluster keeps running, because AppLab put it there and does
+not own it.
 
 **A chart install** is one command:
 

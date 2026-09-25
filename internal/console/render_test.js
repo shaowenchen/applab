@@ -554,9 +554,69 @@ async function render(apps) {
     const card = markup.match(/<h2 data-i18n="State"[\s\S]*?<\/div>\s*<\/div>/);
     check("the State card exists", card !== null, true);
     if (card) {
-      for (const id of ["app-replicas", "app-build", "app-deploy"]) {
+      for (const id of ["app-replicas", "app-build", "app-deploy", "app-branch", "app-branch-use"]) {
         check(`the State card carries ${id}`, card[0].includes(`id="${id}"`), true);
       }
+    }
+  }
+
+  // The branch control, driven through the app's real loader against a stubbed
+  // API. What matters is what the reader ends up able to do: with several
+  // branches the control is usable, and with one it reports which is running
+  // without offering a switch that cannot change anything.
+  {
+    const branchesContext = async (payload) => {
+      const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+      ctx.globalThis = ctx;
+      ctx.fetch = async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: payload }),
+      });
+      vm.runInContext(source, ctx, { filename: "console.js" });
+      await vm.runInContext("loadBranches", ctx)();
+      return ctx;
+    };
+
+    {
+      await branchesContext({ app_id: "shop", branches: ["main", "dev"], active: "dev" });
+      const select = elements.get("app-branch");
+      const options = select.children.map((o) => o.value);
+      check("the branch control lists every branch", options.join(","), "main,dev");
+      check(
+        "and selects the one that is running",
+        select.children.filter((o) => o.selected).map((o) => o.value).join(","),
+        "dev"
+      );
+      check("several branches make the switch usable", select.disabled, false);
+      check("and the button with it", elements.get("app-branch-use").disabled, false);
+    }
+
+    {
+      await branchesContext({ app_id: "shop", branches: ["main"], active: "main" });
+      const select = elements.get("app-branch");
+      check("a single branch still reports which one", select.children.map((o) => o.value).join(","), "main");
+      check("but there is nothing to switch to", select.disabled, true);
+      check("so the button is disabled too", elements.get("app-branch-use").disabled, true);
+    }
+
+    {
+      // No source storage: the API answers 501, which api() raises. The control
+      // goes rather than sitting there enabled and failing on every click.
+      const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+      ctx.globalThis = ctx;
+      ctx.fetch = async () => ({
+        ok: false,
+        status: 501,
+        statusText: "Not Implemented",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ error: "this deployment has no source storage configured" }),
+      });
+      vm.runInContext(source, ctx, { filename: "console.js" });
+      await vm.runInContext("loadBranches", ctx)();
+      check("no source storage hides the branch control", elements.get("app-branch").classList.contains("hidden"), true);
     }
   }
 

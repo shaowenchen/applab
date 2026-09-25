@@ -339,6 +339,21 @@ service:
 # history, and every app's git repository — the only copy of the apps' source, so
 # the bucket must be backed up.
 #
+# One directory per app, and its source is one repository per branch:
+#
+#     apps/<id>/app.json                 the app record
+#     apps/<id>/key.json                 the app's API key
+#     apps/<id>/commits/<sha>.json       one recorded commit
+#     apps/<id>/builds/<id>.json         one build attempt
+#     apps/<id>/repo/branches/<branch>/  the repository for one branch
+#
+# `branches/` is where storage multiplies: each branch holds a full copy of
+# everything reachable from it, so three live branches occupy roughly three
+# times one branch's repository. Measured, 40 commits of 1 MB files are 39 MB
+# with one branch and 78 MB with two. Budget for it if apps are large or
+# branches are many — see the chart README for why a shared object database is
+# not available through this store.
+#
 # This is what makes AppLab stateless. There is no volume, no database and no
 # state on a replica, so a pod can be replaced at any moment, a node can be lost,
 # and more than one replica can serve at once.

@@ -709,6 +709,26 @@
         <button id="app-build" data-i18n="Build latest">Build latest</button>
         <button id="app-deploy" data-i18n="Deploy latest">Deploy latest</button>
       </div>
+
+      <!-- Which branch runs. A control rather than a row in the table above,
+           because it is something you change rather than something you read:
+           the two are told apart by where they sit throughout this page, and the
+           branch is the only setting here that changes what is *deployed*.
+
+           Switching deploys, so it replaces what is serving — said out loud
+           beside the button, because an app that quietly swapped its code on a
+           control that reads like a filter would be a surprise. The select is
+           disabled until there is more than one branch: with one branch there is
+           nothing to choose, and an enabled control that cannot change anything
+           invites a click that does nothing. -->
+      <div class="state-actions">
+        <label class="field">
+          <span data-i18n="Branch">Branch</span>
+          <select id="app-branch"></select>
+          <button id="app-branch-use" data-i18n="Switch">Switch</button>
+        </label>
+        <span class="muted" style="font-size:12px" data-i18n="switching replaces what is running">switching replaces what is running</span>
+      </div>
     </div>
 
     <div class="card">
@@ -1014,6 +1034,11 @@ const ZH = {
   "takes effect on the next deploy": "下次部署时生效",
   "Build latest": "构建最新",
   "Deploy latest": "部署最新",
+  "Branch": "分支",
+  "Switch": "切换",
+  "switching replaces what is running": "切换会替换当前运行的版本",
+  "Switch {app} to {branch}? This replaces what is running.": "将 {app} 切换到 {branch}？这会替换当前运行的版本。",
+  "Could not switch branch: {error}": "切换分支失败：{error}",
   "Replicas must be a whole number between 1 and 50.": "副本数必须是 1 到 50 之间的整数。",
   "This app has no source yet. Upload some before building it.": "该应用还没有代码，请先上传。",
   "Could not set replicas: {error}": "设置副本数失败：{error}",
@@ -2101,6 +2126,93 @@ function setCloneHint(key) {
   appGitReveal.set("git clone https://x:" + key + "@" + base.replace(/^https?:\/\//, ""));
 }
 
+// loadBranches fills the branch control with the branches the app has, marking
+// the active one.
+//
+// The active branch is selected, so the control shows what is running without a
+// second place saying so. Switching is a separate button rather than the select
+// acting on change: a `change` handler makes a mis-click on a dropdown deploy an
+// app, and this is the one control here that replaces what is serving.
+//
+// The whole control is hidden when the deployment has no source storage, which
+// answers 501 — the same treatment the clone command gets, and a fact about the
+// deployment rather than a fault.
+async function loadBranches() {
+  const select = $("app-branch");
+  const button = $("app-branch-use");
+
+  // The whole body is guarded, not just the request: a deployment behind a proxy
+  // that answers HTML would parse to something without a branches array, and
+  // iterating that is a TypeError thrown out of a promise nobody awaits — an
+  // error the reader never sees and cannot act on. Hiding the control is the
+  // honest answer either way.
+  //
+  // The options are cleared on this path too. They belong to the app that was
+  // open, and this runs for the next one — leaving them would put another app's
+  // branch names behind a hidden control, one class away from being offered.
+  let branches = [];
+  let active = "";
+  try {
+    const result = await api("/api/v1/apps/" + state.app + "/branches");
+    branches = result.branches || [];
+    active = result.active || "";
+  } catch {
+    select.replaceChildren();
+    show(select, false);
+    show(button, false);
+    return;
+  }
+
+  select.replaceChildren();
+  for (const branch of branches) {
+    const option = document.createElement("option");
+    option.value = branch;
+    option.textContent = branch;
+    option.selected = branch === active;
+    select.appendChild(option);
+  }
+
+  // Disabled rather than hidden at one branch: the row still says which branch
+  // is running, which is worth knowing, and the button being present but
+  // disabled says "there is nothing to switch to" rather than leaving the reader
+  // to wonder where the control went. With no branches at all there is nothing
+  // to say either, so both go.
+  const many = branches.length > 1;
+  show(select, branches.length > 0);
+  show(button, branches.length > 0);
+  select.disabled = !many;
+  button.disabled = !many;
+}
+
+// switchBranch makes the chosen branch active and deploys it.
+//
+// It replaces what is running — one app runs one branch — which is what the note
+// beside the button says, and why this confirms rather than acting silently.
+async function switchBranch() {
+  const branch = $("app-branch").value;
+  if (!branch) return;
+
+  if (!confirm(tf("Switch {app} to {branch}? This replaces what is running.", {
+    app: state.app, branch: branch,
+  }))) return;
+
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app + "/branch", {
+      method: "PUT",
+      body: JSON.stringify({ branch: branch }),
+    });
+  } catch (err) {
+    setError(tf("Could not switch branch: {error}", { error: err.message }));
+    return;
+  }
+
+  // The deploy may still be building, so what comes back is worth re-reading
+  // rather than assuming: the state card shows the commit that is running, and
+  // after a switch that is a different one.
+  await Promise.all([loadAppState(), loadPods(), loadBranches(), loadCommits()]);
+}
+
 async function openApp(id) {
   // Where the app was opened from, so "← Back" returns there. An app is
   // reachable from the apps list and from a build row, and sending someone to
@@ -2146,6 +2258,7 @@ async function openApp(id) {
     loadAppConfig(),
     loadAppBuilds(),
     loadRepository(),
+    loadBranches(),
   ]);
   startLogs();
 
@@ -2924,6 +3037,7 @@ $("app-replicas-set").onclick = setReplicas;
 $("app-replicas").onkeydown = (e) => { if (e.key === "Enter") setReplicas(); };
 $("app-build").onclick = buildLatest;
 $("app-deploy").onclick = deployLatest;
+$("app-branch-use").onclick = switchBranch;
 $("app-builds-refresh").onclick = loadAppBuilds;
 $("app-stop").onclick = stop;
 $("app-delete").onclick = remove;

@@ -87,6 +87,27 @@ Two things worth knowing before you put production data in it:
   `apps/<id>/key.json`. Before, those were in the cluster with a different
   credential; now they are in the same place as the source.
 
+The layout inside the bucket is one directory per app, and its source is one
+repository per branch:
+
+```
+apps/<id>/app.json                    the app: name, port, env, status, deployed commit
+apps/<id>/key.json                    the app's API key
+apps/<id>/commits/<sha>.json          one recorded commit
+apps/<id>/builds/<id>.json            one build attempt
+apps/<id>/repo/branches/<branch>/     the repository for one branch
+```
+
+**`branches/` is where storage multiplies.** Each branch is a repository of its
+own, holding a full copy of everything reachable from it — so an app with three
+live branches occupies roughly three times one branch's repository. Measured: a
+repository of 40 commits of 1 MB files is 39 MB with one branch and 78 MB once a
+second branch is pushed, even when that second branch held one extra commit. This
+is a deliberate trade, not an oversight: it is what makes a branch a directory you
+can list and delete on its own, and git offers no way to share an object database
+between branches that could be split this way. Budget for it if apps are large or
+branches are many.
+
 Put more than one AppLab in one bucket by setting `objectStore.prefix` to a
 per-installation key prefix.
 
@@ -436,13 +457,38 @@ by name. An upgrade without it fails the same way an install does.
 
 There is no schema to migrate: everything AppLab remembers is objects in the
 bucket, written and read by this version. An upgrade is therefore a rollout, and
-rolling the image back with the chart is the whole of a revert — with one
-exception. Upgrading *to* this version from one that kept app keys and
-configuration in Kubernetes Secrets does not carry them across. An app that had
-a key reads as having none until `applab keys <app> --rotate` mints one, so read
-the old value before upgrading if anything depends on it; and secrets have to be
-set again with `applab env`. The old Secret objects are inert — nothing reads
-them any more — and deleting an app removes them along with its other objects.
+rolling the image back with the chart is the whole of a revert — with two
+exceptions, both of which are about the *shape* of what is already in the bucket.
+
+**App keys and configuration held in Kubernetes Secrets are not carried across.**
+An app that had a key reads as having none until `applab keys <app> --rotate`
+mints one, so read the old value before upgrading if anything depends on it; and
+secrets have to be set again with `applab env`. The old Secret objects are inert —
+nothing reads them any more — and deleting an app removes them along with its
+other objects.
+
+**A repository written by a version before branches moved.** This version stores
+each branch at `apps/<id>/repo/branches/<branch>/`; earlier versions stored one
+repository, flat, at `apps/<id>/repo/`. The old location is not read, so after an
+upgrade every app reads as having no branches and no commits until you move the
+repository — a copy, not a re-push, and it takes one command per bucket layout:
+
+```bash
+# MinIO / mc — move the flat repository to the default branch's directory.
+mc mv --recursive myminio/applab/apps/shop/repo/ \
+                myminio/applab/apps/shop/repo/branches/main/
+
+# AWS CLI — the same move, plus removing the empty source of the copy.
+aws s3 cp s3://applab/apps/shop/repo/ s3://applab/apps/shop/repo/branches/main/ \
+  --recursive
+aws s3 rm s3://applab/apps/shop/repo/ --recursive \
+  --exclude "branches/*"
+```
+
+Do the copy before upgrading, or the app is briefly unreadable; do it with AppLab
+stopped, or a push arriving mid-copy is a push into the old location. Apps that
+were only ever deployed — nothing pushed through AppLab — are unaffected, since
+they have no repository to move.
 
 ## Uninstalling
 

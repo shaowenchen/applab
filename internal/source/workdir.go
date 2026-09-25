@@ -106,18 +106,17 @@ func (s *Store) openWorkingRepo(ctx context.Context, appID, branch string) (*wor
 	return repo, nil
 }
 
-// repoPrefix is where one app's repository lives in the bucket.
+// branchPrefix is where one app's repository for one branch lives in the bucket.
 //
 // It is built here rather than by the store package so that what is inside a
 // repository is this package's business: the store knows an app has a directory
 // for its source, and this package knows what a source directory contains.
 //
-// The directory is "repo" and holds one bare git repository, not one per branch.
-// A repository is git's own storage format, and what is inside it — refs, the
-// object database, the ref log — is not a set of files that can be split by
-// branch without splitting git itself. See the package comment for what that
-// costs and the branch handling in commit.go for how branches are kept apart
-// within it.
+// One bare repository per branch. A repository is git's own storage format, and
+// what is inside it — refs, the object database, the ref log — is not a set of
+// files that can be split by branch without splitting git itself, so two branches
+// of one app cannot share an object database here without sharing a repository.
+// The package comment states what that costs.
 func (s *Store) branchPrefix(appID, branch string) string {
 	return store.BranchPrefix(appID, branch)
 }

@@ -303,6 +303,43 @@ func (c *Client) RotateAppKey(ctx context.Context, appID string) (*AppKey, error
 	return &out, nil
 }
 
+// Branches is what an app has source for, and which of them is running.
+type Branches struct {
+	AppID    string   `json:"app_id"`
+	Branches []string `json:"branches"`
+	Active   string   `json:"active"`
+}
+
+// ListBranches reports the branches an app has.
+//
+// A branch exists once something has been pushed to it, so this is the answer to
+// "what can I switch to".
+func (c *Client) ListBranches(ctx context.Context, appID string) (*Branches, error) {
+	var out Branches
+	if err := c.do(ctx, http.MethodGet, "/api/v1/apps/"+appID+"/branches", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UseBranch makes a branch active and deploys it.
+//
+// It is one call rather than two because a branch that is active but not
+// deployed is not active: the app would report itself on a branch whose code is
+// not running.
+func (c *Client) UseBranch(ctx context.Context, appID, branch string) (*DeployResult, error) {
+	body, err := json.Marshal(map[string]string{"branch": branch})
+	if err != nil {
+		return nil, err
+	}
+	var out DeployResult
+	if err := c.do(ctx, http.MethodPut, "/api/v1/apps/"+appID+"/branch",
+		bytes.NewReader(body), "application/json", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // AppConfig is an app's configuration.
 //
 // The asymmetry is the API's, and it is deliberate: Env carries values because
@@ -395,6 +432,10 @@ type App struct {
 	Hostname string `json:"hostname"`
 	Path     string `json:"path"`
 	URL      string `json:"url"`
+
+	// Branch is the app's active branch: what a deploy builds from, and the
+	// branch a clone with no branch named gets.
+	Branch string `json:"branch"`
 
 	CommitSHA string `json:"commit_sha"`
 	Image     string `json:"image"`

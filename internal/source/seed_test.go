@@ -184,6 +184,107 @@ func TestTheSeededScriptNeverCarriesAKey(t *testing.T) {
 	}
 }
 
+// TestTheSeededScriptsBranchReaderWorks runs the script's own branch reader over
+// the API's real response shape.
+//
+// The reader parses JSON with sed, because the script is expected to work on a
+// base system with no jq — and a sed expression that matches nothing is
+// indistinguishable from "this app has no branches", which is a wrong answer
+// rather than a missing one. So it is executed rather than pattern-matched: the
+// three shapes the endpoint can return are fed through it, and what it prints is
+// asserted.
+func TestTheSeededScriptsBranchReaderWorks(t *testing.T) {
+	shBin, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh is not on PATH")
+	}
+
+	script := ""
+	for _, f := range seedFor("shop") {
+		if strings.HasSuffix(f.Name, ".sh") {
+			script = f.Body
+		}
+	}
+	if script == "" {
+		t.Fatal("no seeded script")
+	}
+
+	// The two functions the reader is built from, taken as they appear so the
+	// test runs the shipped text rather than a copy of it, plus the one call
+	// that runs it — a harness that only defines branch_list prints nothing, and
+	// the "no branches" case would then pass for the wrong reason.
+	//
+	// "\n}\n" is the terminator because it only matches a closing brace at
+	// column zero, and every brace nested inside these functions is indented —
+	// so the first match is the function's own end.
+	extract := func(name string) string {
+		start := strings.Index(script, "\n"+name+"() {")
+		if start < 0 {
+			t.Fatalf("%s is not in the seeded script", name)
+		}
+		end := strings.Index(script[start:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("%s has no closing brace", name)
+		}
+		return script[start+1 : start+end+3]
+	}
+	harness := extract("json_field") + extract("branch_list") + "\nbranch_list\n"
+
+	cases := []struct {
+		name     string
+		response string
+		want     []string
+	}{
+		{
+			name:     "one branch",
+			response: `{"app_id":"shop","branches":["main"],"active":"main"}`,
+			want:     []string{"* main"},
+		},
+		{
+			name:     "several, marking the active one",
+			response: `{"app_id":"shop","branches":["main","dev","feature/x"],"active":"dev"}`,
+			want:     []string{"  main", "* dev", "  feature/x"},
+		},
+		{
+			name:     "none",
+			response: `{"app_id":"shop","branches":[],"active":"main"}`,
+			want:     nil, // reported, not listed: the message goes to stderr
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "reader.sh")
+			if err := os.WriteFile(path, []byte(harness), 0o644); err != nil {
+				t.Fatalf("write reader: %v", err)
+			}
+
+			cmd := exec.Command(shBin, path)
+			cmd.Stdin = strings.NewReader(tc.response)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("run the reader: %v", err)
+			}
+
+			got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+			if tc.want == nil {
+				if strings.TrimSpace(string(out)) != "" {
+					t.Errorf("an app with no branches listed %q, and should report rather than list", out)
+				}
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("printed %q, want %q", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("line %d: printed %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // TestTheSeededScriptIsExecutable asserts the mode, because a script that has to
 // be chmodded before its first use is one an agent will fail on.
 func TestTheSeededScriptIsExecutable(t *testing.T) {
@@ -279,6 +380,8 @@ func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
 		{"POST", "/builds"},
 		{"GET", "/builds"},
 		{"DELETE", "/builds/"},
+		{"GET", "/branches"},
+		{"PUT", "/branch"},
 		{"GET", "/commits"},
 		{"GET", "/config"},
 		{"POST", "/deploy"},

@@ -113,7 +113,8 @@ json_pairs() {
   printf '{"%s":{%s}}' "$wrapper" "${out%,}"
 }
 
-# Reads one field out of a JSON response, so the script does not depend on jq.
+# json_field reads one field out of a JSON response, so the script does not
+# depend on jq.
 #
 # Two forms, because the API returns both: a string value is quoted and a number
 # or boolean is not. Matching only the quoted form silently returns nothing for
@@ -131,6 +132,39 @@ json_field() {
   fi
 
   printf '%s' "$value"
+}
+
+# branch_list prints the branches from a /branches response, marking the active
+# one.
+#
+# The response is {"app_id":"…","branches":["main","dev"],"active":"main"} and it
+# is read with sed rather than parsed, like json_field and for the same reason:
+# this script is expected to work over a bare base system with no jq. The array
+# is taken as the text between the first "[" and the "]" that closes it, split on
+# commas, and each element stripped of its quotes.
+#
+# The mark matches the console's and the CLI's: the active branch is the one you
+# are looking for, and * next to it is a glance rather than a search.
+branch_list() {
+  input=$(cat)
+  active=$(printf '%s' "$input" | json_field active)
+  list=$(printf '%s' "$input" | sed -n 's/.*"branches"[: ]*\[\([^]]*\)\].*/\1/p' | head -1)
+
+  if [ -z "$list" ]; then
+    echo "this app has no branches yet" >&2
+    echo "push to create one: git push <remote> HEAD" >&2
+    return 0
+  fi
+
+  printf '%s\n' "$list" | tr ',' '\n' | while read -r name; do
+    name=$(printf '%s' "$name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//')
+    [ -n "$name" ] || continue
+    if [ "$name" = "$active" ]; then
+      echo "* $name"
+    else
+      echo "  $name"
+    fi
+  done
 }
 
 # The app's own id, so the script works without a key for anything local.
@@ -166,6 +200,19 @@ Changing
   restart            roll the pods, keeping the same image
   stop               remove the running app, keeping the source
   delete <app>       delete the app and its history (needs an admin key)
+
+Branches
+  branch             the branches this app has, and which one is running
+  branch use <name>  switch to a branch and deploy it
+
+  A branch is created by pushing to it — git's own rule. Switching replaces what
+  is running: one app runs one branch at a time.
+
+  git push  "https://x:$APPLAB_KEY@<host>/git/<app>@dev.git" HEAD:dev
+  git clone "https://x:$APPLAB_KEY@<host>/git/<app>.git"        the active branch
+  git clone "https://x:$APPLAB_KEY@<host>/git/<app>@dev.git"    the branch dev
+
+  See AGENT.md for more, and the app's page in the console has both addresses.
 
 Keys and upkeep
   key                print this app's key
@@ -435,6 +482,26 @@ case "${1:-help}" in
         exit 2
         ;;
     esac
+    ;;
+  branch)
+    shift
+    if [ "${1:-}" = "use" ]; then
+      shift
+      [ -n "${1:-}" ] || { echo "usage: ./applab.sh branch use <branch>" >&2; exit 2; }
+      # Escaped rather than interpolated bare: git allows a `"` in a ref name, so
+      # a caller can reach here with one, and unescaped it would end the string
+      # and make the request malformed. Whether the name is otherwise acceptable
+      # is the server's answer, not this script's.
+      api PUT "/api/v1/apps/$APP/branch" \
+        "{\"branch\":\"$(json_escape "$1")\"}" >/dev/null
+      # Reported as building rather than as deployed: the switch deploys the
+      # branch's tip, and a branch that was just pushed has no image yet, so the
+      # common case is a build. Saying "deployed" would have the caller expecting
+      # to find it serving.
+      echo "switched to $1; see ./applab.sh status" >&2
+      exit 0
+    fi
+    api GET "/api/v1/apps/$APP/branches" | branch_list
     ;;
   restart)
     api POST "/api/v1/apps/$APP/restart" >/dev/null

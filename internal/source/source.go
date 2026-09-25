@@ -296,12 +296,19 @@ func (s *Store) Branches(ctx context.Context, appID string) ([]string, error) {
 		return nil, fmt.Errorf("list the branches of app %s: %w", appID, err)
 	}
 
+	// A branch name may contain a slash — git nests them — so the branch is not
+	// the first path segment. What identifies one is git's own marker: a bare
+	// repository always has a HEAD file at its root, so every key ending
+	// "/HEAD" sits exactly one level below a branch and the path between the
+	// prefix and that marker is the name.
+	//
+	// Splitting on the first "/" instead would report "feature/x" as the two
+	// branches "feature" and "x", neither of which exists.
 	seen := map[string]struct{}{}
+	prefix := s.branchesPrefix(appID) + "/"
 	for _, object := range objects {
-		// Only the directory itself says which branch it is; everything below it
-		// is git's own layout.
-		rest := strings.TrimPrefix(object.Key, s.branchesPrefix(appID)+"/")
-		name, _, ok := strings.Cut(rest, "/")
+		rest := strings.TrimPrefix(object.Key, prefix)
+		name, ok := strings.CutSuffix(rest, "/HEAD")
 		if !ok || name == "" {
 			continue
 		}

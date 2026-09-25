@@ -150,6 +150,25 @@ func TestPathTraversalIsRefused(t *testing.T) {
 		{"repo name traversal", "/..git"},
 		{"empty", "/"},
 		{"bare git dir", "/.git/config"},
+
+		// The branch is a second caller-controlled component in the same path
+		// segment, so it gets the same treatment: every shape that would leave a
+		// repository, name a flag, or mean two things at once.
+		{"branch that is empty", "/shop@.git"},
+		{"branch with a traversal", "/shop@..git"},
+		{"branch with a nested traversal", "/shop@../.."},
+		{"branch with an inner traversal", "/shop@a..b.git"},
+		{"branch that is a dash", "/shop@-x.git"},
+		{"branch that is a revision operator", "/shop@{1}.git"},
+		{"two at signs", "/shop@a@b.git"},
+		// Percent-encoded, because a raw space is not a legal request target and
+		// httptest refuses to build one. The Go URL parser decodes it before the
+		// transport sees it, so what reaches resolvePath is the same string a
+		// hand-typed URL would produce.
+		{"branch with a space", "/shop@my%20branch.git"},
+		{"branch with a slash", "/shop@a//b.git"},
+		{"branch ending in lock", "/shop@a.lock.git"},
+		{"uppercase branch", "/shop@Dev.git"},
 	}
 
 	for _, tc := range cases {
