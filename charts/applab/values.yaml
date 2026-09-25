@@ -192,12 +192,18 @@ build:
   # to.
   insecureRegistry: false
 
-  # A Secret holding registry credentials, copied into each app namespace so the
-  # build job can push. It must be a docker-registry Secret, and it must already
-  # exist in AppLab's own namespace — for example created from a docker login.
+  # A Secret holding registry credentials, so the build job can push. It must be
+  # a docker-registry Secret in AppLab's own namespace — for example created
+  # from a docker login:
   #
-  # If it is named here and missing, a build fails before its Job is created
-  # rather than starting and failing at the push minutes later.
+  #   kubectl -n ops-system create secret docker-registry regcred \
+  #     --docker-server=registry.example.com \
+  #     --docker-username=<user> --docker-password=<password>
+  #
+  # Nothing is copied: apps run in that same namespace, so the Job reads the
+  # Secret where it is. A name that does not exist shows up as a Job that never
+  # starts — `kubectl describe pod` names the missing Secret, the build's own
+  # log does not, because the container it would come from never ran.
   pushSecret: ""
 
   # Resource bounds for a build container and for the ephemeral volume the

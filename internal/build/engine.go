@@ -50,9 +50,13 @@ type Config struct {
 	// "registry.example.com/apps". The image name is "<registry>/<app>".
 	Registry string
 
-	// PushSecret names a Secret in each app namespace holding a
-	// .dockerconfigjson for the registry. Empty means the registry needs no
-	// credentials, which is normal for a cluster-local registry.
+	// PushSecret names a Secret holding a .dockerconfigjson for the registry.
+	// Empty means the registry needs no credentials, which is normal for a
+	// cluster-local registry.
+	//
+	// It is read from whichever namespace the Job is created in, which is
+	// AppLab's own — apps run beside it rather than in namespaces of their own,
+	// so there is one Secret for every app rather than one per app.
 	PushSecret string
 
 	// InsecureRegistry allows pushing over plain HTTP and skipping TLS

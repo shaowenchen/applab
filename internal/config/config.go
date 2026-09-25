@@ -231,8 +231,11 @@ type Build struct {
 	// internal/build for why that is not a free choice.
 	FetcherImage string `yaml:"fetcher_image"`
 
-	// PushSecret names a Secret holding registry credentials, copied into each
-	// app namespace. Empty means the registry needs none.
+	// PushSecret names a Secret holding registry credentials, mounted into a
+	// build Job so BuildKit can push. Empty means the registry needs none.
+	//
+	// Not copied anywhere: apps run in AppLab's own namespace, so the Job reads
+	// it where it already is.
 	PushSecret string `yaml:"push_secret"`
 
 	// Rootless runs BuildKit unprivileged. Defaults to true; see the chart
