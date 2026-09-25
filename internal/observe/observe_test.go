@@ -51,7 +51,7 @@ func appPod(name string, phase corev1.PodPhase, ready bool, containers ...corev1
 // TestPodsReportsStateAndReason asserts a pod is reduced to what a caller needs
 // to decide what to do.
 func TestPodsReportsStateAndReason(t *testing.T) {
-	pod := appPod("app-shop-1", corev1.PodRunning, true, corev1.ContainerStatus{
+	pod := appPod("applab-shop-1", corev1.PodRunning, true, corev1.ContainerStatus{
 		Name:         "app",
 		Ready:        true,
 		RestartCount: 0,
@@ -70,7 +70,7 @@ func TestPodsReportsStateAndReason(t *testing.T) {
 	}
 
 	got := pods[0]
-	if got.Name != "app-shop-1" {
+	if got.Name != "applab-shop-1" {
 		t.Errorf("name = %q", got.Name)
 	}
 	if !got.Ready {
@@ -94,7 +94,7 @@ func TestPodsReportsStateAndReason(t *testing.T) {
 // Reading only the current state would report a crash-looping pod as waiting with
 // no explanation, which is exactly the case a caller is asking about.
 func TestCrashLoopReasonComesFromThePreviousContainer(t *testing.T) {
-	pod := appPod("app-shop-1", corev1.PodRunning, false, corev1.ContainerStatus{
+	pod := appPod("applab-shop-1", corev1.PodRunning, false, corev1.ContainerStatus{
 		Name:         "app",
 		Ready:        false,
 		RestartCount: 7,
@@ -140,7 +140,7 @@ func TestCrashLoopReasonComesFromThePreviousContainer(t *testing.T) {
 // TestPodLevelReasonIsReported asserts a pod that never started carries its
 // reason, since an unschedulable pod has no container state to explain it.
 func TestPodLevelReasonIsReported(t *testing.T) {
-	pod := appPod("app-shop-1", corev1.PodPending, false)
+	pod := appPod("applab-shop-1", corev1.PodPending, false)
 	pod.Status.Reason = "Unschedulable"
 	pod.Status.Message = "0/3 nodes are available: insufficient memory"
 
@@ -161,8 +161,8 @@ func TestPodLevelReasonIsReported(t *testing.T) {
 // TestPodsAreScopedToTheApp asserts another app's pods are never returned, which
 // is what keeps an observability call from reaching a neighbour's workload.
 func TestPodsAreScopedToTheApp(t *testing.T) {
-	shopPod := appPod("app-shop-1", corev1.PodRunning, true)
-	other := appPod("app-blog-1", corev1.PodRunning, true)
+	shopPod := appPod("applab-shop-1", corev1.PodRunning, true)
+	other := appPod("applab-blog-1", corev1.PodRunning, true)
 	other.Labels["applab.io/app"] = "blog"
 
 	o, _ := newTestObserver(t, shopPod, other)
@@ -171,7 +171,7 @@ func TestPodsAreScopedToTheApp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pods: %v", err)
 	}
-	if len(pods) != 1 || pods[0].Name != "app-shop-1" {
+	if len(pods) != 1 || pods[0].Name != "applab-shop-1" {
 		t.Errorf("got %v, want only the shop pod", pods)
 	}
 }
@@ -179,10 +179,10 @@ func TestPodsAreScopedToTheApp(t *testing.T) {
 // TestPodsNewestFirst asserts the current revision is what a caller reads first,
 // which matters during a rollout when both revisions have pods.
 func TestPodsNewestFirst(t *testing.T) {
-	old := appPod("app-shop-old", corev1.PodRunning, true)
+	old := appPod("applab-shop-old", corev1.PodRunning, true)
 	old.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
 
-	fresh := appPod("app-shop-new", corev1.PodRunning, true)
+	fresh := appPod("applab-shop-new", corev1.PodRunning, true)
 	fresh.CreationTimestamp = metav1.Now()
 
 	// Listed in the opposite order from the answer, so a missing sort is caught.
@@ -192,7 +192,7 @@ func TestPodsNewestFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pods: %v", err)
 	}
-	if pods[0].Name != "app-shop-new" {
+	if pods[0].Name != "applab-shop-new" {
 		t.Errorf("first pod = %q, want the newest", pods[0].Name)
 	}
 }
@@ -222,7 +222,7 @@ func TestEventsWarningsFirst(t *testing.T) {
 		Count:          12,
 		LastTimestamp:  metav1.Now(),
 		FirstTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
-		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "applab-shop-1"},
 	}
 	pulled := &corev1.Event{
 		ObjectMeta:     metav1.ObjectMeta{Name: "e2", Namespace: "ops-system", CreationTimestamp: metav1.Now()},
@@ -232,10 +232,10 @@ func TestEventsWarningsFirst(t *testing.T) {
 		Count:          1,
 		LastTimestamp:  metav1.Now(),
 		FirstTimestamp: metav1.Now(),
-		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "applab-shop-1"},
 	}
 
-	o, _ := newTestObserver(t, eventPod("app-shop-1", "shop"), pulled, killed)
+	o, _ := newTestObserver(t, eventPod("applab-shop-1", "shop"), pulled, killed)
 
 	events, err := o.Events(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
@@ -255,7 +255,7 @@ func TestEventsWarningsFirst(t *testing.T) {
 // TestLogsRequiresExplicitContainerWhenAmbiguous asserts a multi-container pod
 // resolves to the app's container rather than an arbitrary one.
 func TestLogsRequiresExplicitContainerWhenAmbiguous(t *testing.T) {
-	pod := appPod("app-shop-1", corev1.PodRunning, true)
+	pod := appPod("applab-shop-1", corev1.PodRunning, true)
 	pod.Spec.Containers = []corev1.Container{
 		{Name: "istio-proxy"},
 		{Name: "app"},
@@ -275,7 +275,7 @@ func TestLogsRequiresExplicitContainerWhenAmbiguous(t *testing.T) {
 
 // TestPickContainerHonoursAnExplicitName asserts a named container is used.
 func TestPickContainerHonoursAnExplicitName(t *testing.T) {
-	pod := appPod("app-shop-1", corev1.PodRunning, true)
+	pod := appPod("applab-shop-1", corev1.PodRunning, true)
 	pod.Spec.Containers = []corev1.Container{{Name: "app"}, {Name: "sidecar"}}
 
 	name, err := pickContainer(pod, "sidecar")
@@ -291,7 +291,7 @@ func TestPickContainerHonoursAnExplicitName(t *testing.T) {
 // silently falling back to a different container's log, which would answer a
 // question that was not asked.
 func TestPickContainerRejectsAnUnknownName(t *testing.T) {
-	pod := appPod("app-shop-1", corev1.PodRunning, true)
+	pod := appPod("applab-shop-1", corev1.PodRunning, true)
 	pod.Spec.Containers = []corev1.Container{{Name: "app"}}
 
 	if _, err := pickContainer(pod, "nope"); err == nil {
@@ -341,9 +341,9 @@ func TestLogsOnAnAppWithNoPodsIsClear(t *testing.T) {
 
 // TestResolvePodPicksTheNewest asserts the default pod is the current one.
 func TestResolvePodPicksTheNewest(t *testing.T) {
-	old := appPod("app-shop-old", corev1.PodRunning, true)
+	old := appPod("applab-shop-old", corev1.PodRunning, true)
 	old.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
-	fresh := appPod("app-shop-new", corev1.PodRunning, true)
+	fresh := appPod("applab-shop-new", corev1.PodRunning, true)
 	fresh.CreationTimestamp = metav1.Now()
 
 	o, _ := newTestObserver(t, old, fresh)
@@ -352,7 +352,7 @@ func TestResolvePodPicksTheNewest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolvePod: %v", err)
 	}
-	if name != "app-shop-new" {
+	if name != "applab-shop-new" {
 		t.Errorf("pod = %q, want the newest", name)
 	}
 	if container != "app" {
@@ -408,12 +408,12 @@ func TestEventsCarryTheirObject(t *testing.T) {
 		Message:    "Error: ImagePullBackOff",
 		InvolvedObject: corev1.ObjectReference{
 			Kind: "Pod",
-			Name: "app-shop-1",
+			Name: "applab-shop-1",
 		},
 		LastTimestamp: metav1.Now(),
 	}
 
-	o, _ := newTestObserver(t, eventPod("app-shop-1", "shop"), event)
+	o, _ := newTestObserver(t, eventPod("applab-shop-1", "shop"), event)
 
 	events, err := o.Events(context.Background(), "ops-system", "shop", 10)
 	if err != nil {
@@ -422,8 +422,8 @@ func TestEventsCarryTheirObject(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want 1", len(events))
 	}
-	if events[0].Object != "Pod/app-shop-1" {
-		t.Errorf("object = %q, want Pod/app-shop-1", events[0].Object)
+	if events[0].Object != "Pod/applab-shop-1" {
+		t.Errorf("object = %q, want Pod/applab-shop-1", events[0].Object)
 	}
 }
 
@@ -438,7 +438,7 @@ func TestEventsDoNotLeakBetweenApps(t *testing.T) {
 		Type:           corev1.EventTypeWarning,
 		Reason:         "BackOff",
 		Message:        "shop is crash looping",
-		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "applab-shop-1"},
 		LastTimestamp:  metav1.Now(),
 	}
 	blogsEvent := &corev1.Event{
@@ -446,13 +446,13 @@ func TestEventsDoNotLeakBetweenApps(t *testing.T) {
 		Type:           corev1.EventTypeWarning,
 		Reason:         "FailedScheduling",
 		Message:        "blog has no nodes to run on",
-		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-blog-1"},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "applab-blog-1"},
 		LastTimestamp:  metav1.Now(),
 	}
 
 	o, _ := newTestObserver(t,
-		eventPod("app-shop-1", "shop"),
-		eventPod("app-blog-1", "blog"),
+		eventPod("applab-shop-1", "shop"),
+		eventPod("applab-blog-1", "blog"),
 		shopsEvent, blogsEvent,
 	)
 
@@ -483,7 +483,7 @@ func TestEventsForASharedPrefixAreNotConfused(t *testing.T) {
 	}
 
 	o, _ := newTestObserver(t,
-		eventPod("app-shop-1", "shop"),
+		eventPod("applab-shop-1", "shop"),
 		eventPod("app-shop-2-abc", "shop-2"),
 		second,
 	)
@@ -511,7 +511,7 @@ func TestEventsIncludeDeploymentAndJobEvents(t *testing.T) {
 	}
 
 	o, _ := newTestObserver(t,
-		eventPod("app-shop-1", "shop"),
+		eventPod("applab-shop-1", "shop"),
 		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
 			Name: "app-shop-5f8c", Namespace: "ops-system",
 			Labels: map[string]string{"applab.io/app": "shop"},
@@ -596,7 +596,7 @@ func selfPod(name string, created time.Time, containers ...string) *corev1.Pod {
 func TestSelfPodsExcludesApps(t *testing.T) {
 	o, _ := newTestObserver(t,
 		selfPod("applab-6b9f7-abc", time.Now(), "applab"),
-		appPod("app-shop-1", corev1.PodRunning, true),
+		appPod("applab-shop-1", corev1.PodRunning, true),
 	)
 
 	pods, err := o.SelfPods(context.Background(), "ops-system", 10)
@@ -636,9 +636,9 @@ func TestSelfPodsNewestFirst(t *testing.T) {
 // TestSelfLogsRefusesAnAppsPod is the mirror of TestLogsRefusesAPodOfAnotherApp,
 // and the reason `?pod=` is not a way to read any log in the namespace.
 func TestSelfLogsRefusesAnAppsPod(t *testing.T) {
-	o, _ := newTestObserver(t, appPod("app-shop-1", corev1.PodRunning, true))
+	o, _ := newTestObserver(t, appPod("applab-shop-1", corev1.PodRunning, true))
 
-	_, err := o.SelfLogs(context.Background(), "ops-system", LogOptions{Pod: "app-shop-1"})
+	_, err := o.SelfLogs(context.Background(), "ops-system", LogOptions{Pod: "applab-shop-1"})
 	if err == nil {
 		t.Fatal("the platform log read an app's pod")
 	}

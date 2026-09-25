@@ -187,7 +187,7 @@ func TestDeployCreatesResources(t *testing.T) {
 	}
 
 	// The objects must exist in the app's namespace.
-	if _, err := client.AppsV1().Deployments("ops-system").Get(context.Background(), "app-shop", metav1.GetOptions{}); err != nil {
+	if _, err := client.AppsV1().Deployments("ops-system").Get(context.Background(), "applab-shop", metav1.GetOptions{}); err != nil {
 		t.Errorf("no deployment was created: %v", err)
 	}
 	// And AppLab's record must say what is deployed.
@@ -279,7 +279,7 @@ func TestStopRemovesResources(t *testing.T) {
 		t.Fatalf("stop: %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "applab-shop", metav1.GetOptions{}); err == nil {
 		t.Error("the deployment still exists after stop")
 	}
 
@@ -462,15 +462,15 @@ func TestDeletingAnAppRemovesItsClusterObjects(t *testing.T) {
 	}
 
 	// The app's own objects are gone.
-	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "applab-shop", metav1.GetOptions{}); err == nil {
 		t.Error("the app's Deployment survived the delete")
 	}
-	if _, err := client.CoreV1().Services("ops-system").Get(ctx, "app-shop", metav1.GetOptions{}); err == nil {
+	if _, err := client.CoreV1().Services("ops-system").Get(ctx, "applab-shop", metav1.GetOptions{}); err == nil {
 		t.Error("the app's Service survived the delete")
 	}
 
 	// Nothing else was touched.
-	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "app-blog", metav1.GetOptions{}); err != nil {
+	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "applab-blog", metav1.GetOptions{}); err != nil {
 		t.Errorf("deleting one app removed another app's Deployment: %v", err)
 	}
 	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "applab", metav1.GetOptions{}); err != nil {
@@ -581,7 +581,7 @@ func TestStatusReportsLiveClusterState(t *testing.T) {
 	}
 
 	// Make the cluster report the app as available.
-	deployment, err := client.AppsV1().Deployments("ops-system").Get(ctx, "app-shop", metav1.GetOptions{})
+	deployment, err := client.AppsV1().Deployments("ops-system").Get(ctx, "applab-shop", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}

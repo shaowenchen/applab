@@ -301,7 +301,7 @@ func (o *Observer) Events(ctx context.Context, namespace, appID string, limit in
 //
 // It is how an event is attributed to an app. The alternative — matching the
 // event's object name against a prefix built from the app id — looks simpler and
-// is wrong: apps "shop" and "shop-2" share the prefix "app-shop-", so a prefix
+// is wrong: apps "shop" and "shop-2" share the prefix "applab-shop-", so a prefix
 // match reports one app's pod failures under another app's name. Asking each
 // kind for its labeled objects costs a few list calls and cannot confuse two
 // apps.

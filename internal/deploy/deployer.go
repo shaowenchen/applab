@@ -194,7 +194,13 @@ func selectorLabels(app *model.App) map[string]string {
 // One name for all three is not just tidiness: the Ingress points at the Service
 // by name and the Service selects the Deployment's pods, so a single source for
 // the name removes the possibility of a typo breaking one of those links.
-func ObjectName(appID string) string { return "app-" + appID }
+//
+// The "applab-" prefix is what makes the name say whose it is. Everything in
+// this namespace is AppLab's — it deploys every app beside itself rather than
+// into a namespace per app — so an object named "app-shop" reads as something
+// whose owner has to be looked up, and it collides with any other thing in the
+// cluster that decided "app-" was a good prefix for its objects.
+func ObjectName(appID string) string { return "applab-" + appID }
 
 func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image string) error {
 	namespace := app.Namespace
