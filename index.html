@@ -133,13 +133,13 @@ img { max-width: 100%; height: auto; }
   </nav>
   <main>
     <article>
-<h1>AppLab</h1>
+<h1 id="applab">AppLab</h1>
 <p>Deploy an application to Kubernetes by uploading its source.</p>
 <p>This chart installs the control plane: it stores source in a git repository per
 app per branch, builds images in the cluster, deploys them and exposes them on a
 hostname. Give someone its URL and an API key, and they can ship with one
 command.</p>
-<h2>Quick start</h2>
+<h2 id="quick-start">Quick start</h2>
 <p>Three steps, and the order matters: the registry credential has to exist before
 AppLab does, because a build reads it from the namespace AppLab runs in.</p>
 <p><strong>1. The namespace, and the registry credential</strong></p>
@@ -199,11 +199,11 @@ export APPLAB_KEY=&lt;the key from the release's Secret&gt;
 
 applab push myshop
 </code></pre>
-<h2>Before you install</h2>
+<h2 id="before-you-install">Before you install</h2>
 <p>A bucket and three decisions. The bucket is required and has no default, and each
 decision is much easier to make now than after, because it changes what the
 cluster has to be able to do.</p>
-<h3>0. A bucket, which is where everything lives</h3>
+<h3 id="0-a-bucket-which-is-where-everything-lives">0. A bucket, which is where everything lives</h3>
 <p>AppLab is stateless: every app, every repository, every commit, every build and
 every key are objects in a bucket you point it at. Create the bucket before
 installing — AppLab does not create one, because a bucket's name, region and
@@ -248,7 +248,7 @@ between branches that could be split this way. Budget for it if apps are large o
 branches are many.</p>
 <p>Put more than one AppLab in one bucket by setting <code>objectStore.prefix</code> to a
 per-installation key prefix.</p>
-<h3>1. A registry the cluster can push to and pull from</h3>
+<h3 id="1-a-registry-the-cluster-can-push-to-and-pull-from">1. A registry the cluster can push to and pull from</h3>
 <p><code>build.registry</code> is where built images go. How an app's image is named depends on
 how much path the registry has — a repository can only be extended so far before
 the registry rejects it, so a deep prefix puts the app in the tag instead:</p>
@@ -304,7 +304,7 @@ point away from the actual cause.</p>
 certificate, needs <code>build.insecureRegistry=true</code> — which is a deliberate weakening
 of the guarantee that the image that arrived is the image that was pushed, so it
 is off by default.</p>
-<h3>2. A domain, a gateway, and a certificate</h3>
+<h3 id="2-a-domain-a-gateway-and-a-certificate">2. A domain, a gateway, and a certificate</h3>
 <p><code>ingress.host</code> is the one hostname this installation lives on, and it does two
 jobs at once: AppLab's own console and API are served under it, and the apps are
 published under it too. There is no second domain setting — setting
@@ -329,7 +329,7 @@ apps cannot both own <code>/</code>.</p>
 <code>VirtualService</code> is created for the apps and there is no host for the console
 either, so the release is reachable by <code>port-forward</code> only. The install notes
 say so, and print the command.</p>
-<h4>The gateway</h4>
+<h4 id="the-gateway">The gateway</h4>
 <p>Apps are published by attaching a <code>VirtualService</code> to an <strong>Istio gateway</strong>. The
 gateway is infrastructure you own — it holds the listeners and the certificate
 for the domain — and AppLab attaches to it by name and never creates or modifies
@@ -352,7 +352,7 @@ setting to get wrong. An app is served over HTTPS when the gateway has an HTTPS
 listener whose certificate covers the host. For a subdomain-per-app install that
 certificate must be a wildcard (<code>*.applab.example.com</code>); for a <code>pathPrefix</code>
 install a single-host certificate is enough, which is the reason to prefer it.</p>
-<h4>When the console has its own Ingress</h4>
+<h4 id="when-the-console-has-its-own-ingress">When the console has its own Ingress</h4>
 <p>The console and API are reached through a plain Kubernetes Ingress by default
 (<code>ingress.path</code>, <code>/applab</code>), on whatever ingress controller the cluster runs.
 Apps are unaffected: they are always published through the gateway above.</p>
@@ -361,7 +361,7 @@ console on the gateway instead — a <code>VirtualService</code> on <code>ingres
 apps' own. That is why this is one hostname rather than two: the console's
 fallback route and the apps' route are the same host, so the gateway only needs
 one listener and one certificate for both.</p>
-<h4>Configuration that is refused</h4>
+<h4 id="configuration-that-is-refused">Configuration that is refused</h4>
 <p>The chart fails at render time rather than letting these reach a cluster:</p>
 <ul>
 <li><code>ingress.host</code> set with <code>deploy.gateway</code> empty — apps would get hostnames that
@@ -370,7 +370,7 @@ nothing serves, and with no Ingress the console would have no route either.</li>
 <li><code>apps.pathPrefix</code> set with <code>ingress.host</code> empty — the prefix is the only thing
 telling one app from another on that shared host.</li>
 </ul>
-<h3>3. Whether the cluster can build</h3>
+<h3 id="3-whether-the-cluster-can-build">3. Whether the cluster can build</h3>
 <p>This is the one to check before installing, because a build that cannot run fails
 in a way that looks like nothing is happening.</p>
 <p>Builds run as a Kubernetes Job per build, with <strong>BuildKit in rootless mode</strong>. That
@@ -424,7 +424,7 @@ elsewhere. <code>applab push</code> will say clearly that this deployment cannot
 <p>With the pipeline off there is no registry to authenticate to either, so the
 registry credential is ignored: <code>build.secret</code> is emptied along with
 <code>build.registry</code>, and no Secret has to exist for an app to deploy.</p>
-<h2>What gets installed</h2>
+<h2 id="what-gets-installed">What gets installed</h2>
 <table>
 <thead>
 <tr>
@@ -463,7 +463,7 @@ registry credential is ignored: <code>build.secret</code> is emptied along with
 </tr>
 </tbody>
 </table>
-<h3>Replicas and the bucket</h3>
+<h3 id="replicas-and-the-bucket">Replicas and the bucket</h3>
 <p>AppLab holds nothing on a replica. Every app, every repository and all of the
 history are in the bucket you point <code>objectStore</code> at, so <code>replicaCount</code> can be
 raised for availability and a pod can be replaced at any moment.</p>
@@ -475,7 +475,7 @@ each branch is a repository of its own. A push is a rare event and the next buil
 reads what git actually has, so this is a note rather than a warning — but it is
 why one replica is still the default.</p>
 <p><strong>Back up the bucket.</strong> It is the only copy of every app's source.</p>
-<h3>The Role</h3>
+<h3 id="the-role">The Role</h3>
 <p>AppLab runs in one namespace and deploys every app into it too, so a namespaced
 <code>Role</code> and <code>RoleBinding</code> are enough — one namespace, one binding, no cluster-wide
 grant.</p>
@@ -494,7 +494,7 @@ Kubernetes API token</strong> (<code>automountServiceAccountToken: false</code>)
 every Secret in its namespace, so an app holding one could reach the API keys and
 the registry credentials. AppLab sets this itself, so there is nothing to
 configure — but an app deployed into this namespace by hand needs the same.</p>
-<h2>Values</h2>
+<h2 id="values">Values</h2>
 <p>See <a href="https://github.com/shaowenchen/applab/blob/master/charts/applab/values.yaml"><code>values.yaml</code></a> for every option, each with a note on what it
 does and why it defaults the way it does. The ones that matter most:</p>
 <table>
@@ -593,7 +593,7 @@ does and why it defaults the way it does. The ones that matter most:</p>
 </tr>
 </tbody>
 </table>
-<h3>Keys</h3>
+<h3 id="keys">Keys</h3>
 <p>There are two tiers, and the difference is reach.</p>
 <p><strong>Admin keys</strong> are what this chart configures. A key that authenticates can also
 delete — every app this installation manages — so give it to nobody you would not
@@ -618,7 +618,7 @@ cached and a rotation takes effect immediately. Two consequences worth knowing:
 the bucket credential now reaches every app's key as well as the source, and a
 deployment whose object storage is unreachable cannot authenticate at all, admin
 keys included. Nothing in the chart has to be configured for this.</p>
-<h3>App configuration</h3>
+<h3 id="app-configuration">App configuration</h3>
 <p>Both halves of an app's configuration live in the app's own record in the
 bucket, and both reach the container the same way: AppLab writes them into the
 Deployment's <code>env</code> as plain values.</p>
@@ -638,7 +638,7 @@ be kept out of a pod spec, and the two objects that do it — Secret and
 objects left by an older version.</p>
 <p>Both halves are managed with <code>applab env</code> (or <code>PUT /api/v1/apps/&lt;app&gt;/secrets</code>),
 and <strong>take effect on the next deploy</strong>. Nothing to configure in the chart.</p>
-<h2>After installing</h2>
+<h2 id="after-installing">After installing</h2>
 <pre><code class="language-bash"># The key the chart generated, if you used auth.key
 kubectl -n ops-system get secret applab-auth -o jsonpath='{.data.APPLAB_KEYS}' | base64 -d
 
@@ -648,7 +648,133 @@ curl -s https://applab.example.com/api/v1/describe
 # What the deployment can do
 applab config
 </code></pre>
-<h2>Installing a development build</h2>
+<h2 id="your-first-app">Your first app</h2>
+<p>Everything below runs from a terminal with no cluster access — that is the whole
+point of installing AppLab. The only credential needed up front is the <strong>admin
+key</strong> from the step above; the app gets one of its own along the way.</p>
+<pre><code class="language-bash">export APPLAB_URL=https://applab.example.com
+export APPLAB_KEY=&lt;the admin key from the release's Secret&gt;
+</code></pre>
+<p><code>applab</code> here is the CLI. <a href="https://github.com/shaowenchen/applab#development">Build it from the repository</a>
+(<code>make build</code> puts it in <code>bin/</code>), or drive the same endpoints with <code>curl</code> — the
+last part of this section shows that instead.</p>
+<h3 id="1-create-the-app">1. Create the app</h3>
+<pre><code class="language-bash">applab create shop --port 8080
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--port</code></td>
+<td>the port the app listens on in its container; 8080 if omitted</td>
+</tr>
+<tr>
+<td><code>--dockerfile</code></td>
+<td>path to the Dockerfile within the source; <code>Dockerfile</code> if omitted</td>
+</tr>
+<tr>
+<td><code>--replicas</code></td>
+<td>how many copies to run</td>
+</tr>
+<tr>
+<td><code>--domain</code></td>
+<td>an explicit hostname, overriding the one derived from <code>ingress.host</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="2-take-the-apps-own-key">2. Take the app's own key</h3>
+<pre><code class="language-bash">applab keys shop
+</code></pre>
+<p>An app has a key separate from the admin one, and it is the one to use from here
+on. It reaches this app and nothing else: it can push, build, deploy and roll
+back, but cannot delete the app and cannot see any other. That is what makes it
+safe to keep on the machine doing the work, where the admin key — which can
+delete every app this installation manages — should not be.</p>
+<pre><code class="language-bash">export APPLAB_APP_KEY=&lt;the key the command printed&gt;
+</code></pre>
+<p>Both keys authenticate; the difference is reach. See <a href="#keys">Keys</a> for the full
+comparison.</p>
+<h3 id="3-clone-the-apps-repository">3. Clone the app's repository</h3>
+<p>Every app <em>is</em> a git repository from the moment it is created, so it can be
+cloned before it has any content:</p>
+<pre><code class="language-bash">git clone &quot;https://x:$APPLAB_APP_KEY@applab.example.com/git/shop.git&quot;
+cd shop
+</code></pre>
+<p>Three things about that URL:</p>
+<ul>
+<li><strong>The username is a placeholder.</strong> <code>x</code> can be anything — <code>git</code>, the app id.
+Git needs <em>some</em> username to send a password at all, and AppLab reads only the
+password.</li>
+<li><strong>The key is the password.</strong> Which is why the admin key should not be used
+here: a URL lands in shell history and in the repository's own <code>config</code> on
+disk.</li>
+<li><strong>The branch is in the URL.</strong> <code>/git/shop.git</code> is the app's active branch;
+another is <code>/git/shop@dev.git</code>. Pushing to a branch that does not exist yet
+creates it.</li>
+</ul>
+<p>If you would rather the key never enter the URL:</p>
+<pre><code class="language-bash">git -c http.extraHeader=&quot;Authorization: Bearer $APPLAB_APP_KEY&quot; \
+  clone https://applab.example.com/git/shop.git
+</code></pre>
+<h3 id="4-push">4. Push</h3>
+<p>The clone is empty, so add something to build. AppLab needs a Dockerfile; the
+app listens on the port given at creation:</p>
+<pre><code class="language-bash">cat &gt; Dockerfile &lt;&lt;'EOF'
+FROM nginx:alpine
+COPY . /usr/share/nginx/html
+EOF
+echo &quot;hello from shop&quot; &gt; index.html
+
+git add .
+git commit -m &quot;first&quot;
+git push origin main
+</code></pre>
+<p>A push stores the source and nothing else — it does not build. That is deliberate
+(<code>git push</code> is how you get code in, not how you ask for a deploy), so the next
+step is explicit.</p>
+<h3 id="5-build-and-deploy">5. Build and deploy</h3>
+<pre><code class="language-bash">applab build shop          # build the newest commit into an image
+applab deploy shop         # run that image
+
+# Or both, following the log until it is serving:
+applab deploy shop --build
+</code></pre>
+<p>When it finishes, <code>applab deploy</code> prints the URL the app is served at. If it does
+not come up, <code>applab status shop</code> says what AppLab recorded and what the cluster
+actually has — the two side by side, because the difference between them is the
+information — and <code>applab diagnose shop</code> is the first thing to read: it walks the
+same checks in order and reports the first that fails.</p>
+<h3 id="the-same-thing-with-curl">The same thing with curl</h3>
+<p>No CLI required. Each numbered step above is one request:</p>
+<pre><code class="language-bash"># 1. Create — the admin key does this.
+curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps&quot; \
+  -H &quot;Authorization: Bearer $APPLAB_KEY&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;id&quot;:&quot;shop&quot;,&quot;port&quot;:8080}'
+
+# 2. The app's own key, to use from here on.
+curl -sS &quot;$APPLAB_URL/api/v1/apps/shop/key&quot; \
+  -H &quot;Authorization: Bearer $APPLAB_KEY&quot;
+</code></pre>
+<p>Steps 3 and 4 are git itself, unchanged — the clone URL above works the same
+either way. Step 5, as one call rather than two:</p>
+<pre><code class="language-bash">curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps/shop/deploy&quot; \
+  -H &quot;Authorization: Bearer $APPLAB_APP_KEY&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;build&quot;:true}'
+</code></pre>
+<p><code>build:true</code> because a deploy with no image to deploy is refused, and names this
+flag as the fix: building is a separate operation, so a deploy that silently
+started one would make the response time unpredictable and hide a build failure
+behind a deploy. Leaving it out is only correct when the image already exists.</p>
+<p><code>GET /api/v1/describe</code> lists every endpoint with what it needs and what it
+returns, which is where to look for anything not shown here.</p>
+<h2 id="installing-a-development-build">Installing a development build</h2>
 <p>Every push to the default branch publishes a chart versioned <code>&lt;Chart.yaml version&gt;-dev</code>, replacing the previous one, and an image tagged with that same
 version — so the chart's default <code>image.tag</code> is the image it needs, and an
 install with nothing overridden runs the build that chart was packaged from.</p>
@@ -681,7 +807,7 @@ back to.</p>
 <p>Tagged releases (<code>v0.2.0</code> → chart <code>0.2.0</code>) are published alongside and never
 pruned. Only the <code>-dev</code> package is replaced, so a development build can never
 remove a release.</p>
-<h2>Upgrading</h2>
+<h2 id="upgrading">Upgrading</h2>
 <pre><code class="language-bash">helm upgrade applab applab/applab \
   --namespace ops-system -f my-values.yaml \
   --version 0.1.0-dev
@@ -706,7 +832,7 @@ having no commits until it is pushed again. That is the ordinary cost of running
 a pre-release, and it is why the shape of the bucket is not something this
 document walks you through: it is not part of the contract until there is a
 release to break.</p>
-<h2>Uninstalling</h2>
+<h2 id="uninstalling">Uninstalling</h2>
 <pre><code class="language-bash">helm uninstall applab --namespace ops-system
 </code></pre>
 <p><strong>The apps are not removed.</strong> They are Deployments, Services and
