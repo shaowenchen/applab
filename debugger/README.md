@@ -52,6 +52,7 @@ see [the overview](../README.md) for how to install it, or drive the API directl
 | **AppLab** | The published image, installed with this repository's [Helm chart](../charts/applab/README.md). |
 | **Istio** | The ingress gateway apps are published through. Install it yourself in a real deployment; here it is part of the environment. |
 | **registry:2** | Where built images are pushed, as `kind-registry:5000` — a cluster-local registry with no TLS and no credentials. |
+| **MinIO** | The object store, as `applab-object-store:9000` — a container on the host the cluster reaches by name. The image `bitnami/minio` 17.0.21 declares, so what runs here is what a real install of that chart would run. |
 | **cloudflared** | A named tunnel, published at `domain`. Set `domain` to empty for a quick tunnel instead, or `tunnel: ngrok` to use ngrok. |
 
 Two Istio objects are involved here and only one comes from `istioctl`.

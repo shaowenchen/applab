@@ -90,6 +90,23 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 : "${APPLAB_OBJECT_STORE_ACCESS_KEY:=applab}"
 : "${APPLAB_OBJECT_STORE_SECRET_KEY:=$(openssl rand -hex 16)}"
 
+# The object store's images, pinned to what bitnami/minio 17.0.21 declares — the
+# chart's `annotations.images`, which is the list it validates its own defaults
+# against. Pinned for the same reason kind and istio are: a moving tag would
+# change this environment's behaviour without this repository changing.
+#
+# The repository is `bitnamilegacy` rather than `bitnami`. Bitnami moved its free
+# images out of `bitnami/` during 2025 and the old paths now resolve to nothing —
+# `bitnami/minio` has no tags at all — so the tag the chart names is only
+# pullable from the legacy namespace. It is still the same image the chart
+# selects, which is the point of naming the version rather than a tag alone.
+#
+# Both halves are here because both are needed: the server, and `mc` for creating
+# the bucket. `mc` is not a dependency of the server image, so it is a second
+# container that runs once and exits.
+: "${APPLAB_OBJECT_STORE_IMAGE:=bitnamilegacy/minio:2025.7.23-debian-12-r3}"
+: "${APPLAB_OBJECT_STORE_CLIENT_IMAGE:=bitnamilegacy/minio-client:2025.7.21-debian-12-r2}"
+
 : "${CLOUDFLARE_TOKEN:=}"
 : "${NGROK_TOKEN:=}"
 
@@ -409,13 +426,37 @@ docker network connect "kind" "$APPLAB_REGISTRY_NAME" 2>/dev/null || true
 # in the release at all, which is the point of the change: this environment used
 # to prove that a PersistentVolume survived a restart, and now proves the
 # opposite.
+#
+# The image is the one bitnami/minio 17.0.21 declares, so this runs what the
+# chart would run if the object store were an object in the cluster rather than a
+# container here. Three things about that image shape the invocation below, and
+# all three are the chart's own settings rather than choices made here:
+#
+#   - its data directory is /bitnami/minio/data, not /data, and that is what
+#     MINIO_DATA_DIR names. The chart sets it to its persistence.mountPath, which
+#     defaults to the same path, so this is the chart's value written out.
+#   - it runs as uid 1001, not root. The image declares /bitnami/minio/data as a
+#     volume, so docker initialises that directory with the image's own ownership
+#     and the server can write to it. A bind mount in its place would be
+#     root-owned and would fail on the first write.
+#   - MINIO_SKIP_CLIENT is what the chart sets when there are no default buckets,
+#     which is this case: the bucket is created below, and the image's own client
+#     step would be a second thing trying to do it. It also keeps the server from
+#     needing $HOME/.mc, which it cannot write with HOME=/ and uid 1001.
+#
+# No command or arguments are passed, which is deliberate: the chart passes none
+# either, so the image's own entrypoint and run script are what starts the
+# server. Handing it `server /data` — what the previous image took — would
+# replace that entrypoint's default command with something it cannot exec.
 log "starting the object store at ${APPLAB_OBJECT_STORE_ENDPOINT}"
 if [ "$(docker inspect -f '{{.State.Running}}' "$APPLAB_OBJECT_STORE_NAME" 2>/dev/null || echo false)" != "true" ]; then
   docker run -d --restart=always -p "127.0.0.1:${APPLAB_OBJECT_STORE_PORT}:9000" \
     --name "$APPLAB_OBJECT_STORE_NAME" \
     -e "MINIO_ROOT_USER=${APPLAB_OBJECT_STORE_ACCESS_KEY}" \
     -e "MINIO_ROOT_PASSWORD=${APPLAB_OBJECT_STORE_SECRET_KEY}" \
-    minio/minio:latest server /data >/dev/null
+    -e "MINIO_DATA_DIR=/bitnami/minio/data" \
+    -e "MINIO_SKIP_CLIENT=yes" \
+    "$APPLAB_OBJECT_STORE_IMAGE" >/dev/null
 fi
 docker network connect "kind" "$APPLAB_OBJECT_STORE_NAME" 2>/dev/null || true
 
@@ -426,11 +467,23 @@ docker network connect "kind" "$APPLAB_OBJECT_STORE_NAME" 2>/dev/null || true
 #
 # `mc` is MinIO's own client, run from this host against the published port, so
 # it is one throwaway container rather than a dependency of the server image.
+# The client image is the one the chart declares beside the server's, and it is
+# driven the way the chart drives it — `mc alias set`, then `mc mb` with
+# --ignore-existing — so what creates the bucket here is what would create it in
+# a cluster.
+#
+# HOME is set to /tmp because the image ships HOME=/ and `mc` keeps its config in
+# $HOME/.mc. The chart mounts /.mc as a writable volume for exactly that reason;
+# with no volume here, / is root-owned and uid 1001 cannot write to it, so `mc`
+# would fail before reaching the server. /tmp is world-writable, and nothing
+# outside this one-shot container reads what it writes.
 log "creating the bucket ${APPLAB_OBJECT_STORE_BUCKET}"
 for _ in $(seq 1 30); do
   if docker run --rm --network "container:${APPLAB_OBJECT_STORE_NAME}" \
-      --entrypoint sh minio/mc:latest -c \
-      "mc alias set local http://127.0.0.1:9000 '${APPLAB_OBJECT_STORE_ACCESS_KEY}' '${APPLAB_OBJECT_STORE_SECRET_KEY}' >/dev/null 2>&1 && mc mb --ignore-existing local/${APPLAB_OBJECT_STORE_BUCKET}" \
+      -e "HOME=/tmp" \
+      --entrypoint /bin/bash \
+      "$APPLAB_OBJECT_STORE_CLIENT_IMAGE" -c \
+      "mc alias set local http://127.0.0.1:9000 '${APPLAB_OBJECT_STORE_ACCESS_KEY}' '${APPLAB_OBJECT_STORE_SECRET_KEY}' && mc mb --ignore-existing local/${APPLAB_OBJECT_STORE_BUCKET}" \
       >/dev/null 2>&1; then
     break
   fi
