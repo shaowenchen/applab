@@ -554,9 +554,24 @@ async function render(apps) {
     const card = markup.match(/<h2 data-i18n="State"[\s\S]*?<\/div>\s*<\/div>/);
     check("the State card exists", card !== null, true);
     if (card) {
-      for (const id of ["app-replicas", "app-build", "app-deploy", "app-branch", "app-branch-use"]) {
+      for (const id of ["app-build", "app-deploy", "app-branch", "app-branch-use"]) {
         check(`the State card carries ${id}`, card[0].includes(`id="${id}"`), true);
       }
+      // Replicas is deliberately not here: it belongs with the instances it
+      // counts, in the card below, not with the app's other settings.
+      check("and does not carry app-replicas", card[0].includes('id="app-replicas"'), false);
+    }
+  }
+
+  // Replicas sits with the instances it counts, which is the card that lists
+  // them. Asserted as a placement rather than as existence: the control works
+  // wherever it is, and what makes it findable is being next to its subject.
+  {
+    const instances = markup.match(/<h2 data-i18n="Instances"[\s\S]*?<\/div>\s*<\/div>/);
+    check("the Instances card exists", instances !== null, true);
+    if (instances) {
+      check("the Instances card carries app-replicas", instances[0].includes('id="app-replicas"'), true);
+      check("and app-replicas-set", instances[0].includes('id="app-replicas-set"'), true);
     }
   }
 

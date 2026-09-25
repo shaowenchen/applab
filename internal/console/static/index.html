@@ -693,18 +693,6 @@
            commit, and the history table below is where one specific commit is
            chosen. -->
       <div class="state-actions">
-        <label class="field">
-          <span data-i18n="Replicas">Replicas</span>
-          <input id="app-replicas" type="number" min="1" max="50" size="3" style="width:72px">
-          <button id="app-replicas-set" data-i18n="Set">Set</button>
-        </label>
-        <!-- Said out loud because the alternative is someone setting three
-             replicas, seeing nothing change, and concluding it is broken. The
-             setting is the app's; the deployer is what applies it, exactly as it
-             applies the app's port and image. `applab update --replicas` behaves
-             the same way, so this also keeps the console and the CLI honest with
-             each other. -->
-        <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
         <span class="spacer"></span>
         <button id="app-build" data-i18n="Build latest">Build latest</button>
         <button id="app-deploy" data-i18n="Deploy latest">Deploy latest</button>
@@ -733,11 +721,28 @@
 
     <div class="card">
       <div class="card-head">
-        <h2 data-i18n="Pods">Pods</h2>
+        <h2 data-i18n="Instances">Instances</h2>
+        <!-- How many copies run, beside the copies themselves. It belongs with
+             what it counts rather than with the app's other settings: a replica
+             count is a fact about the instances, and the table below is those
+             instances. Nothing here applies it — the deployer does, on the next
+             deploy — which is what the note beside it says. -->
+        <label class="field">
+          <span data-i18n="Replicas">Replicas</span>
+          <input id="app-replicas" type="number" min="1" max="50" size="3" style="width:72px">
+          <button id="app-replicas-set" data-i18n="Set">Set</button>
+        </label>
+        <!-- Said out loud because the alternative is someone setting three
+             replicas, seeing nothing change, and concluding it is broken. The
+             setting is the app's; the deployer is what applies it, exactly as it
+             applies the app's port and image. `applab update --replicas` behaves
+             the same way, so this also keeps the console and the CLI honest with
+             each other. -->
+        <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
         <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
       </div>
       <table>
-        <thead><tr><th data-i18n="Pod">Pod</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="Reason">Reason</th></tr></thead>
+        <thead><tr><th data-i18n="Instance">Instance</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="Reason">Reason</th></tr></thead>
         <tbody id="pods"></tbody>
       </table>
       <div id="pods-empty" class="empty hidden" data-i18n="Nothing is running.">Nothing is running.</div>
@@ -755,52 +760,33 @@
     </div>
 
     <div class="card">
-      <h2 data-i18n="Configuration">Configuration</h2>
+      <h2 data-i18n="Environment variables">Environment variables</h2>
       <p class="muted" style="margin-top:0"
          data-i18n="Changes take effect on the next deploy, not immediately — configuration travels the same path as code.">Changes
         take effect on the next deploy, not immediately — configuration travels
         the same path as code.</p>
 
-      <!-- The two tables are deliberately not the same shape. A variable is
-           shown with its value because it is not sensitive; a secret is shown
-           as a name with no value, because no endpoint returns one. The
-           difference on screen is the difference in the API — and the hint
-           below the secrets table is what keeps the screen from promising more
-           than that: a secret is not readable here, but it is readable in the
-           Deployment, which is where both kinds of value end up. -->
-      <h3 style="font-size:14px" data-i18n="Environment variables">Environment variables</h3>
       <table>
-        <thead><tr><th data-i18n="Name">Name</th><th data-i18n="Value">Value</th><th></th></tr></thead>
+        <thead><tr><th data-i18n="Name">Name</th><th data-i18n="Value">Value</th><th></th><th></th></tr></thead>
         <tbody id="config-env"></tbody>
       </table>
       <div id="config-env-empty" class="empty hidden" data-i18n="No environment variables.">No environment variables.</div>
 
       <div class="row" style="margin-top:8px">
         <input id="config-env-name" placeholder="NAME" size="16">
-        <input id="config-env-value" placeholder="value" size="24"
+        <input id="config-env-value" placeholder="value" type="password" size="24"
                style="flex:1">
         <button id="config-env-set" data-i18n="Set">Set</button>
       </div>
 
-      <h3 style="font-size:14px;margin-top:20px" data-i18n="Secrets">Secrets</h3>
-      <table>
-        <thead><tr><th data-i18n="Name">Name</th><th></th></tr></thead>
-        <tbody id="config-secret"></tbody>
-      </table>
-      <div id="config-secret-empty" class="empty hidden" data-i18n="No secrets.">No secrets.</div>
-
-      <div class="row" style="margin-top:8px">
-        <input id="config-secret-name" placeholder="NAME" size="16">
-        <input id="config-secret-value" placeholder="value" type="password" size="24"
-               style="flex:1">
-        <button id="config-secret-set" data-i18n="Set">Set</button>
-      </div>
+      <!-- Said out loud because the value is in the clear in the Deployment, and
+           a page that worded this as a promise would be claiming more than the
+           platform delivers. The eye only keeps a value off the screen. -->
       <p class="muted" style="font-size:13px;margin-bottom:0"
-         data-i18n="A secret's value can never be read back — not here, not through the API, not from the CLI. Setting one again replaces it. It is written into the Deployment's environment, so anyone who can read that Deployment can read it.">A
-        secret's value can never be read back — not here, not through the API,
-        not from the CLI. Setting one again replaces it. It is written into the
-        Deployment's environment, so anyone who can read that Deployment can
-        read it.</p>
+         data-i18n="Values are written into the Deployment's environment, so anyone who can read that Deployment can read them. The eye here only keeps them off the screen.">Values
+        are written into the Deployment's environment, so anyone who can read
+        that Deployment can read them. The eye here only keeps them off the
+        screen.</p>
       <div id="config-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
 
@@ -996,7 +982,8 @@ const ZH = {
   "Status": "状态",
   "Age": "时间",
   "Where": "地址",
-  "Pod": "Pod",
+  "Instance": "实例",
+  "Instances": "实例",
   "Ready": "就绪",
   "Restarts": "重启",
   "Reason": "原因",
@@ -1014,7 +1001,6 @@ const ZH = {
   "Cancel": "取消",
   "An app needs an id.": "请填写应用 ID。",
   "An environment variable needs a name.": "环境变量需要一个名称。",
-  "A secret needs a name.": "密钥需要一个名称。",
   "The port must be a number between 1 and 65535.": "端口必须是 1 到 65535 之间的数字。",
   "Could not create {id}: {error}": "无法创建 {id}：{error}",
   "No apps yet. Push one with": "还没有应用。用这个命令推送一个，或者在这里创建一个：",
@@ -1051,22 +1037,18 @@ const ZH = {
   "Restart": "重启",
   "Stop": "停止",
   "Delete": "删除",
-  "Pods": "Pods",
   "Nothing is running.": "没有正在运行的实例。",
   "Log": "日志",
   "previous instance": "上一个实例",
   "Follow": "跟随",
   "(not started)": "（未开始）",
   "(no output)": "（无输出）",
-  "Configuration": "配置",
   "Changes take effect on the next deploy, not immediately — configuration travels the same path as code.":
     "改动在下次部署时生效，不会立即生效 —— 配置和代码走同一条路径。",
   "Environment variables": "环境变量",
+  "Values are written into the Deployment's environment, so anyone who can read that Deployment can read them. The eye here only keeps them off the screen.":
+    "这些值会被写入 Deployment 的环境变量，因此任何能读取该 Deployment 的人都能读到。这里的眼睛只是不把它们显示在屏幕上。",
   "No environment variables.": "没有环境变量。",
-  "Secrets": "密钥",
-  "No secrets.": "没有密钥。",
-  "A secret's value can never be read back — not here, not through the API, not from the CLI. Setting one again replaces it. It is written into the Deployment's environment, so anyone who can read that Deployment can read it.":
-    "密钥的值无法读回 —— 这里、API、CLI 都不行。再次设置会覆盖它。它会被写入 Deployment 的环境变量，因此任何能读取该 Deployment 的人都能读到它。",
   "Set": "设置",
   "Remove": "移除",
   "History": "历史",
@@ -1133,7 +1115,7 @@ const ZH = {
   "Could not read configuration: {error}": "无法读取配置：{error}",
   "Could not read the log: {error}": "无法读取日志：{error}",
   "Log stream ended: {error}": "日志流已结束：{error}",
-  "Pods are not available: {error}": "无法获取 Pod：{error}",
+  "Instances are not available: {error}": "无法获取实例：{error}",
 
   // -- Controls -------------------------------------------------------------
   "Theme": "主题",
@@ -1319,9 +1301,15 @@ function selectAll(button) {
 // concealed registers a value and its eye, in either of the two shapes it comes
 // in: a field the browser masks itself, or a run of text the console masks.
 function concealed(valueId, buttonId, copyId) {
-  const valueEl = $(valueId);
-  const button = $(buttonId);
-  const copyButton = copyId ? $(copyId) : null;
+  // Accepts an element or an id, because the callers differ: the clone command's
+  // pair is in the markup and is named by id, while the environment table builds
+  // one pair per row and has no id to give. Resolving here rather than at each
+  // call site keeps `$`'s "this is an id" meaning intact rather than quietly
+  // widening it to "an id, or an element".
+  const resolve = (x) => (x && x.nodeType ? x : $(x));
+  const valueEl = resolve(valueId);
+  const button = resolve(buttonId);
+  const copyButton = copyId ? resolve(copyId) : null;
   if (!valueEl || !button) return { set() {}, reveal() {}, refresh() {} };
 
   let shown = false;
@@ -1385,6 +1373,11 @@ function concealed(valueId, buttonId, copyId) {
 // local to boot, since nothing outside it refers to that one.
 let appGitReveal = null;
 
+// The environment table's eyes, one per variable. They are rebuilt on every
+// render, so this is cleared at the start of each one rather than accumulating
+// handles to rows that no longer exist.
+let envReveals = [];
+
 // refreshReveals rebuilds the eyes' labels, which are translated and so change
 // with the language. Called from setLang, after the dictionary has switched.
 //
@@ -1394,6 +1387,7 @@ let appGitReveal = null;
 // is the one that must not be made a variable to reach it.
 function refreshReveals() {
   if (appGitReveal) appGitReveal.refresh();
+  for (const r of envReveals) r.refresh();
 }
 
 // setLang switches language and re-renders everything that carries text.
@@ -2269,11 +2263,13 @@ async function openApp(id) {
   $("build-logs").textContent = "";
 }
 
-// loadAppConfig renders the app's configuration.
+// loadAppConfig renders the app's environment variables.
 //
-// One request fills both tables, because the API answers both halves from one
-// endpoint. The rendering differs between them on purpose and mirrors the API:
-// variables carry their values, secrets are names with no value to show.
+// Variables only. The endpoint also answers with the *names* of the app's
+// secrets, and that half is deliberately not rendered: a value cannot be read
+// back through any route, so a table of names here could only ever be a list of
+// things you cannot inspect or correct — and setting one is a job for a terminal,
+// where the value does not pass through a page's memory or its history.
 async function loadAppConfig() {
   const problem = $("config-problem");
   show(problem, false);
@@ -2282,21 +2278,20 @@ async function loadAppConfig() {
   try {
     config = await api("/api/v1/apps/" + state.app + "/config");
   } catch (err) {
-    // Secrets need a cluster; environment variables do not. A deployment
-    // without one reports 501 for the secret half, and saying so is more
-    // useful than hiding the whole card.
+    // A deployment with no cluster cannot answer this at all, and saying so is
+    // more useful than hiding the card.
     show(problem, true);
     problem.textContent = tf("Could not read configuration: {error}", { error: err.message });
     return;
   }
 
   renderEnv(config.env || {});
-  renderSecrets(config.secrets || []);
 }
 
 function renderEnv(env) {
   const body = $("config-env");
   body.replaceChildren();
+  envReveals = [];
 
   const names = Object.keys(env).sort();
   for (const name of names) {
@@ -2309,8 +2304,21 @@ function renderEnv(env) {
 
     const value = document.createElement("td");
     value.className = "mono";
-    value.textContent = env[name];
+    // Held on the element's data rather than in its text, so a masked row does
+    // not contain the value — see concealed. The eye is per row, and starts
+    // masked: a value is shown on request rather than on arrival.
+    value.dataset.value = env[name];
     tr.appendChild(value);
+
+    // Built here rather than declared in the markup, because there is one row
+    // per variable and the markup has none.
+    const revealCell = document.createElement("td");
+    const reveal = document.createElement("button");
+    reveal.className = "reveal";
+    revealCell.appendChild(reveal);
+    tr.appendChild(revealCell);
+
+    envReveals.push(concealed(value, reveal));
 
     const actions = document.createElement("td");
     const remove = document.createElement("button");
@@ -2323,31 +2331,6 @@ function renderEnv(env) {
   }
 
   show($("config-env-empty"), names.length === 0);
-}
-
-function renderSecrets(names) {
-  const body = $("config-secret");
-  body.replaceChildren();
-
-  for (const name of names) {
-    const tr = document.createElement("tr");
-
-    const key = document.createElement("td");
-    key.className = "mono";
-    key.textContent = name;
-    tr.appendChild(key);
-
-    const actions = document.createElement("td");
-    const remove = document.createElement("button");
-    remove.textContent = t("Remove");
-    remove.onclick = () => removeSecret(name);
-    actions.appendChild(remove);
-    tr.appendChild(actions);
-
-    body.appendChild(tr);
-  }
-
-  show($("config-secret-empty"), names.length === 0);
 }
 
 // configAction runs a configuration change and reports the outcome.
@@ -2381,29 +2364,6 @@ function removeEnv(name) {
   const problem = $("config-problem");
   configAction(problem, async () => {
     await api("/api/v1/apps/" + state.app + "/env/" + encodeURIComponent(name), {
-      method: "DELETE",
-    });
-  });
-}
-
-function setSecret(name, value) {
-  const problem = $("config-problem");
-  configAction(problem, async () => {
-    await api("/api/v1/apps/" + state.app + "/secrets", {
-      method: "PUT",
-      body: JSON.stringify({ secrets: { [name]: value } }),
-    });
-    // Cleared as soon as it is sent: the value cannot be read back, so leaving
-    // it in the field would only invite the belief that it is still on screen
-    // somewhere.
-    $("config-secret-value").value = "";
-  });
-}
-
-function removeSecret(name) {
-  const problem = $("config-problem");
-  configAction(problem, async () => {
-    await api("/api/v1/apps/" + state.app + "/secrets/" + encodeURIComponent(name), {
       method: "DELETE",
     });
   });
@@ -2527,7 +2487,7 @@ async function loadPods() {
     // Observability is an optional capability; a deployment without a cluster
     // reports 501 here, which is not a failure of the console.
     show($("pods-empty"), true);
-    $("pods-empty").textContent = tf("Pods are not available: {error}", { error: err.message });
+    $("pods-empty").textContent = tf("Instances are not available: {error}", { error: err.message });
     return;
   }
 
@@ -3057,19 +3017,6 @@ $("config-env-set").onclick = () => {
   setEnv(name, value);
   $("config-env-name").value = "";
   $("config-env-value").value = "";
-};
-
-$("config-secret-set").onclick = () => {
-  const name = $("config-secret-name").value.trim();
-  const value = $("config-secret-value").value;
-  const problem = $("config-problem");
-  if (!name) {
-    show(problem, true);
-    problem.textContent = t("A secret needs a name.");
-    return;
-  }
-  setSecret(name, value);
-  $("config-secret-name").value = "";
 };
 
 $("logs-toggle").onclick = () => {

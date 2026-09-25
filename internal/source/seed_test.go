@@ -354,6 +354,12 @@ func TestSeedReplacesASymlinkRatherThanFollowingIt(t *testing.T) {
 // than of the API's routes — a route nothing offers to a user is not something
 // the script owes parity with.
 //
+// One direction only. The script may reach routes the console does not, and
+// does: `secret set` and `secret unset` have no console equivalent, because a
+// secret's value cannot be read back and a page that only ever writes one is a
+// worse place to keep it than a terminal. The reverse — a console button with no
+// script command — is the divergence this catches.
+//
 // When the console gains a call, this fails and names it. Adding the command to
 // the script is the fix; widening the exemption list is the thing to resist.
 func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
@@ -392,8 +398,6 @@ func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
 		{"GET", "/pods"},
 		{"POST", "/restart"},
 		{"POST", "/rollback"},
-		{"PUT", "/secrets"},
-		{"DELETE", "/secrets/"},
 		{"GET", "/status"},
 		{"POST", "/stop"},
 		{"PATCH", "/api/v1/apps/"},
@@ -461,7 +465,6 @@ func TestTheScriptsRequestsCarryTheSameFields(t *testing.T) {
 		{"deploy", `commit_sha: head, build: true`, `commit_sha\":\"${1:-}\",\"build\":true`},
 		{"replicas", `JSON.stringify({ replicas: wanted })`, `{\"replicas\":$1}`},
 		{"env set", `JSON.stringify({ env: {`, `json_pairs env`},
-		{"secret set", `JSON.stringify({ secrets: {`, `json_pairs secrets`},
 	}
 
 	for _, tc := range cases {
