@@ -47,6 +47,7 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 )
 
@@ -234,6 +235,15 @@ var markdown = goldmark.New(
 	// they render as a paragraph of pipe characters, which looks like the
 	// markdown failed to parse rather than like a missing extension.
 	goldmark.WithExtensions(extension.GFM),
+	// Heading ids, without which every in-page link in a published document is
+	// dead. The chart README links to its own sections — "#keys",
+	// "#1-a-registry-..." — and those anchors are written for GitHub, which
+	// generates ids from heading text. Without this the site rendered the same
+	// headings with no id at all, so every one of those links scrolled nowhere:
+	// a reader following "see Keys" stayed exactly where they were. The scheme
+	// below is goldmark's, which matches GitHub's for the headings these
+	// documents use.
+	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 	goldmark.WithRendererOptions(
 		// Source documents are trusted — they are this repository's own — so
 		// goldmark's unsafe mode is what lets a raw HTML block through if one is

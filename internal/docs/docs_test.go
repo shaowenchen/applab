@@ -3,6 +3,7 @@ package docs
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -322,4 +323,52 @@ func TestRealRepositoryBuilds(t *testing.T) {
 		t.Errorf("index.html was not published: %v", err)
 	}
 	t.Logf("published %v", result.Written)
+}
+
+// TestEveryInPageLinkLandsSomewhere is the missing half of
+// TestLinksResolveToSomethingReal.
+//
+// That test covers links that leave the site — a repository file, another page —
+// and fails when one points at nothing. A link to a section of the *same* page
+// was never checked, and headings were rendered without ids, so every "#keys"
+// and "#installing-a-development-build" in the chart README scrolled nowhere: a
+// reader following "see Keys" stayed exactly where they were, with nothing to
+// say the link was dead.
+//
+// Checked against the rendered HTML rather than the source, because that is what
+// the reader gets — the anchor has to match an id the renderer actually emitted.
+func TestEveryInPageLinkLandsSomewhere(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Skipf("not running from the repository: %v", err)
+	}
+
+	dest := t.TempDir()
+	site := DefaultSite(root, "https://github.com/shaowenchen/applab", "master")
+	if _, err := site.Build(dest); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	for _, page := range site.Pages {
+		body, err := os.ReadFile(filepath.Join(dest, page.Output))
+		if err != nil {
+			t.Fatalf("read %s: %v", page.Output, err)
+		}
+		html := string(body)
+
+		ids := map[string]bool{}
+		for _, m := range regexp.MustCompile(`id="([^"]+)"`).FindAllStringSubmatch(html, -1) {
+			ids[m[1]] = true
+		}
+
+		for _, m := range regexp.MustCompile(`href="#([^"]+)"`).FindAllStringSubmatch(html, -1) {
+			if !ids[m[1]] {
+				t.Errorf("%s links to #%s, which is not a heading on that page; the link scrolls nowhere",
+					page.Output, m[1])
+			}
+		}
+	}
 }

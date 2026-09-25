@@ -479,6 +479,153 @@ curl -s https://applab.example.com/api/v1/describe
 applab config
 ```
 
+## Your first app
+
+Everything below runs from a terminal with no cluster access — that is the whole
+point of installing AppLab. The only credential needed up front is the **admin
+key** from the step above; the app gets one of its own along the way.
+
+```bash
+export APPLAB_URL=https://applab.example.com
+export APPLAB_KEY=<the admin key from the release's Secret>
+```
+
+`applab` here is the CLI. [Build it from the repository](https://github.com/shaowenchen/applab#development)
+(`make build` puts it in `bin/`), or drive the same endpoints with `curl` — the
+last part of this section shows that instead.
+
+### 1. Create the app
+
+```bash
+applab create shop --port 8080
+```
+
+| Flag | Meaning |
+|---|---|
+| `--port` | the port the app listens on in its container; 8080 if omitted |
+| `--dockerfile` | path to the Dockerfile within the source; `Dockerfile` if omitted |
+| `--replicas` | how many copies to run |
+| `--domain` | an explicit hostname, overriding the one derived from `ingress.host` |
+
+### 2. Take the app's own key
+
+```bash
+applab keys shop
+```
+
+An app has a key separate from the admin one, and it is the one to use from here
+on. It reaches this app and nothing else: it can push, build, deploy and roll
+back, but cannot delete the app and cannot see any other. That is what makes it
+safe to keep on the machine doing the work, where the admin key — which can
+delete every app this installation manages — should not be.
+
+```bash
+export APPLAB_APP_KEY=<the key the command printed>
+```
+
+Both keys authenticate; the difference is reach. See [Keys](#keys) for the full
+comparison.
+
+### 3. Clone the app's repository
+
+Every app *is* a git repository from the moment it is created, so it can be
+cloned before it has any content:
+
+```bash
+git clone "https://x:$APPLAB_APP_KEY@applab.example.com/git/shop.git"
+cd shop
+```
+
+Three things about that URL:
+
+- **The username is a placeholder.** `x` can be anything — `git`, the app id.
+  Git needs *some* username to send a password at all, and AppLab reads only the
+  password.
+- **The key is the password.** Which is why the admin key should not be used
+  here: a URL lands in shell history and in the repository's own `config` on
+  disk.
+- **The branch is in the URL.** `/git/shop.git` is the app's active branch;
+  another is `/git/shop@dev.git`. Pushing to a branch that does not exist yet
+  creates it.
+
+If you would rather the key never enter the URL:
+
+```bash
+git -c http.extraHeader="Authorization: Bearer $APPLAB_APP_KEY" \
+  clone https://applab.example.com/git/shop.git
+```
+
+### 4. Push
+
+The clone is empty, so add something to build. AppLab needs a Dockerfile; the
+app listens on the port given at creation:
+
+```bash
+cat > Dockerfile <<'EOF'
+FROM nginx:alpine
+COPY . /usr/share/nginx/html
+EOF
+echo "hello from shop" > index.html
+
+git add .
+git commit -m "first"
+git push origin main
+```
+
+A push stores the source and nothing else — it does not build. That is deliberate
+(`git push` is how you get code in, not how you ask for a deploy), so the next
+step is explicit.
+
+### 5. Build and deploy
+
+```bash
+applab build shop          # build the newest commit into an image
+applab deploy shop         # run that image
+
+# Or both, following the log until it is serving:
+applab deploy shop --build
+```
+
+When it finishes, `applab deploy` prints the URL the app is served at. If it does
+not come up, `applab status shop` says what AppLab recorded and what the cluster
+actually has — the two side by side, because the difference between them is the
+information — and `applab diagnose shop` is the first thing to read: it walks the
+same checks in order and reports the first that fails.
+
+### The same thing with curl
+
+No CLI required. Each numbered step above is one request:
+
+```bash
+# 1. Create — the admin key does this.
+curl -sS -X POST "$APPLAB_URL/api/v1/apps" \
+  -H "Authorization: Bearer $APPLAB_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"shop","port":8080}'
+
+# 2. The app's own key, to use from here on.
+curl -sS "$APPLAB_URL/api/v1/apps/shop/key" \
+  -H "Authorization: Bearer $APPLAB_KEY"
+```
+
+Steps 3 and 4 are git itself, unchanged — the clone URL above works the same
+either way. Step 5, as one call rather than two:
+
+```bash
+curl -sS -X POST "$APPLAB_URL/api/v1/apps/shop/deploy" \
+  -H "Authorization: Bearer $APPLAB_APP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"build":true}'
+```
+
+`build:true` because a deploy with no image to deploy is refused, and names this
+flag as the fix: building is a separate operation, so a deploy that silently
+started one would make the response time unpredictable and hide a build failure
+behind a deploy. Leaving it out is only correct when the image already exists.
+
+`GET /api/v1/describe` lists every endpoint with what it needs and what it
+returns, which is where to look for anything not shown here.
+
 ## Installing a development build
 
 Every push to the default branch publishes a chart versioned `<Chart.yaml
