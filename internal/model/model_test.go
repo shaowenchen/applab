@@ -66,6 +66,27 @@ func TestValidateBranchName(t *testing.T) {
 	}
 }
 
+// TestAutoDeploysResolvesUnsetToOn asserts the one resolution there is.
+//
+// A plain bool would have made "off" the zero value, so every app written before
+// the field existed would have silently stopped deploying on a push. The pointer
+// is what makes "no value recorded" mean what those apps actually do.
+func TestAutoDeploysResolvesUnsetToOn(t *testing.T) {
+	if !(model.App{}).AutoDeploys() {
+		t.Error("an app with no auto-deploy setting recorded reports it as off; every existing app would stop deploying on a push")
+	}
+
+	off := false
+	if (model.App{AutoDeploy: &off}).AutoDeploys() {
+		t.Error("an app explicitly set to false reports auto-deploy on; the switch would do nothing")
+	}
+
+	on := true
+	if !(model.App{AutoDeploy: &on}).AutoDeploys() {
+		t.Error("an app explicitly set to true reports auto-deploy off")
+	}
+}
+
 // TestValidatePortAndReplicas pins the bounds the four surfaces enforce.
 //
 // The API, the console, the CLI's create and the CLI's update all refuse these,

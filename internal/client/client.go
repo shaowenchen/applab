@@ -440,6 +440,11 @@ type App struct {
 	CommitSHA string `json:"commit_sha"`
 	Image     string `json:"image"`
 
+	// AutoDeploy is whether a push builds and deploys this app on its own. The
+	// API reports the resolved setting, so this is always what the app does —
+	// never a "not set" that a caller would have to interpret.
+	AutoDeploy bool `json:"auto_deploy"`
+
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason"`
 
@@ -472,6 +477,9 @@ type CreateAppRequest struct {
 	Replicas   *int32 `json:"replicas,omitempty"`
 	Dockerfile string `json:"dockerfile,omitempty"`
 	Domain     string `json:"domain,omitempty"`
+
+	// AutoDeploy is optional; omitted means true.
+	AutoDeploy *bool `json:"auto_deploy,omitempty"`
 }
 
 // ListApps returns every app.
@@ -514,6 +522,10 @@ type UpdateAppRequest struct {
 	Replicas   *int32  `json:"replicas,omitempty"`
 	Dockerfile *string `json:"dockerfile,omitempty"`
 	Domain     *string `json:"domain,omitempty"`
+
+	// AutoDeploy turns building and deploying on a push on or off. Omitted
+	// leaves it alone.
+	AutoDeploy *bool `json:"auto_deploy,omitempty"`
 }
 
 // UpdateApp changes an app's settings.

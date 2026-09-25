@@ -115,6 +115,17 @@ type App struct {
 	// about.
 	Branch string
 
+	// AutoDeploy is whether a push to the active branch builds and deploys on
+	// its own. Nil means unset, which resolves to true — the same treatment
+	// Branch gets below, and for the same reason: every app written before this
+	// field existed behaves as though it were set, so a nil has to mean "on"
+	// rather than "off".
+	//
+	// The pointer is what makes that possible. A plain bool would have "off" as
+	// its zero value, so every existing app would silently stop deploying on a
+	// push the moment this field was added.
+	AutoDeploy *bool
+
 	// Env is the app's plain configuration, applied to the container as
 	// environment variables at deploy time.
 	//
@@ -228,6 +239,17 @@ func (a App) ActiveBranch() string {
 		return DefaultBranch
 	}
 	return a.Branch
+}
+
+// AutoDeploys reports whether a push should build and deploy this app without
+// being asked.
+//
+// Every caller goes through this rather than testing the pointer, so "no value
+// recorded" has one meaning — yes — instead of being resolved at each call site
+// and possibly resolved differently. See AutoDeploy for why the zero value of
+// the field cannot be the answer.
+func (a App) AutoDeploys() bool {
+	return a.AutoDeploy == nil || *a.AutoDeploy
 }
 
 // ValidateBranchName reports whether name may be used as a branch.

@@ -41,6 +41,18 @@ func newDeployServer(t *testing.T) (*api.Server, *fake.Clientset, *store.Store) 
 // to read a commit directly.
 func newDeployServerWithSource(t *testing.T) (*api.Server, *fake.Clientset, *store.Store) {
 	t.Helper()
+	srv, client, st, _ := newDeployServerWithDynamic(t)
+	return srv, client, st
+}
+
+// newDeployServerWithDynamic also returns the dynamic client the server itself
+// publishes through.
+//
+// The typed clientset and the dynamic one are separate handles on separate fake
+// stores, so a test that builds its own dynamic client sees none of the objects
+// the server created. Anything asserting on a VirtualService needs this one.
+func newDeployServerWithDynamic(t *testing.T) (*api.Server, *fake.Clientset, *store.Store, dynamic.Interface) {
+	t.Helper()
 
 	dataDir := t.TempDir()
 	st, err := store.OpenLocal(context.Background(), filepath.Join(dataDir, "t.db"))
@@ -54,7 +66,8 @@ func newDeployServerWithSource(t *testing.T) (*api.Server, *fake.Clientset, *sto
 	}
 
 	client := fake.NewSimpleClientset()
-	deployer := deploy.NewWithDynamic(client, fakeDynamic(t), deploy.Config{
+	dyn := fakeDynamic(t)
+	deployer := deploy.NewWithDynamic(client, dyn, deploy.Config{
 		BaseDomain: "apps.example.com",
 		Gateway:    "ops-system/gateway",
 	})
@@ -72,7 +85,7 @@ func newDeployServerWithSource(t *testing.T) (*api.Server, *fake.Clientset, *sto
 		WithDeployer(deployer).
 		WithAppObjectsDeleter(cluster.DeleteAppObjects)
 
-	return srv, client, st
+	return srv, client, st, dyn
 }
 
 // fakeDynamic returns a dynamic client over the resources AppLab publishes with,

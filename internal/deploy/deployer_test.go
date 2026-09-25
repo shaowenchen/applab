@@ -156,6 +156,132 @@ func TestApplyCreatesEverything(t *testing.T) {
 	}
 }
 
+// TestPublishCreatesTheRoutingWithoutAWorkload asserts that an app can be
+// published before it has anything to run.
+//
+// This is what makes an app's address real from the moment it is created: the
+// VirtualService's hosts come from the app's settings and its destination is the
+// Service the app will have, so none of it needs an image or a commit.
+func TestPublishCreatesTheRoutingWithoutAWorkload(t *testing.T) {
+	d, client := newTestDeployer(t, testConfig())
+	ctx := context.Background()
+
+	// An app as it exists the moment it is created: no commit, no image.
+	app := &model.App{
+		ID:        "fresh",
+		Namespace: "ops-system",
+		Port:      8080,
+		Replicas:  1,
+	}
+
+	addr, err := d.Publish(ctx, app)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if addr.String() != "fresh.apps.example.com" {
+		t.Errorf("address = %q, want fresh.apps.example.com", addr.String())
+	}
+
+	vs := virtualService(t, d, app.ID)
+	hosts, _, _ := unstructured.NestedStringSlice(vs.Object, "spec", "hosts")
+	if len(hosts) != 1 || hosts[0] != addr.Host {
+		t.Errorf("virtualservice hosts = %v, want [%s]", hosts, addr.Host)
+	}
+	if dest := destination(t, vs)["host"]; dest != ObjectName(app.ID) {
+		t.Errorf("the virtualservice routes to %q, want %q — the Service a deploy will create", dest, ObjectName(app.ID))
+	}
+
+	// And nothing else was created. Publishing is routing only; a workload with
+	// no image to run would be a Deployment stuck in ImagePullBackOff.
+	if _, err := client.AppsV1().Deployments(app.Namespace).Get(ctx, ObjectName(app.ID), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("Publish created a Deployment; it must create only the routing")
+	}
+	services, err := client.CoreV1().Services(app.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list services: %v", err)
+	}
+	if len(services.Items) != 0 {
+		t.Errorf("Publish created %d services; it must create only the routing", len(services.Items))
+	}
+}
+
+// TestPublishMatchesWhatApplyProduces asserts an app published at create time and
+// one published by its first deploy are indistinguishable.
+//
+// Apply currently ends by delegating here, so today the two agree by
+// construction and this passes trivially. Its value is as a guard: the whole
+// point of publishing early is that the routing does not change when the first
+// deploy arrives, and the way that would break is someone inlining the address
+// computation back into Apply and getting it subtly different. This is what
+// would notice.
+//
+// The configuration is the one where that divergence is visible — a shared path
+// prefix and an app-level domain, so the address has three branches to disagree
+// about rather than one.
+func TestPublishMatchesWhatApplyProduces(t *testing.T) {
+	ctx := context.Background()
+
+	cfg := testConfig()
+	cfg.PathPrefix = "/apps"
+
+	published, _ := newTestDeployer(t, cfg)
+	deployed, _ := newTestDeployer(t, cfg)
+
+	app := testApp()
+	if _, err := published.Publish(ctx, app); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if _, err := deployed.Apply(ctx, app, "registry.example.com/apps/shop:abc123def456"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	fromPublish := virtualService(t, published, app.ID).Object
+	fromApply := virtualService(t, deployed, app.ID).Object
+
+	// Compared field by field rather than whole, because the dynamic client
+	// stamps metadata the caller does not control on each copy.
+	for _, path := range [][]string{
+		{"spec", "hosts"},
+		{"spec", "gateways"},
+		{"spec", "http"},
+	} {
+		a, _, _ := unstructured.NestedFieldNoCopy(fromPublish, path...)
+		b, _, _ := unstructured.NestedFieldNoCopy(fromApply, path...)
+		if fmt.Sprintf("%v", a) != fmt.Sprintf("%v", b) {
+			t.Errorf("the two disagree about %v:\n  published: %v\n  deployed:  %v",
+				strings.Join(path, "."), a, b)
+		}
+	}
+}
+
+// TestPublishWithNoBaseDomainDoesNothing asserts an installation with no address
+// publishes nothing rather than an empty host.
+//
+// With no base domain every app is internal, and a VirtualService with an empty
+// host would be a routing rule matching nothing — accepted by the cluster and
+// meaningless.
+func TestPublishWithNoBaseDomainDoesNothing(t *testing.T) {
+	cfg := testConfig()
+	cfg.BaseDomain = ""
+	d, _ := newTestDeployer(t, cfg)
+
+	addr, err := d.Publish(context.Background(), testApp())
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !addr.Empty() {
+		t.Errorf("address = %q, want empty when the deployment has no base domain", addr.String())
+	}
+
+	list, err := d.dynamic.Resource(virtualServiceGVR).Namespace("ops-system").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list virtualservices: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("%d virtualservices were created with no base domain", len(list.Items))
+	}
+}
+
 // TestSelectorsLinkUp is the invariant that a running app is a reachable app.
 //
 // A Service selector that does not match its Deployment's pods produces an app

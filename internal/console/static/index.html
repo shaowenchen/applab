@@ -760,6 +760,22 @@
         </label>
         <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
       </div>
+
+      <!-- Whether a push ships on its own. Unlike the settings above this one
+           takes effect immediately, because it is read when a push arrives
+           rather than applied by the deployer — which is why it is not sitting
+           under the "takes effect on the next deploy" note.
+
+           On by default, and the box shows the app's real setting rather than a
+           stored preference: the API reports the resolved value, so an app that
+           has never been told otherwise reads as on. -->
+      <div class="state-actions">
+        <label class="field">
+          <input type="checkbox" id="app-auto-deploy">
+          <span data-i18n="Deploy on push">Deploy on push</span>
+        </label>
+        <span class="muted" style="font-size:12px" data-i18n="a push builds and deploys by itself">a push builds and deploys by itself</span>
+      </div>
     </div>
 
     <div class="card">
@@ -1089,6 +1105,9 @@ const ZH = {
   "This app has no source yet. Upload some before building it.": "该应用还没有代码，请先上传。",
   "Could not set replicas: {error}": "设置副本数失败：{error}",
   "Port": "端口",
+  "Deploy on push": "推送即部署",
+  "a push builds and deploys by itself": "推送后自动构建并部署",
+  "Could not set auto-deploy: {error}": "设置自动部署失败：{error}",
   // No entry for the port-range message: the create form already refuses a bad
   // port with those exact words, so the string is translated once, above.
   "Could not set port: {error}": "设置端口失败：{error}",
@@ -2470,6 +2489,11 @@ async function loadAppState() {
   if (app && typeof app.port === "number") {
     $("app-port").value = String(app.port);
   }
+  // The API reports the resolved setting, so this is the app's real behaviour
+  // rather than a stored preference that might be unset.
+  if (app && typeof app.auto_deploy === "boolean") {
+    $("app-auto-deploy").checked = app.auto_deploy;
+  }
 
   let status;
   try {
@@ -2750,6 +2774,29 @@ async function setPort() {
     return;
   }
   await loadAppState();
+}
+
+// setAutoDeploy turns building and deploying on a push on or off.
+//
+// Sent on the change event rather than behind a Set button: a checkbox that
+// needs confirming is a control people leave half-applied, and the value it
+// carries is unambiguous where a text field's is not.
+async function setAutoDeploy() {
+  const wanted = $("app-auto-deploy").checked;
+
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app, {
+      method: "PATCH",
+      body: JSON.stringify({ auto_deploy: wanted }),
+    });
+  } catch (err) {
+    setError(tf("Could not set auto-deploy: {error}", { error: err.message }));
+    // Put the box back, so what it shows is what the app is set to. Left as the
+    // reader moved it, a failed change would look applied.
+    await loadAppState();
+    return;
+  }
 }
 
 // buildLatest starts a build of the app's newest commit.
@@ -3175,6 +3222,7 @@ $("apps-new-id").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
 $("apps-new-port").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
 $("back").onclick = closeApp;
 $("app-restart").onclick = restart;
+$("app-auto-deploy").onchange = setAutoDeploy;
 $("app-port-set").onclick = setPort;
 $("app-port").onkeydown = (e) => { if (e.key === "Enter") setPort(); };
 $("app-replicas-set").onclick = setReplicas;

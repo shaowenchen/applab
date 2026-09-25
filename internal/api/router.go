@@ -159,6 +159,11 @@ type Deployer interface {
 	// Apply creates or updates an app's resources and returns its address.
 	Apply(ctx context.Context, app *model.App, image string) (model.Address, error)
 
+	// Publish creates or updates only the app's routing, for an app that has no
+	// workload yet. It is what Apply ends with, and it is separate so that an
+	// app can be published the moment it exists — see deploy.Deployer.Publish.
+	Publish(ctx context.Context, app *model.App) (model.Address, error)
+
 	// Status reads an app's live state.
 	Status(ctx context.Context, app *model.App) (deploy.Status, error)
 

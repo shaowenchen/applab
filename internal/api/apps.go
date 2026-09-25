@@ -67,6 +67,12 @@ type appResponse struct {
 	CommitSHA string `json:"commit_sha,omitempty"`
 	Image     string `json:"image,omitempty"`
 
+	// AutoDeploy is whether a push to the active branch builds and deploys on
+	// its own. Reported as the resolved value rather than the stored one, so a
+	// caller never has to know that "unset" means yes — it reads true, which is
+	// what the app actually does.
+	AutoDeploy bool `json:"auto_deploy"`
+
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason,omitempty"`
 
@@ -93,6 +99,7 @@ func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string) appRespo
 		CommitSHA:    a.CommitSHA,
 		Image:        a.Image,
 		Branch:       a.ActiveBranch(),
+		AutoDeploy:   a.AutoDeploys(),
 		Status:       string(a.Status),
 		StatusReason: a.StatusReason,
 		EnvCount:     len(a.Env),
@@ -121,6 +128,11 @@ type createAppRequest struct {
 	Replicas   *int32 `json:"replicas"`
 	Dockerfile string `json:"dockerfile"`
 	Domain     string `json:"domain"`
+
+	// AutoDeploy is optional and defaults to true, which is what a create
+	// without it gets. A pointer so that `"auto_deploy": false` is
+	// distinguishable from the field being absent.
+	AutoDeploy *bool `json:"auto_deploy"`
 }
 
 func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
@@ -161,6 +173,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	if req.Replicas != nil {
 		app.Replicas = *req.Replicas
 	}
+	app.AutoDeploy = req.AutoDeploy
 	if err := validateAppSettings(app); err != nil {
 		fail(w, r, err)
 		return
@@ -219,11 +232,42 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The routing is created now, so the address the caller is handed is really
+	// wired rather than one that appears at the first deploy. Everything the
+	// VirtualService needs — the host, the path, the Service it will point at —
+	// is known from the app's own settings.
+	//
+	// A failure here is logged and not rolled back, unlike the repository and the
+	// key above. Those leave the app unusable; this leaves it unreachable until
+	// the next deploy, which creates the same object. Destroying an app the
+	// caller just created, over routing that a retry fixes, would be the worse
+	// answer.
+	s.publishApp(r.Context(), app)
+
 	if s.metrics != nil {
 		s.metrics.ObserveAppCreated()
 	}
 	slog.InfoContext(r.Context(), "app created", "app", app.ID)
 	respond(w, http.StatusCreated, toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
+}
+
+// publishApp creates or updates an app's routing, reporting a failure without
+// failing the caller's operation.
+//
+// It is best-effort for the same reason on both paths that call it: an app with
+// no VirtualService still stores source, still builds, and is published by the
+// next deploy — see Deployer.Publish. What it must not do is leave an operator
+// unaware, so the failure is logged at error with the app named.
+func (s *Server) publishApp(ctx context.Context, app *model.App) {
+	if s.deployer == nil || !s.deployer.Ready() {
+		// No cluster, or no gateway configured: there is nothing to publish to,
+		// and an installation with no base domain has no address at all.
+		return
+	}
+	if _, err := s.deployer.Publish(ctx, app); err != nil {
+		slog.ErrorContext(ctx, "could not publish the app's routing; the next deploy will create it",
+			"app", app.ID, "error", err)
+	}
 }
 
 // createRepository delegates to the source store. It is separated so that the
@@ -296,6 +340,14 @@ type updateAppRequest struct {
 	Dockerfile *string `json:"dockerfile"`
 	Domain     *string `json:"domain"`
 
+	// AutoDeploy turns building and deploying on a push on or off for this app.
+	//
+	// A pointer for the usual reason: an absent field leaves the setting alone,
+	// which is how every other field on this request behaves. There is no
+	// "unset" state a caller can write — the API reports the resolved value, so
+	// what goes in is what comes back.
+	AutoDeploy *bool `json:"auto_deploy"`
+
 	// Branch sets the app's active branch.
 	//
 	// Setting it here does not deploy anything, which is the difference between
@@ -319,6 +371,10 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Whether this update moves the app's address, which is what decides if its
+	// routing has to be rewritten below.
+	domainChanged := false
+
 	if req.Name != nil {
 		app.Name = strings.TrimSpace(*req.Name)
 	}
@@ -335,7 +391,12 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Domain != nil {
-		app.Domain = strings.TrimSpace(*req.Domain)
+		next := strings.TrimSpace(*req.Domain)
+		domainChanged = next != app.Domain
+		app.Domain = next
+	}
+	if req.AutoDeploy != nil {
+		app.AutoDeploy = req.AutoDeploy
 	}
 	if req.Branch != nil {
 		branch := strings.TrimSpace(*req.Branch)
@@ -359,6 +420,15 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, fromStoreError(err, fmt.Sprintf("app %q", app.ID)))
 		return
 	}
+
+	// The domain is what the app's address is made of, so changing it moves the
+	// app — and its VirtualService would otherwise keep routing the old host
+	// until the next deploy. Republished only when it changed, since every other
+	// field leaves the address where it was.
+	if domainChanged {
+		s.publishApp(r.Context(), app)
+	}
+
 	respond(w, http.StatusOK, toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
 }
 

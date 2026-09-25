@@ -330,6 +330,7 @@ func updateCommand(urlFlag, keyFlag *string) *cobra.Command {
 		replicas   int32
 		dockerfile string
 		domain     string
+		autoDeploy bool
 	)
 
 	cmd := &cobra.Command{
@@ -379,9 +380,16 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 				req.Domain = &domain
 				changed = true
 			}
+			// Changed rather than tested for a value, because false is a
+			// setting here: --auto-deploy=false has to reach the server, and a
+			// plain bool cannot tell it from the flag being absent.
+			if cmd.Flags().Changed("auto-deploy") {
+				req.AutoDeploy = &autoDeploy
+				changed = true
+			}
 
 			if !changed {
-				return fmt.Errorf("nothing to change: pass at least one of --name, --port, --replicas, --dockerfile, --domain")
+				return fmt.Errorf("nothing to change: pass at least one of --name, --port, --replicas, --dockerfile, --domain, --auto-deploy")
 			}
 
 			app, err := c.UpdateApp(cmd.Context(), args[0], req)
@@ -392,6 +400,7 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 			fmt.Printf("updated %s\n", app.ID)
 			fmt.Printf("port     %d\n", app.Port)
 			fmt.Printf("replicas %d\n", app.Replicas)
+			fmt.Printf("auto-deploy %t\n", app.AutoDeploy)
 			if app.Hostname != "" {
 				fmt.Printf("served   %s%s\n", app.Hostname, app.Path)
 			}
@@ -404,6 +413,7 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 	cmd.Flags().Int32Var(&replicas, "replicas", 0, "how many replicas to run")
 	cmd.Flags().StringVar(&dockerfile, "dockerfile", "", "Dockerfile path within the source")
 	cmd.Flags().StringVar(&domain, "domain", "", "hostname to serve the app at (empty to use the deployment default)")
+	cmd.Flags().BoolVar(&autoDeploy, "auto-deploy", true, "build and deploy on a push without being asked (default true)")
 
 	return cmd
 }

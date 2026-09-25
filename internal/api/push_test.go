@@ -2,12 +2,18 @@ package api_test
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
@@ -142,6 +148,113 @@ func TestAPushWithNothingToBuildOrDeployIsANoOp(t *testing.T) {
 			t.Errorf("a deployment that cannot deploy started %d builds", len(got))
 		}
 	})
+}
+
+// TestAPushToAnAppWithAutoDeployOffDoesNothing asserts the per-app switch.
+//
+// It stops the build as well as the deploy, and that is the point rather than an
+// oversight: whoever turned it off is releasing by hand, and an image pushed on
+// every commit is not what they asked for. The push itself still succeeds — the
+// source is stored, which is what git was asked to do.
+func TestAPushToAnAppWithAutoDeployOffDoesNothing(t *testing.T) {
+	srv, engine, st := pushServer(t)
+	h := srv.Handler()
+	ctx := context.Background()
+
+	sortAppWithCommit(t, srv, h, "shop")
+
+	off := false
+	rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"auto_deploy": off})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("turning auto-deploy off: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"auto_deploy":true`) {
+		t.Errorf("the app still reports auto-deploy on:\n%s", rec.Body.String())
+	}
+
+	srv.StartPushBuild(ctx, "shop", "main")
+	time.Sleep(100 * time.Millisecond)
+
+	if got := engine.startedJobs(); len(got) != 0 {
+		t.Errorf("a push to an app with auto-deploy off started %d builds, want none", len(got))
+	}
+	if builds, _ := st.ListBuilds(ctx, "shop", 0); len(builds) != 0 {
+		t.Errorf("a push to an app with auto-deploy off recorded %d builds", len(builds))
+	}
+}
+
+// TestAutoDeployReadsAsSet asserts the response reports the resolved value, so a
+// caller never has to know that "unset" means on.
+func TestAutoDeployReadsAsSet(t *testing.T) {
+	srv, _, _ := pushServer(t)
+	h := srv.Handler()
+
+	// Created without the field: on.
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"auto_deploy":true`) {
+		t.Errorf("a new app does not report auto-deploy on:\n%s", rec.Body.String())
+	}
+
+	// Set to false: reported as false, and it stays false on a later read.
+	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"auto_deploy": false}); rec.Code != http.StatusOK {
+		t.Fatalf("patch: %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
+	if !strings.Contains(rec.Body.String(), `"auto_deploy":false`) {
+		t.Errorf("the app does not report auto-deploy off after being set:\n%s", rec.Body.String())
+	}
+
+	// A patch that does not mention it leaves it alone.
+	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"name": "Shop"}); rec.Code != http.StatusOK {
+		t.Fatalf("patch name: %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
+	if !strings.Contains(rec.Body.String(), `"auto_deploy":false`) {
+		t.Errorf("a patch of another field reset auto-deploy:\n%s", rec.Body.String())
+	}
+}
+
+// TestCreatingAnAppPublishesItsRouting asserts the address is wired from the
+// moment the app exists, not at its first deploy.
+//
+// The console already renders an undeployed app's address as a link marked "not
+// deployed", and the API reports the host and path before anything is running —
+// so the routing object has to exist for that address to mean anything. What it
+// points at is the Service a deploy will create; until then Istio answers 503,
+// which is the deliberate trade of publishing early.
+func TestCreatingAnAppPublishesItsRouting(t *testing.T) {
+	srv, _, _, dyn := newDeployServerWithDynamic(t)
+	h := srv.Handler()
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	vs, err := dyn.Resource(virtualServiceGVR).Namespace("ops-system").Get(
+		context.Background(), "applab-shop", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("an app was created with no routing: %v", err)
+	}
+
+	hosts, _, _ := unstructured.NestedStringSlice(vs.Object, "spec", "hosts")
+	if len(hosts) != 1 || hosts[0] != "shop.apps.example.com" {
+		t.Errorf("the published hosts are %v, want [shop.apps.example.com]", hosts)
+	}
+
+	// And nothing is running yet: publishing creates routing, not a workload.
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
+	if strings.Contains(rec.Body.String(), `"url":"http`) {
+		t.Errorf("an undeployed app reports a url; the address is real but nothing is serving it:\n%s", rec.Body.String())
+	}
+}
+
+// virtualServiceGVR mirrors the resource the deployer publishes through. It is
+// spelled here rather than imported because internal/deploy keeps it unexported.
+var virtualServiceGVR = schema.GroupVersionResource{
+	Group: "networking.istio.io", Version: "v1", Resource: "virtualservices",
 }
 
 // TestAPushToAnUnknownAppDoesNothing asserts a push the store accepted for an app

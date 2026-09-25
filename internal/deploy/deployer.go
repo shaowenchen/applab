@@ -136,6 +136,28 @@ func (d *Deployer) Apply(ctx context.Context, app *model.App, image string) (mod
 		return model.Address{}, err
 	}
 
+	return d.Publish(ctx, app)
+}
+
+// Publish creates or updates the routing for an app, without touching its
+// workload.
+//
+// It is what Apply ends with, split out because it is the one step that does not
+// need an image: a VirtualService's destination is the app's Service and its
+// hosts come from the app's address, both of which are known from the moment the
+// app exists. That is what lets an app be published at create time, so the
+// address a caller is given is really wired and the first deploy changes only
+// whether anything is answering behind it.
+//
+// An app with no address — no base domain configured, so the whole installation
+// is internal — has nothing to publish, and that is not an error: there is no
+// host for it to be reached at.
+//
+// The destination Service does not have to exist. Istio accepts a VirtualService
+// pointing at nothing and answers 503 until the first deploy creates it, which is
+// the deliberate trade of publishing early: an address that is reachable and
+// failing, rather than one that does not resolve at all.
+func (d *Deployer) Publish(ctx context.Context, app *model.App) (model.Address, error) {
 	addr := app.Address(d.cfg.BaseDomain, d.cfg.PathPrefix)
 	if addr.Empty() {
 		return model.Address{}, nil
@@ -189,11 +211,13 @@ func selectorLabels(app *model.App) map[string]string {
 	return map[string]string{k8s.LabelApp: app.ID}
 }
 
-// ObjectName is the name shared by an app's Deployment, Service and Ingress.
+// ObjectName is the name shared by an app's Deployment, Service and
+// VirtualService.
 //
-// One name for all three is not just tidiness: the Ingress points at the Service
-// by name and the Service selects the Deployment's pods, so a single source for
-// the name removes the possibility of a typo breaking one of those links.
+// One name for all three is not just tidiness: the VirtualService routes to the
+// Service by name and the Service selects the Deployment's pods, so a single
+// source for the name removes the possibility of a typo breaking one of those
+// links.
 //
 // The "applab-" prefix is what makes the name say whose it is. Everything in
 // this namespace is AppLab's — it deploys every app beside itself rather than

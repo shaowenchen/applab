@@ -566,6 +566,13 @@ That is the whole deployment. The push stores the source, and AppLab then builds
 and deploys the result on its own — `git push` returns as soon as git is done, so
 the build runs in the background and the app goes live when it succeeds.
 
+To release by hand instead, turn that off for the app: `applab update shop
+--auto-deploy=false`, or the "Deploy on push" box on the app's page. A push then
+stores the source and stops, and `applab deploy shop` ships it. Either way the
+app's address is live from the moment it is created — the gateway is routed to it
+before it has ever been deployed, so the URL the console shows is the one it will
+serve at.
+
 ### 5. Watch it come up
 
 Nothing needs calling, so this step is only about seeing where it got to:

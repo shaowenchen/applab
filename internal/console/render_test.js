@@ -641,12 +641,23 @@ async function render(apps) {
     const card = markup.match(/<h2 data-i18n="State"[\s\S]*?<\/div>\s*<\/div>/);
     check("the State card exists", card !== null, true);
     if (card) {
-      for (const id of ["app-build", "app-deploy", "app-branch", "app-branch-use"]) {
+      for (const id of ["app-build", "app-deploy", "app-branch", "app-branch-use", "app-port", "app-port-set", "app-auto-deploy"]) {
         check(`the State card carries ${id}`, card[0].includes(`id="${id}"`), true);
       }
       // Replicas is deliberately not here: it belongs with the instances it
-      // counts, in the card below, not with the app's other settings.
+      // counts, in the card below, not with the app's other settings. The port
+      // is the opposite case — it is not a fact about how many copies run, it is
+      // what the Service targets, so it belongs with the app.
       check("and does not carry app-replicas", card[0].includes('id="app-replicas"'), false);
+
+      // Auto-deploy is here rather than a card of its own because it is a
+      // setting like the others — and unlike them it applies immediately, which
+      // is why it must not sit under the "takes effect on the next deploy" note.
+      check(
+        "and auto-deploy is not under the next-deploy note",
+        /app-auto-deploy[\s\S]{0,400}?takes effect on the next deploy/.test(card[0]),
+        false
+      );
     }
   }
 

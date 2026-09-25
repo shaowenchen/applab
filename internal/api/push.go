@@ -132,6 +132,20 @@ func (s *Server) StartPushBuild(ctx context.Context, appID, branch string) {
 		return
 	}
 
+	// The app's own switch, and it turns off the build as well as the deploy.
+	// A build whose image nothing will run is what the guard above refuses, and
+	// this app is in exactly that position: whoever turned this off is releasing
+	// by hand, and an image pushed on every commit is not what they asked for.
+	//
+	// The push itself is unaffected — the source is stored, which is what git
+	// was asked to do. See applab update --auto-deploy and the console's
+	// checkbox for where the switch is set.
+	if !app.AutoDeploys() {
+		slog.DebugContext(ctx, "a push will not be built: this app has auto-deploy turned off",
+			"app", appID, "branch", branch)
+		return
+	}
+
 	head, err := s.headCommit(ctx, appID, branch)
 	if err != nil {
 		slog.WarnContext(ctx, "a pushed branch will not be built: its tip could not be read",

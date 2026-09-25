@@ -189,7 +189,14 @@ Nothing else needs calling. The app's status — `applab status shop`, or
 `GET /api/v1/apps/shop/status` — is where the build and the rollout show up, and
 `applab logs shop -f` follows the running result.
 
-Two things about it are worth knowing:
+Three things about it are worth knowing:
+
+- **It can be turned off per app.** `applab update shop --auto-deploy=false`, the
+  console's "Deploy on push" box, or `PATCH /api/v1/apps/shop {"auto_deploy":false}`.
+  With it off a push still stores the source — that is what git was asked to do —
+  but starts no build either, on the grounds that an image nothing will run is
+  not worth producing. Deploy by hand with `applab deploy shop`. The default is
+  on, and an app that has never been told otherwise reports as on.
 
 - **Only the active branch deploys.** Pushing any branch stores it and builds it;
   whether the result is deployed is decided when the build finishes, against what
