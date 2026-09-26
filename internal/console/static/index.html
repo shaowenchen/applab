@@ -1604,7 +1604,13 @@ const EYE_CLOSED =
 // A fixed width says "masked" just as clearly and says nothing else. That the
 // length is not disclosed is a second, smaller argument for it: a key's length
 // is a fact about the key, and there is no reason for the page to state it.
-const MASK_WIDTH = 16;
+//
+// 32 long enough to read as a credential worth protecting without becoming the
+// thing the row is made of. It was 16, which read as a short value rather than as
+// a masked one — the clone command in front of it is the longer string, so the
+// mask looked like the least important part of the line rather than the part
+// being withheld.
+const MASK_WIDTH = 32;
 
 // --- Resource units ---------------------------------------------------------
 //
