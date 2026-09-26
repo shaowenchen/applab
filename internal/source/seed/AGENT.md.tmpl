@@ -5,15 +5,15 @@ This file is written by AppLab every time source is uploaded to the app
 describes how to drive this app's whole lifecycle; what differs between apps is
 the app's id, and the address and key written into `applab.sh`.
 
+## Where this app is
+
+{{APP_ADDRESS}}
+
 ## What this app is
 
 An AppLab app is one source repository, one image, one Deployment and one
 address. This repository **is** the app's source: uploading to it is how code
 gets in, and what is committed is what can be deployed.
-
-The app is served at a URL the deployment knows. Ask for it:
-
-    curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/status"
 
 ## The two things you need
 
@@ -66,6 +66,7 @@ nothing to install. The header of `applab.sh` lists every command it calls.
 It does everything the app's page in the console does — the two are the same
 operations against the same API:
 
+    ./applab.sh url               # just the address it is served at
     ./applab.sh show              # port, replicas, domain, address
     ./applab.sh pods              # the pods, and why one is not ready
     ./applab.sh config            # env vars, and the names of the secrets

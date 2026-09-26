@@ -720,3 +720,84 @@ func TestASeedWithNoKeyOrAddressStillRenders(t *testing.T) {
 		t.Error("with no key, the script should say so rather than call with an empty credential")
 	}
 }
+
+// TestTheSeededTreeCarriesTheAppsAddress asserts the app's own URL is in the
+// repository, in AGENT.md, rather than only behind an API call.
+//
+// The repository is where someone arrives — they clone an app, and the first
+// question is where it is. Answering that with a curl command means running the
+// API before you can learn the address, which is a lot of machinery for a string
+// the deployment already knows.
+func TestTheSeededTreeCarriesTheAppsAddress(t *testing.T) {
+	objs, err := objectstore.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	const appURL = "https://applab.example.com/applab/apps/shop"
+	s, err := New(Options{
+		Objects:   objs,
+		DataDir:   t.TempDir(),
+		PublicURL: "https://applab.example.com/applab",
+		AppURL:    func(string) string { return appURL },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	agent := fileAtTip(t, s, "shop", "AGENT.md")
+	if !strings.Contains(agent, appURL) {
+		t.Errorf("AGENT.md does not carry the app's own address:\n%s", firstLines(agent, 20))
+	}
+	if strings.Contains(agent, "{{APP_ADDRESS}}") {
+		t.Error("AGENT.md still has the address placeholder in it")
+	}
+	if !strings.Contains(agent, "served at") {
+		t.Error("AGENT.md does not say what the address is for")
+	}
+
+	// And an upload rewrites it, the same as the rest of the file.
+	body := buildTar(t, []tarEntry{{name: "main.go", body: "package main\n"}})
+	if _, err := s.Ingest(ctx, "shop", main, strings.NewReader(string(body)), "later", "", DefaultIngestLimits); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if !strings.Contains(fileAtTip(t, s, "shop", "AGENT.md"), appURL) {
+		t.Error("an upload rewrote AGENT.md without the app's address")
+	}
+}
+
+// TestWithNoAppDomainTheSeedSaysSo asserts the empty case reads as an answer.
+//
+// An installation with no domain serves its apps only inside the cluster, which
+// is a legitimate way to run it. The section must say that rather than printing
+// a heading with nothing under it — a substitution that renders an empty string
+// produces exactly the kind of file someone concludes is truncated.
+func TestWithNoAppDomainTheSeedSaysSo(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Create(context.Background(), "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	agent := fileAtTip(t, s, "shop", "AGENT.md")
+	if strings.Contains(agent, "{{") {
+		t.Error("AGENT.md has an unsubstituted placeholder with no address to write")
+	}
+	if !strings.Contains(agent, "no address outside the cluster") {
+		t.Errorf("with no domain the section should say so:\n%s", firstLines(agent, 16))
+	}
+}
+
+// firstLines is the head of a file, for a failure message that names the start
+// of it rather than printing the whole document.
+func firstLines(body string, n int) string {
+	lines := strings.SplitN(body, "\n", n+1)
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
+}

@@ -87,6 +87,15 @@ type Store struct {
 	// call and the key store belongs to another package; a nil one means this
 	// deployment mints no keys.
 	seedKey func(ctx context.Context, appID string) (string, error)
+
+	// appURL is where an app is served under this deployment's conventions.
+	//
+	// It is a function rather than a string because the answer depends on the
+	// app: the app id is part of its own address. A nil one means this deployment
+	// serves apps under no domain — an installation reachable only inside the
+	// cluster — and the seeded files then say so instead of carrying a link that
+	// does not resolve.
+	appURL func(appID string) string
 }
 
 // repoLock is one app's lock. It is a struct rather than a bare mutex so the map
@@ -111,6 +120,12 @@ type Options struct {
 	// variable for the caller to set, which is what a deployment with no known
 	// public address wants.
 	PublicURL string
+
+	// AppURL reports where an app is served, for the seeded files to carry.
+	//
+	// Nil means this deployment has no domain to serve apps under, which is a
+	// real configuration rather than a misconfiguration.
+	AppURL func(appID string) string
 
 	// SeedKey reads an app's API key, for the seeded files to carry as the
 	// default APPLAB_KEY.
@@ -160,6 +175,7 @@ func New(opts Options) (*Store, error) {
 		authorEmail: opts.AuthorEmail,
 		publicURL:   strings.TrimSuffix(strings.TrimSpace(opts.PublicURL), "/"),
 		seedKey:     opts.SeedKey,
+		appURL:      opts.AppURL,
 	}
 
 	// The scratch layout is created up front so the first upload does not pay for

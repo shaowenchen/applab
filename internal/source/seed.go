@@ -91,6 +91,15 @@ type SeedValues struct {
 	// is the only source.
 	URL string
 
+	// AppURL is the address *this app* is served at — the answer to "where do I
+	// reach it", written into AGENT.md so it is in the repository rather than
+	// only behind an API call.
+	//
+	// Empty when this deployment serves apps under no domain, which is a real
+	// configuration: an installation reachable only inside the cluster has no
+	// address to report, and a link invented here would not resolve.
+	AppURL string
+
 	// Key is the app's own API key. Empty when this deployment mints no app
 	// keys, or when the key could not be read.
 	//
@@ -121,9 +130,10 @@ func seedForFirstCommit(v SeedValues) []seedFile {
 // renderSeed renders the named templates, in the order given.
 func renderSeed(v SeedValues, names []string) []seedFile {
 	replacements := map[string]string{
-		"{{APP}}": v.App,
-		"{{URL}}": v.URL,
-		"{{KEY}}": v.Key,
+		"{{APP}}":         v.App,
+		"{{URL}}":         v.URL,
+		"{{APP_ADDRESS}}": v.appAddress(),
+		"{{KEY}}":         v.Key,
 	}
 	out := make([]seedFile, 0, len(names))
 	for _, name := range names {
@@ -145,6 +155,34 @@ func renderSeed(v SeedValues, names []string) []seedFile {
 		out = append(out, seedFile{Name: name, Mode: mode, Body: body})
 	}
 	return out
+}
+
+// appAddress is the whole "where this app is" section of AGENT.md.
+//
+// The section rather than a bare URL, because there are two cases and a plain
+// substitution cannot branch: with no domain configured the app has no address
+// outside the cluster, and a paragraph that opened "It is served at:" and then
+// said so would read as a mistake. Producing the prose here keeps the template
+// to one substitution and puts the branch where it can be tested.
+//
+// The token is deliberately not {{URL}}: that one is a shell literal in
+// applab.sh, and one name meaning two things in two files is how a substitution
+// ends up in the wrong one.
+func (v SeedValues) appAddress() string {
+	if v.AppURL == "" {
+		return "This app has no address outside the cluster: the deployment it belongs\n" +
+			"to has not been given a domain to serve apps under. Whoever runs it can set\n" +
+			"one, and this app is then reachable at its own URL. `./applab.sh url`\n" +
+			"reports the current answer either way."
+	}
+	return "It is served at:\n\n    " + v.AppURL + "\n\n" +
+		"That is the live address — the one the gateway routes to — and it is the\n" +
+		"same one the console's Open button uses. `./applab.sh url` prints it, which\n" +
+		"is the answer to ask for if this copy is old and the deployment has moved.\n\n" +
+		"An app that has never been deployed has an address too, and nothing\n" +
+		"answering at it yet: where an app *is served* is a fact about its settings,\n" +
+		"known from the moment it exists, while whether anything is there is what\n" +
+		"`./applab.sh status` reports."
 }
 
 // writeSeed puts the kept-current files into a source tree, replacing whatever
@@ -191,7 +229,8 @@ func AgentFileNames() []string {
 }
 
 // seedValues assembles what an app's seeded files are rendered against: its id,
-// the address people reach this deployment at, and the app's own key.
+// the address people reach this deployment at, the address the app itself is
+// served at, and the app's own key.
 //
 // The address comes from the Store because it is a deployment-wide setting that
 // every app's tree carries a copy of. The key is fetched through the injected
@@ -205,6 +244,9 @@ func AgentFileNames() []string {
 // an optional convenience into a hard dependency.
 func (s *Store) seedValues(ctx context.Context, appID string) SeedValues {
 	v := SeedValues{App: appID, URL: strings.TrimSuffix(strings.TrimSpace(s.publicURL), "/")}
+	if s.appURL != nil {
+		v.AppURL = s.appURL(appID)
+	}
 	if s.seedKey == nil {
 		return v
 	}

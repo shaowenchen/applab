@@ -23,6 +23,7 @@ import (
 	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/gitx"
 	"github.com/shaowenchen/applab/internal/k8s"
+	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
@@ -184,11 +185,12 @@ func run() error {
 	// store its source is worse than one that refuses to start, because the
 	// caller only finds out at the end of an upload.
 	//
-	// PublicURL and SeedKey are what the seeded files carry: the address this
-	// deployment is reached at, and the key of the app they are written for. Both
-	// are defaults in the rendered script rather than values — see SeedValues —
-	// and both are optional here, since a deployment without a known public
-	// address or without app keys still seeds a usable tree.
+	// PublicURL, AppURL and SeedKey are what the seeded files carry: the address
+	// this deployment is reached at, the address the app itself is served at, and
+	// the key of the app they are written for. All three are optional here — a
+	// deployment without a public address, without a domain to serve apps under,
+	// or without app keys still seeds a usable tree — and the first two are
+	// written as defaults rather than as values. See source.SeedValues.
 	appKeys := appkey.New(st)
 	src, err := source.New(source.Options{
 		Objects:     objects,
@@ -196,6 +198,7 @@ func run() error {
 		AuthorName:  "applab",
 		AuthorEmail: "applab@localhost",
 		PublicURL:   cfg.PublicURL,
+		AppURL:      func(appID string) string { return cfg.AppURL(&model.App{ID: appID}) },
 		SeedKey:     appKeys.Get,
 	})
 	if err != nil {

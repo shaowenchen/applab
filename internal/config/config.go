@@ -17,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/objectstore"
 )
 
@@ -46,7 +47,6 @@ type Config struct {
 	// X-Forwarded-Proto — which is right for a deployment reached directly and
 	// an assumption for one behind a proxy that strips either.
 	PublicURL string `yaml:"public_url"`
-
 	// BasePath is the path prefix this service is served under, e.g. "/applab".
 	//
 	// It exists because of how a Kubernetes Ingress works: an Ingress routes on a
@@ -301,6 +301,33 @@ type Build struct {
 // Enabled reports whether the build pipeline is configured.
 func (b Build) Enabled() bool {
 	return b.Registry != "" && b.KanikoImage != ""
+}
+
+// Scheme is the URL scheme this deployment is reached with.
+//
+// It is taken from PublicURL, which is the one source that knows: an installation
+// served over TLS answers https, and one that has not set it answers http. That
+// is a guess rather than an inference — a deployment behind a proxy that
+// terminates TLS and has not set PublicURL is really https — but it is the only
+// answer available where there is no request to read it from.
+//
+// The API layer does better when it can: it reads the request's own TLS state and
+// X-Forwarded-Proto first, and only falls to this. The seeded files have no
+// request, so this is what they carry — see source.SeedValues.
+func (c Config) Scheme() string {
+	if i := strings.Index(c.PublicURL, "://"); i > 0 {
+		return c.PublicURL[:i]
+	}
+	return "http"
+}
+
+// AppURL is the address an app is served at, as one string.
+//
+// It is empty when this deployment has no domain to serve apps under: an
+// installation reachable only inside the cluster has no address to report, and
+// inventing one would be a link that does not resolve.
+func (c Config) AppURL(app *model.App) string {
+	return app.Address(c.BaseDomain, c.BasePath, c.PathPrefix).URL(c.Scheme())
 }
 
 // Default returns the configuration used when nothing is set. It is a working

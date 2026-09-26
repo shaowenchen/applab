@@ -248,6 +248,16 @@ Environment:
 EOF
 }
 
+# where prints the address the app is served at.
+#
+# It reads the app rather than the status: the address is a fact about the app's
+# settings, known from the moment it exists, where the status is what the cluster
+# has. An app that has never been deployed has an address and nothing answering
+# at it, and this is the command that says which.
+where() {
+  api GET "/api/v1/apps/$APP" | json_field url
+}
+
 # push packages this directory the way AppLab expects.
 #
 # The exclusions are the ones that would make an upload slower and a build no
@@ -430,7 +440,7 @@ case "${1:-help}" in
     api GET "/api/v1/apps/$APP/builds?limit=20"
     ;;
   url)
-    api GET "/api/v1/apps/$APP/status" | json_field url
+    where
     ;;
   show)
     api GET "/api/v1/apps/$APP"

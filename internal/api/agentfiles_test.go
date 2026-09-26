@@ -342,3 +342,32 @@ func TestTheKeyIsMintedBeforeTheRepositoryIsSeeded(t *testing.T) {
 			"repository is created (lookups that found nothing: %v)", missed)
 	}
 }
+
+// TestTheServedFileCarriesTheAppsAddress asserts the served copy names the app's
+// own URL, not just the deployment's.
+//
+// This is the half that matters for `self-update`: it fetches these files and
+// moves them over the checkout's, so a served copy rendered without the address
+// would replace a section that had it with one that did not — and the file in
+// the repository would lose the answer to its own first question.
+func TestTheServedFileCarriesTheAppsAddress(t *testing.T) {
+	srv, _ := newTieredServer(t)
+	h := srv.Handler()
+	createAppWithKey(t, h, "shop")
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/agent/files/AGENT.md", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("serving AGENT.md returned %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The test server's base domain is apps.example.com and no path prefix, so
+	// the app is served at its own subdomain. The scheme is http because this
+	// server has no PublicURL set, so the address follows the request — which is
+	// the documented fallback, and the reason the assertion is on the host.
+	if !strings.Contains(rec.Body.String(), "shop.apps.example.com") {
+		t.Errorf("AGENT.md does not carry the app's own address:\n%s", rec.Body.String()[:min(900, rec.Body.Len())])
+	}
+	if strings.Contains(rec.Body.String(), "no address outside the cluster") {
+		t.Error("AGENT.md says the app has no address while a base domain is configured")
+	}
+}

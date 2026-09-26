@@ -46,7 +46,8 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // agentFileValues assembles what the seeded files are rendered against for one
-// app: its id, the address people reach this deployment at, and its key.
+// app: its id, the address people reach this deployment at, the address the app
+// itself is served at, and its key.
 //
 // It mirrors what the source store does when it writes those files into a tree,
 // and the two have to agree — `self-update` fetches the served copy and moves it
@@ -56,7 +57,11 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 // A key that cannot be read is not an error, for the same reason it is not one
 // on the write path: the file is rendered without it and says where to get one.
 func (s *Server) agentFileValues(r *http.Request, appID string) source.SeedValues {
-	v := source.SeedValues{App: appID, URL: s.publicURL(r)}
+	v := source.SeedValues{
+		App:    appID,
+		URL:    s.publicURL(r),
+		AppURL: s.appURLFor(r, appID),
+	}
 	if s.appKeys == nil {
 		return v
 	}
@@ -71,6 +76,23 @@ func (s *Server) agentFileValues(r *http.Request, appID string) source.SeedValue
 	}
 	v.Key = key
 	return v
+}
+
+// appURLFor reports where an app is served, for the seeded files to carry.
+//
+// It reads the app so an app-level domain is honoured, and falls back to the
+// deployment's own convention when it cannot — which is what a deployment with no
+// app record to read, or no domain configured, produces: an empty string.
+func (s *Server) appURLFor(r *http.Request, appID string) string {
+	app, err := s.store.GetApp(r.Context(), appID)
+	if err != nil {
+		return ""
+	}
+	addr := s.addressFor(app)
+	if addr.Empty() {
+		return ""
+	}
+	return addr.URL(s.scheme(r))
 }
 
 // handleAgentFiles lists them.
