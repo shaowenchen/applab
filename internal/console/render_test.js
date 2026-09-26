@@ -258,8 +258,8 @@ async function render(apps) {
   // A shared path prefix: one host, the app distinguished by path.
   {
     const body = await render([
-      { id: "shop", status: "running", hostname: "www.example.com", path: "/applab/apps/shop", url: "https://www.example.com/applab/apps/shop" },
-      { id: "blog", status: "running", hostname: "www.example.com", path: "/applab/apps/blog", url: "https://www.example.com/applab/apps/blog" },
+      { id: "shop", status: "running", url: "https://www.example.com/applab/apps/shop" },
+      { id: "blog", status: "running", url: "https://www.example.com/applab/apps/blog" },
     ]);
     const text = body.allText();
     check("path-prefixed apps show their own path", text.includes("/applab/apps/shop"), true);
@@ -276,7 +276,7 @@ async function render(apps) {
   // A subdomain per app: no path, and the host is the whole address.
   {
     const body = await render([
-      { id: "shop", status: "running", hostname: "shop.apps.example.com", url: "https://shop.apps.example.com" },
+      { id: "shop", status: "running", url: "https://shop.apps.example.com" },
     ]);
     const text = body.allText();
     check("subdomain apps show their host", text.includes("shop.apps.example.com"), true);
@@ -290,7 +290,7 @@ async function render(apps) {
   // be" is exactly the question someone has before deploying.
   {
     const body = await render([
-      { id: "shop", status: "created", hostname: "www.example.com", path: "/applab/apps/shop" },
+      { id: "shop", status: "created", url: "https://www.example.com/applab/apps/shop" },
     ]);
     const text = body.allText();
     check("an undeployed app shows its address", text.includes("www.example.com/applab/apps/shop"), true);

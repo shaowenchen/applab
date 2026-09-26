@@ -104,8 +104,15 @@ directory name.`,
 			}
 
 			fmt.Printf("created %s\n", app.ID)
-			if app.Hostname != "" {
-				fmt.Printf("it will be served at %s\n", app.Hostname)
+			if app.URL != "" {
+				fmt.Printf("it will be served at %s\n", app.URL)
+			}
+			// The key comes back from this one call, which is the moment the
+			// caller is entitled to it. Printing it here rather than sending them
+			// to `applab key` afterwards is the difference between a credential
+			// they have and one they have to go and find.
+			if app.AppKey != "" {
+				fmt.Printf("its API key is %s\n", app.AppKey)
 			}
 			fmt.Printf("push source to it with: applab push %s\n", app.ID)
 			return nil
@@ -153,9 +160,6 @@ func listCommand(urlFlag, keyFlag *string) *cobra.Command {
 			undeployed := 0
 			for _, app := range apps {
 				url := app.URL
-				if url == "" {
-					url = app.Hostname
-				}
 				if url == "" {
 					url = "-"
 				}
@@ -228,8 +232,6 @@ func statusCommand(urlFlag, keyFlag *string) *cobra.Command {
 
 			if status.URL != "" {
 				fmt.Printf("url      %s\n", status.URL)
-			} else if status.Host != "" {
-				fmt.Printf("host     %s (not reachable yet)\n", status.Host+status.Path)
 			}
 
 			return nil
@@ -317,10 +319,6 @@ func deployAfterBuild(cmd *cobra.Command, c *client.Client, appID, commit string
 func printDeployed(result *client.DeployResult) {
 	if result.URL != "" {
 		fmt.Println(result.URL)
-		return
-	}
-	if result.Host != "" {
-		fmt.Printf("deployed to %s (not reachable yet)\n", result.Host+result.Path)
 		return
 	}
 	fmt.Println("deployed")

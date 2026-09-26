@@ -311,10 +311,6 @@ func shipCommit(ctx context.Context, c *client.Client, opts *pushOptions) error 
 
 	if deployed.URL != "" {
 		fmt.Println(deployed.URL)
-	} else if deployed.Host != "" {
-		// With a path prefix the host alone is not the whole address, so it is
-		// reported as it was given rather than silently joined without one.
-		fmt.Println(deployed.Host + deployed.Path)
 	} else {
 		fmt.Printf("%s deployed\n", opts.app)
 	}

@@ -153,8 +153,6 @@ func (s *Server) deployResolved(w http.ResponseWriter, r *http.Request, app *mod
 		"app":      s.appResponseFor(r.Context(), r, app),
 		"commit":   resolved,
 		"image":    image,
-		"host":     addr.Host,
-		"path":     addr.Path,
 		"url":      addr.URL(s.scheme(r)),
 		"deployed": true,
 	})
@@ -339,13 +337,10 @@ type appStatusResponse struct {
 
 	Live *liveState `json:"live,omitempty"`
 
-	Host string `json:"host,omitempty"`
-
-	// Path is the app's path under the host, set only when the deployment uses
-	// a shared path prefix. A caller that has Host but no Path has an app at
-	// that host's root.
-	Path string `json:"path,omitempty"`
-	URL  string `json:"url,omitempty"`
+	// URL is where the app is served, as one address — the same field the app
+	// response carries, derived the same way. It was a host and a path beside it,
+	// and the host alone was not the address whenever a path prefix was in use.
+	URL string `json:"url,omitempty"`
 }
 
 type liveState struct {
@@ -395,11 +390,7 @@ func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 
 	addr := s.addressFor(app)
 	if !addr.Empty() {
-		resp.Host = addr.Host
-		resp.Path = addr.Path
-		if status == model.AppStatusRunning || status == model.AppStatusDeploying {
-			resp.URL = addr.URL(s.scheme(r))
-		}
+		resp.URL = addr.URL(s.scheme(r))
 	}
 
 	respond(w, http.StatusOK, resp)

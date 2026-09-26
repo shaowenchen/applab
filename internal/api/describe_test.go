@@ -111,8 +111,8 @@ func TestDescribeNamesTheAppsItLists(t *testing.T) {
 	}
 	// The address an app is served at is the thing a caller most often wants
 	// next, and it is not derivable from the id alone — a path prefix changes it.
-	if app["hostname"] == nil && app["path"] == nil {
-		t.Errorf("apps[0] carries neither hostname nor path: %v", app)
+	if app["url"] == nil {
+		t.Errorf("apps[0] carries no url: %v", app)
 	}
 }
 

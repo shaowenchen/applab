@@ -416,6 +416,16 @@ type App struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 
+	// AppKey is the app's own API key, and it is set only by CreateApp.
+	//
+	// Creating an app is the one moment the caller is entitled to the credential:
+	// they just asked for the app, the key is minted with it, and fetching it
+	// afterwards is a second call they have to know to make. Every other call
+	// leaves this empty, which is why it is not on the API's own app shape —
+	// there it would be one refactor away from appearing in a listing of every
+	// app in the deployment.
+	AppKey string `json:"app_key"`
+
 	Port     int32 `json:"port"`
 	Replicas int32 `json:"replicas"`
 
@@ -426,12 +436,10 @@ type App struct {
 	// themselves come from AppConfig, so a list does not carry them.
 	EnvCount int `json:"env_count"`
 
-	// Hostname is the host an app answers on and Path where under it. With a
-	// shared path prefix the host is the deployment's rather than the app's, so
-	// neither field alone is the address; URL is the whole thing.
-	Hostname string `json:"hostname"`
-	Path     string `json:"path"`
-	URL      string `json:"url"`
+	// URL is where the app is served, as one address. The API used to report it
+	// as a hostname and a path beside each other, and neither was the address
+	// whenever a path prefix was in use.
+	URL string `json:"url"`
 
 	// Branch is the app's active branch: what a deploy builds from, and the
 	// branch a clone with no branch named gets.
@@ -797,12 +805,8 @@ type DeployResult struct {
 	Commit string `json:"commit"`
 	Image  string `json:"image"`
 
-	// Host is where the app answers and Path where under it, so a caller can
-	// see the two parts. URL is them joined with a scheme, which is what most
-	// callers want.
-	Host string `json:"host"`
-	Path string `json:"path"`
-	URL  string `json:"url"`
+	// URL is where the app is served, as one address.
+	URL string `json:"url"`
 
 	// Build is set instead of the fields above when the deploy started a build,
 	// which happens only when the caller asked for one.
@@ -867,9 +871,8 @@ type Status struct {
 		Message         string `json:"message"`
 	} `json:"live"`
 
-	Host string `json:"host"`
-	Path string `json:"path"`
-	URL  string `json:"url"`
+	// URL is where the app is served, as one address.
+	URL string `json:"url"`
 }
 
 // AppStatus reads an app's status.

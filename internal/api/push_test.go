@@ -257,9 +257,14 @@ func TestCreatingAnAppPublishesItsRouting(t *testing.T) {
 	}
 
 	// And nothing is running yet: publishing creates routing, not a workload.
+	// The address is still reported, because it is where the app *is served* —
+	// the status is the field that says nothing answers there yet.
 	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
-	if strings.Contains(rec.Body.String(), `"url":"http`) {
-		t.Errorf("an undeployed app reports a url; the address is real but nothing is serving it:\n%s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"url":"http`) {
+		t.Errorf("an app with routing but no workload reports no address:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"created"`) {
+		t.Errorf("an app with routing but no workload does not report being undeployed:\n%s", rec.Body.String())
 	}
 }
 

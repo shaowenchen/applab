@@ -57,8 +57,13 @@ func TestAFreshInstallReportsAppsAsNotDeployed(t *testing.T) {
 			t.Errorf("app %s reports %q with no Deployment; a fresh install must not claim it is running",
 				app.ID, app.Status)
 		}
-		if app.URL != "" {
-			t.Errorf("app %s reports a URL (%s) with nothing serving it", app.ID, app.URL)
+		// The address is reported even though nothing serves it. It is where the
+		// app is served — a fact about its settings, which a fresh install reads
+		// from the bucket — and the status above is what says nothing is running.
+		// Withholding it would cost a caller the one thing they need in order to
+		// know where the first deploy will put the app.
+		if app.URL == "" {
+			t.Errorf("app %s reports no address; where it is served is known even when nothing is running", app.ID)
 		}
 	}
 

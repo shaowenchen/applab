@@ -322,6 +322,39 @@ if grep -q 'applab.io/app' <<<"$(render --set apps.pathPrefix= --set ingress.hos
   fail "a chart object carries applab.io/app; the cleanup sweep would delete it as though it were an app"
 fi
 
+# AppLab's own pods have to carry the label the server finds them by.
+#
+# The platform log endpoint lists pods with observe.selfSelector and reads one's
+# log. That selector looks for app.kubernetes.io/part-of, which the chart puts on
+# applab.labels — and applab.labels is what objects get, not what the pod
+# template gets: a pod carries selectorLabels alone. So the selector matched
+# nothing, and the panel answered every request with "read applab's log" and no
+# cause. The Go test passed because it labelled its own fake pod with the value
+# the selector wanted, which is exactly the shape of test that cannot catch this.
+#
+# Cross-checked against the Go constant and the rendered pod template, so the two
+# are compared to each other rather than to a copy of one of them here.
+self_selector="$(sed -n 's/^const selfSelector = "\(.*\)"$/\1/p' internal/observe/observe.go)"
+[ -n "$self_selector" ] \
+  || fail "observe.selfSelector is gone; this check has nothing to compare against"
+selector_key="${self_selector%%=*}"
+selector_val="${self_selector#*=}"
+if ! render | python3 -c '
+import sys, yaml
+want_key, want_val = sys.argv[1], sys.argv[2]
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+deploys = [d for d in docs if d.get("kind") == "Deployment"]
+if not deploys:
+    print("no Deployment rendered", file=sys.stderr)
+    sys.exit(1)
+labels = deploys[0]["spec"]["template"]["metadata"]["labels"]
+if labels.get(want_key) != want_val:
+    print(f"pod template labels are {labels}, which do not carry {want_key}={want_val}", file=sys.stderr)
+    sys.exit(1)
+' "$selector_key" "$selector_val"; then
+  fail "AppLab's pods do not carry $self_selector, which is what observe.selfSelector lists them by — the platform log endpoint would find no pods and report every request as a failure"
+fi
+
 # RBAC is a Role, not a ClusterRole: AppLab keeps everything in one namespace,
 # so it has no business holding any permission outside it. A ClusterRole
 # reappearing here would silently undo the point of that.

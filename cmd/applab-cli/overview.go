@@ -419,8 +419,8 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 			fmt.Printf("port     %d\n", app.Port)
 			fmt.Printf("replicas %d\n", app.Replicas)
 			fmt.Printf("auto-deploy %t\n", app.AutoDeploy)
-			if app.Hostname != "" {
-				fmt.Printf("served   %s%s\n", app.Hostname, app.Path)
+			if app.URL != "" {
+				fmt.Printf("served   %s\n", app.URL)
 			}
 			return nil
 		},

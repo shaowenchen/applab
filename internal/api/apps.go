@@ -60,16 +60,20 @@ type appResponse struct {
 	// the names are worth having anyway.
 	EnvCount int `json:"env_count"`
 
-	// Hostname and Path are the two halves of where an app is served, and URL is
-	// them joined with a scheme. All three are derived, and reported so a caller
-	// does not have to reconstruct the deployment's addressing convention.
+	// URL is where an app is served, as one address. It is derived and reported
+	// so a caller does not have to reconstruct the deployment's addressing
+	// convention.
 	//
-	// Hostname alone is the whole address only when no path prefix is
-	// configured — with one, every app shares that host and the path is what
-	// says which is meant. URL is empty until the app has been deployed.
-	Hostname string `json:"hostname,omitempty"`
-	Path     string `json:"path,omitempty"`
-	URL      string `json:"url,omitempty"`
+	// One field rather than a host and a path, because the two are not
+	// independently meaningful: with a shared path prefix every app reports the
+	// same host and the path is what says which is meant, and with a subdomain
+	// each there is no path at all. A caller given the pair has to know which
+	// case it is in to use them; given the address it does not.
+	//
+	// It is reported whether or not the app has been deployed, because it is
+	// where the app *is served* — a fact about its settings — rather than whether
+	// anything answers there yet. `status` is the field that says that.
+	URL string `json:"url,omitempty"`
 
 	// Branch is the app's active branch: what a deploy builds from, and the
 	// branch a git clone with no branch named gets. It is always set — an app
@@ -139,15 +143,7 @@ func (s *Server) toAppResponse(a *model.App, r *http.Request, status model.AppSt
 
 	addr := s.addressFor(a)
 	if !addr.Empty() {
-		resp.Hostname = addr.Host
-		resp.Path = addr.Path
-		// Only advertised once something is actually serving: a URL that 404s
-		// reads as "deployed but broken" when the truth is "not deployed yet".
-		// Istio answers 503 rather than 404 for a VirtualService with no
-		// Service behind it, which makes that distinction worth keeping.
-		if status == model.AppStatusRunning || status == model.AppStatusDeploying {
-			resp.URL = addr.URL(s.scheme(r))
-		}
+		resp.URL = addr.URL(s.scheme(r))
 	}
 	return resp
 }
@@ -292,7 +288,54 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.metrics.ObserveAppCreated()
 	}
 	slog.InfoContext(r.Context(), "app created", "app", app.ID)
-	respond(w, http.StatusCreated, s.appResponseFor(r.Context(), r, app))
+
+	// The create response carries the app's key, which no other response does.
+	//
+	// Creating an app is the one moment the caller is entitled to it: they just
+	// asked for the app, the key is minted here, and fetching it afterwards is a
+	// second call they have to know to make. Everywhere else the key stays behind
+	// GET /apps/{app}/key, where a deliberate request for a credential is what
+	// produces one.
+	//
+	// It is a wrapper around the ordinary response rather than a field on it,
+	// which is the point: appResponse is shared by list, get and patch, and a
+	// credential on that shape is one refactor away from appearing in a listing
+	// of every app in the deployment. A separate type cannot leak that way.
+	var appKey string
+	if s.appKeys != nil {
+		// Best effort, and deliberately so: the key exists — it was created above,
+		// and its failure would have rolled the app back — so a read that fails
+		// here costs the caller one extra call to GET /apps/{app}/key rather than
+		// making a successful create look like a failed one.
+		key, err := s.appKeys.Get(r.Context(), app.ID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "created an app but could not read back its key",
+				"app", app.ID, "error", err)
+		}
+		appKey = key
+	}
+
+	respond(w, http.StatusCreated, createdAppResponse{
+		appResponse: s.appResponseFor(r.Context(), r, app),
+		AppKey:      appKey,
+	})
+}
+
+// createdAppResponse is what POST /api/v1/apps returns.
+//
+// It embeds the app's own response so every field is in the same place it is
+// everywhere else, and adds the one thing only a create can answer: the key the
+// app was minted with.
+type createdAppResponse struct {
+	appResponse
+
+	// AppKey is the app's API key. It is the same credential
+	// GET /api/v1/apps/{app}/key returns.
+	//
+	// Omitted when this deployment mints no app keys, which is a real
+	// configuration — appKeys is optional — and an empty string would read as a
+	// key that authenticates nothing.
+	AppKey string `json:"app_key,omitempty"`
 }
 
 // publishApp creates or updates an app's routing, reporting a failure without

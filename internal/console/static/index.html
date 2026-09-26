@@ -1033,26 +1033,26 @@ function baseURL() {
     (window.location.pathname || "").replace(/\/+$/, "");
 }
 
-// appURL is the address an app will be served at, whether or not it is running.
+// appURL is the address an app is served at.
 //
-// It is the same scheme as the page itself, because the deployment serves the
-// console and the apps through one gateway: if this page came over https, so
-// will they. The address is derived here rather than read from the app because
-// the API only fills in its `url` once the app has been deployed — and someone
-// looking at an app they have not deployed yet is precisely the person who wants
-// to know where it is going to land.
+// It is read from the app, which reports it whether or not anything is running:
+// where an app is served is a fact about its settings, known from the moment it
+// exists. The console used to compute it from a host and a path the API also
+// sent, and to prefer the API's url once there was one — two answers to the same
+// question, and the computed one was only right for a deployment with no path
+// prefix.
 function appURL(app) {
-  return addressURL(app.hostname, app.path, app.url);
+  return app.url || "";
 }
 
-// addressURL is the same derivation from the parts, for the callers that have an
-// app's status in hand rather than the app itself.
-function addressURL(host, path, url) {
-  if (url) return url;
-  const address = (host || "") + (path || "");
-  if (!address) return "";
-  const scheme = (window.location.protocol || "https:").replace(/:$/, "");
-  return scheme + "://" + address;
+// statusURL is where an app's status says it is served, and is empty when the
+// deployment reports no address for it — an installation with no base domain,
+// where apps are reachable inside the cluster only.
+//
+// No derivation from parts any more: the API reports the address as one field on
+// both an app and its status, so there is nothing here to get wrong.
+function statusURL(status) {
+  return status.url || "";
 }
 
 // ---------------------------------------------------------------------------
@@ -2688,15 +2688,39 @@ async function loadAppState() {
     list.append(dt, dd);
   };
 
-  // The address as text. The link that opens it lives in the title row, where
-  // the reason someone opens this page is; repeating it here as a second link
-  // would be a second thing to keep true, and this row is the record.
+  // addLink is the same row with a link as its value.
+  //
+  // An <a> and not a button: the browser's own "copy link address", middle-click
+  // and hover preview are the point of an address being an address. It opens in
+  // a new tab with rel="noopener noreferrer" — the app is served by the same
+  // gateway as this console, and an app given a handle on this window is an app
+  // that could navigate the console out from under whoever is reading it.
+  const addLink = (term, href) => {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    const link = document.createElement("a");
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = href;
+    dd.appendChild(link);
+    list.append(dt, dd);
+  };
+
+  // The address, as a link that opens in its own tab.
+  //
+  // It is the same destination the title row's Open button goes to, and it is
+  // repeated here because this row is the record: someone reading the app's
+  // facts should be able to act on the one fact that is a place. The link opens
+  // in a new tab rather than navigating away — this page is the app's console,
+  // and following its own address in place would replace it with the app.
   //
   // It carries no note about whether the app is serving. It did — "(not
   // deployed)" — and the row below it is the status, which says exactly that.
-  const appAddress = addressURL(status.host, status.path, status.url);
+  const appAddress = statusURL(status);
   if (appAddress) {
-    add(t("url"), appAddress);
+    addLink(t("url"), appAddress);
   }
 
   add(t("status"), t(status.status));
@@ -2798,10 +2822,18 @@ async function loadPods() {
   }
 }
 
+// HISTORY_LIMIT is how many commits the History card shows.
+//
+// Three, because the card answers "what did I just push, and can I go back to
+// it" — and a list that scrolls past the fold is a list nobody reads the end of.
+// The endpoint defaults to fifty; asking for three is what keeps the table from
+// growing a scrollbar as an app accumulates commits.
+const HISTORY_LIMIT = 3;
+
 async function loadCommits() {
   let history;
   try {
-    history = await api("/api/v1/apps/" + state.app + "/commits");
+    history = await api("/api/v1/apps/" + state.app + "/commits?limit=" + HISTORY_LIMIT);
   } catch (err) {
     setError(tf("Could not read history: {error}", { error: err.message }));
     return;

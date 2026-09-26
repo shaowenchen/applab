@@ -46,6 +46,21 @@ spec:
         {{- end }}
       labels:
         {{- include "applab.selectorLabels" . | nindent 8 }}
+        {{- /*
+        The label that says these pods are AppLab's, as opposed to an app's.
+
+        applab reads its own log by listing pods with this selector, and the
+        endpoint that serves it has been failing since it was added: part-of is
+        on applab.labels, which the pod template did not include, so the selector
+        matched nothing and the platform log panel answered "read applab's log"
+        with no cause. A test passed because it labelled its own fake pod.
+
+        It is added here rather than included as a whole because this is a pod
+        template: everything in it is part of the pod's identity, and the
+        Deployment's own selector must not move — it is immutable, so a change
+        there makes an existing release un-upgradeable.
+        */}}
+        app.kubernetes.io/part-of: applab
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

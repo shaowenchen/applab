@@ -187,16 +187,15 @@ func TestDeployCreatesResources(t *testing.T) {
 	}
 
 	var result struct {
-		Host string `json:"host"`
-		URL  string `json:"url"`
+		URL string `json:"url"`
 	}
 	decodeData(t, rec, &result)
 
-	if result.Host != "shop.apps.example.com" {
-		t.Errorf("host = %q, want shop.apps.example.com", result.Host)
-	}
-	if !strings.HasPrefix(result.URL, "http") || !strings.Contains(result.URL, result.Host) {
-		t.Errorf("url = %q, want a URL containing the host", result.URL)
+	// The address is one field, and it is the app's own — no host beside it to
+	// disagree with. The host used to be reported separately, which was only the
+	// whole address when no path prefix was configured.
+	if result.URL != "http://shop.apps.example.com" {
+		t.Errorf("url = %q, want the address the app is served at", result.URL)
 	}
 
 	// The objects must exist in the app's namespace.
@@ -367,9 +366,11 @@ func TestStatusReportsNothingRunningForAnUndeployedApp(t *testing.T) {
 	if result.Status != "created" {
 		t.Errorf("status = %q, want created — nothing is running", result.Status)
 	}
-	// And no URL, because nothing is serving one.
-	if rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil); strings.Contains(rec.Body.String(), `"url"`) {
-		t.Errorf("an app with no Deployment reported a url:\n%s", rec.Body.String())
+	// And the address is still reported. It is where the app is *served* — a fact
+	// about its settings, known from the moment the app exists — rather than
+	// whether anything answers there, which is what status says above.
+	if rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil); !strings.Contains(rec.Body.String(), `"url"`) {
+		t.Errorf("an app with no Deployment reported no url; the address is known even when nothing is serving it:\n%s", rec.Body.String())
 	}
 }
 
@@ -537,9 +538,16 @@ func TestDeleteKeepsTheRecordWhenClusterCleanupFails(t *testing.T) {
 	}
 }
 
-// TestListAppsReportsURLOnlyWhenDeployed asserts an undeployed app does not
-// advertise a URL that would 404 at the ingress.
-func TestListAppsReportsURLOnlyWhenDeployed(t *testing.T) {
+// TestListAppsReportsTheAddressBeforeDeploy asserts an app that has never been
+// deployed still reports where it is served.
+//
+// The address is a fact about the app's settings, known from the moment it
+// exists, and it is what someone needs in order to know where the first deploy
+// will put it. It used to be withheld until something was serving, on the
+// reasoning that a URL that 404s reads as broken — and the field that carried
+// "where will this be" in the meantime was the hostname, which only told the
+// whole address when there was no path prefix.
+func TestListAppsReportsTheAddressBeforeDeploy(t *testing.T) {
 	srv, _, _ := newDeployServer(t)
 	h := srv.Handler()
 
@@ -549,11 +557,8 @@ func TestListAppsReportsURLOnlyWhenDeployed(t *testing.T) {
 	var app map[string]any
 	decodeData(t, rec, &app)
 
-	if _, present := app["url"]; present {
-		t.Errorf("an undeployed app reported a URL: %v", app["url"])
-	}
-	if app["hostname"] != "shop.apps.example.com" {
-		t.Errorf("hostname = %v, want the computed hostname even before deploy", app["hostname"])
+	if app["url"] != "http://shop.apps.example.com" {
+		t.Errorf("url = %v, want the address even before a deploy", app["url"])
 	}
 }
 

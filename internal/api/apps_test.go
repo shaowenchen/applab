@@ -109,13 +109,21 @@ func TestCreateAppDefaults(t *testing.T) {
 	if app["status"] != string(model.AppStatusCreated) {
 		t.Errorf("status = %v, want %v", app["status"], model.AppStatusCreated)
 	}
-	if app["hostname"] != "shop.apps.example.com" {
-		t.Errorf("hostname = %v, want shop.apps.example.com from the configured base domain", app["hostname"])
+	// The address is one field, and it is reported before the app is deployed.
+	//
+	// It is where the app *is served* — a fact about its settings, known from the
+	// moment the app exists — rather than whether anything answers there. The
+	// status field is what says that, and it reads "created" above.
+	if app["url"] != "http://shop.apps.example.com" {
+		t.Errorf("url = %v, want the address the app is served at", app["url"])
 	}
-	// Nothing has been deployed, so there is no URL yet — advertising one that
-	// 404s at the ingress would read as a broken deployment.
-	if _, present := app["url"]; present {
-		t.Errorf("url was reported for an app that has never been deployed: %v", app["url"])
+	// The two halves it used to be split into are gone: with a path prefix every
+	// app reports the same hostname, and with a subdomain each there is no path,
+	// so a caller given the pair has to know which case it is in to use them.
+	for _, gone := range []string{"hostname", "path"} {
+		if v, present := app[gone]; present {
+			t.Errorf("%s = %v; the address is reported as url alone now", gone, v)
+		}
 	}
 }
 
@@ -379,17 +387,17 @@ func TestUnknownRouteIsJSON(t *testing.T) {
 	}
 }
 
-// TestAppResponseReportsBothHalvesOfAPathPrefixAddress asserts the API reports
-// the path alongside the host.
+// TestAppResponseReportsOneAddressUnderAPathPrefix asserts a shared path prefix
+// produces a usable address rather than two fields a client has to assemble.
 //
-// With a shared path prefix the host is the deployment's rather than the app's:
-// every app reports the same one, and the path is what says which app is meant.
-// A client shown only the host would label every app identically, which is
-// exactly what the console did until this field existed.
+// With a prefix the host is the deployment's rather than the app's: every app
+// reports the same one, and the path is what says which app is meant. A client
+// shown only the host would label every app identically — which is what the
+// console did until the address became one field.
 //
 // The path is the whole one, nested inside the installation's base path — see
 // TestAppResponseNestsThePathUnderTheBasePath for why that nesting matters.
-func TestAppResponseReportsBothHalvesOfAPathPrefixAddress(t *testing.T) {
+func TestAppResponseReportsOneAddressUnderAPathPrefix(t *testing.T) {
 	srv := newTestServerWithPrefix(t, "/apps")
 	h := srv.Handler()
 
@@ -401,17 +409,16 @@ func TestAppResponseReportsBothHalvesOfAPathPrefixAddress(t *testing.T) {
 	var app map[string]any
 	decodeData(t, rec, &app)
 
-	if app["hostname"] != "apps.example.com" {
-		t.Errorf("hostname = %v, want the shared host", app["hostname"])
-	}
-	if app["path"] != "/applab/apps/shop" {
-		t.Errorf("path = %v, want /applab/apps/shop; without it the host names the deployment, not the app", app["path"])
+	want := "http://apps.example.com/applab/apps/shop"
+	if app["url"] != want {
+		t.Errorf("url = %v, want %v — the address the app is actually routed on", app["url"], want)
 	}
 
-	// And the two together are what a client shows, so they have to be the
-	// address the app is actually routed on.
-	if got := app["hostname"].(string) + app["path"].(string); got != "apps.example.com/applab/apps/shop" {
-		t.Errorf("host+path = %q, want apps.example.com/applab/apps/shop", got)
+	// And the halves are gone, so nothing can disagree with the address above.
+	for _, gone := range []string{"hostname", "path"} {
+		if v, present := app[gone]; present {
+			t.Errorf("%s = %v; the address is reported as url alone now", gone, v)
+		}
 	}
 }
 
@@ -456,8 +463,8 @@ func TestAppResponseNestsThePathUnderTheBasePath(t *testing.T) {
 	var app map[string]any
 	decodeData(t, rec, &app)
 
-	if app["path"] != "/applab/apps/shop" {
-		t.Errorf("path = %v, want /applab/apps/shop", app["path"])
+	if app["url"] != "http://apps.example.com/applab/apps/shop" {
+		t.Errorf("url = %v, want the app nested inside the installation's base path", app["url"])
 	}
 
 	// And the domain template a client reads to guess an address carries it too.
