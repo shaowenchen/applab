@@ -442,6 +442,23 @@
   td.app-id:hover { color: var(--accent); }
   .mono { font-family: var(--mono); font-size: 12px; }
 
+  /* A cell whose value is a sentence rather than a word.
+     A build's failure reason comes from the cluster and can be a paragraph —
+     kaniko's messages name the layer, the command and the exit status. Rendered
+     at its natural length it stretches that one column until the two action
+     buttons beside it wrap onto three lines and the rest of the table is
+     squeezed to make room. Capped and truncated instead, with the whole of it on
+     the element's title: the table stays readable, and nothing is hidden.
+     The cap is on a block child rather than on the td, because a table cell
+     ignores max-width: the column is sized by the table's own algorithm. */
+  .report-cell {
+    display: block;
+    max-width: 30ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .pill {
     display: inline-block;
     padding: 2px 8px;
@@ -2227,7 +2244,9 @@ function buildRows(builds) {
     tr.appendChild(when);
 
     // A failed build's reason is the useful part and has nowhere else to appear
-    // in this table; the title attribute keeps the row one line.
+    // in this table — it is five columns wide and the reason is a paragraph.
+    // On the row's title rather than in a cell of its own, which is what keeps
+    // the whole table on one line.
     if (build.reason) tr.title = build.reason;
 
     rows.push(tr);
@@ -2347,9 +2366,18 @@ async function loadAppBuilds() {
     when.textContent = ago(build.created_at);
     tr.appendChild(when);
 
+    // The reason is a sentence from the cluster — kaniko names the layer, the
+    // command and the exit status — and at its natural length it stretches this
+    // one column until the buttons beside it wrap and the rest of the table is
+    // squeezed. Truncated to a readable width, with the whole of it on the
+    // title, so the row stays one line and nothing is lost.
     const reason = document.createElement("td");
     reason.className = "muted";
-    reason.textContent = build.reason || "—";
+    const reasonText = document.createElement("span");
+    reasonText.className = "report-cell";
+    reasonText.textContent = build.reason || "—";
+    if (build.reason) reasonText.title = build.reason;
+    reason.appendChild(reasonText);
     tr.appendChild(reason);
 
     // Deploying a build's commit is the reason to look at this table at all —
@@ -3168,9 +3196,18 @@ async function loadPods() {
 
     // A crash loop's reason is on the previous container instance, so the
     // server promotes it here — this is the column that explains a failure.
+    //
+    // Capped like the build table's, and for the same reason: a reason is short
+    // ("CrashLoopBackOff") but a message is not, and one long one would stretch
+    // the column and squeeze the rest of the row.
     const reason = document.createElement("td");
     reason.className = "muted";
-    reason.textContent = pod.reason || pod.message || "—";
+    const reasonText = document.createElement("span");
+    reasonText.className = "report-cell";
+    reasonText.textContent = pod.reason || pod.message || "—";
+    const full = pod.reason || pod.message;
+    if (full) reasonText.title = full;
+    reason.appendChild(reasonText);
     tr.appendChild(reason);
 
     body.appendChild(tr);

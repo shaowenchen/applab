@@ -1058,6 +1058,13 @@ async function render(apps) {
           data: [
             { id: "abcdef1234567890", commit_sha: "1234567890abcdef", status: "running", created_at: "2026-01-01T00:00:00Z", pod: { name: "applab-build-shop-abc" } },
             { id: "fedcba0987654321", commit_sha: "0987654321fedcba", status: "succeeded", created_at: "2026-01-01T00:00:00Z" },
+            {
+              id: "1111222233334444",
+              commit_sha: "4444333322221111",
+              status: "failed",
+              created_at: "2026-01-01T00:00:00Z",
+              reason: "error building image: getting stage builder for stage 0: failed to resolve source metadata for docker.io/library/golang:1.24-alpine",
+            },
           ],
         }),
     });
@@ -1073,6 +1080,32 @@ async function render(apps) {
     // Absent, not blank: a finished build's Job has been collected by its TTL, so
     // there is no pod to name and a caller must not read the column as one.
     check("and a build with no pod says so rather than showing nothing", done, "—");
+
+    // A failed build's reason is a sentence from kaniko — it names the layer,
+    // the command and the exit status — and it is rendered into a cell that is
+    // capped and truncated, with the whole of it on the title.
+    //
+    // Without the cap it stretches its column until the two buttons beside it
+    // wrap onto three lines and the rest of the table is squeezed. The class is
+    // what does that, so it is what is asserted; the CSS rule is checked below.
+    const reasonCell = rows[2] && rows[2].children[5];
+    const reasonSpan = reasonCell && reasonCell.children[0];
+    check("a failed build's reason is in a capped cell", reasonSpan && reasonSpan.className, "report-cell");
+    check(
+      "and the whole of it is on the title, so nothing is hidden",
+      reasonSpan && reasonSpan.title.startsWith("error building image"),
+      true
+    );
+    // And the class has a rule, because the assertion above is about the markup
+    // and a class with no rule behind it is a cell that still stretches. The
+    // cap has to be on a block child rather than on the <td>: a table cell
+    // ignores max-width, so the obvious version of this fix silently does
+    // nothing in a browser while reading as though it did.
+    check(
+      "the capped-cell class is a real rule, not just a name",
+      /\.report-cell\s*\{[^}]*max-width/.test(markup),
+      true
+    );
   }
 
   // The resource units, both directions.
