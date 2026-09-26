@@ -983,7 +983,19 @@ expect_config "the-namespace" "${APPLAB_NAMESPACE}"
 # the two paths configured the template is "<host>/applab/apps/<app>", and a
 # server that had taken the prefix but not the installation's own path — or the
 # other way round — would publish an app at a path the gateway does not serve.
-expect_config "the-base-path-in-the-address-template" "${APPLAB_BASE_PATH}${APPLAB_PATH_PREFIX}/<app>"
+#
+# Matched up to the app id and not through it. Go's JSON encoder escapes angle
+# brackets into their unicode escape form, because that is what keeps a JSON
+# document safe to embed in HTML — so the server reports the template correctly
+# while the raw body holds something other than the characters the template was
+# built from. A grep for the literal placeholder therefore matches nothing
+# however right the deployment is, which is what this check did on its first run:
+# it failed an environment whose every setting had arrived.
+#
+# The host and both paths are the part that can be compared, and they are also
+# the part that distinguishes a server that took the base path from one that did
+# not.
+expect_config "the-base-path-in-the-address-template" "\"domain_template\":\"${TUNNEL_HOST}${APPLAB_BASE_PATH}${APPLAB_PATH_PREFIX}/"
 
 # And the build pipeline has to be usable, since this environment sets a registry
 # for it. A deployment whose build half silently came up disabled still serves
