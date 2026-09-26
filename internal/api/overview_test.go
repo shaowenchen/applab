@@ -3,7 +3,13 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/shaowenchen/applab/internal/model"
 )
@@ -71,28 +77,26 @@ func TestOverviewReportsEmptyDeployment(t *testing.T) {
 	}
 }
 
-// TestOverviewCountsAppsByStatus asserts the counts are real counts.
+// TestOverviewCountsAppsByStatus asserts the counts are real counts, read from
+// the cluster.
+//
+// The statuses are not written into the apps: they are not a field of an app any
+// more. What makes an app "running" here is a Deployment the cluster reports as
+// available, and what makes it "failed" is one whose rollout cannot progress.
 func TestOverviewCountsAppsByStatus(t *testing.T) {
-	srv, st := newTestServer(t)
-	ctx := context.Background()
+	srv, client, _ := newDeployServer(t)
+	h := srv.Handler()
 
-	// Two running, one failed, one merely created.
-	for _, app := range []struct {
-		id     string
-		status model.AppStatus
-	}{
-		{"shop", model.AppStatusRunning},
-		{"blog", model.AppStatusRunning},
-		{"broken", model.AppStatusFailed},
-		{"fresh", model.AppStatusCreated},
-	} {
-		if err := st.CreateApp(ctx, &model.App{
-			ID: app.id, Port: 8080, Replicas: 1, Dockerfile: "Dockerfile",
-			Status: app.status, Namespace: "ops-system",
-		}); err != nil {
-			t.Fatalf("create app %s: %v", app.id, err)
+	for _, id := range []string{"shop", "blog", "broken", "fresh"} {
+		if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": id}); rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d (%s)", id, rec.Code, rec.Body.String())
 		}
 	}
+
+	// Two available, one that cannot progress, one with no Deployment at all.
+	createDeployment(t, client, "shop", true)
+	createDeployment(t, client, "blog", true)
+	createDeployment(t, client, "broken", false)
 
 	apps := section(t, overviewFor(t, srv), "apps")
 
@@ -105,31 +109,57 @@ func TestOverviewCountsAppsByStatus(t *testing.T) {
 	if apps["failed"] != float64(1) {
 		t.Errorf("apps.failed = %v, want 1", apps["failed"])
 	}
+	if apps["created"] != float64(1) {
+		t.Errorf("apps.created = %v, want 1 — an app with no Deployment is not running", apps["created"])
+	}
 	// The number a person acts on: one app is in a state that needs looking at.
 	if apps["needs_attention"] != float64(1) {
 		t.Errorf("apps.needs_attention = %v, want 1", apps["needs_attention"])
 	}
 }
 
-// TestOverviewExcludesDeletedApps asserts a deleted app is not counted.
+// createDeployment gives an app the Deployment a deploy would create, so a test
+// can place it in a state the cluster reports.
 //
-// Its row survives so the id is not quietly reused, but reporting it would mean
-// the count could never return to zero after an app was removed — which makes
-// the number useless for exactly the question it exists to answer.
-func TestOverviewExcludesDeletedApps(t *testing.T) {
-	srv, st := newTestServer(t)
-	ctx := context.Background()
+// A ready one is available; an unready one has a rollout that cannot progress,
+// which is the condition the API reads as "failed" and the single most useful
+// thing to surface when an app will not come up.
+func createDeployment(t *testing.T, client *fake.Clientset, appID string, ready bool) {
+	t.Helper()
 
-	if err := st.CreateApp(ctx, &model.App{
-		ID: "gone", Port: 8080, Replicas: 1, Dockerfile: "Dockerfile",
-		Status: model.AppStatusDeleted, Namespace: "ops-system",
-	}); err != nil {
-		t.Fatalf("create deleted app: %v", err)
+	conditions := []appsv1.DeploymentCondition{
+		{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+	}
+	if !ready {
+		conditions = []appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse,
+				Reason:  "ProgressDeadlineExceeded",
+				Message: "ReplicaSet has timed out progressing"},
+		}
 	}
 
-	apps := section(t, overviewFor(t, srv), "apps")
-	if apps["total"] != float64(0) {
-		t.Errorf("apps.total = %v, want 0 — a deleted app is still a row, not an app", apps["total"])
+	_, err := client.AppsV1().Deployments("ops-system").Create(context.Background(),
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "applab-" + appID,
+				Namespace: "ops-system",
+				Labels:    map[string]string{"applab.io/app": appID},
+				Annotations: map[string]string{
+					"applab.io/commit": strings.Repeat("a", 40),
+					"applab.io/image":  "image:abc",
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"applab.io/app": appID}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"applab.io/app": appID}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "image:abc"}}},
+				},
+			},
+			Status: appsv1.DeploymentStatus{ReadyReplicas: 1, Conditions: conditions},
+		}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create the deployment for %s: %v", appID, err)
 	}
 }
 
@@ -281,42 +311,6 @@ func TestOverviewRequiresAKey(t *testing.T) {
 	}
 }
 
-// TestCountAppsByStatusIgnoresDeleted covers the store query directly, since the
-// endpoint could pass for the wrong reason if a deleted app happened to be the
-// only row.
-func TestCountAppsByStatusIgnoresDeleted(t *testing.T) {
-	_, st := newTestServer(t)
-	ctx := context.Background()
-
-	for _, app := range []struct {
-		id     string
-		status model.AppStatus
-	}{
-		{"live", model.AppStatusRunning},
-		{"dead", model.AppStatusDeleted},
-	} {
-		if err := st.CreateApp(ctx, &model.App{
-			ID: app.id, Port: 8080, Replicas: 1, Dockerfile: "Dockerfile",
-		}); err != nil {
-			t.Fatalf("create app %s: %v", app.id, err)
-		}
-		if err := st.SetAppStatus(ctx, app.id, app.status, ""); err != nil {
-			t.Fatalf("set %s status: %v", app.id, err)
-		}
-	}
-
-	counts, err := st.CountAppsByStatus(ctx)
-	if err != nil {
-		t.Fatalf("count apps by status: %v", err)
-	}
-	if counts[model.AppStatusRunning] != 1 {
-		t.Errorf("running = %d, want 1", counts[model.AppStatusRunning])
-	}
-	if _, present := counts[model.AppStatusDeleted]; present {
-		t.Errorf("deleted apps were counted: %v", counts)
-	}
-}
-
 // TestListRecentBuildsOrdersNewestFirst asserts the ordering a dashboard panel
 // depends on.
 func TestListRecentBuildsOrdersNewestFirst(t *testing.T) {
@@ -383,14 +377,6 @@ func TestListRecentBuildsSpansApps(t *testing.T) {
 func TestStoreAggregatesOnEmptyDatabase(t *testing.T) {
 	_, st := newTestServer(t)
 	ctx := context.Background()
-
-	apps, err := st.CountAppsByStatus(ctx)
-	if err != nil {
-		t.Fatalf("count apps: %v", err)
-	}
-	if len(apps) != 0 {
-		t.Errorf("apps = %v, want an empty map", apps)
-	}
 
 	builds, err := st.ListRecentBuilds(ctx, 10)
 	if err != nil {

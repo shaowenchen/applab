@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/observe"
 )
 
@@ -173,16 +174,17 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The app's own record first, since it needs no cluster call and often
-	// already explains things — nothing deployed, or a build that failed.
+	// What the cluster says comes first, because it is the answer: an app with
+	// no Deployment is diagnosed without reading a single pod.
+	live := s.liveStatusesFor(r.Context(), app)
 	diagnosis := map[string]any{
 		"app_id": app.ID,
-		"status": string(app.Status),
+		"status": string(appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(r.Context(), app.ID))),
 	}
-	if app.StatusReason != "" {
-		diagnosis["status_reason"] = app.StatusReason
+	if live.Message != "" {
+		diagnosis["status_reason"] = live.Message
 	}
-	if app.CommitSHA == "" {
+	if !live.Found {
 		diagnosis["problem"] = "nothing has been deployed yet"
 		diagnosis["next"] = "deploy a commit with POST /api/v1/apps/" + app.ID + "/deploy"
 		respond(w, http.StatusOK, diagnosis)

@@ -122,7 +122,6 @@ directory name.`,
 
 // listCommand lists apps.
 func listCommand(urlFlag, keyFlag *string) *cobra.Command {
-	var includeDeleted bool
 
 	cmd := &cobra.Command{
 		Use:     "list",
@@ -135,7 +134,7 @@ func listCommand(urlFlag, keyFlag *string) *cobra.Command {
 				return err
 			}
 
-			apps, err := c.ListApps(cmd.Context(), includeDeleted)
+			apps, err := c.ListApps(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -146,6 +145,7 @@ func listCommand(urlFlag, keyFlag *string) *cobra.Command {
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "APP\tSTATUS\tCOMMIT\tURL")
+			undeployed := 0
 			for _, app := range apps {
 				url := app.URL
 				if url == "" {
@@ -155,12 +155,24 @@ func listCommand(urlFlag, keyFlag *string) *cobra.Command {
 					url = "-"
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", app.ID, app.Status, shortSHA(app.CommitSHA), url)
+				if app.Status == "created" {
+					undeployed++
+				}
 			}
-			return w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
+
+			// An app that exists in the bucket but has nothing running is the
+			// normal state on a platform that has just been pointed at existing
+			// data, and the column alone does not say what to do about it.
+			if undeployed > 0 {
+				fmt.Printf("\n%d app(s) have nothing running; deploy one with: applab deploy <app> --build\n", undeployed)
+			}
+			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&includeDeleted, "include-deleted", false, "also list deleted apps")
 	return cmd
 }
 
@@ -185,34 +197,27 @@ func statusCommand(urlFlag, keyFlag *string) *cobra.Command {
 			fmt.Printf("app      %s\n", status.AppID)
 			fmt.Printf("status   %s\n", status.Status)
 
-			if status.Deployed != nil {
-				if status.Deployed.CommitSHA != "" {
-					fmt.Printf("commit   %s\n", shortSHA(status.Deployed.CommitSHA))
+			// Everything below is the cluster's answer. When an app has no
+			// Deployment there is nothing to report and the way out is worth
+			// saying, because on a platform that has just been pointed at an
+			// existing bucket every app is in exactly this state.
+			if status.Live == nil {
+				fmt.Printf("cluster  nothing deployed\n")
+				fmt.Printf("         deploy it with: applab deploy %s --build\n", status.AppID)
+			} else {
+				if status.Live.CommitSHA != "" {
+					fmt.Printf("commit   %s\n", shortSHA(status.Live.CommitSHA))
 				}
-				if status.Deployed.Image != "" {
-					fmt.Printf("image    %s\n", status.Deployed.Image)
+				if status.Live.CurrentImage != "" {
+					fmt.Printf("image    %s\n", status.Live.CurrentImage)
 				}
-				if status.Deployed.Reason != "" {
-					fmt.Printf("reason   %s\n", status.Deployed.Reason)
+				fmt.Printf("cluster  %d/%d replicas ready", status.Live.ReadyReplicas, status.Live.DesiredReplicas)
+				if status.Live.Available {
+					fmt.Printf(" (available)")
 				}
-			}
-
-			// The live view is reported separately from AppLab's record rather
-			// than merged with it: when the two disagree, the difference is the
-			// information — AppLab thought the rollout succeeded and something
-			// has happened since.
-			if status.Live != nil {
-				if !status.Live.Deployed {
-					fmt.Printf("cluster  nothing deployed\n")
-				} else {
-					fmt.Printf("cluster  %d/%d replicas ready", status.Live.ReadyReplicas, status.Live.DesiredReplicas)
-					if status.Live.Available {
-						fmt.Printf(" (available)")
-					}
-					fmt.Println()
-					if status.Live.Message != "" {
-						fmt.Printf("         %s\n", status.Live.Message)
-					}
+				fmt.Println()
+				if status.Live.Message != "" {
+					fmt.Printf("reason   %s\n", status.Live.Message)
 				}
 			}
 

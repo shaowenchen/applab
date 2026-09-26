@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
@@ -121,7 +122,9 @@ func (s *Server) deployResolved(w http.ResponseWriter, r *http.Request, app *mod
 		// The build runs asynchronously; the caller gets its id and follows it.
 		// Deploying here would mean holding the request open for a build that may
 		// take minutes, and the caller could not tell progress from a hang.
-		s.setAppStatus(r.Context(), app.ID, model.AppStatusBuilding, "building commit "+shortSHA(resolved))
+		//
+		// Nothing records that a build started: the build's own record is what
+		// says so, and it is what appStatus reads to report the app as building.
 		respond(w, http.StatusAccepted, map[string]any{
 			"build":  toBuildResponse(build),
 			"commit": resolved,
@@ -147,7 +150,7 @@ func (s *Server) deployResolved(w http.ResponseWriter, r *http.Request, app *mod
 		"app", app.ID, "commit", resolved, "image", image, "address", addr.String())
 
 	respond(w, http.StatusOK, map[string]any{
-		"app":      toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)),
+		"app":      s.appResponseFor(r.Context(), r, app),
 		"commit":   resolved,
 		"image":    image,
 		"host":     addr.Host,
@@ -159,29 +162,15 @@ func (s *Server) deployResolved(w http.ResponseWriter, r *http.Request, app *mod
 
 // deployCommit applies an app's resources for a known image.
 //
-// The app record is updated only after the resources are applied. Writing the
-// record first would make AppLab claim a deploy that failed, and the record is
-// what a caller reads to decide whether anything happened.
+// Nothing is recorded afterwards, and that is the change: what is deployed is
+// what the cluster says is deployed, which Apply has just stamped onto the
+// Deployment. Writing it to the bucket as well is what made a fresh install
+// report apps as running with nothing behind them.
 func (s *Server) deployCommit(ctx context.Context, app *model.App, commitSHA, image string) (model.Address, *apiError) {
-	// The image and commit go into the object the deployer builds, so a rollout
-	// carries the revision it came from.
-	deployApp := *app
-	deployApp.CommitSHA = commitSHA
-
-	addr, err := s.applyDeployment(ctx, &deployApp, image)
+	addr, err := s.applyDeployment(ctx, app, image, commitSHA)
 	if err != nil {
-		s.setAppStatus(ctx, app.ID, model.AppStatusFailed, err.Error())
 		return model.Address{}, Errorf(http.StatusInternalServerError, "deploy app %q", app.ID).Wrap(err)
 	}
-
-	if err := s.store.SetAppDeployed(ctx, app.ID, commitSHA, image); err != nil {
-		slog.WarnContext(ctx, "deployed but could not record it", "app", app.ID, "error", err)
-	}
-	s.setAppStatus(ctx, app.ID, model.AppStatusDeploying, "rolling out "+shortSHA(commitSHA))
-
-	app.CommitSHA = commitSHA
-	app.Image = image
-
 	return addr, nil
 }
 
@@ -234,7 +223,11 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if app.CommitSHA == resolved {
+	// What is deployed comes from the cluster, which is the only place it is
+	// recorded now: the Deployment's annotation, stamped by the deploy that put
+	// it there.
+	current := s.liveStatusesFor(r.Context(), app).CommitSHA
+	if current == resolved {
 		// Rolling back to what is already deployed is a no-op, and saying so is
 		// more useful than a rollout that changes nothing.
 		fail(w, r, Conflict("commit %s is already deployed to app %q", shortSHA(resolved), app.ID))
@@ -269,13 +262,13 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		"app", app.ID, "commit", resolved, "image", build.Image)
 
 	respond(w, http.StatusOK, map[string]any{
-		"app":              toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)),
+		"app":              s.appResponseFor(r.Context(), r, app),
 		"commit":           resolved,
 		"image":            build.Image,
 		"host":             addr.Host,
 		"path":             addr.Path,
 		"url":              addr.URL(s.scheme(r)),
-		"rolled_back_from": app.CommitSHA,
+		"rolled_back_from": current,
 	})
 }
 
@@ -299,11 +292,12 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.setAppStatus(r.Context(), app.ID, model.AppStatusCreated, "stopped")
 	slog.InfoContext(r.Context(), "app stopped", "app", app.ID)
 
+	// The app reports as "created" from here without anything recording it: the
+	// Deployment is gone, and a status derived from the cluster says so.
 	respond(w, http.StatusOK, map[string]any{
-		"app":     toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)),
+		"app":     s.appResponseFor(r.Context(), r, app),
 		"stopped": true,
 	})
 }
@@ -329,21 +323,21 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.setAppStatus(r.Context(), app.ID, model.AppStatusDeploying, "restarted")
 	respond(w, http.StatusOK, map[string]any{"app": app.ID, "restarted": true})
 }
 
-// appStatusResponse is an app's live state as the API presents it.
+// appStatusResponse is an app's state as the API presents it.
+//
+// There used to be two halves: Deployed, what AppLab had recorded, and Live,
+// what the cluster showed. They are the same thing now — nothing is recorded, so
+// there is nothing for the cluster to disagree with — and the single view is the
+// cluster's. The derived status in Status is that view summarised into one word
+// for a listing, and Live is its detail.
 type appStatusResponse struct {
 	AppID  string `json:"app_id"`
 	Status string `json:"status"`
 
-	// Deployed is what AppLab recorded; Live is what the cluster shows. They are
-	// reported together rather than reconciled, because the difference is the
-	// useful information: a running app whose cluster state is unhealthy is a
-	// failure AppLab did not cause and cannot see through its own record.
-	Deployed *deploymentRecord `json:"deployed,omitempty"`
-	Live     *liveState        `json:"live,omitempty"`
+	Live *liveState `json:"live,omitempty"`
 
 	Host string `json:"host,omitempty"`
 
@@ -354,23 +348,24 @@ type appStatusResponse struct {
 	URL  string `json:"url,omitempty"`
 }
 
-type deploymentRecord struct {
-	CommitSHA string `json:"commit_sha,omitempty"`
-	Image     string `json:"image,omitempty"`
-	Status    string `json:"status"`
-	Reason    string `json:"status_reason,omitempty"`
-}
-
 type liveState struct {
 	Deployed        bool   `json:"deployed"`
 	Available       bool   `json:"available"`
 	ReadyReplicas   int32  `json:"ready_replicas"`
 	DesiredReplicas int32  `json:"desired_replicas"`
 	CurrentImage    string `json:"current_image,omitempty"`
-	Message         string `json:"message,omitempty"`
+
+	// CommitSHA is the commit the running image was built from, read from the
+	// Deployment's annotation. It is the only record of it there is.
+	CommitSHA string `json:"commit_sha,omitempty"`
+
+	Message string `json:"message,omitempty"`
 }
 
-// handleAppStatus reports an app's live state alongside AppLab's record.
+// handleAppStatus reports what is running for one app.
+//
+// It is the detail behind the one-word status in a listing, and it comes from
+// the cluster — including the commit, which nothing else records now.
 func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 	app, apiErr := s.loadApp(r)
 	if apiErr != nil {
@@ -378,58 +373,32 @@ func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	live := s.liveStatusesFor(r.Context(), app)
+	status := appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(r.Context(), app.ID))
+
 	resp := appStatusResponse{
 		AppID:  app.ID,
-		Status: string(app.Status),
-		Deployed: &deploymentRecord{
-			CommitSHA: app.CommitSHA,
-			Image:     app.Image,
-			Status:    string(app.Status),
-			Reason:    app.StatusReason,
-		},
+		Status: string(status),
+	}
+
+	if live.Found {
+		resp.Live = &liveState{
+			Deployed:        true,
+			Available:       live.Available,
+			ReadyReplicas:   live.ReadyReplicas,
+			DesiredReplicas: live.DesiredReplicas,
+			CurrentImage:    live.CurrentImage,
+			CommitSHA:       live.CommitSHA,
+			Message:         live.Message,
+		}
 	}
 
 	addr := s.addressFor(app)
 	if !addr.Empty() {
 		resp.Host = addr.Host
 		resp.Path = addr.Path
-		if app.Status == model.AppStatusRunning || app.Status == model.AppStatusDeploying {
+		if status == model.AppStatusRunning || status == model.AppStatusDeploying {
 			resp.URL = addr.URL(s.scheme(r))
-		}
-	}
-
-	if s.deployer != nil && s.deployer.Ready() {
-		live, err := s.appLiveStatus(r.Context(), app)
-		if err != nil {
-			// Not fatal: AppLab's own record is still an answer, and a cluster
-			// read failing is exactly when a caller wants to see it.
-			slog.DebugContext(r.Context(), "could not read live app status", "app", app.ID, "error", err)
-		} else {
-			resp.Live = &liveState{
-				Deployed:        live.Found,
-				Available:       live.Available,
-				ReadyReplicas:   live.ReadyReplicas,
-				DesiredReplicas: live.DesiredReplicas,
-				CurrentImage:    live.CurrentImage,
-				Message:         live.Message,
-			}
-
-			// Keep AppLab's own status honest: a rollout that has completed is
-			// "running", and one that cannot progress is "failed". This is where
-			// the record converges on the cluster rather than drifting from it.
-			if live.Found {
-				switch {
-				case live.Available && app.Status == model.AppStatusDeploying:
-					s.setAppStatus(r.Context(), app.ID, model.AppStatusRunning, "")
-					resp.Status = string(model.AppStatusRunning)
-					resp.Deployed.Status = string(model.AppStatusRunning)
-				case live.Message != "":
-					s.setAppStatus(r.Context(), app.ID, model.AppStatusFailed, live.Message)
-					resp.Status = string(model.AppStatusFailed)
-					resp.Deployed.Status = string(model.AppStatusFailed)
-					resp.Deployed.Reason = live.Message
-				}
-			}
 		}
 	}
 

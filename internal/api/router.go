@@ -157,7 +157,7 @@ type Deployer interface {
 	Ready() bool
 
 	// Apply creates or updates an app's resources and returns its address.
-	Apply(ctx context.Context, app *model.App, image string) (model.Address, error)
+	Apply(ctx context.Context, app *model.App, image, commitSHA string) (model.Address, error)
 
 	// Publish creates or updates only the app's routing, for an app that has no
 	// workload yet. It is what Apply ends with, and it is separate so that an
@@ -166,6 +166,14 @@ type Deployer interface {
 
 	// Status reads an app's live state.
 	Status(ctx context.Context, app *model.App) (deploy.Status, error)
+
+	// Statuses reads every app's live state in the namespace at once.
+	//
+	// It is what a listing uses, and it exists rather than being a loop over
+	// Status because the API's most common question is "what is running" for a
+	// whole page. Deployments carry the app label, so one list answers for all
+	// of them.
+	Statuses(ctx context.Context, namespace string) (map[string]deploy.Status, error)
 
 	// Remove deletes an app's running resources without deleting the app.
 	Remove(ctx context.Context, app *model.App) error
@@ -292,11 +300,11 @@ func (s *Server) imageFor(appID, commitSHA string) string {
 }
 
 // applyDeployment applies an app's resources through the deployer.
-func (s *Server) applyDeployment(ctx context.Context, app *model.App, image string) (model.Address, error) {
+func (s *Server) applyDeployment(ctx context.Context, app *model.App, image, commitSHA string) (model.Address, error) {
 	if s.deployer == nil {
 		return model.Address{}, fmt.Errorf("this deployment cannot deploy")
 	}
-	return s.deployer.Apply(ctx, app, image)
+	return s.deployer.Apply(ctx, app, image, commitSHA)
 }
 
 // appLiveStatus reads an app's state from the cluster.
@@ -420,13 +428,7 @@ func (s *Server) WithMetrics(m *Metrics) *Server {
 			// stale number that looks live is worse than an obvious zero.
 			return 0
 		}
-		n := 0
-		for _, a := range apps {
-			if a.Status != model.AppStatusDeleted {
-				n++
-			}
-		}
-		return float64(n)
+		return float64(len(apps))
 	})
 	return s
 }
@@ -662,7 +664,7 @@ func (s *Server) routes() []route {
 			// which app an app key belongs to before it can ask for that app.
 			// The handler filters the result set to the caller's own app.
 			AppListScope: true,
-			Doc:          "List apps. `?include_deleted=true` also returns apps that were deleted but whose id is still reserved.",
+			Doc:          "List apps.",
 			Handler:      s.handleListApps,
 		},
 		{
@@ -1088,18 +1090,6 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.metrics.ServeHTTP(w, r)
-}
-
-// MarkDeployedForTest records a deployment on an app, for tests that need an app
-// past the "nothing deployed yet" state. It is not part of the API surface.
-func (s *Server) MarkDeployedForTest(appID, commitSHA, image string) {
-	app, err := s.loadAppByID(context.Background(), appID)
-	if err != nil {
-		return
-	}
-	_ = s.store.SetAppDeployed(context.Background(), appID, commitSHA, image)
-	app.CommitSHA = commitSHA
-	app.Image = image
 }
 
 // Handler builds the HTTP handler: the route table, wrapped in authentication

@@ -7,31 +7,6 @@ import (
 	"github.com/shaowenchen/applab/internal/model"
 )
 
-// CountAppsByStatus counts apps by their status.
-//
-// It is a listing plus one read per app, because a status is a field of the app
-// rather than a key: there is nothing to count without reading the objects that
-// carry it. That is the cost the layout pays for keeping one app in one object,
-// and it is bounded by the number of apps rather than by anything they contain.
-func (s *Store) CountAppsByStatus(ctx context.Context) (map[model.AppStatus]int, error) {
-	apps, err := s.ListApps(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	counts := map[model.AppStatus]int{}
-	for _, app := range apps {
-		// A deleted app is a tombstone, not an app: counting it would mean the
-		// number could never return to zero after an app was removed, which
-		// makes it useless for the question it exists to answer.
-		if app.Status == model.AppStatusDeleted {
-			continue
-		}
-		counts[app.Status]++
-	}
-	return counts, nil
-}
-
 // CountBuildsByStatus counts builds by their status, across every app.
 //
 // Every build is read, so the cost grows with the platform's build history —

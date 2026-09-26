@@ -121,7 +121,14 @@ func (d *Deployer) Ready() bool { return d.client != nil }
 // the operation has to be safe to repeat. A failure part-way leaves earlier
 // objects in place, which is the correct outcome — they are consistent with each
 // other, and the next attempt continues from there.
-func (d *Deployer) Apply(ctx context.Context, app *model.App, image string) (model.Address, error) {
+//
+// commitSHA is what is being deployed, and it is a parameter rather than a field
+// read off the app because the app no longer carries one: the commit that is
+// running is a fact about the cluster, and this is the call that tells the
+// cluster what it should be. It is stamped on the Deployment — as an annotation
+// and a pod label — which is what every later read of "what is deployed" reads,
+// including AppLab's own.
+func (d *Deployer) Apply(ctx context.Context, app *model.App, image, commitSHA string) (model.Address, error) {
 	// Before anything is created, for the same reason a build checks its push
 	// credential first: a pod that names a Secret which is not there does not
 	// start, and the app reports ImagePullBackOff rather than anything about the
@@ -129,7 +136,7 @@ func (d *Deployer) Apply(ctx context.Context, app *model.App, image string) (mod
 	if err := d.checkImagePullSecret(ctx, app.Namespace); err != nil {
 		return model.Address{}, err
 	}
-	if err := d.applyDeployment(ctx, app, image); err != nil {
+	if err := d.applyDeployment(ctx, app, image, commitSHA); err != nil {
 		return model.Address{}, err
 	}
 	if err := d.applyService(ctx, app); err != nil {
@@ -226,7 +233,7 @@ func selectorLabels(app *model.App) map[string]string {
 // cluster that decided "app-" was a good prefix for its objects.
 func ObjectName(appID string) string { return "applab-" + appID }
 
-func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image string) error {
+func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image, commitSHA string) error {
 	namespace := app.Namespace
 	name := ObjectName(app.ID)
 
@@ -252,11 +259,11 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image st
 	for k, v := range labels {
 		podLabels[k] = v
 	}
-	podLabels["applab.io/commit"] = shortSHA(app.CommitSHA)
+	podLabels["applab.io/commit"] = shortSHA(commitSHA)
 
 	annotations := map[string]string{"applab.io/image": image}
-	if app.CommitSHA != "" {
-		annotations["applab.io/commit"] = app.CommitSHA
+	if commitSHA != "" {
+		annotations["applab.io/commit"] = commitSHA
 	}
 	// A fingerprint of the app's configuration, so that changing configuration
 	// alone triggers a rollout.
@@ -631,6 +638,10 @@ func toStringMap(in map[string]string) map[string]any {
 }
 
 // Status describes what the cluster currently shows for an app.
+//
+// It is the single source of truth about what is running: AppLab stores none of
+// this, so a fresh install pointed at an existing bucket reads these values and
+// reports what is really there rather than what it last recorded.
 type Status struct {
 	// DesiredReplicas and ReadyReplicas are the Deployment's counts.
 	DesiredReplicas int32
@@ -646,8 +657,14 @@ type Status struct {
 	// a caller can tell whether a deploy actually changed anything.
 	CurrentImage string
 
+	// CommitSHA is the commit the running image was built from. It comes from the
+	// annotation applyDeployment stamps, and it is the only record of it that
+	// survives: the app's own record no longer holds one. Empty for a Deployment
+	// created by an AppLab old enough not to have stamped it.
+	CommitSHA string
+
 	// Found is false when the app has no Deployment at all, which means it has
-	// never been deployed.
+	// never been deployed, or was stopped.
 	Found bool
 }
 
@@ -660,11 +677,54 @@ func (d *Deployer) Status(ctx context.Context, app *model.App) (Status, error) {
 	if err != nil {
 		return Status{}, fmt.Errorf("read deployment for app %s: %w", app.ID, err)
 	}
+	return deploymentStatus(deployment), nil
+}
 
+// Statuses reads the live state of every app at once.
+//
+// It exists because the question the API asks is almost always "what is
+// running", for a whole listing rather than for one app — and Deployment carries
+// the app label, so one list answers for all of them. Doing it per app would be
+// one round trip per row on a page that shows every app.
+//
+// An app with no entry in the returned map has no Deployment. The apps slice is
+// not used for the lookup beyond documentation of what the caller cares about:
+// the answer is keyed by the app label, so an app the caller did not name cannot
+// appear, and an app with no Deployment cannot appear either.
+func (d *Deployer) Statuses(ctx context.Context, namespace string) (map[string]Status, error) {
+	list, err := d.client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: k8s.LabelApp,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list deployments in %s: %w", namespace, err)
+	}
+
+	out := make(map[string]Status, len(list.Items))
+	for i := range list.Items {
+		deployment := &list.Items[i]
+		appID := deployment.Labels[k8s.LabelApp]
+		if appID == "" {
+			// The selector requires the label, so this cannot happen; skipping
+			// rather than keying on "" keeps a mislabeled object from being
+			// reported as some app's state.
+			continue
+		}
+		out[appID] = deploymentStatus(deployment)
+	}
+	return out, nil
+}
+
+// deploymentStatus interprets one Deployment.
+//
+// Shared by Status and Statuses so a single app and a whole listing cannot
+// disagree about what the same Deployment means — which they would, eventually,
+// if the reading of conditions lived in two places.
+func deploymentStatus(deployment *appsv1.Deployment) Status {
 	status := Status{
 		Found:           true,
 		DesiredReplicas: derefInt32(deployment.Spec.Replicas),
 		ReadyReplicas:   deployment.Status.ReadyReplicas,
+		CommitSHA:       deployment.Annotations["applab.io/commit"],
 	}
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		status.CurrentImage = deployment.Spec.Template.Spec.Containers[0].Image
@@ -687,7 +747,7 @@ func (d *Deployer) Status(ctx context.Context, app *model.App) (Status, error) {
 		}
 	}
 
-	return status, nil
+	return status
 }
 
 // Remove deletes an app's Deployment, Service and VirtualService.

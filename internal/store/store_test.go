@@ -179,9 +179,14 @@ func TestUpdateKeepsFieldsTheCallerDidNotKnowAbout(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// What SetAppStatus does: read, change one field, write back.
-	if err := st.SetAppStatus(ctx, "shop", model.AppStatusRunning, "rolled out"); err != nil {
-		t.Fatalf("set status: %v", err)
+	// A caller that loaded the app, changed one field and saved it back.
+	loaded, err := st.GetApp(ctx, "shop")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	loaded.Name = "Shop Front"
+	if err := st.UpdateApp(ctx, loaded); err != nil {
+		t.Fatalf("update: %v", err)
 	}
 
 	got, err := st.GetApp(ctx, "shop")
@@ -189,10 +194,10 @@ func TestUpdateKeepsFieldsTheCallerDidNotKnowAbout(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 	if got.Port != 8080 || got.Dockerfile != "Dockerfile" || got.Env["A"] != "1" {
-		t.Errorf("a status write dropped fields: %+v", got)
+		t.Errorf("an update dropped fields the caller did not touch: %+v", got)
 	}
-	if got.Status != model.AppStatusRunning || got.StatusReason != "rolled out" {
-		t.Errorf("status = %q/%q, want running/rolled out", got.Status, got.StatusReason)
+	if got.Name != "Shop Front" {
+		t.Errorf("name = %q, want the change that was made", got.Name)
 	}
 }
 
@@ -217,8 +222,8 @@ func TestUpdateDoesNotFreezeADerivedField(t *testing.T) {
 	}
 
 	// A write of what was read must not persist the derived value.
-	if err := st.SetAppStatus(ctx, "shop", model.AppStatusRunning, ""); err != nil {
-		t.Fatalf("set status: %v", err)
+	if err := st.UpdateApp(ctx, got); err != nil {
+		t.Fatalf("update: %v", err)
 	}
 
 	raw, err := st.Objects().GetBytes(ctx, "apps/shop/app.json")
@@ -303,36 +308,6 @@ func TestDeleteAppRemovesEverythingUnderIt(t *testing.T) {
 	// And the id is free again.
 	if err := st.CreateApp(ctx, &model.App{ID: "shop", Name: "Again"}); err != nil {
 		t.Errorf("a deleted app's id was not reusable: %v", err)
-	}
-}
-
-// TestTheDeletedStatusIsSkippedWhereItMatters keeps the older marker working for
-// a record that already carries it.
-//
-// AppStatusDeleted predates the directory layout and is no longer written —
-// deleting now removes the record — but a deployment upgraded from a version
-// that wrote one still has rows carrying it, and they must not be counted as
-// live apps or listed as if they were.
-func TestTheDeletedStatusIsSkippedWhereItMatters(t *testing.T) {
-	st := newTestStore(t)
-	ctx := context.Background()
-
-	for _, id := range []string{"shop", "gone"} {
-		app := &model.App{ID: id, Name: id, Status: model.AppStatusRunning}
-		if err := st.CreateApp(ctx, app); err != nil {
-			t.Fatalf("create %s: %v", id, err)
-		}
-	}
-	if err := st.SetAppStatus(ctx, "gone", model.AppStatusDeleted, ""); err != nil {
-		t.Fatalf("mark deleted: %v", err)
-	}
-
-	counts, err := st.CountAppsByStatus(ctx)
-	if err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if counts[model.AppStatusDeleted] != 0 {
-		t.Errorf("an app marked deleted was counted: %v", counts)
 	}
 }
 

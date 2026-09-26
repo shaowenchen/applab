@@ -172,7 +172,6 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitS
 		// asked for a build and needs to be able to see that it did not start and
 		// why.
 		s.setBuildStatus(ctx, app.ID, buildID, model.BuildStatusFailed, err.Error())
-		s.setAppStatus(ctx, app.ID, model.AppStatusBuildFailed, err.Error())
 		return nil, Errorf(http.StatusInternalServerError, "start the build job").Wrap(err)
 	}
 
@@ -192,7 +191,6 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitS
 	if err := s.store.SetBuildStatus(ctx, app.ID, buildID, model.BuildStatusPending, ""); err != nil {
 		slog.WarnContext(ctx, "could not record build status", "build", buildID, "error", err)
 	}
-	s.setAppStatus(ctx, app.ID, model.AppStatusBuilding, "building commit "+shortSHA(commitSHA))
 
 	// Any other build of this app is now the older one. Stopping it here as well
 	// as on upload is what makes the invariant hold for every way a build can
@@ -337,14 +335,10 @@ func (s *Server) supersedeBuilds(ctx context.Context, app *model.App) {
 		slog.InfoContext(ctx, "stopped the build in flight to make way for an upload",
 			"app", app.ID, "build", build.ID, "job", build.JobName)
 
-		// The app's own status reverts to what the cluster is actually running.
-		// "building" is the status of an app whose build is in flight, and there
-		// is no longer one; leaving it would show an app as busy until something
-		// else happened to overwrite it.
-		if app.Status == model.AppStatusBuilding {
-			s.setAppStatus(ctx, app.ID, model.AppStatusDeploying,
-				"the build in flight was superseded by a newer upload")
-		}
+		// There is nothing to revert on the app itself: "building" is derived
+		// from there being an unfinished build, and this one has just been
+		// cancelled, so the next read of the app reports what the cluster is
+		// actually running.
 	}
 }
 
@@ -563,9 +557,6 @@ func (s *Server) refreshBuild(ctx context.Context, build *model.Build) {
 			slog.WarnContext(ctx, "could not record build image", "build", build.ID, "error", err)
 		}
 		build.Image = image
-		s.setAppStatus(ctx, build.AppID, model.AppStatusDeploying, "built "+shortSHA(build.CommitSHA))
-	} else if status == model.BuildStatusFailed {
-		s.setAppStatus(ctx, build.AppID, model.AppStatusBuildFailed, reason)
 	}
 }
 
@@ -595,16 +586,6 @@ func (s *Server) loadBuild(r *http.Request) (*model.Build, *apiError) {
 		return nil, Errorf(http.StatusInternalServerError, "read build").Wrap(err)
 	}
 	return build, nil
-}
-
-// setAppStatus records an app's status, logging rather than failing on error.
-//
-// A status write is derived information: failing an operation because AppLab
-// could not record how it went would be worse than the stale status.
-func (s *Server) setAppStatus(ctx context.Context, appID string, status model.AppStatus, reason string) {
-	if err := s.store.SetAppStatus(ctx, appID, status, reason); err != nil {
-		slog.WarnContext(ctx, "could not record app status", "app", appID, "status", status, "error", err)
-	}
 }
 
 func (s *Server) setBuildStatus(ctx context.Context, appID, buildID string, status model.BuildStatus, reason string) {

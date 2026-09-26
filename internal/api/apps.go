@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/store"
 )
@@ -88,36 +89,64 @@ func (s *Server) addressFor(a *model.App) model.Address {
 	return a.Address(s.cfg.BaseDomain, s.cfg.PathPrefix)
 }
 
-func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string) appResponse {
+// toAppResponse renders an app as the API presents it.
+//
+// status and live are passed in rather than read from the app, because the app
+// no longer carries them: what is running is a fact about the cluster, and it is
+// read once for a whole listing rather than once per row. A caller that has no
+// cluster passes the zero Status, which reports the app as not deployed — which
+// is what a deployment without a cluster can honestly say.
+func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string, status model.AppStatus, live deploy.Status) appResponse {
 	resp := appResponse{
-		ID:           a.ID,
-		Name:         a.Name,
-		Port:         a.Port,
-		Replicas:     a.Replicas,
-		Dockerfile:   a.Dockerfile,
-		Domain:       a.Domain,
-		CommitSHA:    a.CommitSHA,
-		Image:        a.Image,
-		Branch:       a.ActiveBranch(),
-		AutoDeploy:   a.AutoDeploys(),
-		Status:       string(a.Status),
-		StatusReason: a.StatusReason,
-		EnvCount:     len(a.Env),
-		CreatedAt:    a.CreatedAt,
-		UpdatedAt:    a.UpdatedAt,
+		ID:         a.ID,
+		Name:       a.Name,
+		Port:       a.Port,
+		Replicas:   a.Replicas,
+		Dockerfile: a.Dockerfile,
+		Domain:     a.Domain,
+		Branch:     a.ActiveBranch(),
+		AutoDeploy: a.AutoDeploys(),
+		Status:     string(status),
+		EnvCount:   len(a.Env),
+		CreatedAt:  a.CreatedAt,
+		UpdatedAt:  a.UpdatedAt,
 	}
+
+	// What is deployed, from the cluster. Both are empty for an app with no
+	// Deployment, which is what the console reads to decide whether to show a
+	// commit at all.
+	if live.Found {
+		resp.CommitSHA = live.CommitSHA
+		resp.Image = live.CurrentImage
+		resp.StatusReason = live.Message
+	}
+
 	addr := a.Address(baseDomain, pathPrefix)
 	if !addr.Empty() {
 		resp.Hostname = addr.Host
 		resp.Path = addr.Path
-		// Only advertised once the app has actually been deployed: a URL that
-		// 404s reads as "deployed but broken" when the truth is "not deployed
-		// yet".
-		if a.Status == model.AppStatusRunning || a.Status == model.AppStatusDeploying {
+		// Only advertised once something is actually serving: a URL that 404s
+		// reads as "deployed but broken" when the truth is "not deployed yet".
+		// Istio answers 503 rather than 404 for a VirtualService with no
+		// Service behind it, which makes that distinction worth keeping.
+		if status == model.AppStatusRunning || status == model.AppStatusDeploying {
 			resp.URL = addr.URL(scheme)
 		}
 	}
 	return resp
+}
+
+// appResponseFor renders one app, reading its live state from the cluster.
+//
+// It is what every single-app route uses, so that a route cannot report a status
+// that disagrees with its neighbours: there is one place that decides, and this
+// is the convenience wrapper over it. The list route does not use it — it
+// resolves every app's status in one pass instead, which is the whole point of
+// appStatuses.
+func (s *Server) appResponseFor(ctx context.Context, r *http.Request, app *model.App) appResponse {
+	live := s.liveStatusesFor(ctx, app)
+	return toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r),
+		appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(ctx, app.ID)), live)
 }
 
 // createAppRequest is the body of POST /api/v1/apps.
@@ -155,7 +184,6 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		Replicas:   1,
 		Dockerfile: strings.TrimSpace(req.Dockerfile),
 		Domain:     strings.TrimSpace(req.Domain),
-		Status:     model.AppStatusCreated,
 
 		// Set here so everything downstream — the namespace creation just
 		// below, and any build or deploy — has it without recomputing.
@@ -248,7 +276,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.metrics.ObserveAppCreated()
 	}
 	slog.InfoContext(r.Context(), "app created", "app", app.ID)
-	respond(w, http.StatusCreated, toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
+	respond(w, http.StatusCreated, s.appResponseFor(r.Context(), r, app))
 }
 
 // publishApp creates or updates an app's routing, reporting a failure without
@@ -305,16 +333,19 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 	// string, so no request parameter can widen it.
 	identity := identityFrom(r.Context())
 
-	includeDeleted := r.URL.Query().Get("include_deleted") == "true"
+	// Every app is returned. There used to be an `include_deleted` filter and a
+	// "deleted" status a delete wrote, so that an id stayed reserved — nothing
+	// ever wrote it: DeleteApp removes the record outright, which frees the id
+	// for reuse, and the flag selected on a value that could not occur.
 	out := make([]appResponse, 0, len(apps))
+	live := s.liveStatus(r.Context())
+	statuses := s.appStatuses(r.Context(), apps, live)
 	for _, a := range apps {
 		if !identity.Admin() && a.ID != identity.App {
 			continue
 		}
-		if a.Status == model.AppStatusDeleted && !includeDeleted {
-			continue
-		}
-		out = append(out, toAppResponse(a, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
+		out = append(out, toAppResponse(a, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r),
+			statuses[a.ID], live[a.ID]))
 	}
 	respond(w, http.StatusOK, out)
 }
@@ -325,7 +356,7 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	respond(w, http.StatusOK, toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
+	respond(w, http.StatusOK, s.appResponseFor(r.Context(), r, app))
 }
 
 // updateAppRequest is the body of PATCH /api/v1/apps/{app}.
@@ -429,7 +460,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		s.publishApp(r.Context(), app)
 	}
 
-	respond(w, http.StatusOK, toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r)))
+	respond(w, http.StatusOK, s.appResponseFor(r.Context(), r, app))
 }
 
 func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
@@ -515,9 +546,6 @@ func (s *Server) loadApp(r *http.Request) (*model.App, *apiError) {
 	app, err := s.loadAppByID(r.Context(), id)
 	if err != nil {
 		return nil, fromStoreError(err, fmt.Sprintf("app %q", id))
-	}
-	if app.Status == model.AppStatusDeleted {
-		return nil, NotFound("app %q", id)
 	}
 	return app, nil
 }

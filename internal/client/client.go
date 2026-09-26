@@ -483,14 +483,9 @@ type CreateAppRequest struct {
 }
 
 // ListApps returns every app.
-func (c *Client) ListApps(ctx context.Context, includeDeleted bool) ([]App, error) {
-	path := "/api/v1/apps"
-	if includeDeleted {
-		path += "?include_deleted=true"
-	}
-
+func (c *Client) ListApps(ctx context.Context) ([]App, error) {
 	var out []App
-	if err := c.do(ctx, http.MethodGet, path, nil, "", &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/apps", nil, "", &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -834,24 +829,23 @@ func (c *Client) Restart(ctx context.Context, appID string) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/apps/"+appID+"/restart", nil, "", nil)
 }
 
-// Status is an app's live state alongside AppLab's record.
+// Status is an app's live state.
+//
+// There is one view rather than two: what AppLab recorded and what the cluster
+// shows used to be reported separately, and they are the same thing now — the
+// cluster is the only thing that knows, so there is nothing to disagree with.
 type Status struct {
 	AppID  string `json:"app_id"`
 	Status string `json:"status"`
 
-	Deployed *struct {
-		CommitSHA string `json:"commit_sha"`
-		Image     string `json:"image"`
-		Status    string `json:"status"`
-		Reason    string `json:"status_reason"`
-	} `json:"deployed"`
-
+	// Live is absent when the app has no Deployment at all.
 	Live *struct {
 		Deployed        bool   `json:"deployed"`
 		Available       bool   `json:"available"`
 		ReadyReplicas   int32  `json:"ready_replicas"`
 		DesiredReplicas int32  `json:"desired_replicas"`
 		CurrentImage    string `json:"current_image"`
+		CommitSHA       string `json:"commit_sha"`
 		Message         string `json:"message"`
 	} `json:"live"`
 

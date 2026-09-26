@@ -313,11 +313,26 @@ Two failure modes are designed around rather than left to be discovered:
   between two VirtualServices on one host is undefined, which app won would not
   even be consistent. `/apps/shop/` cannot match `/apps/shop-2/`.
 
-### AppLab's record versus the cluster
+### The cluster is the only record of what is running
 
-AppLab records what it last did. **The cluster is the source of truth for what is
-running.** When the two disagree, believe the cluster — `/apps/{app}/status`
-reports both side by side rather than picking one.
+AppLab stores an app's *settings* — its port, replicas, branch, environment — and
+nothing about what is running. Whether an app is up, which commit it is serving
+and which image that came from are read from the cluster's Deployment every time,
+so they cannot be stale.
+
+That matters most when AppLab is pointed at a bucket it did not write. On a fresh
+install every app lists with its settings and history intact, and every one of
+them reports as **not deployed**, because that is the truth: nothing is running
+yet. Nothing is rebuilt automatically either — an installation that started
+bringing up every app it found would be a surprise on a cluster someone else
+operates. Recreate what you want with:
+
+```bash
+applab deploy shop --build     # or the Deploy latest button on the app's page
+```
+
+A push does the same thing: pushing to an app with no Deployment builds the
+commit and creates the Deployment, Service and VirtualService it needs.
 
 ### Finding out what went wrong
 

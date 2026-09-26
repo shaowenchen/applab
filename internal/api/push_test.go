@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/source"
@@ -27,13 +28,27 @@ import (
 
 // pushServer returns a server with source storage, a build engine and a
 // deployer, so a test can push a real commit and observe what follows.
-func pushServer(t *testing.T) (*api.Server, *fakeBuildEngine, *store.Store) {
+func pushServer(t *testing.T) (*api.Server, *fakeBuildEngine, *store.Store, *fake.Clientset) {
 	t.Helper()
 
-	srv, _, st := newDeployServerWithSource(t)
+	srv, client, st := newDeployServerWithSource(t)
 	engine := &fakeBuildEngine{}
 	srv.WithBuild(engine)
-	return srv, engine, st
+	return srv, engine, st, client
+}
+
+// deployedCommit reports the commit the cluster says is running for an app.
+//
+// It reads the Deployment's annotation, which is where a deploy records what it
+// put there — the app's own record no longer carries one. Empty means no
+// Deployment, or one created before that annotation existed.
+func deployedCommit(t *testing.T, client *fake.Clientset, appID string) string {
+	t.Helper()
+	deployment, err := client.AppsV1().Deployments("ops-system").Get(context.Background(), "applab-"+appID, metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	return deployment.Annotations["applab.io/commit"]
 }
 
 // TestAPushBuildsWhatWasPushed asserts the pushed commit is what gets built.
@@ -44,7 +59,7 @@ func pushServer(t *testing.T) (*api.Server, *fakeBuildEngine, *store.Store) {
 // what makes a push of a branch that had commits added by anything else still
 // build the right thing.
 func TestAPushBuildsWhatWasPushed(t *testing.T) {
-	srv, engine, st := pushServer(t)
+	srv, engine, st, _ := pushServer(t)
 	h := srv.Handler()
 
 	sortAppWithCommit(t, srv, h, "shop")
@@ -77,7 +92,7 @@ func TestAPushBuildsWhatWasPushed(t *testing.T) {
 // runs: the case this is for is not "already running" but "built and never
 // deployed", and a push means "this source is live".
 func TestAPushOfAnAlreadyBuiltCommitDeploysWithoutRebuilding(t *testing.T) {
-	srv, engine, st := pushServer(t)
+	srv, engine, st, client := pushServer(t)
 	h := srv.Handler()
 	ctx := context.Background()
 
@@ -97,12 +112,9 @@ func TestAPushOfAnAlreadyBuiltCommitDeploysWithoutRebuilding(t *testing.T) {
 
 	srv.StartPushBuild(ctx, "shop", "main")
 
-	// The deploy happens on the background job, so the wait is for the app to be
-	// recorded as running that commit rather than for the call to return.
-	waitFor(t, func() bool {
-		app, err := st.GetApp(ctx, "shop")
-		return err == nil && app.CommitSHA == commit && app.Image != ""
-	})
+	// The deploy happens on the background job, so the wait is for the cluster to
+	// show that commit rather than for the call to return.
+	waitFor(t, func() bool { return deployedCommit(t, client, "shop") == commit })
 
 	if got := engine.startedJobs(); len(got) != 0 {
 		t.Errorf("a push of a commit that already has an image started %d builds, want none", len(got))
@@ -157,7 +169,7 @@ func TestAPushWithNothingToBuildOrDeployIsANoOp(t *testing.T) {
 // every commit is not what they asked for. The push itself still succeeds — the
 // source is stored, which is what git was asked to do.
 func TestAPushToAnAppWithAutoDeployOffDoesNothing(t *testing.T) {
-	srv, engine, st := pushServer(t)
+	srv, engine, st, _ := pushServer(t)
 	h := srv.Handler()
 	ctx := context.Background()
 
@@ -186,7 +198,7 @@ func TestAPushToAnAppWithAutoDeployOffDoesNothing(t *testing.T) {
 // TestAutoDeployReadsAsSet asserts the response reports the resolved value, so a
 // caller never has to know that "unset" means on.
 func TestAutoDeployReadsAsSet(t *testing.T) {
-	srv, _, _ := pushServer(t)
+	srv, _, _, _ := pushServer(t)
 	h := srv.Handler()
 
 	// Created without the field: on.
@@ -261,7 +273,7 @@ var virtualServiceGVR = schema.GroupVersionResource{
 // that is not there — which authorization should already have refused — does not
 // become a crash or a build against nothing.
 func TestAPushToAnUnknownAppDoesNothing(t *testing.T) {
-	srv, engine, _ := pushServer(t)
+	srv, engine, _, _ := pushServer(t)
 
 	srv.StartPushBuild(context.Background(), "nosuchapp", "main")
 

@@ -49,7 +49,6 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 		if b.JobName == "" {
 			s.setBuildStatus(ctx, b.AppID, b.ID, model.BuildStatusFailed,
 				"applab restarted before the build job was started")
-			s.setAppStatus(ctx, b.AppID, model.AppStatusBuildFailed, "applab restarted during the build")
 			continue
 		}
 
@@ -70,11 +69,6 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 		switch {
 		case status.Terminal():
 			s.setBuildStatus(ctx, b.AppID, b.ID, status, reason)
-			appStatus := model.AppStatusDeploying
-			if status == model.BuildStatusFailed {
-				appStatus = model.AppStatusBuildFailed
-			}
-			s.setAppStatus(ctx, b.AppID, appStatus, reason)
 			slog.InfoContext(ctx, "reconciled a build", "build", b.ID, "status", status)
 
 		case status == "":
@@ -83,8 +77,6 @@ func (s *Server) ReconcileBuilds(ctx context.Context) {
 			// deploy an image that may never have been pushed.
 			s.setBuildStatus(ctx, b.AppID, b.ID, model.BuildStatusFailed,
 				"the build job finished while applab was restarting and its outcome could not be determined")
-			s.setAppStatus(ctx, b.AppID, model.AppStatusBuildFailed,
-				"the build outcome could not be determined after a restart")
 
 		default:
 			// Still running: record the state so the app's status is accurate, and

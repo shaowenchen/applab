@@ -159,6 +159,8 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	base := s.baseURL(r)
 
 	out := make([]appResponse, 0, len(apps))
+	live := s.liveStatus(r.Context())
+	statuses := s.appStatuses(r.Context(), apps, live)
 	for _, a := range apps {
 		if !identity.Authenticated() {
 			break
@@ -166,10 +168,8 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		if !identity.Admin() && a.ID != identity.App {
 			continue
 		}
-		if a.Status == model.AppStatusDeleted {
-			continue
-		}
-		out = append(out, toAppResponse(a, s.cfg.BaseDomain, s.cfg.PathPrefix, scheme))
+		out = append(out, toAppResponse(a, s.cfg.BaseDomain, s.cfg.PathPrefix, scheme,
+			statuses[a.ID], live[a.ID]))
 	}
 
 	cfg := s.configResponse(r)

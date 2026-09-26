@@ -23,29 +23,35 @@ const PortEnv = "PORT"
 
 // AppStatus is where an app is in its lifecycle.
 //
-// The status is derived rather than authoritative: it is AppLab's summary of
-// what it last tried to do and how that went, and the cluster remains the
-// source of truth for whether the app is actually up. A status that disagrees
-// with the cluster means AppLab's last operation failed, not that the app is
-// healthy.
+// It is computed, never stored. What an app is doing is a fact about the
+// cluster — whether its Deployment exists, is rolling out, or is available —
+// and AppLab is not the authority on it. The stored version of this field was a
+// cache of a cluster fact, and a cache of a cluster fact is wrong the moment the
+// cluster is recreated, which is exactly what pointing a new AppLab at an
+// existing bucket does: every app read back as "running" with nothing behind it.
+//
+// It is still a type rather than a string so the vocabulary stays in one place:
+// the API reports it, the console colours it and the CLI prints it.
 type AppStatus string
 
 const (
-	// AppStatusCreated means the app exists but has no source yet.
+	// AppStatusCreated means the app exists but nothing is running for it. That
+	// covers an app that has never been deployed and one that was stopped,
+	// because from outside they are the same: no workload, and its source and
+	// history intact.
 	AppStatusCreated AppStatus = "created"
 	// AppStatusBuilding means a build is in flight.
 	AppStatusBuilding AppStatus = "building"
 	// AppStatusBuildFailed means the most recent build failed.
 	AppStatusBuildFailed AppStatus = "build-failed"
-	// AppStatusDeploying means an image was built and is being rolled out.
+	// AppStatusDeploying means there is a workload and it has not finished
+	// rolling out.
 	AppStatusDeploying AppStatus = "deploying"
-	// AppStatusRunning means the most recent rollout completed.
+	// AppStatusRunning means a rollout completed and the app is available.
 	AppStatusRunning AppStatus = "running"
-	// AppStatusFailed means the most recent deploy failed.
+	// AppStatusFailed means a rollout cannot progress — a pod that will not start
+	// is the usual cause.
 	AppStatusFailed AppStatus = "failed"
-	// AppStatusDeleted means the app was removed. The row is kept so the id is
-	// not silently reusable and so history stays readable.
-	AppStatusDeleted AppStatus = "deleted"
 )
 
 // BuildStatus is where a single build attempt stands.
@@ -148,20 +154,17 @@ type App struct {
 	// names, not this map.
 	Secrets map[string]string
 
-	// CommitSHA is the commit currently deployed, and Image the image built from
-	// it. Both empty means nothing has been deployed yet.
-	CommitSHA string
-	Image     string
+	// Nothing here records what is *running*. The commit deployed, the image it
+	// came from and whether the app is up are facts about the cluster, and the
+	// cluster is where they are read from — see the AppStatus comment above and
+	// Deployer.Statuses. An app loaded from the bucket answers "what is this
+	// app", never "what is it doing".
 
 	// Namespace is where this app's resources live. It is derived from the
 	// deployment's prefix and the app id, and carried on the app so that every
 	// object AppLab creates for it is named consistently without each call site
 	// recomputing — and possibly recomputing differently.
 	Namespace string
-
-	// Status and StatusReason describe the most recent attempt.
-	Status       AppStatus
-	StatusReason string
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

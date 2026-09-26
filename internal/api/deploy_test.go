@@ -203,10 +203,14 @@ func TestDeployCreatesResources(t *testing.T) {
 	if _, err := client.AppsV1().Deployments("ops-system").Get(context.Background(), "applab-shop", metav1.GetOptions{}); err != nil {
 		t.Errorf("no deployment was created: %v", err)
 	}
-	// And AppLab's record must say what is deployed.
-	updated, _ := st.GetApp(context.Background(), "shop")
-	if updated.CommitSHA != commit {
-		t.Errorf("recorded commit = %q, want %q", updated.CommitSHA, commit)
+	// The cluster must say what is deployed — it is the only place that
+	// records it, as the annotation Apply stamps on the Deployment.
+	deployment, err := client.AppsV1().Deployments("ops-system").Get(context.Background(), "applab-shop", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get the deployment: %v", err)
+	}
+	if got := deployment.Annotations["applab.io/commit"]; got != commit {
+		t.Errorf("deployed commit = %q, want %q", got, commit)
 	}
 }
 
@@ -297,12 +301,8 @@ func TestStopRemovesResources(t *testing.T) {
 	}
 
 	// The app and its source must survive.
-	app, err := st.GetApp(ctx, "shop")
-	if err != nil {
+	if _, err := st.GetApp(ctx, "shop"); err != nil {
 		t.Fatalf("the app was deleted by stop: %v", err)
-	}
-	if app.Status == "deleted" {
-		t.Error("stop deleted the app instead of stopping it")
 	}
 	commits, err := st.ListCommits(ctx, "shop", 1)
 	if err != nil || len(commits) == 0 {
@@ -329,8 +329,13 @@ func TestRestartOfUndeployedAppFails(t *testing.T) {
 //
 // They are deliberately not reconciled into one value: the difference is the
 // useful information, since an app AppLab thinks is running but whose pods are
-// unhealthy is something AppLab did not cause and could not see otherwise.
-func TestStatusSeparatesRecordFromCluster(t *testing.T) {
+// TestStatusReportsNothingRunningForAnUndeployedApp asserts the status endpoint
+// does not claim an app is deployed when nothing is.
+//
+// This is the whole point of reading the cluster instead of a stored status: an
+// app whose record says "running" from a previous installation, with no
+// Deployment behind it, must report as not deployed.
+func TestStatusReportsNothingRunningForAnUndeployedApp(t *testing.T) {
 	srv, _, _ := newDeployServer(t)
 	h := srv.Handler()
 
@@ -342,12 +347,9 @@ func TestStatusSeparatesRecordFromCluster(t *testing.T) {
 	}
 
 	var result struct {
-		AppID    string `json:"app_id"`
-		Status   string `json:"status"`
-		Deployed *struct {
-			Status string `json:"status"`
-		} `json:"deployed"`
-		Live *struct {
+		AppID  string `json:"app_id"`
+		Status string `json:"status"`
+		Live   *struct {
 			Deployed  bool `json:"deployed"`
 			Available bool `json:"available"`
 		} `json:"live"`
@@ -357,15 +359,17 @@ func TestStatusSeparatesRecordFromCluster(t *testing.T) {
 	if result.AppID != "shop" {
 		t.Errorf("app_id = %q, want shop", result.AppID)
 	}
-	if result.Deployed == nil {
-		t.Error("no deployment record was reported")
+	// Nothing has been deployed, so the cluster must say so — and with no
+	// Deployment there is no live block at all.
+	if result.Live != nil {
+		t.Errorf("live state was reported for an app with no Deployment: %+v", result.Live)
 	}
-	if result.Live == nil {
-		t.Fatal("no live state was reported")
+	if result.Status != "created" {
+		t.Errorf("status = %q, want created — nothing is running", result.Status)
 	}
-	// Nothing has been deployed, so the cluster must say so.
-	if result.Live.Deployed {
-		t.Error("live state says the app is deployed, but nothing was deployed")
+	// And no URL, because nothing is serving one.
+	if rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil); strings.Contains(rec.Body.String(), `"url"`) {
+		t.Errorf("an app with no Deployment reported a url:\n%s", rec.Body.String())
 	}
 }
 

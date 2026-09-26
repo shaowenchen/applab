@@ -27,6 +27,10 @@ func testConfig() Config {
 	}
 }
 
+// testCommit is what the tests deploy, since the commit is now an argument to
+// Apply rather than a field of the app.
+const testCommit = "abc123def456789012345678901234567890abcd"
+
 func testApp() *model.App {
 	return &model.App{
 		ID:         "shop",
@@ -34,7 +38,6 @@ func testApp() *model.App {
 		Port:       8080,
 		Replicas:   2,
 		Dockerfile: "Dockerfile",
-		CommitSHA:  "abc123def456789012345678901234567890abcd",
 	}
 }
 
@@ -120,7 +123,7 @@ func TestApplyCreatesEverything(t *testing.T) {
 	app := testApp()
 	image := "registry.example.com/apps/shop:abc123def456"
 
-	addr, err := d.Apply(ctx, app, image)
+	addr, err := d.Apply(ctx, app, image, testCommit)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -231,7 +234,7 @@ func TestPublishMatchesWhatApplyProduces(t *testing.T) {
 	if _, err := published.Publish(ctx, app); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if _, err := deployed.Apply(ctx, app, "registry.example.com/apps/shop:abc123def456"); err != nil {
+	if _, err := deployed.Apply(ctx, app, "registry.example.com/apps/shop:abc123def456", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -294,7 +297,7 @@ func TestSelectorsLinkUp(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -354,7 +357,7 @@ func TestServiceTargetsAppPort(t *testing.T) {
 	app := testApp()
 	app.Port = 3000
 
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -382,7 +385,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 	app := testApp()
 
 	for i := 0; i < 3; i++ {
-		if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 			t.Fatalf("Apply attempt %d: %v", i+1, err)
 		}
 	}
@@ -409,10 +412,10 @@ func TestRedeployChangesTheImage(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:first"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:first", testCommit); err != nil {
 		t.Fatalf("first Apply: %v", err)
 	}
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:second"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:second", testCommit); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
 
@@ -430,7 +433,7 @@ func TestNoVirtualServiceWithoutDomain(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	addr, err := d.Apply(ctx, app, "image:tag")
+	addr, err := d.Apply(ctx, app, "image:tag", testCommit)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -455,7 +458,7 @@ func TestAppDomainOverride(t *testing.T) {
 	app := testApp()
 	app.Domain = "shop.acme.com"
 
-	addr, err := d.Apply(ctx, app, "image:tag")
+	addr, err := d.Apply(ctx, app, "image:tag", testCommit)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -488,7 +491,7 @@ func TestEveryAppAttachesToTheSameGateway(t *testing.T) {
 	for _, id := range []string{"shop", "blog"} {
 		app := testApp()
 		app.ID = id
-		if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+		if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 			t.Fatalf("Apply %s: %v", id, err)
 		}
 	}
@@ -523,7 +526,7 @@ func TestVirtualServiceAnnotationsAreReplaced(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -534,7 +537,7 @@ func TestVirtualServiceAnnotationsAreReplaced(t *testing.T) {
 	// Change AppLab's config and reapply.
 	cfg.Annotations = map[string]string{"istio.io/foo": "50m"}
 	d = NewWithDynamic(d.client, d.dynamic, cfg)
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
 
@@ -554,13 +557,13 @@ func TestVirtualServiceAnnotationsCanBeRemoved(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
 	cfg.Annotations = nil
 	d = NewWithDynamic(d.client, d.dynamic, cfg)
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
 
@@ -784,7 +787,7 @@ func TestRemoveDeletesEverything(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if err := d.Remove(ctx, app); err != nil {
@@ -815,7 +818,7 @@ func TestRestartChangesThePodTemplate(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -858,7 +861,7 @@ func buildDeploymentForTest(t *testing.T, d *Deployer, app *model.App) *appsv1.D
 	t.Helper()
 
 	ctx := context.Background()
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -947,7 +950,7 @@ func TestPathPrefixRoutesByPath(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	addr, err := d.Apply(ctx, app, "image:tag")
+	addr, err := d.Apply(ctx, app, "image:tag", testCommit)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -1033,7 +1036,7 @@ func TestPathPrefixRedirectsTheBarePath(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	if _, err := d.Apply(ctx, app, "image:tag"); err != nil {
+	if _, err := d.Apply(ctx, app, "image:tag", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -1068,7 +1071,7 @@ func TestNoPathPrefixKeepsPerAppHosts(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	addr, err := d.Apply(ctx, app, "image:tag")
+	addr, err := d.Apply(ctx, app, "image:tag", testCommit)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -1106,7 +1109,7 @@ func TestEnvVarsReachTheContainer(t *testing.T) {
 	app := testApp()
 	app.Env = map[string]string{"LOG_LEVEL": "debug", "FEATURE_X": "on"}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -1142,7 +1145,7 @@ func TestSecretValueReachesTheDeployment(t *testing.T) {
 	app := testApp()
 	app.Secrets = map[string]string{"DATABASE_URL": secretValue}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -1168,7 +1171,7 @@ func TestSecretsAndEnvAreOneList(t *testing.T) {
 	app.Env = map[string]string{"LOG_LEVEL": "debug"}
 	app.Secrets = map[string]string{"TOKEN": "t"}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -1199,7 +1202,7 @@ func TestEnvVarsAreSortedInThePodTemplate(t *testing.T) {
 	app.Env = map[string]string{"ZED": "1", "ALPHA": "2", "MID": "3"}
 	app.Secrets = map[string]string{"TOKEN": "t"}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -1232,13 +1235,13 @@ func TestConfigHashChangesWhenASecretValueChanges(t *testing.T) {
 	app := testApp()
 	app.Secrets = map[string]string{"TOKEN": "old"}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("first Apply: %v", err)
 	}
 	before := configHashOf(t, client, app)
 
 	app.Secrets = map[string]string{"TOKEN": "new"}
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
 	after := configHashOf(t, client, app)
@@ -1256,13 +1259,13 @@ func TestConfigHashChangesWhenAVariableChanges(t *testing.T) {
 
 	app := testApp()
 	app.Env = map[string]string{"LOG_LEVEL": "info"}
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("first Apply: %v", err)
 	}
 	before := configHashOf(t, client, app)
 
 	app.Env = map[string]string{"LOG_LEVEL": "debug"}
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
 	after := configHashOf(t, client, app)
@@ -1287,7 +1290,7 @@ func TestConfigHashIsStableAcrossDeploys(t *testing.T) {
 	app.Env = map[string]string{"ZED": "1", "ALPHA": "2", "MID": "3"}
 	app.Secrets = map[string]string{"A": "1", "B": "2", "C": "3"}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("first Apply: %v", err)
 	}
 	before := configHashOf(t, client, app)
@@ -1295,7 +1298,7 @@ func TestConfigHashIsStableAcrossDeploys(t *testing.T) {
 	// Applied repeatedly: map order differs between runs, so an unstable hash
 	// shows up as a difference here even though nothing changed.
 	for i := 0; i < 5; i++ {
-		if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+		if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 			t.Fatalf("Apply %d: %v", i, err)
 		}
 	}
@@ -1319,14 +1322,14 @@ func TestConfigHashCoversBothHalves(t *testing.T) {
 
 	app := testApp()
 	app.Env = map[string]string{"VALUE": "x"}
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	asEnv := configHashOf(t, client, app)
 
 	app.Env = nil
 	app.Secrets = map[string]string{"VALUE": "x"}
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	asSecret := configHashOf(t, client, app)
@@ -1351,7 +1354,7 @@ func TestReservedPortIsNotDeclaredTwice(t *testing.T) {
 	app := testApp()
 	app.Env = map[string]string{"PORT": "9999"}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -1384,7 +1387,7 @@ func TestReservedPortIsNotDeclaredTwiceAsASecret(t *testing.T) {
 	app := testApp()
 	app.Secrets = map[string]string{"PORT": "9999"}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -1443,7 +1446,7 @@ func TestApplyRefusesAMissingImagePullSecret(t *testing.T) {
 	ctx := context.Background()
 	app := testApp()
 
-	_, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc")
+	_, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit)
 	if err == nil {
 		t.Fatal("an app deployed with an image pull credential that does not exist")
 	}
@@ -1481,7 +1484,7 @@ func TestApplyAcceptsAnExistingImagePullSecret(t *testing.T) {
 		t.Fatalf("create secret: %v", err)
 	}
 
-	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc"); err != nil {
+	if _, err := d.Apply(ctx, app, "registry.example.com/apps/shop:abc", testCommit); err != nil {
 		t.Fatalf("a deploy was refused with the credential present: %v", err)
 	}
 }

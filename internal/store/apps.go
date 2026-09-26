@@ -125,28 +125,6 @@ func (s *Store) UpdateApp(ctx context.Context, app *model.App) error {
 	return s.putJSON(ctx, appKey(app.ID), appRecord{App: *app})
 }
 
-// SetAppStatus records the outcome of the most recent attempt.
-func (s *Store) SetAppStatus(ctx context.Context, id string, status model.AppStatus, reason string) error {
-	app, err := s.GetApp(ctx, id)
-	if err != nil {
-		return err
-	}
-	app.Status = status
-	app.StatusReason = reason
-	return s.UpdateApp(ctx, app)
-}
-
-// SetAppDeployed records what is now running.
-func (s *Store) SetAppDeployed(ctx context.Context, id, commitSHA, image string) error {
-	app, err := s.GetApp(ctx, id)
-	if err != nil {
-		return err
-	}
-	app.CommitSHA = commitSHA
-	app.Image = image
-	return s.UpdateApp(ctx, app)
-}
-
 // DeleteApp removes the app and everything under it.
 //
 // The id becomes available again, which is what an operator re-creating an app

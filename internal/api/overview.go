@@ -76,10 +76,20 @@ type clusterSummary struct {
 // It is authenticated like every other data route: the numbers describe this
 // deployment's apps, which is exactly what a key protects everywhere else.
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	appCounts, err := s.store.CountAppsByStatus(r.Context())
+	// Counted from the derived status rather than from the store: a status is a
+	// fact about the cluster now, so counting what the bucket holds would count
+	// something that is not the question. It costs one list of Deployments for
+	// the whole page.
+	allApps, err := s.store.ListApps(r.Context())
 	if err != nil {
-		fail(w, r, Errorf(http.StatusInternalServerError, "could not count apps").Wrap(err))
+		fail(w, r, Errorf(http.StatusInternalServerError, "could not list apps").Wrap(err))
 		return
+	}
+	appStatuses := s.appStatuses(r.Context(), allApps, s.liveStatus(r.Context()))
+
+	appCounts := map[model.AppStatus]int{}
+	for _, status := range appStatuses {
+		appCounts[status]++
 	}
 
 	buildCounts, err := s.store.CountBuildsByStatus(r.Context())
@@ -110,8 +120,8 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		Failed:      appCounts[model.AppStatusFailed],
 		BuildFailed: appCounts[model.AppStatusBuildFailed],
 	}
-	// Deleted apps are excluded by the query, so the total is the sum of what it
-	// returned rather than a second COUNT(*) that could disagree with it.
+	// Every app that exists is counted: DeleteApp removes the record outright,
+	// so there is no tombstone to exclude.
 	for _, n := range appCounts {
 		apps.Total += n
 	}

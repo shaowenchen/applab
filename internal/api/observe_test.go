@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -15,6 +16,7 @@ import (
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
+	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
@@ -42,9 +44,19 @@ func newObserveServer(t *testing.T) (*api.Server, *fake.Clientset) {
 	cfg.BaseDomain = "apps.example.com"
 	cfg.DataDir = dataDir
 
+	// A deployer, because whether an app is deployed is read from the cluster
+	// now: a server without one reports every app as not deployed, which is the
+	// right answer for a deployment that has no cluster but not what these tests
+	// are about.
+	deployer := deploy.NewWithDynamic(client, fakeDynamic(t), deploy.Config{
+		BaseDomain: "apps.example.com",
+		Gateway:    "ops-system/gateway",
+	})
+
 	srv := api.New(cfg, st, auth.New(cfg.Keys)).
 		WithSource(src).
 		WithObserver(observe.New(client)).
+		WithDeployer(deployer).
 		WithMetrics(api.NewMetrics())
 
 	return srv, client
@@ -246,7 +258,7 @@ func TestDiagnoseReportsNoPods(t *testing.T) {
 
 	// Mark the app deployed so the diagnosis moves past the first check.
 	createNamespaceForTest(t, client, "ops-system")
-	markDeployed(t, srv, "shop")
+	markDeployed(t, client, "shop")
 
 	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/diagnose", nil)
 	if rec.Code != http.StatusOK {
@@ -271,7 +283,7 @@ func TestDiagnoseReportsUnreadyPodsWithLogs(t *testing.T) {
 
 	ctx := context.Background()
 	createNamespaceForTest(t, client, "ops-system")
-	markDeployed(t, srv, "shop")
+	markDeployed(t, client, "shop")
 
 	// A crash-looping pod: not ready, with the reason on the previous instance.
 	if _, err := client.CoreV1().Pods("ops-system").Create(ctx, &corev1.Pod{
@@ -333,7 +345,7 @@ func TestDiagnoseReportsHealthy(t *testing.T) {
 
 	ctx := context.Background()
 	createNamespaceForTest(t, client, "ops-system")
-	markDeployed(t, srv, "shop")
+	markDeployed(t, client, "shop")
 
 	if _, err := client.CoreV1().Pods("ops-system").Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -620,11 +632,38 @@ func createNamespaceForTest(t *testing.T, client *fake.Clientset, name string) {
 	}
 }
 
-// markDeployed gives an app a deployed commit so the diagnosis moves past its
-// first check.
-func markDeployed(t *testing.T, srv *api.Server, appID string) {
+// markDeployed creates the Deployment a deployed app has, so the diagnosis
+// moves past its first check.
+//
+// It creates the object rather than recording a flag, because there is no flag
+// any more: whether an app is deployed is read from the cluster, and a test that
+// does not create the Deployment is testing an app that is not deployed.
+func markDeployed(t *testing.T, client *fake.Clientset, appID string) {
 	t.Helper()
-	srv.MarkDeployedForTest(appID, strings.Repeat("a", 40), "image:abc")
+	_, err := client.AppsV1().Deployments("ops-system").Create(context.Background(),
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "applab-" + appID,
+				Namespace: "ops-system",
+				Labels:    map[string]string{"applab.io/app": appID},
+				Annotations: map[string]string{
+					"applab.io/commit": strings.Repeat("a", 40),
+					"applab.io/image":  "image:abc",
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"applab.io/app": appID}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"applab.io/app": appID}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "image:abc"}},
+					},
+				},
+			},
+		}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create the deployment for %s: %v", appID, err)
+	}
 }
 
 func firstLines(s string, n int) string {

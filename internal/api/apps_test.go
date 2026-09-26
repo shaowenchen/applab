@@ -213,42 +213,6 @@ func TestAppSettingsValidation(t *testing.T) {
 	}
 }
 
-// TestListAppsExcludesDeletedByDefault asserts the default listing is what a
-// caller expects while keeping the opt-in for the full history.
-func TestListAppsExcludesDeletedByDefault(t *testing.T) {
-	srv, st := newTestServer(t)
-	h := srv.Handler()
-
-	for _, id := range []string{"one", "two"} {
-		if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": id}); rec.Code != http.StatusCreated {
-			t.Fatalf("create %s: %d (%s)", id, rec.Code, rec.Body.String())
-		}
-	}
-
-	// Mark one deleted directly, standing in for the teardown path.
-	app, err := st.GetApp(t.Context(), "two")
-	if err != nil {
-		t.Fatalf("get app: %v", err)
-	}
-	app.Status = model.AppStatusDeleted
-	if err := st.UpdateApp(t.Context(), app); err != nil {
-		t.Fatalf("update app: %v", err)
-	}
-
-	var list []map[string]any
-	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps", nil)
-	decodeData(t, rec, &list)
-	if len(list) != 1 || list[0]["id"] != "one" {
-		t.Errorf("default listing = %v, want only the live app", list)
-	}
-
-	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps?include_deleted=true", nil)
-	decodeData(t, rec, &list)
-	if len(list) != 2 {
-		t.Errorf("include_deleted listing returned %d apps, want 2", len(list))
-	}
-}
-
 // TestGetAppNotFound asserts a missing app is a 404, not a 500 or an empty
 // success — an agent branches on this.
 func TestGetAppNotFound(t *testing.T) {
