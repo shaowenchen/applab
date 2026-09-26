@@ -1199,18 +1199,16 @@ async function render(apps) {
     );
   }
 
-  // The port a new app is created with.
+  // What creating an app asks for.
   //
-  // 80 is the point: it is the port an image built for a platform that serves
-  // HTTP conventionally EXPOSEs, so an app created without a port listens
-  // somewhere its own Dockerfile agrees with. The form ships the value and sends
-  // what it reads back, so the default living only in the markup would be a
-  // default that a reader of this test could not see was used.
+  // The dialog asks for the id and nothing else. Everything else an app is — its
+  // port, its replicas, its branch, its bounds — has a default that is right for
+  // a first deploy and is editable on the app's own page, beside what it
+  // produces. Asking for a port at create time meant answering a question about
+  // a container that did not exist yet.
   //
-  // Driven through createApp rather than asserted from the markup, because the
-  // field's value is only half of it: what matters is the number that reaches
-  // the request, and the two would part company if the handler stopped reading
-  // the field.
+  // So the assertion is twofold: the request carries the id alone, and the
+  // dialog is a dialog rather than a row that appears above the list.
   {
     const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
     ctx.globalThis = ctx;
@@ -1228,18 +1226,20 @@ async function render(apps) {
     vm.runInContext(source, ctx, { filename: "console.js" });
     vm.runInContext('state.url = "https://applab.example.com"; state.key = "k";', ctx);
 
-    // The shipped default, read from the markup the browser would have parsed.
-    const shipped = /id="apps-new-port"[^>]*\bvalue="([^"]*)"/.exec(markup);
-    check("the create form ships a port", shipped !== null, true);
-    check("and it is 80, the port an image conventionally exposes", shipped && shipped[1], "80");
+    // The dialog has no port field.
+    check(
+      "the create dialog asks for an id and no port",
+      /id="apps-new-port"/.test(markup),
+      false
+    );
+    check(
+      "and the id field is in the markup it is looked up from",
+      /id="apps-new-id"/.test(markup),
+      true
+    );
 
-    // And with nothing typed, that is the port the request carries.
-    //
-    // Only the request is asserted. createApp goes on to re-render the app list
-    // and open the new app, which needs a working API the stub does not have;
-    // what this check is about is the number that was sent, and that is captured
-    // before any of that runs.
-    elements.get("apps-new-port").value = shipped ? shipped[1] : "";
+    // The request carries the id alone, so the server's own default is what a
+    // new app gets rather than a number this page invented.
     elements.get("apps-new-id").value = "shop";
     try {
       await vm.runInContext("createApp", ctx)();
@@ -1248,7 +1248,17 @@ async function render(apps) {
     }
 
     const posted = ctx.bodies.find((b) => b.url.endsWith("/api/v1/apps"));
-    check("and the request carries the port the form showed", posted && JSON.parse(posted.body).port, 80);
+    if (!posted) {
+      check("creating an app posts to the apps collection", false, true);
+    } else {
+      const body = JSON.parse(posted.body);
+      check("and sends the id", body.id, "shop");
+      check(
+        "and leaves the port to the server's default",
+        Object.prototype.hasOwnProperty.call(body, "port"),
+        false
+      );
+    }
   }
 
   // The app page's side navigation.

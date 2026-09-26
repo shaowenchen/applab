@@ -102,7 +102,12 @@ func TestCreateAppDefaults(t *testing.T) {
 	}
 	// The port a caller did not name. 80 is the port an image built for a
 	// platform that serves HTTP conventionally listens on, so it is the default
-	// most likely to be right — and the one the console's create form offers.
+	// most likely to be right.
+	//
+	// It is now the *only* place a port a new app gets is decided: the console's
+	// create dialog asks for the id alone, so "an app created with no port
+	// listens on 80" is this line rather than a value the page shipped. A change
+	// here is a change to what every app created without one gets.
 	if app["port"] != float64(80) {
 		t.Errorf("port = %v, want 80 — the default an app is created with", app["port"])
 	}
@@ -508,4 +513,78 @@ func newObjects(t *testing.T) objectstore.Store {
 		t.Fatalf("NewLocal: %v", err)
 	}
 	return objs
+}
+
+// TestAnAppsPortCanBeChangedAfterItIsCreated asserts the thing the create dialog
+// relies on: a port left at its default is not stuck there.
+//
+// The console asks for the id alone when it creates an app, which is only
+// reasonable if the port — the setting that most needs to be right, since an app
+// listening somewhere its Service does not target is unreachable — can be set
+// afterwards. It is a PATCH, and the same one `applab update --port` sends.
+//
+// It is asserted here rather than at the console because this is the promise the
+// console is trusting: the page can only offer to fix a port later if the API
+// accepts the change.
+func TestAnAppsPortCanBeChangedAfterItIsCreated(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+
+	// Created with nothing but an id, exactly as the dialog does.
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"port": 3000})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch the port: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var app map[string]any
+	decodeData(t, rec, &app)
+	if app["port"] != float64(3000) {
+		t.Errorf("port = %v, want 3000", app["port"])
+	}
+
+	// And it is what is stored, not just what the response said.
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get: %d", rec.Code)
+	}
+	decodeData(t, rec, &app)
+	if app["port"] != float64(3000) {
+		t.Errorf("port reads back as %v, want 3000", app["port"])
+	}
+}
+
+// TestAPortOutsideTheRangeIsRefusedOnAPatchToo asserts the bound is enforced on
+// the path an app's port is actually changed through.
+//
+// The create path checks it, and so did the tests — but create is no longer how
+// a port is set in the console, so a validation that lived only there would be
+// one nothing reaches. A port of 0 would reach the Service as a targetPort of 0,
+// which is not a port.
+func TestAPortOutsideTheRangeIsRefusedOnAPatchToo(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	for _, port := range []int{0, -1, 70000} {
+		rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"port": port})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("patch port=%d -> %d, want 400 (body: %s)", port, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Refused, and unchanged: a rejected patch that still wrote the value would
+	// leave the app listening where nothing looks for it.
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
+	var app map[string]any
+	decodeData(t, rec, &app)
+	if app["port"] != float64(80) {
+		t.Errorf("port = %v after refused patches, want it left at 80", app["port"])
+	}
 }

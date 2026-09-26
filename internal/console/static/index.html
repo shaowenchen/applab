@@ -739,24 +739,10 @@
       <button id="apps-new" class="primary" data-i18n="New app">New app</button>
     </div>
     <!-- Creating an app mints its key, which is the credential whoever deploys
-         it will use. It is shown here once the app exists rather than typed
-         into this form, because the API does not return it from a create — a
-         key field on the app response would reach every list and get, so it is
-         fetched from the app's own key route instead. -->
-    <!-- The form is itself the card, and carries the same border as everything
-         else on the page. Wrapping it in one would leave that border behind as
-         an empty box every time the form is closed. -->
-    <div id="apps-new-form" class="card row hidden">
-      <input id="apps-new-id" placeholder="app id, e.g. shop" size="24" data-i18n-placeholder="app id, e.g. shop"
-             autocomplete="off" spellcheck="false">
-      <input id="apps-new-port" placeholder="port" size="6" value="80" data-i18n-placeholder="port"
-             autocomplete="off">
-      <button id="apps-new-create" class="primary" data-i18n="Create">Create</button>
-      <button id="apps-new-cancel" data-i18n="Cancel">Cancel</button>
-      <!-- Full width, so the failure sits under the fields it is about rather
-           than inline beside the Cancel button. -->
-      <div id="apps-new-problem" class="error hidden" style="flex-basis:100%"></div>
-    </div>
+         it will use. It is shown on the app's page once the app exists rather
+         than typed into the create dialog, because the API does not return it
+         from a create — a key field on the app response would reach every list
+         and get, so it is fetched from the app's own key route instead. -->
     <div class="card flush">
       <table>
         <thead>
@@ -1088,6 +1074,43 @@
       </table>
     </div>
 
+    <!-- The dialog that creates an app.
+
+         It asks for the id and nothing else. The rest of what an app is — its
+         port, its replicas, its branch, its resource bounds — has a default
+         that is right for a first deploy, and all of it is editable on the
+         app's own page, where there is something to compare it against. Asking
+         for a port here meant answering a question about the container before
+         the app existed to have one. The app is opened once it is created, so
+         the settings are one click away.
+
+         It is a dialog rather than a row that appears above the list because
+         one field does not earn a form that is shown open and empty until
+         someone fills it in — and the row pushed the apps down every time it
+         was opened.
+
+         Outside .app-body, so the nav's IntersectionObserver does not treat it
+         as part of the scrolling column — the same reason the log dialog is
+         here. -->
+    <div id="apps-new-modal" class="log-modal hidden" role="dialog" aria-modal="true" aria-labelledby="apps-new-title">
+      <div class="log-modal-scrim" id="apps-new-scrim"></div>
+      <div class="log-modal-panel" style="width:min(520px,100%)">
+        <div class="log-modal-head">
+          <h2 id="apps-new-title" data-i18n="New app">New app</h2>
+        </div>
+        <div class="row">
+          <input id="apps-new-id" placeholder="app id, e.g. shop" size="24" data-i18n-placeholder="app id, e.g. shop"
+                 autocomplete="off" spellcheck="false" style="flex:1">
+          <button id="apps-new-create" class="primary" data-i18n="Create">Create</button>
+          <button id="apps-new-cancel" data-i18n="Cancel">Cancel</button>
+        </div>
+        <!-- Below the field it is about, rather than beside the buttons: a
+             refused id is the usual failure here, and the message names what is
+             wrong with what was typed. -->
+        <div id="apps-new-problem" class="error hidden" style="margin-top:12px"></div>
+      </div>
+    </div>
+
     <!-- The log dialog, shared by all three surfaces that stream: the platform's
          own log, an app's runtime log, and a single build's output. One dialog
          rather than three, because they are the same thing to read — a lot of
@@ -1330,7 +1353,6 @@ const ZH = {
   // -- Apps -----------------------------------------------------------------
   "New app": "新建应用",
   "app id, e.g. shop": "应用 ID，例如 shop",
-  "port": "端口",
   "Create": "创建",
   "Cancel": "取消",
   "An app needs an id.": "请填写应用 ID。",
@@ -2138,6 +2160,10 @@ async function showOverview() {
 async function showApps() {
   stopLogs();
   state.app = "";
+  // The create dialog is dismissed here rather than left open behind the view:
+  // leaving the apps list and coming back is not a reason to still be asked for
+  // an app id, and whatever was half-typed would be sitting there.
+  closeCreateApp();
   navTo("apps");
   // Registering an app is an admin operation, so the control that reaches it is
   // not offered to an app key. Nothing routes an app key here today — it opens
@@ -2482,6 +2508,12 @@ async function loadApps() {
 // The new app is opened once it exists, because creating one also mints its key
 // and the detail view is where that key is readable. Leaving whoever just created
 // it to go looking is how a key gets read from somewhere else, or not at all.
+//
+// Only the id is sent. The server fills in the rest — port 80, one replica, the
+// default branch — and every one of those is editable on the page this opens,
+// beside what they produce. Sending a port from here would mean the form and the
+// page could disagree about it, and only the page has anything to check it
+// against.
 async function createApp() {
   const problem = $("apps-new-problem");
   show(problem, false);
@@ -2489,12 +2521,6 @@ async function createApp() {
   const id = $("apps-new-id").value.trim();
   if (!id) {
     problem.textContent = t("An app needs an id.");
-    show(problem, true);
-    return;
-  }
-  const port = parseInt($("apps-new-port").value.trim(), 10);
-  if (!Number.isInteger(port) || port < MIN_PORT || port > MAX_PORT) {
-    problem.textContent = portProblem(port);
     show(problem, true);
     return;
   }
@@ -2506,7 +2532,7 @@ async function createApp() {
   try {
     await api("/api/v1/apps", {
       method: "POST",
-      body: JSON.stringify({ id: id, port: port }),
+      body: JSON.stringify({ id: id }),
     });
   } catch (err) {
     problem.textContent = tf("Could not create {id}: {error}", { id: id, error: err.message });
@@ -2517,7 +2543,7 @@ async function createApp() {
   }
 
   $("apps-new-id").value = "";
-  show($("apps-new-form"), false);
+  show($("apps-new-modal"), false);
   await loadApps();
   await openApp(id);
 }
@@ -3874,18 +3900,27 @@ $("overview-refresh").onclick = loadOverview;
 
 $("apps-refresh").onclick = () => { loadApps(); };
 $("apps-new").onclick = () => {
-  const form = $("apps-new-form");
-  show(form, form.classList.contains("hidden"));
+  show($("apps-new-modal"), true);
   show($("apps-new-problem"), false);
-  if (!form.classList.contains("hidden")) $("apps-new-id").focus();
+  $("apps-new-id").focus();
 };
-$("apps-new-cancel").onclick = () => {
-  show($("apps-new-form"), false);
+// Closing clears the field, for the same reason the environment-variable form
+// does: leaving a half-typed id there would put it back on screen the next time
+// the dialog opened, as though it had been accepted.
+function closeCreateApp() {
+  show($("apps-new-modal"), false);
   show($("apps-new-problem"), false);
-};
+  $("apps-new-id").value = "";
+}
+$("apps-new-cancel").onclick = closeCreateApp;
+$("apps-new-scrim").onclick = closeCreateApp;
 $("apps-new-create").onclick = createApp;
-$("apps-new-id").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
-$("apps-new-port").onkeydown = (e) => { if (e.key === "Enter") createApp(); };
+$("apps-new-id").onkeydown = (e) => {
+  // Escape closes, Enter creates: the dialog holds one field, so there is
+  // nothing else either key could mean.
+  if (e.key === "Enter") createApp();
+  if (e.key === "Escape") closeCreateApp();
+};
 $("back").onclick = closeApp;
 $("app-restart").onclick = restart;
 $("app-auto-deploy").onchange = setAutoDeploy;
