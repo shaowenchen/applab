@@ -234,12 +234,12 @@ repository per branch:</p>
 <pre><code>apps/&lt;id&gt;/app.json                    the app's settings: name, port, replicas, env, branch
 apps/&lt;id&gt;/key.json                    the app's API key
 apps/&lt;id&gt;/commits/&lt;sha&gt;.json          one recorded commit
-apps/&lt;id&gt;/builds/&lt;id&gt;.json            one build attempt, and the image it produced
 apps/&lt;id&gt;/repo/branches/&lt;branch&gt;/     the repository for one branch
 </code></pre>
-<p>Note what is not in there: nothing about what is <em>running</em>. Whether an app is up,
-which commit it serves and which image that came from are read from the cluster's
-Deployment, so they cannot go stale. On an installation pointed at a bucket
+<p>Note what is not in there: nothing about what is <em>running</em>, and nothing about
+what has been <em>built</em>. Whether an app is up, which commit it serves and which
+image that came from are read from the cluster's Deployment; the build history is
+read from the build Jobs themselves. On an installation pointed at a bucket
 someone else wrote, every app lists with its settings and history and reports as
 <strong>not deployed</strong> — and stays that way until someone deploys it:</p>
 <pre><code class="language-bash">applab deploy &lt;app&gt; --build      # or the Deploy latest button on the app's page
@@ -247,6 +247,16 @@ someone else wrote, every app lists with its settings and history and reports as
 <p>Nothing is rebuilt at startup on purpose. An installation that started bringing up
 every app it found in a bucket would be a surprise on a cluster somebody else
 operates, and an app deliberately stopped would come back with it.</p>
+<p><strong>Build Jobs are kept for a day, and that is what bounds a build's history.</strong>
+Because a build is a Job and nothing else records it, <code>build.ttlAfterFinished</code> is
+both the window to read a failed build's log and how far back the build list and
+a rollback reach. It costs more than the Job: Kubernetes collects a Job and its
+pod together, so this is also how long a finished build's pod lives. Raise it for
+a longer history and rollback window; lower it if a busy app accumulates more
+completed pods than you want in the namespace. A commit whose Job has been
+collected can still be deployed — the image tag is derived from the commit, so
+the deploy works — but AppLab can no longer tell you it was ever built, and a
+rollback to it is refused rather than attempted.</p>
 <p><strong><code>branches/</code> is where storage multiplies.</strong> Each branch is a repository of its
 own, holding a full copy of everything reachable from it — so an app with three
 live branches occupies roughly three times one branch's repository. Measured: a
