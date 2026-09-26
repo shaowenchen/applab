@@ -729,6 +729,7 @@ serve at.</p>
 <pre><code class="language-bash">applab status shop         # what AppLab recorded and what the cluster actually has
 applab logs shop -f        # the running app's output
 applab builds shop --logs  # the build's output, if it did not get that far
+applab builds shop --stop &lt;id&gt;   # cancel one that has not finished
 </code></pre>
 <p><code>applab status</code> is the first thing to read when something is wrong: it reports
 AppLab's own record beside the cluster's, and the difference between the two is
