@@ -89,11 +89,11 @@ type appResponse struct {
 }
 
 // addressFor resolves where an app is served under this deployment's
-// conventions. It is the one place the base domain and the path prefix are
-// combined, so a response cannot report one convention while the route uses
-// another.
+// conventions. It is the one place the base domain, the base path and the path
+// prefix are combined, so a response cannot report one convention while the
+// route uses another.
 func (s *Server) addressFor(a *model.App) model.Address {
-	return a.Address(s.cfg.BaseDomain, s.cfg.PathPrefix)
+	return a.Address(s.cfg.BaseDomain, s.cfg.BasePath, s.cfg.PathPrefix)
 }
 
 // toAppResponse renders an app as the API presents it.
@@ -103,7 +103,11 @@ func (s *Server) addressFor(a *model.App) model.Address {
 // read once for a whole listing rather than once per row. A caller that has no
 // cluster passes the zero Status, which reports the app as not deployed — which
 // is what a deployment without a cluster can honestly say.
-func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string, status model.AppStatus, live deploy.Status) appResponse {
+//
+// It is a method rather than a function taking the convention as arguments: the
+// base domain, the base path and the path prefix are only meaningful together,
+// and three positional strings is a pair waiting to be swapped.
+func (s *Server) toAppResponse(a *model.App, r *http.Request, status model.AppStatus, live deploy.Status) appResponse {
 	resp := appResponse{
 		ID:         a.ID,
 		Name:       a.Name,
@@ -128,7 +132,7 @@ func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string, status m
 		resp.StatusReason = live.Message
 	}
 
-	addr := a.Address(baseDomain, pathPrefix)
+	addr := s.addressFor(a)
 	if !addr.Empty() {
 		resp.Hostname = addr.Host
 		resp.Path = addr.Path
@@ -137,7 +141,7 @@ func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string, status m
 		// Istio answers 503 rather than 404 for a VirtualService with no
 		// Service behind it, which makes that distinction worth keeping.
 		if status == model.AppStatusRunning || status == model.AppStatusDeploying {
-			resp.URL = addr.URL(scheme)
+			resp.URL = addr.URL(s.scheme(r))
 		}
 	}
 	return resp
@@ -152,8 +156,8 @@ func toAppResponse(a *model.App, baseDomain, pathPrefix, scheme string, status m
 // appStatuses.
 func (s *Server) appResponseFor(ctx context.Context, r *http.Request, app *model.App) appResponse {
 	live := s.liveStatusesFor(ctx, app)
-	return toAppResponse(app, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r),
-		appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(ctx, app.ID)), live)
+	status := appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(ctx, app.ID))
+	return s.toAppResponse(app, r, status, live)
 }
 
 // createAppRequest is the body of POST /api/v1/apps.
@@ -351,8 +355,7 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		if !identity.Admin() && a.ID != identity.App {
 			continue
 		}
-		out = append(out, toAppResponse(a, s.cfg.BaseDomain, s.cfg.PathPrefix, s.scheme(r),
-			statuses[a.ID], live[a.ID]))
+		out = append(out, s.toAppResponse(a, r, statuses[a.ID], live[a.ID]))
 	}
 	respond(w, http.StatusOK, out)
 }

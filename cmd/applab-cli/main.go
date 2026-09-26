@@ -154,7 +154,10 @@ func newClient(urlFlag, keyFlag string) (*client.Client, error) {
 
 	c, err := client.New(client.Options{BaseURL: baseURL, Key: key})
 	if err != nil {
-		return nil, fmt.Errorf("%w\n\nSet them in the environment:\n\n    export APPLAB_URL=https://applab.example.com\n    export APPLAB_KEY=<your key>", err)
+		// The example carries a path because the Helm chart serves an
+		// installation under /applab by default: an address without it reaches
+		// whatever else is on the host rather than this deployment.
+		return nil, fmt.Errorf("%w\n\nSet them in the environment:\n\n    export APPLAB_URL=https://applab.example.com/applab\n    export APPLAB_KEY=<your key>\n\nThe path is part of the address — a deployment served under one answers nothing at the host's root.", err)
 	}
 	return c, nil
 }

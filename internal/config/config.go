@@ -92,16 +92,23 @@ type Config struct {
 	BaseDomain string `yaml:"base_domain"`
 
 	// PathPrefix puts every app under one path on one host, so an app with id
-	// "shop" is served at "<BaseDomain>/<PathPrefix>/shop". It is a prefix, not
-	// a domain: it changes the route, and the host is shared by every app.
+	// "shop" is served at "<BaseDomain><BasePath>/<PathPrefix>/shop". It is a
+	// prefix, not a domain: it changes the route, and the host is shared by every
+	// app.
 	//
 	// This is the alternative to a wildcard DNS entry and a wildcard
 	// certificate. Serve one host and one certificate, and let the path say
 	// which app is meant. AppLab strips the prefix before the request reaches
 	// the app, so an app sees the paths it would see if it were at the root.
 	//
-	// Must begin with "/" and must not end with one; empty means per-app
-	// hostnames, the original behaviour.
+	// It sits *inside* BasePath, not beside it: everything this deployment
+	// serves — the console, the API, git and the apps — lives under BasePath,
+	// because that is what a deployment serving the whole platform under one
+	// path means. With BasePath "/applab" and PathPrefix "/apps", an app with id
+	// "shop" is at "/applab/apps/shop".
+	//
+	// Must begin with "/" and must not end with one; empty means every app gets
+	// a hostname of its own, the original behaviour.
 	PathPrefix string `yaml:"path_prefix"`
 
 	// MaxSimpleUpload is the largest source archive accepted in one request.

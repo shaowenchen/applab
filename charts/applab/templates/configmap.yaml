@@ -24,12 +24,15 @@ data:
 
   # The path applab itself is served under, when it is not the root.
   #
-  # Taken from the Ingress path, because that is what the server has to expect:
-  # an Ingress routes on a path and cannot strip one, so a request for
-  # /applab/api/v1/... arrives with the prefix intact and the server has to
-  # match it. Empty when there is no Ingress — the console is then on the Istio
-  # gateway at the root of ingress.host, which is what console-virtualservice
-  # serves.
+  # It is ingress.path, because that is what the server has to expect: an Ingress
+  # routes on a path and cannot strip one, so a request for /applab/api/v1/...
+  # arrives with the prefix intact and the server has to match it. Empty when the
+  # path is "/", which is the root.
+  #
+  # It applies whether or not an Ingress is enabled. The apps are nested under
+  # this path — an app is served at "<base path><apps.pathPrefix>/<app>" — so a
+  # deployment published through the gateway instead needs the same prefix, or
+  # every app would be routed somewhere the gateway never sends a request.
   APPLAB_BASE_PATH: {{ include "applab.basePath" . | quote }}
 
   # Upload limits, so a client can size its parts instead of discovering them by

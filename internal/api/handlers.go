@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/shaowenchen/applab/internal/buildinfo"
@@ -106,12 +107,17 @@ func (s *Server) configResponse(r *http.Request) configResponse {
 // two forms are different enough that reporting the wrong one would be worse
 // than reporting none, so the prefix changes it rather than being folded into
 // it.
+//
+// The base path is part of it, because an app's route is nested inside it: a
+// template of "<domain>/apps/<app>" would describe an address the gateway does
+// not serve when the installation is itself under "/applab".
 func (s *Server) domainTemplate() string {
 	if s.cfg.BaseDomain == "" {
 		return "<base domain not configured>"
 	}
 	if s.cfg.PathPrefix != "" {
-		return s.cfg.BaseDomain + s.cfg.PathPrefix + "/<app>"
+		basePath := strings.TrimSuffix(strings.TrimSpace(s.cfg.BasePath), "/")
+		return s.cfg.BaseDomain + basePath + s.cfg.PathPrefix + "/<app>"
 	}
 	return "*." + s.cfg.BaseDomain
 }

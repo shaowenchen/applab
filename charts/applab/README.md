@@ -228,9 +228,23 @@ a wildcard, and a wildcard DNS record to go with it.
 `ingress.host` and the path says which is meant:
 
 ```bash
---set ingress.host=applab.example.com --set apps.pathPrefix=/apps
-# shop is served at https://applab.example.com/apps/shop
+--set ingress.host=applab.example.com --set ingress.enabled=false \
+  --set deploy.gateway=istio-system/istio-ingressgateway --set apps.pathPrefix=/apps
+# shop is served at https://applab.example.com/applab/apps/shop
 ```
+
+The apps are nested under `ingress.path` (the installation's own base path,
+`/applab` by default), because that is the path the gateway routes on: a route
+written outside it would be one nothing ever delivers to. Set `ingress.path=/`
+to serve the whole installation at the root, in which case an app is at
+`/apps/shop`.
+
+`ingress.enabled=false` is part of this, and not optional. An app on a prefix is
+served by its own VirtualService on the gateway, and an Ingress routes on a path
+without being able to strip one — so an Ingress on `/applab` would match the
+apps' own path and deliver their traffic to AppLab, which answers with the
+console. The chart refuses that combination rather than deploying apps nothing
+can reach.
 
 The reason to want this is the certificate. One host needs one ordinary
 certificate, not a wildcard, and nothing has to be reissued as apps are added.
@@ -298,6 +312,11 @@ The chart fails at render time rather than letting these reach a cluster:
 - `deploy.gateway` not in `<namespace>/<name>` form.
 - `apps.pathPrefix` set with `ingress.host` empty — the prefix is the only thing
   telling one app from another on that shared host.
+- `apps.pathPrefix` set with `ingress.enabled=true` — an app on a prefix is
+  nested under `ingress.path`, and the Ingress routes that whole path to AppLab
+  itself, so every app would be deployed and unreachable. Set
+  `ingress.enabled=false` so the gateway serves the console and the apps, or
+  leave `apps.pathPrefix` empty.
 
 ### 3. Whether the cluster can build
 
@@ -394,7 +413,7 @@ does and why it defaults the way it does. The ones that matter most:
 |---|---|---|
 | `auth.key` | `""` | **Required.** The admin key: `openssl rand -hex 32`. One is enough; see [Keys](#keys) for more |
 | `auth.existingSecret` | `""` | Preferred over `auth.key`: keeps the key out of the release, and carries more than one |
-| `apps.pathPrefix` | `""` | Serves every app under one path on that host; needs no wildcard certificate |
+| `apps.pathPrefix` | `""` | Serves every app under `ingress.path` + this, on one host; needs no wildcard certificate. Needs `ingress.enabled=false` |
 | `deploy.gateway` | `istio-ingress/istio-ingress` | **Required with a host.** `<namespace>/<name>` |
 | `build.enabled` | `true` | `false` runs AppLab without building |
 | `build.registry` | `""` | Required when `build.enabled` |

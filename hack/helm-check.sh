@@ -386,9 +386,19 @@ fi
 
 # apps.pathPrefix has to reach the server, or every app would be given a host of
 # its own while the gateway served them under a path.
-prefixed="$(render --set "apps.pathPrefix=/apps")"
+#
+# With ingress.enabled=false, because a prefix and an Ingress are alternatives:
+# an app on a prefix is nested under ingress.path, and an Ingress routes that
+# whole path to applab itself, so the app would be deployed and unreachable.
+# That combination is refused outright, and the check for it is further down.
+prefixed="$(render --set "apps.pathPrefix=/apps" --set ingress.enabled=false --set "deploy.gateway=istio-system/gw")"
 grep -q 'APPLAB_PATH_PREFIX: "/apps"' <<<"$prefixed" \
   || fail "apps.pathPrefix does not reach the server; apps would be routed by subdomain"
+# And a prefix with an Ingress is refused rather than rendered into an app that
+# nothing can reach.
+if helm template applab "$CHART" "${BASE[@]}" --set "apps.pathPrefix=/apps" >/dev/null 2>&1; then
+  fail "apps.pathPrefix with an Ingress should be refused: the Ingress routes the app's own path to applab"
+fi
 # A prefix with no host cannot route: the prefix is the only thing telling one
 # app from another on a shared host, so every app would be unreachable.
 #
@@ -398,7 +408,7 @@ grep -q 'APPLAB_PATH_PREFIX: "/apps"' <<<"$prefixed" \
 if helm template applab "$CHART" --namespace "$NS" \
   --set "auth.key=k" --set "build.registry=r.example.com/a" \
   --set "objectStore.endpoint=http://minio:9000" --set "objectStore.bucket=applab" \
-  --set "ingress.host=" --set "apps.pathPrefix=/apps" >/dev/null 2>&1; then
+  --set "ingress.enabled=false" --set "ingress.host=" --set "apps.pathPrefix=/apps" >/dev/null 2>&1; then
   fail "a path prefix without a host should be refused"
 fi
 
@@ -563,6 +573,20 @@ grep -q "APPLAB_BASE_URL: \"http://applab.$NS.svc:80\"" <<<"$rootpath" \
 seturl="$(render --set "apps.baseURL=https://applab.example.com" --set "ingress.path=/platform")"
 grep -q 'APPLAB_BASE_URL: "https://applab.example.com"' <<<"$seturl" \
   || fail "an explicit apps.baseURL had the Ingress path appended to it"
+
+# The base path applies with the gateway as well as with an Ingress.
+#
+# It used to be returned only when ingress.enabled was true, on the reasoning
+# that the path was the Ingress's business. But the server serves the console,
+# the API, git and the apps, and the apps are nested under this path — so an
+# installation published through the gateway instead got a server at the root
+# and apps written at "/apps/shop", a path the gateway never routes. The
+# failure was an environment whose console worked and whose every app 404'd.
+gatewayed="$(render --set ingress.enabled=false --set "deploy.gateway=istio-system/gw")"
+grep -q 'APPLAB_BASE_PATH: "/applab"' <<<"$gatewayed" \
+  || fail "the base path is not set when the console is served from the gateway; every app would be routed outside the prefix the gateway serves"
+grep -q "APPLAB_BASE_URL: \"http://applab.$NS.svc:80/applab\"" <<<"$gatewayed" \
+  || fail "the gateway deployment's clone address has no base path, so every build would ask for a path the server does not serve"
 
 # The host is one value, so `--set ingress.host=...` is the whole of it — the
 # spelling the README teaches, and the reason `hosts` stopped being a list.

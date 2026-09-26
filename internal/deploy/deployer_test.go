@@ -904,6 +904,61 @@ func pathPrefixConfig() Config {
 	}
 }
 
+// TestPathPrefixNestsUnderTheBasePath asserts an app is served inside the
+// installation's own path, not beside it.
+//
+// The base path is what the gateway and the Ingress route on, so a route written
+// outside it is a route nothing delivers to: the app would deploy, report
+// healthy, and answer 404 at every address its owner was given. The two paths
+// are therefore nested — "/applab/apps/shop" — and this is the assertion that
+// keeps them from drifting apart.
+func TestPathPrefixNestsUnderTheBasePath(t *testing.T) {
+	cfg := pathPrefixConfig()
+	cfg.BasePath = "/applab"
+	d, _ := newTestDeployer(t, cfg)
+
+	app := testApp()
+	addr, err := d.Apply(context.Background(), app, "image:tag", testCommit)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if addr.Path != "/applab/apps/shop" {
+		t.Errorf("path = %q, want the app nested inside the installation's base path", addr.Path)
+	}
+	if got := addr.URL("https"); got != "https://www.example.com/applab/apps/shop" {
+		t.Errorf("url = %q", got)
+	}
+
+	// And the route the VirtualService matches has to be that same path, or the
+	// gateway would be routing to something that never arrives.
+	entries := httpEntries(t, virtualService(t, d, app.ID))
+	if len(entries) != 2 {
+		t.Fatalf("got %d http entries, want a redirect and a route", len(entries))
+	}
+	if got := matchPrefix(t, entries[1]); got != "/applab/apps/shop/" {
+		t.Errorf("serving prefix = %q, want /applab/apps/shop/", got)
+	}
+	if got := entries[0]["match"].([]any)[0].(map[string]any)["uri"].(map[string]any)["exact"]; got != "/applab/apps/shop" {
+		t.Errorf("redirect matches %v, want the app's own path without its trailing slash", got)
+	}
+}
+
+// TestNoBasePathKeepsTheOriginalPath asserts an installation at the root is
+// unaffected, since that is what a dedicated hostname wants and what every
+// existing deployment of this platform is.
+func TestNoBasePathKeepsTheOriginalPath(t *testing.T) {
+	d, _ := newTestDeployer(t, pathPrefixConfig())
+
+	addr, err := d.Apply(context.Background(), testApp(), "image:tag", testCommit)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if addr.Path != "/apps/shop" {
+		t.Errorf("path = %q, want /apps/shop with no base path configured", addr.Path)
+	}
+}
+
 // httpEntries returns a VirtualService's http routes, in order.
 func httpEntries(t *testing.T, vs *unstructured.Unstructured) []map[string]any {
 	t.Helper()

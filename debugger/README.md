@@ -39,14 +39,16 @@ That is the whole workflow. Open the run's **Summary** for the console link and
 the API key, then push something at it:
 
 ```bash
-export APPLAB_URL='https://<the link>'
+export APPLAB_URL='https://<the link>/applab'
 export APPLAB_KEY='<the key>'
 
 cd any-project-with-a-Dockerfile
 applab push myshop
 ```
 
-The app is served at `<the link>/apps/myshop/` and appears in the console. The
+The app is served at `<the link>/applab/apps/myshop/` and appears in the console.
+The environment's base path is part of the address, so `APPLAB_URL` carries it:
+a URL without it reaches the host rather than this deployment. The
 `applab` CLI is the binary from [the AppLab repository](https://github.com/shaowenchen/applab);
 see [the overview](../README.md) for how to install it, or drive the API directly —
 `GET /api/v1/describe` is the contract, and it needs no key.
@@ -70,16 +72,17 @@ writes it, with the selector read from the deployment it has to bind to. Without
 it every VirtualService here names a gateway that does not exist: the API server
 accepts it, the chart renders it, and the proxy serves nothing.
 
-One hostname serves everything, and the Istio gateway is what serves it. An app
-is published under `/apps/<app>/`, and AppLab itself — the console at `/`, the
-API under `/api/v1/`, the git endpoints under `/git/` — is a route the chart
-installs on the same gateway, at the root of the same host.
+One hostname serves everything, and the Istio gateway is what serves it. AppLab
+itself — the console, the API under `/api/v1/`, the git endpoints under `/git/` —
+is a route the chart installs on that gateway under the installation's own base
+path, `/applab` by default, and an app is published under `/applab/apps/<app>/`:
+nested inside it, because that is the path the gateway routes on.
 
 There is nothing in front of the gateway to tell the two apart, because the paths
 already do. Istio sorts a virtual host's catch-all route to the end while leaving
 the rest in order, so the console — which matches everything — is evaluated only
-after every app has declined the request, and an app's route is under a prefix
-none of the console's own paths share.
+after every app has declined the request, and an app's route is under a path none
+of the console's own routes claim.
 
 ## Inputs
 

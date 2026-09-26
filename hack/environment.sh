@@ -62,7 +62,19 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 : "${APPLAB_NAMESPACE:=ops-system}"
 : "${APPLAB_GATEWAY_NODEPORT:=30080}"
 : "${APPLAB_CLUSTER_NAME:=applab-debugger}"
+# Where the apps are served, nested under the installation's own base path:
+# with the defaults below, an app called "myshop" is at "/applab/apps/myshop/".
 : "${APPLAB_PATH_PREFIX:=/apps}"
+# The path the whole installation is served under. It is the chart's
+# ingress.path, which applies whether or not an Ingress exists — this
+# environment sets ingress.enabled=false and serves the console from the gateway
+# instead, and the server still has to expect the prefix because the gateway
+# route is written for it.
+#
+# Everything this environment touches moves with it: the console, the API, git
+# and the apps. That is why it is one variable here rather than a literal in the
+# half-dozen places that build a URL.
+: "${APPLAB_BASE_PATH:=/applab}"
 : "${APPLAB_IMAGE_REPOSITORY:=docker.io/shaowenchen/applab}"
 # How long AppLab's first rollout may take before the environment gives up. The
 # script waits for the Deployment itself rather than letting helm block on it, so
@@ -285,7 +297,7 @@ resolve_host() {
   # nothing when APPLAB_PUBLIC_HOST is set.
   if [ -n "${APPLAB_PUBLIC_HOST:-}" ]; then
     TUNNEL_HOST="$APPLAB_PUBLIC_HOST"
-    public_url="http://${TUNNEL_HOST}"
+    public_url="http://${TUNNEL_HOST}${APPLAB_BASE_PATH}"
     log "using the supplied hostname ${TUNNEL_HOST}; no tunnel will be started"
     return 0
   fi
@@ -311,7 +323,7 @@ resolve_host() {
     # not discoverable — see above. The tunnel's ingress has to already point
     # here; nothing in this script can create or check it.
     TUNNEL_HOST="$APPLAB_DOMAIN"
-    public_url="https://${TUNNEL_HOST}"
+    public_url="https://${TUNNEL_HOST}${APPLAB_BASE_PATH}"
     log "the environment will be served at ${public_url}"
     log "  (the tunnel's ingress is configured in Cloudflare, not here)"
     return 0
@@ -340,7 +352,7 @@ resolve_host() {
   TUNNEL_HOST="${found#https://}"
   TUNNEL_HOST="${TUNNEL_HOST#http://}"
   TUNNEL_HOST="${TUNNEL_HOST%%/*}"
-  public_url="https://${TUNNEL_HOST}"
+  public_url="https://${TUNNEL_HOST}${APPLAB_BASE_PATH}"
   log "the environment will be published at ${public_url}"
 }
 
@@ -690,10 +702,16 @@ kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
 # insecureRegistry is left at its default of false. Docker Hub is reached over
 # TLS, and a credential sent in clear text is the one thing that flag turns on —
 # it is for a cluster-local registry serving plain HTTP, which this no longer is.
+#
+# ingress.path is set explicitly rather than left to the chart's default,
+# because this script builds URLs from it: the console, the API and every app
+# live under this path, and a chart default that drifted would leave the printed
+# links pointing at nothing.
 if ! helm install applab "$REPO_ROOT/charts/applab" \
   --namespace "$APPLAB_NAMESPACE" \
   --set auth.existingSecret=applab-keys \
   --set "ingress.host=${TUNNEL_HOST}" \
+  --set "ingress.path=${APPLAB_BASE_PATH}" \
   --set "apps.pathPrefix=${APPLAB_PATH_PREFIX}" \
   --set deploy.gateway=istio-system/istio-ingressgateway \
   --set "build.registry=${APPLAB_REGISTRY}" \
@@ -875,7 +893,7 @@ if [ "$(gateway_code /health)" != "200" ]; then
   kubectl -n "$APPLAB_NAMESPACE" get pods
   kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --tail=50 2>/dev/null || true
   kubectl -n "$APPLAB_NAMESPACE" get virtualservices 2>/dev/null || true
-  die "the gateway is not serving AppLab at /health"
+  die "the gateway is not serving AppLab at /health (/health and /metrics are the two paths the cluster reaches the pod on; they are served at the root, outside the base path)"
 fi
 
 # Every endpoint a person or a client uses, and the status each one answers.
@@ -884,6 +902,13 @@ fi
 # are all served by one process behind one route, so anything but a 200 is a bug
 # rather than a slow start, and a table of green is the evidence that the gateway,
 # the two VirtualServices, the Service and the deployment all line up.
+#
+# The paths are written with the base path in front, except for the two the
+# cluster itself uses. /health and /metrics are reached by the kubelet and by
+# Prometheus on the container port, neither of which knows what path the
+# deployment is published under — so the server answers them at the root and
+# applies its prefix to everything else. Writing both kinds out here is what
+# makes that exemption visible rather than a rule someone has to know.
 log "the endpoints, through the gateway on ${APPLAB_GATEWAY_NODEPORT}"
 printf '  %-32s %s\n' "PATH" "STATUS"
 
@@ -905,17 +930,25 @@ check_endpoint() {
 # whose absence nothing else would catch, because everything else a client uses
 # needs a key first.
 check_endpoint "/health"                /health
-check_endpoint "/api/v1/config"         /api/v1/config
-check_endpoint "/api/v1/version"        /api/v1/version
-check_endpoint "/api/v1/describe"       /api/v1/describe
 check_endpoint "/metrics"               /metrics
-check_endpoint "/ (the console)"        /
+check_endpoint "/ (the console)"        "${APPLAB_BASE_PATH}"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/config"   "${APPLAB_BASE_PATH}/api/v1/config"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/version"  "${APPLAB_BASE_PATH}/api/v1/version"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/describe" "${APPLAB_BASE_PATH}/api/v1/describe"
 # The one thing that proves the admin key works through the gateway, not only
 # that the route exists.
-check_endpoint "/api/v1/overview (key)" /api/v1/overview -H "Authorization: Bearer ${APPLAB_API_KEY}"
-check_endpoint "/api/v1/describe (key)" /api/v1/describe -H "Authorization: Bearer ${APPLAB_API_KEY}"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/overview (key)" "${APPLAB_BASE_PATH}/api/v1/overview" -H "Authorization: Bearer ${APPLAB_API_KEY}"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/describe (key)" "${APPLAB_BASE_PATH}/api/v1/describe" -H "Authorization: Bearer ${APPLAB_API_KEY}"
 
-[ -z "$failed" ] || die "these did not answer 200 through the gateway:${failed}"
+# And the base path is a prefix, not an alias: the same service must not answer
+# outside it. A server that ignored its own prefix would serve every route twice
+# and shadow whatever else owns the root — which is the whole reason the setting
+# exists.
+root_code=$(gateway_code /api/v1/config)
+printf '  %-32s %s\n' "/api/v1/config (outside the base path)" "$root_code"
+[ "$root_code" != "200" ] || failed="${failed} the-api-answers-outside-its-base-path"
+
+[ -z "$failed" ] || die "these did not answer as expected through the gateway:${failed}"
 
 # The chart's settings have to reach the *server*, not only the render.
 #
@@ -929,7 +962,7 @@ check_endpoint "/api/v1/describe (key)" /api/v1/describe -H "Authorization: Bear
 # environment now depends on a real registry for.
 log "confirming the settings the chart passed actually arrived"
 config_json=$(curl -s --max-time 5 -H "Host: ${TUNNEL_HOST}" \
-  "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}/api/v1/config" 2>/dev/null || true)
+  "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${APPLAB_BASE_PATH}/api/v1/config" 2>/dev/null || true)
 
 # jq is not assumed present on a runner; the raw JSON is matched instead.
 config_problems=""
@@ -944,6 +977,13 @@ expect_config() {
 expect_config "the-host" "${TUNNEL_HOST}"
 [ -z "$APPLAB_PATH_PREFIX" ] || expect_config "the-path-prefix" "${APPLAB_PATH_PREFIX}"
 expect_config "the-namespace" "${APPLAB_NAMESPACE}"
+
+# The base path reaches the server too. Asserted against the address template
+# rather than against a bare path, because that is where it is observable: with
+# the two paths configured the template is "<host>/applab/apps/<app>", and a
+# server that had taken the prefix but not the installation's own path — or the
+# other way round — would publish an app at a path the gateway does not serve.
+expect_config "the-base-path-in-the-address-template" "${APPLAB_BASE_PATH}${APPLAB_PATH_PREFIX}/<app>"
 
 # And the build pipeline has to be usable, since this environment sets a registry
 # for it. A deployment whose build half silently came up disabled still serves
@@ -994,6 +1034,7 @@ APPLAB_API_KEY_SHOWN="$APPLAB_API_KEY" \
 APPLAB_VERSION_SHOWN="$APPLAB_VERSION" \
 APPLAB_NAMESPACE_SHOWN="$APPLAB_NAMESPACE" \
 APPLAB_PATH_PREFIX_SHOWN="$APPLAB_PATH_PREFIX" \
+APPLAB_BASE_PATH_SHOWN="$APPLAB_BASE_PATH" \
 APPLAB_TUNNEL_SHOWN="$APPLAB_TUNNEL" \
 APPLAB_REGISTRY_SHOWN="$APPLAB_REGISTRY" \
 APPLAB_CLUSTER_SHOWN="$APPLAB_CLUSTER_NAME" \

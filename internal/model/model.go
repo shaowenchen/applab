@@ -471,28 +471,41 @@ func (a Address) RoutePath() string {
 	return a.Path + "/"
 }
 
-// Address returns where an app is served, given the deployment's base domain
-// and its optional shared path prefix.
+// Address returns where an app is served, given the deployment's base domain,
+// its optional shared path prefix, and the base path the whole installation is
+// served under.
 //
 // An app-level Domain wins outright and puts the app at the root of its own
 // host: the point of the override is to escape the deployment's convention, so
 // carrying the convention's path along with it would defeat it.
+//
+// The app's path is nested inside basePath, because everything this deployment
+// serves lives under it — the console, the API, git and the apps alike. An
+// installation served at "/applab" with a path prefix of "/apps" serves an app
+// called "shop" at "/applab/apps/shop", not at "/apps/shop": the alternative
+// would be a route outside the prefix the ingress routes on, which nothing would
+// ever reach.
 //
 // This is the only way an app's address is derived. There is deliberately no
 // hostname-only helper: with a path prefix the host is half an address, and a
 // helper that returned it alone would be a trap — correct in the common
 // configuration and quietly wrong in the other one, at every call site that
 // reached for it.
-func (a App) Address(baseDomain, pathPrefix string) Address {
+func (a App) Address(baseDomain, basePath, pathPrefix string) Address {
 	if d := strings.TrimSpace(a.Domain); d != "" {
 		return Address{Host: d}
 	}
 	if baseDomain == "" {
 		return Address{}
 	}
+	// The base path is trimmed rather than assumed normalized, so that a caller
+	// holding a raw value cannot produce "/applab//apps/shop". Config normalizes
+	// it on the way in; this is the second belt.
+	basePath = strings.TrimSuffix(strings.TrimSpace(basePath), "/")
+
 	if pathPrefix != "" {
 		// Every app on one host, told apart by path.
-		return Address{Host: baseDomain, Path: pathPrefix + "/" + a.ID}
+		return Address{Host: baseDomain, Path: basePath + pathPrefix + "/" + a.ID}
 	}
 	return Address{Host: a.ID + "." + baseDomain}
 }

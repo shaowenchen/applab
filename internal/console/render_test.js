@@ -258,19 +258,19 @@ async function render(apps) {
   // A shared path prefix: one host, the app distinguished by path.
   {
     const body = await render([
-      { id: "shop", status: "running", hostname: "www.example.com", path: "/apps/shop", url: "https://www.example.com/apps/shop" },
-      { id: "blog", status: "running", hostname: "www.example.com", path: "/apps/blog", url: "https://www.example.com/apps/blog" },
+      { id: "shop", status: "running", hostname: "www.example.com", path: "/applab/apps/shop", url: "https://www.example.com/applab/apps/shop" },
+      { id: "blog", status: "running", hostname: "www.example.com", path: "/applab/apps/blog", url: "https://www.example.com/applab/apps/blog" },
     ]);
     const text = body.allText();
-    check("path-prefixed apps show their own path", text.includes("/apps/shop"), true);
-    check("and the other app's too", text.includes("/apps/blog"), true);
-    check("neither row shows a bare host", /www\.example\.com(?!\/apps)/.test(text), false);
+    check("path-prefixed apps show their own path", text.includes("/applab/apps/shop"), true);
+    check("and the other app's too", text.includes("/applab/apps/blog"), true);
+    check("neither row shows a bare host", /www\.example\.com(?!\/applab)/.test(text), false);
     // The scheme is part of the address shown, not just of the link target. The
     // column is read as an address — it is what someone copies — and the app
     // detail's own row shows the full URL, so a list that showed the two without
     // a scheme would disagree with the page it links to about what an app's
     // address is.
-    check("and the address is shown with its scheme", text.includes("https://www.example.com/apps/shop"), true);
+    check("and the address is shown with its scheme", text.includes("https://www.example.com/applab/apps/shop"), true);
   }
 
   // A subdomain per app: no path, and the host is the whole address.
@@ -290,10 +290,10 @@ async function render(apps) {
   // be" is exactly the question someone has before deploying.
   {
     const body = await render([
-      { id: "shop", status: "created", hostname: "www.example.com", path: "/apps/shop" },
+      { id: "shop", status: "created", hostname: "www.example.com", path: "/applab/apps/shop" },
     ]);
     const text = body.allText();
-    check("an undeployed app shows its address", text.includes("www.example.com/apps/shop"), true);
+    check("an undeployed app shows its address", text.includes("www.example.com/applab/apps/shop"), true);
     check("marked as not deployed", text.includes("not deployed"), true);
 
     const link = body.children[0].children[3].children.find((c) => c.tagName === "A");
@@ -301,7 +301,7 @@ async function render(apps) {
     check(
       "pointing at where the app will be",
       link && link.href,
-      "https://www.example.com/apps/shop"
+      "https://www.example.com/applab/apps/shop"
     );
     // The scheme comes from the page: a deployment served over https serves its
     // apps over https, through the same gateway.

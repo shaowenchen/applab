@@ -82,8 +82,19 @@ auth:
 # ---------------------------------------------------------------------------
 apps:
   # Serves every app from one host under one path, instead of giving each app
-  # its own subdomain: with pathPrefix "/apps", an app with id "shop" is served
-  # at <ingress.host>/apps/shop.
+  # its own subdomain: with pathPrefix "/apps" and the default ingress.path of
+  # "/applab", an app with id "shop" is served at
+  # <ingress.host>/applab/apps/shop.
+  #
+  # The apps are nested under ingress.path, because that is the path the gateway
+  # routes on. A route written outside it would be one nothing ever delivers to.
+  #
+  # Setting this requires ingress.enabled=false. An app on a prefix is served by
+  # its own VirtualService on the gateway, and an Ingress routes on a path
+  # without being able to strip one — so an Ingress on "/applab" would match the
+  # apps' own path and deliver their traffic to applab itself, which answers with
+  # the console. The chart refuses the combination rather than deploying apps
+  # that cannot be reached.
   #
   # The reason to want this is the certificate. A subdomain per app needs a
   # wildcard DNS record and a wildcard certificate, and both have to be reissued
@@ -373,6 +384,11 @@ ingress:
   # the git endpoints all move under it together — an Ingress routes on a path
   # but cannot strip one, so the server has to expect the prefix rather than
   # receive it stripped.
+  #
+  # It applies whether or not an Ingress is enabled, because it is the address
+  # of the whole installation rather than of one route. With apps.pathPrefix set,
+  # the apps are nested under it too, so this is also the path the gateway serves
+  # them on.
   #
   # "/" serves AppLab at the root of its host, which is what a dedicated
   # hostname wants.

@@ -11,7 +11,7 @@ Two things are enough to use it: **the base URL** and **an API key**.
 
 ```
 upload source ──▶ build image ──▶ deploy ──▶ https://shop.apps.example.com
-                                             or .../apps/shop
+                                             or .../applab/apps/shop
 ```
 
 ## Quick start
@@ -305,10 +305,17 @@ An app is addressed one of two ways, and the deployment picks one:
 under, so an app with id `shop` is at `shop.apps.example.com`. This needs a
 wildcard DNS record and a wildcard certificate.
 
-**One host, one path per app** — set `apps.pathPrefix`. Every app then shares
-`ingress.host` and the path says which is meant, so `shop` is at
-`apps.example.com/apps/shop`. One ordinary certificate covers any number of
-apps, and nothing has to be reissued as the deployment grows.
+**One host, one path per app** — set `apps.pathPrefix` with
+`ingress.enabled=false`. Every app then shares `ingress.host` and the path says
+which is meant, so with the default `ingress.path` of `/applab`, `shop` is at
+`apps.example.com/applab/apps/shop`. One ordinary certificate covers any number
+of apps, and nothing has to be reissued as the deployment grows.
+
+The apps are nested under the installation's own path (`ingress.path`, `/applab`
+by default) because that is what the gateway routes on. The Ingress has to be
+off: an app on a prefix is served by its own `VirtualService`, and an Ingress
+routes on a path without being able to strip one, so it would claim the apps'
+path for AppLab itself. The chart refuses that combination.
 
 AppLab strips the prefix before the request reaches the app, so an app sees the
 paths it would see at a root and needs no change to work under one; it also sets
@@ -324,9 +331,10 @@ Two failure modes are designed around rather than left to be discovered:
   from outside.
 - The path an app is routed on always ends in a slash. Istio's prefix match is a
   plain string prefix rather than a path-segment match, so a route on
-  `/apps/shop` would also claim `/apps/shop-2/anything` — and since the order
-  between two VirtualServices on one host is undefined, which app won would not
-  even be consistent. `/apps/shop/` cannot match `/apps/shop-2/`.
+  `/applab/apps/shop` would also claim `/applab/apps/shop-2/anything` — and since
+  the order between two VirtualServices on one host is undefined, which app won
+  would not even be consistent. `/applab/apps/shop/` cannot match
+  `/applab/apps/shop-2/`.
 
 ### The cluster is the only record of what is running
 
@@ -455,9 +463,9 @@ One address serves everything, and the gateway is what serves it. Istio routes
 one virtual host's catch-all route last while leaving the rest in order
 (`route.SortVHostRoutes`), so the console — a catch-all the chart installs on the
 base domain — is evaluated only after every app has declined the request, and the
-apps match on `/<pathPrefix>/<app>/`, a prefix the console's own paths do not
-share. That ordering is defined, so nothing has to sit in front of the gateway to
-tell the two apart.
+apps match on `/<basePath><pathPrefix>/<app>/`, a path the console's own routes
+never claim for themselves. That ordering is defined, so nothing has to sit in
+front of the gateway to tell the two apart.
 
 CI checks the commit and builds the image on every change; the environment above
 is what a person starts when they want to push an app at something.

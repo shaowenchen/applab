@@ -295,6 +295,12 @@ func run() error {
 		srv.WithDeployer(deploy.NewWithDynamic(client.Clientset(), client.Dynamic(), deploy.Config{
 			Gateway:    cfg.Deploy.Gateway,
 			BaseDomain: cfg.BaseDomain,
+			// The base path is what the installation is served under, and an
+			// app's route is nested inside it — "/applab/apps/shop" rather than
+			// "/apps/shop". The deployer has to know it because the ingress
+			// routes on that prefix and cannot strip it, so the VirtualService
+			// must match the path the request really arrives with.
+			BasePath: cfg.BasePath,
 			// The prefix is what puts every app under one path on a shared host
 			// instead of on a subdomain of its own. It has to reach the deployer
 			// as well as the API: the API is what advertises an app's address and

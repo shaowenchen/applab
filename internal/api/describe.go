@@ -155,7 +155,6 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identity := identityFrom(r.Context())
-	scheme := s.scheme(r)
 	base := s.baseURL(r)
 
 	out := make([]appResponse, 0, len(apps))
@@ -168,8 +167,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		if !identity.Admin() && a.ID != identity.App {
 			continue
 		}
-		out = append(out, toAppResponse(a, s.cfg.BaseDomain, s.cfg.PathPrefix, scheme,
-			statuses[a.ID], live[a.ID]))
+		out = append(out, s.toAppResponse(a, r, statuses[a.ID], live[a.ID]))
 	}
 
 	cfg := s.configResponse(r)

@@ -37,9 +37,21 @@ type Config struct {
 	// VirtualService is created and an app is reachable only inside the cluster.
 	BaseDomain string
 
+	// BasePath is the path this installation is served under, e.g. "/applab".
+	// Empty means the root.
+	//
+	// It reaches the deployer because an app's route is nested inside it: the
+	// ingress routes on this prefix and cannot strip it, so the VirtualService
+	// has to match the prefix the request really arrives with. A deployer that
+	// did not know it would write a route for "/apps/shop" and serve nothing,
+	// because the gateway delivers "/applab/apps/shop".
+	BasePath string
+
 	// PathPrefix, when set, puts every app under one path on one shared host
 	// instead of giving each its own subdomain. It is what makes a single
 	// wildcard-free certificate enough for any number of apps.
+	//
+	// It is nested inside BasePath; see model.App.Address.
 	PathPrefix string
 
 	// Gateway is the Istio gateway apps are published through, as
@@ -165,7 +177,7 @@ func (d *Deployer) Apply(ctx context.Context, app *model.App, image, commitSHA s
 // the deliberate trade of publishing early: an address that is reachable and
 // failing, rather than one that does not resolve at all.
 func (d *Deployer) Publish(ctx context.Context, app *model.App) (model.Address, error) {
-	addr := app.Address(d.cfg.BaseDomain, d.cfg.PathPrefix)
+	addr := app.Address(d.cfg.BaseDomain, d.cfg.BasePath, d.cfg.PathPrefix)
 	if addr.Empty() {
 		return model.Address{}, nil
 	}

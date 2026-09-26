@@ -386,11 +386,14 @@ func TestUnknownRouteIsJSON(t *testing.T) {
 // every app reports the same one, and the path is what says which app is meant.
 // A client shown only the host would label every app identically, which is
 // exactly what the console did until this field existed.
+//
+// The path is the whole one, nested inside the installation's base path — see
+// TestAppResponseNestsThePathUnderTheBasePath for why that nesting matters.
 func TestAppResponseReportsBothHalvesOfAPathPrefixAddress(t *testing.T) {
 	srv := newTestServerWithPrefix(t, "/apps")
 	h := srv.Handler()
 
-	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
+	rec := doRequest(t, h, http.MethodPost, "/applab/api/v1/apps", map[string]any{"id": "shop"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("got status %d, want %d (body: %s)", rec.Code, http.StatusCreated, rec.Body.String())
 	}
@@ -401,14 +404,14 @@ func TestAppResponseReportsBothHalvesOfAPathPrefixAddress(t *testing.T) {
 	if app["hostname"] != "apps.example.com" {
 		t.Errorf("hostname = %v, want the shared host", app["hostname"])
 	}
-	if app["path"] != "/apps/shop" {
-		t.Errorf("path = %v, want /apps/shop; without it the host names the deployment, not the app", app["path"])
+	if app["path"] != "/applab/apps/shop" {
+		t.Errorf("path = %v, want /applab/apps/shop; without it the host names the deployment, not the app", app["path"])
 	}
 
 	// And the two together are what a client shows, so they have to be the
 	// address the app is actually routed on.
-	if got := app["hostname"].(string) + app["path"].(string); got != "apps.example.com/apps/shop" {
-		t.Errorf("host+path = %q, want apps.example.com/apps/shop", got)
+	if got := app["hostname"].(string) + app["path"].(string); got != "apps.example.com/applab/apps/shop" {
+		t.Errorf("host+path = %q, want apps.example.com/applab/apps/shop", got)
 	}
 }
 
@@ -431,6 +434,41 @@ func TestAppResponseHasNoPathWithoutAPrefix(t *testing.T) {
 	}
 }
 
+// TestAppResponseNestsThePathUnderTheBasePath asserts the address an app is
+// reported at is the one it is really served at.
+//
+// An installation with a base path serves everything under it — the console, the
+// API, git and the apps — so an app's path is "/applab/apps/shop", not
+// "/apps/shop". Reporting the shorter one is the failure this pins down: it is a
+// plausible-looking address that nothing routes, and the person given it has no
+// way to tell it from the app being broken.
+func TestAppResponseNestsThePathUnderTheBasePath(t *testing.T) {
+	srv := newTestServerWithPrefix(t, "/apps")
+	h := srv.Handler()
+
+	// Every route is under the base path, so the request carries it — that is
+	// what an Ingress sends and what the server expects.
+	rec := doRequest(t, h, http.MethodPost, "/applab/api/v1/apps", map[string]any{"id": "shop"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got status %d, want %d (body: %s)", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var app map[string]any
+	decodeData(t, rec, &app)
+
+	if app["path"] != "/applab/apps/shop" {
+		t.Errorf("path = %v, want /applab/apps/shop", app["path"])
+	}
+
+	// And the domain template a client reads to guess an address carries it too.
+	rec = doRequest(t, h, http.MethodGet, "/applab/api/v1/config", nil)
+	var cfg map[string]any
+	decodeData(t, rec, &cfg)
+	if cfg["domain_template"] != "apps.example.com/applab/apps/<app>" {
+		t.Errorf("domain_template = %v, want the path the app is really served at", cfg["domain_template"])
+	}
+}
+
 // newTestServerWithPrefix builds a Server that serves every app from one host
 // under a shared path prefix.
 func newTestServerWithPrefix(t *testing.T, prefix string) *api.Server {
@@ -444,6 +482,7 @@ func newTestServerWithPrefix(t *testing.T, prefix string) *api.Server {
 	cfg := config.Default()
 	cfg.Keys = []string{"test-key"}
 	cfg.BaseDomain = "apps.example.com"
+	cfg.BasePath = "/applab"
 	cfg.PathPrefix = prefix
 
 	return api.New(cfg, st, auth.New(cfg.Keys))

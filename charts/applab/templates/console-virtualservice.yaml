@@ -14,9 +14,15 @@ all of which are settled at install time and change only with a release.
 It is a catch-all, and that is safe rather than lazy. Istio sorts each virtual
 host's routes so that routes matching everything move to the end while the rest
 keep their order (route.SortVHostRoutes), and the apps applab publishes match on
-"/<apps.pathPrefix>/<app>/" — a prefix the console's own paths (/, /api/v1/,
-/git/, /health, /metrics) do not share. So the apps are always evaluated first
-and this route only sees what nothing else claimed.
+"/<basePath><apps.pathPrefix>/<app>/" — a path the console's own routes never
+claim for themselves. So the apps are always evaluated first and this route only
+sees what nothing else claimed.
+
+With a base path the installation is served under it — "/applab" by default —
+and the apps are nested inside it too ("/applab/apps/shop"). The catch-all stays
+correct: it still only sees what the apps declined, and a request outside the
+base path is refused by the server rather than served, which is the same answer
+the Ingress gives in that case.
 
 Rendered only when there is no Ingress to use: an enabled Ingress is an explicit
 statement about where the console lives, and two front doors to one Service is

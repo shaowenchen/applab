@@ -10,6 +10,8 @@ set -euo pipefail
 
 url="${APPLAB_PUBLIC_URL:-}"
 key="${APPLAB_API_KEY_SHOWN:-}"
+# The public URL already carries the installation's base path — it is the
+# console's address — so the app prefix is appended to it, not to the host.
 prefix="${APPLAB_PATH_PREFIX_SHOWN:-/apps}"
 
 {

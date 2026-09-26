@@ -133,9 +133,17 @@ nothing else, so a build asked for /git/<app>.git at the root of a server that
 only answers under /applab, and every clone failed with a 404 the server wrote
 itself. Deriving all three from this one definition is what keeps that from
 being a thing to remember.
+
+It applies whether or not an Ingress is enabled. It used to be returned only
+when one was, on the reasoning that the path was the Ingress's business — but
+the server serves the console, the API, git and the apps, and the apps are
+nested under this path, so an installation published through the gateway instead
+needs the same prefix or every app would be routed somewhere the gateway does not
+send requests. The setting is named for the Ingress because that is the case
+that needs a path at all; the value is the whole installation's.
 */}}
 {{- define "applab.basePath" -}}
-{{- if and .Values.ingress.enabled (ne .Values.ingress.path "/") -}}
+{{- if ne (toString .Values.ingress.path) "/" -}}
 {{- .Values.ingress.path -}}
 {{- end -}}
 {{- end }}
@@ -185,15 +193,13 @@ case, which is the point.
 {{- define "applab.consoleURL" -}}
 {{- if not .Values.ingress.host -}}
 {{- else if .Values.ingress.enabled -}}
-{{- $path := "" -}}
-{{- if ne .Values.ingress.path "/" -}}{{- $path = .Values.ingress.path -}}{{- end -}}
 {{- if .Values.ingress.tls -}}
-{{- printf "https://%s%s" .Values.ingress.host $path -}}
+{{- printf "https://%s%s" .Values.ingress.host (include "applab.basePath" .) -}}
 {{- else -}}
-{{- printf "http://%s%s" .Values.ingress.host $path -}}
+{{- printf "http://%s%s" .Values.ingress.host (include "applab.basePath" .) -}}
 {{- end -}}
 {{- else if .Values.deploy.gateway -}}
-{{- printf "https://%s" .Values.ingress.host -}}
+{{- printf "https://%s%s" .Values.ingress.host (include "applab.basePath" .) -}}
 {{- end -}}
 {{- end }}
 
@@ -233,6 +239,28 @@ so there has to be a host for them to share.
 */}}
 {{- if and (not (empty .Values.apps.pathPrefix)) (empty .Values.ingress.host) }}
 {{- fail "apps.pathPrefix is set but ingress.host is empty: the prefix distinguishes apps on a shared host, so there has to be a host. Set ingress.host, or leave apps.pathPrefix empty to give each app its own subdomain" }}
+{{- end }}
+{{/*
+Apps on a path prefix cannot be published behind an Ingress.
+
+An app is served by its own VirtualService on the gateway, and with a prefix it
+is nested under the installation's base path: "/applab/apps/shop". An Ingress
+routes on a path and cannot strip one, so the Ingress this chart writes — on
+"/applab" — matches that path too and delivers the app's traffic to applab's own
+Service, which answers with the console. The app is deployed, healthy and
+unreachable, and nothing in the Ingress looks wrong.
+
+There is no arrangement of the Ingress that avoids this: it can only send
+sub-paths to one Service, and the console and the apps are different Services.
+So the prefix and the Ingress are alternatives, and the gateway serves both —
+which is what the console VirtualService is for, and why it is rendered whether
+or not an Ingress exists.
+
+Refused here rather than discovered from a browser, and the message names the
+way out.
+*/}}
+{{- if and (not (empty .Values.apps.pathPrefix)) .Values.ingress.enabled }}
+{{- fail "apps.pathPrefix is set and ingress.enabled is true: with a prefix every app is nested under ingress.path, and an Ingress routes that whole path to applab itself — the apps would be deployed and unreachable. Set ingress.enabled=false so the gateway serves the console and the apps, or leave apps.pathPrefix empty to give each app its own subdomain" }}
 {{- end }}
 {{/*
 A bucket with no endpoint or no bucket name is the one configuration that fails
