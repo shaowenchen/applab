@@ -145,10 +145,18 @@ jobs:
           # second is an input, and putting it here instead is how a launch form
           # quietly stops being able to configure the thing it launches.
           internal = {'APPLAB_RUNTIME_DIR', 'APPLAB_NAMESPACE', 'APPLAB_PATH_PREFIX',
-                      'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME', 'APPLAB_REGISTRY_NAME',
-                      'APPLAB_REGISTRY_PORT', 'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
+                      'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME',
+                      'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
                       'APPLAB_PUBLIC_HOST', 'APPLAB_INSTALL_TIMEOUT_SECONDS',
                       'APPLAB_VERSION',
+                      # How the environment addresses itself: the path the whole
+                      # installation is served under, which is also where the
+                      # apps are nested, and the name of the Secret the script
+                      # creates for the registry credential. Both are the rig's
+                      # own shape rather than a knob — the tunnel's ingress is
+                      # arranged for a particular path, and nothing outside this
+                      # script names the Secret — so neither is an input.
+                      'APPLAB_BASE_PATH', 'APPLAB_REGISTRY_SECRET',
                       # The object store: a container this script starts, on a
                       # port it picks, with a credential it generates.
                       'APPLAB_OBJECT_STORE_NAME', 'APPLAB_OBJECT_STORE_PORT',

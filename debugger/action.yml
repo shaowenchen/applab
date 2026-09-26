@@ -186,6 +186,15 @@ runs:
         APPLAB_DOMAIN: ${{ inputs.domain }}
         CLOUDFLARE_TOKEN: ${{ inputs.cloudflare_token }}
         NGROK_TOKEN: ${{ inputs.ngrok_token }}
+        # The registry, forwarded under the names the script reads. These three
+        # were validated above and then not passed, so the credential the
+        # workflow supplied never reached the script: it built a registry Secret
+        # with empty fields and reported that no credential had been supplied,
+        # for a run that had given it one. The input contract check in
+        # .github/workflows/image.yml is what caught it.
+        APPLAB_REGISTRY: ${{ inputs.registry }}
+        APPLAB_REGISTRY_USERNAME: ${{ inputs.registry_username }}
+        APPLAB_REGISTRY_PASSWORD: ${{ inputs.registry_password }}
         APPLAB_RUNTIME_DIR: ${{ github.workspace }}/.applab-debugger
       run: |
         set -euo pipefail
