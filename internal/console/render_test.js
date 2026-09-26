@@ -966,6 +966,93 @@ async function render(apps) {
     }
   }
 
+  // A build's pod belongs to the build, not to the app.
+  //
+  // A build Job's pod carries the app's label — it is how the uninstall sweep
+  // finds it — so it used to appear in the app's Instances list as a pod that is
+  // running but not ready. It is filtered out there by a label selector and
+  // reported here instead, on the build it belongs to. Both halves are checked
+  // because either one alone leaves the pod either hidden or duplicated.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.fetch = async (url) => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => "application/json" },
+      text: async () =>
+        JSON.stringify({
+          data: [
+            { id: "abcdef1234567890", commit_sha: "1234567890abcdef", status: "running", created_at: "2026-01-01T00:00:00Z", pod: { name: "applab-build-shop-abc" } },
+            { id: "fedcba0987654321", commit_sha: "0987654321fedcba", status: "succeeded", created_at: "2026-01-01T00:00:00Z" },
+          ],
+        }),
+    });
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.app = "shop";', ctx);
+    await vm.runInContext("loadAppBuilds", ctx)();
+
+    const rows = elements.get("app-builds").children;
+    const running = (rows[0] && rows[0].children[3] && rows[0].children[3].textContent) || "";
+    const done = (rows[1] && rows[1].children[3] && rows[1].children[3].textContent) || "";
+
+    check("a build in flight shows the pod it is running in", running, "applab-build-shop-abc");
+    // Absent, not blank: a finished build's Job has been collected by its TTL, so
+    // there is no pod to name and a caller must not read the column as one.
+    check("and a build with no pod says so rather than showing nothing", done, "—");
+  }
+
+  // The instances list can be filtered by label, which is how one revision is
+  // told from another during a rollout — every pod an app runs carries the
+  // commit it was built from.
+  //
+  // The selector is applied by the server, so what this checks is that the
+  // console sends it and reports an empty result as "nothing matched" rather
+  // than as "nothing is running": the two look identical in the table, and only
+  // one of them means the app is down.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { app_id: "shop", pods: [], count: 0 } }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.app = "shop";', ctx);
+
+    elements.get("pods-label").value = "applab.io/commit=abc1234";
+    await vm.runInContext("loadPods", ctx)();
+
+    check(
+      "the instances list is filtered by the label that was typed",
+      ctx.requests[0],
+      "https://applab.example.com/api/v1/apps/shop/pods?label=applab.io%2Fcommit%3Dabc1234"
+    );
+    check(
+      "and nothing matching the filter is not reported as nothing running",
+      (elements.get("pods-empty").textContent || "").includes("No instance matches"),
+      true
+    );
+
+    // With no filter, the wording is the plain one again — the filter must not
+    // leak into the next render.
+    elements.get("pods-label").value = "";
+    await vm.runInContext("loadPods", ctx)();
+    check(
+      "and an unfiltered empty list is reported as nothing running",
+      elements.get("pods-empty").textContent,
+      "Nothing is running."
+    );
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed`);
     process.exit(1);

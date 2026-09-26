@@ -22,6 +22,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/shaowenchen/applab/internal/k8s"
 )
 
 // Observer reads an app's runtime state.
@@ -72,6 +74,15 @@ type Pod struct {
 	// Containers reports per-container state, since an app with a sidecar can
 	// have one healthy and one not.
 	Containers []ContainerState `json:"containers,omitempty"`
+
+	// Labels are the pod's own labels, which is what a caller filters a list of
+	// pods by: during a rollout the app's pods carry the commit they were built
+	// from, and "show me only the new revision" is a label selection.
+	//
+	// They are the app's own labels — its id, its commit, and the marker saying
+	// AppLab manages them — so there is nothing here a caller allowed to read the
+	// app's pods could not already derive.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // ContainerState is one container's state within a pod.
@@ -95,8 +106,22 @@ type ContainerState struct {
 // name, so pods from an older ReplicaSet during a rollout are included — a
 // caller asking what is running wants all of it, not just the current revision.
 func (o *Observer) Pods(ctx context.Context, namespace, appID string, limit int) ([]Pod, error) {
+	// The app's own pods, and only those. A build Job's pod carries the app
+	// label too — it is how the sweep finds it to delete — so it is excluded by
+	// the second label rather than by a name prefix, which is the mistake the
+	// package comment warns about: "applab-shop-build-..." and an app called
+	// "shop-build" would be the same string.
+	//
+	// Without this, every build in flight appears in the app's instance list as
+	// a pod that is not ready and eventually succeeds, which reads as the app
+	// itself being broken.
+	//
+	// `!build` and not `build!=`: an existence test excludes any pod carrying the
+	// label, while `build!=` parses as "the label's value is not the empty
+	// string" and therefore matches every build pod, since a build's id is never
+	// empty. The two look interchangeable and are not.
 	pods, err := o.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "applab.io/app=" + appID,
+		LabelSelector: k8s.LabelApp + "=" + appID + ",!" + k8s.LabelBuild,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list pods in %s: %w", namespace, err)
@@ -117,6 +142,59 @@ func (o *Observer) Pods(ctx context.Context, namespace, appID string, limit int)
 	return out, nil
 }
 
+// BuildPods lists one app's build pods, keyed by build id.
+//
+// A build's pod is not an instance of the app — it is the thing that produced the
+// image the instances run — so it belongs with the build it belongs to rather
+// than in the app's pod list. This is the read that puts it there.
+//
+// Keyed by build id because that is what a caller has: the label carries the
+// build's id, and a caller rendering a build's row is holding exactly that. A
+// build whose Job has been collected by its TTL has no pod and simply has no
+// entry, which is the same "nothing to show" a build that never started gets.
+//
+// Only pods, not Jobs: a Job that is waiting to be scheduled has no pod yet and
+// the build record already says "pending", so there is nothing a pod could add.
+// Empty result is not an error — most builds are long finished.
+func (o *Observer) BuildPods(ctx context.Context, namespace, appID string) (map[string]Pod, error) {
+	return o.buildPods(ctx, namespace, k8s.LabelApp+"="+appID)
+}
+
+// AllBuildPods lists every app's build pods in a namespace, keyed by build id.
+//
+// It exists for the overview, which lists recent builds across apps and would
+// otherwise need one cluster read per app on the list. Keying by build id alone
+// is enough because build ids are random and globally unique — they come from
+// NewID, not from a per-app sequence — so two apps' builds cannot collide.
+func (o *Observer) AllBuildPods(ctx context.Context, namespace string) (map[string]Pod, error) {
+	return o.buildPods(ctx, namespace, k8s.LabelBuild)
+}
+
+// buildPods reads build pods matching the app selector, with the build label
+// required, and keys them by build id.
+func (o *Observer) buildPods(ctx context.Context, namespace, appSelector string) (map[string]Pod, error) {
+	pods, err := o.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: appSelector + "," + k8s.LabelBuild,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list build pods in %s: %w", namespace, err)
+	}
+
+	out := make(map[string]Pod, len(pods.Items))
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		buildID := pod.Labels[k8s.LabelBuild]
+		if buildID == "" {
+			// Unreachable through this selector, which requires the label, but a
+			// lookup under an empty key would put one build's pod on every row
+			// that has no pod — so it is skipped rather than trusted.
+			continue
+		}
+		out[buildID] = toPod(pod)
+	}
+	return out, nil
+}
+
 // toPod reduces a pod to the fields worth reporting.
 func toPod(pod *corev1.Pod) Pod {
 	out := Pod{
@@ -124,6 +202,16 @@ func toPod(pod *corev1.Pod) Pod {
 		Phase:     string(pod.Status.Phase),
 		Node:      pod.Spec.NodeName,
 		StartedAt: pod.CreationTimestamp.Time,
+	}
+
+	// A copy, not the pod's own map: the result outlives the call, and a caller
+	// that filtered or annotated it in place would be writing into the object
+	// the client returned.
+	if len(pod.Labels) > 0 {
+		out.Labels = make(map[string]string, len(pod.Labels))
+		for k, v := range pod.Labels {
+			out.Labels[k] = v
+		}
 	}
 
 	for _, condition := range pod.Status.Conditions {

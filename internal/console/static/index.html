@@ -822,6 +822,14 @@
              the same way, so this also keeps the console and the CLI honest with
              each other. -->
         <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
+        <!-- Filtering the instances by label, which is how one revision is told
+             from another during a rollout: every pod an app runs carries the
+             commit it was built from. Applied by the server, so the same
+             selection works from the API (`?label=`) and the CLI (`--label`) —
+             one feature with three front ends rather than three implementations. -->
+        <label class="field">
+          <input id="pods-label" placeholder="applab.io/commit=abc1234" size="26" class="mono">
+        </label>
         <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
       </div>
       <table>
@@ -829,6 +837,7 @@
         <tbody id="pods"></tbody>
       </table>
       <div id="pods-empty" class="empty hidden" data-i18n="Nothing is running.">Nothing is running.</div>
+      <div id="pods-problem" class="error hidden" style="margin-top:8px"></div>
     </div>
 
     <div class="card">
@@ -886,7 +895,11 @@
       </div>
       <table>
         <thead>
-          <tr><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Age">Age</th><th data-i18n="Reason">Reason</th><th></th><th></th></tr>
+          <!-- "Build pod" rather than "Instance": a build's pod is not an
+               instance of the app — it is what produces the image the instances
+               run — so it is reported here, on the build, and deliberately not
+               in the Instances card above. -->
+          <tr><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Build pod">Build pod</th><th data-i18n="Age">Age</th><th data-i18n="Reason">Reason</th><th></th><th></th></tr>
         </thead>
         <tbody id="app-builds"></tbody>
       </table>
@@ -1145,6 +1158,7 @@ const ZH = {
   "Stop": "停止",
   "Delete": "删除",
   "Nothing is running.": "没有正在运行的实例。",
+  "No instance matches {selector}.": "没有实例匹配 {selector}。",
   "Log": "日志",
   "previous instance": "上一个实例",
   "Follow": "跟随",
@@ -1160,6 +1174,7 @@ const ZH = {
   "Remove": "移除",
   "History": "历史",
   "Builds": "构建",
+  "Build pod": "构建 Pod",
   "Build log": "构建日志",
   "Deploy": "部署",
   "(loading)": "（加载中）",
@@ -1999,6 +2014,21 @@ async function loadAppBuilds() {
     status.appendChild(buildPill(build.status));
     tr.appendChild(status);
 
+    // The pod the build is running in. Only while it exists: a finished build's
+    // Job is collected by its TTL, and a build that never started has none — so
+    // the field is absent and this says so, rather than showing a dash that
+    // reads like a failure.
+    const pod = document.createElement("td");
+    pod.className = "mono";
+    if (build.pod) {
+      pod.textContent = build.pod.name;
+      pod.title = build.pod.name;
+    } else {
+      pod.className = "muted";
+      pod.textContent = "—";
+    }
+    tr.appendChild(pod);
+
     const when = document.createElement("td");
     when.className = "muted";
     when.textContent = ago(build.created_at);
@@ -2630,9 +2660,13 @@ async function loadAppState() {
 }
 
 async function loadPods() {
+  const selector = ($("pods-label").value || "").trim();
+
   let result;
   try {
-    result = await api("/api/v1/apps/" + state.app + "/pods");
+    const path = "/api/v1/apps/" + state.app + "/pods" +
+      (selector ? "?label=" + encodeURIComponent(selector) : "");
+    result = await api(path);
   } catch (err) {
     // Observability is an optional capability; a deployment without a cluster
     // reports 501 here, which is not a failure of the console.
@@ -2641,11 +2675,16 @@ async function loadPods() {
     return;
   }
 
+  // A label selector that matches nothing is not an empty app, and the two read
+  // identically from the table alone — so the filter is echoed back when it is
+  // the reason there is nothing to show.
   const body = $("pods");
   body.replaceChildren();
   show($("pods-empty"), result.pods.length === 0);
   if (result.pods.length === 0) {
-    $("pods-empty").textContent = t("Nothing is running.");
+    $("pods-empty").textContent = selector
+      ? tf("No instance matches {selector}.", { selector: selector })
+      : t("Nothing is running.");
     return;
   }
 
@@ -2655,6 +2694,11 @@ async function loadPods() {
     const name = document.createElement("td");
     name.className = "mono";
     name.textContent = pod.name;
+    // The commit the pod was built from, when it carries one, because that is
+    // the label someone filtering by revision is looking at.
+    if (pod.labels && pod.labels["applab.io/commit"]) {
+      name.title = "applab.io/commit=" + pod.labels["applab.io/commit"];
+    }
     tr.appendChild(name);
 
     const ready = document.createElement("td");
@@ -3281,6 +3325,12 @@ $("app-builds-refresh").onclick = loadAppBuilds;
 $("app-stop").onclick = stop;
 $("app-delete").onclick = remove;
 $("pods-refresh").onclick = loadPods;
+
+// Reloading as the selector is typed would fire a request per keystroke; on
+// Enter and on blur is what someone filtering a short list does anyway, and a
+// label selector is not something to apply half-typed.
+$("pods-label").onkeydown = (event) => { if (event.key === "Enter") loadPods(); };
+$("pods-label").onblur = loadPods;
 
 // Configuration. The name and value fields are read at click time rather than
 // tracked as state, so there is nothing to keep in sync.

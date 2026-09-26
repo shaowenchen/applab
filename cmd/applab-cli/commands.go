@@ -523,14 +523,21 @@ listing above rather than from memory.`,
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "BUILD\tCOMMIT\tSTATUS\tAGE\tIMAGE")
+			// POD is the build's own pod, which is where a build in flight is
+			// watching from — `applab pods` deliberately does not list it, since a
+			// build's pod is not an instance of the app.
+			fmt.Fprintln(w, "BUILD\tCOMMIT\tSTATUS\tPOD\tAGE\tIMAGE")
 			for _, b := range builds {
 				image := b.Image
 				if image == "" {
 					image = "-"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					b.ID[:8], shortSHA(b.CommitSHA), b.Status, humanAge(b.CreatedAt), image)
+				pod := "-"
+				if b.Pod != nil {
+					pod = b.Pod.Name
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					b.ID[:8], shortSHA(b.CommitSHA), b.Status, pod, humanAge(b.CreatedAt), image)
 			}
 			return w.Flush()
 		},

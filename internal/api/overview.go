@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/observe"
 )
 
 // overviewResponse is what GET /api/v1/overview returns.
@@ -104,12 +107,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A build in flight is the one case where the overview would otherwise report
+	// a build with nothing to show for what it is doing, so the pods are read
+	// once for the whole panel rather than per row.
+	pods := s.allBuildPods(r.Context())
+
 	// A nil slice encodes as JSON null, which a client would have to special-case
 	// before iterating. An empty list is the honest answer for a deployment with
 	// no builds yet and needs no branch on the other side.
 	recent := make([]buildResponse, 0, len(recentBuilds))
 	for _, b := range recentBuilds {
-		recent = append(recent, toBuildResponse(b))
+		recent = append(recent, toBuildResponse(b, pods))
 	}
 
 	apps := appsSummary{
@@ -152,6 +160,22 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		Cluster:    cluster,
 		Deployment: s.configResponse(r),
 	})
+}
+
+// allBuildPods reads every app's build pods, for the recent-builds panel.
+//
+// Same contract as buildPods: no cluster or an unreachable one means no pods,
+// because the build records still deserve to be shown.
+func (s *Server) allBuildPods(ctx context.Context) map[string]observe.Pod {
+	if s.observer == nil || !s.observer.Ready() {
+		return nil
+	}
+	pods, err := s.observer.AllBuildPods(ctx, s.cfg.Namespace)
+	if err != nil {
+		slog.WarnContext(ctx, "could not read build pods; recent builds are reported without them", "error", err)
+		return nil
+	}
+	return pods
 }
 
 // overviewRecentBuilds is how many recent builds the overview carries.

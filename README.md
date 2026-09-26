@@ -86,6 +86,7 @@ applab status myshop      # what is running, and where
 applab logs myshop -f     # watch it
 applab branch myshop      # which branches there are, and which one runs
 applab pods myshop        # the pods, and why one is not ready
+applab pods myshop --label applab.io/commit=abc1234   # just one revision's pods
 applab events myshop      # Kubernetes events, warnings first
 applab diagnose myshop    # why it is not working
 applab build myshop       # build a commit without deploying it

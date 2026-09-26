@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
+
 	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/observe"
 )
@@ -32,6 +34,30 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fail(w, r, Errorf(http.StatusInternalServerError, "list pods for app %q", app.ID).Wrap(err))
 		return
+	}
+
+	// A label selection is applied here rather than passed to Kubernetes, so that
+	// what a caller may select is the set of labels the app's own pods actually
+	// carry. The alternative — forwarding the string to the API server — would
+	// let a caller select on any label in the namespace, and would answer "no
+	// pods" for a typo in a way indistinguishable from a genuine absence.
+	//
+	// The console offers the same selection, so this is the API half of one
+	// feature rather than a second way to do it.
+	selector := strings.TrimSpace(r.URL.Query().Get("label"))
+	if selector != "" {
+		parsed, err := labels.Parse(selector)
+		if err != nil {
+			fail(w, r, Errorf(http.StatusBadRequest, "label selector %q could not be parsed", selector).Wrap(err))
+			return
+		}
+		filtered := make([]observe.Pod, 0, len(pods))
+		for _, pod := range pods {
+			if parsed.Matches(labels.Set(pod.Labels)) {
+				filtered = append(filtered, pod)
+			}
+		}
+		pods = filtered
 	}
 
 	respond(w, http.StatusOK, map[string]any{

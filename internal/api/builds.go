@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
 )
@@ -25,12 +26,26 @@ type buildResponse struct {
 	JobName string `json:"job_name,omitempty"`
 	Reason  string `json:"reason,omitempty"`
 
+	// Pod is the pod the build is running in, when there is one to report.
+	//
+	// A build's pod is not an instance of the app, so it is not in the app's pod
+	// endpoint — it is here, on the build it belongs to. The fields are the ones
+	// a pod is already reported with, so a console renders a build's pod with the
+	// same code it renders an app's.
+	//
+	// Absent for a build that has finished and had its Job collected, which is
+	// most of them, and for a deployment that cannot observe a cluster.
+	Pod *observe.Pod `json:"pod,omitempty"`
+
 	CreatedAt  time.Time `json:"created_at"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
 }
 
-func toBuildResponse(b *model.Build) buildResponse {
+// toBuildResponse renders a build. pods is the app's build pods keyed by build
+// id, and may be nil — which is what a deployment with no cluster passes, and
+// what makes the pod field absent rather than empty.
+func toBuildResponse(b *model.Build, pods map[string]observe.Pod) buildResponse {
 	resp := buildResponse{
 		ID:        b.ID,
 		AppID:     b.AppID,
@@ -40,6 +55,9 @@ func toBuildResponse(b *model.Build) buildResponse {
 		JobName:   b.JobName,
 		Reason:    b.Reason,
 		CreatedAt: b.CreatedAt,
+	}
+	if pod, ok := pods[b.ID]; ok {
+		resp.Pod = &pod
 	}
 	if !b.StartedAt.IsZero() {
 		resp.StartedAt = b.StartedAt
@@ -115,7 +133,10 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 	slog.InfoContext(r.Context(), "build started",
 		"app", app.ID, "build", build.ID, "commit", resolved, "job", build.JobName)
 
-	respond(w, http.StatusAccepted, toBuildResponse(build))
+	// A build that was just started has no pod yet in almost every case — the Job
+	// was created a moment ago — so this reads for the answer rather than
+	// assuming it, and the field is simply absent when there is nothing yet.
+	respond(w, http.StatusAccepted, toBuildResponse(build, s.buildPods(r.Context(), app)))
 }
 
 // startBuild creates the record and the Job for one build.
@@ -280,7 +301,7 @@ func (s *Server) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
 	build.Reason = "stopped on request"
 
 	slog.InfoContext(r.Context(), "build stopped", "app", app.ID, "build", build.ID, "job", build.JobName)
-	respond(w, http.StatusOK, toBuildResponse(build))
+	respond(w, http.StatusOK, toBuildResponse(build, s.buildPods(r.Context(), app)))
 }
 
 // supersedeBuilds stops whatever this app is currently building.
@@ -354,7 +375,37 @@ func (s *Server) handleGetBuild(w http.ResponseWriter, r *http.Request) {
 	// endpoint would see "pending" forever after a crash-restart of applab.
 	s.refreshBuild(r.Context(), build)
 
-	respond(w, http.StatusOK, toBuildResponse(build))
+	app, apiErr := s.loadApp(r)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
+	respond(w, http.StatusOK, toBuildResponse(build, s.buildPods(r.Context(), app)))
+}
+
+// buildPods reads the pods the app's builds are running in, keyed by build id.
+//
+// Returning an empty map rather than nil for a deployment with no cluster keeps
+// every caller from having to distinguish "cannot observe" from "nothing
+// running": both mean no pod to show, and a build row renders the same either
+// way.
+//
+// An unreachable cluster is logged and reported as no pods rather than as a
+// failure, because the build records themselves come from the store and are
+// still worth serving — failing the whole listing because the cluster blinked
+// would hide builds that are perfectly well recorded.
+func (s *Server) buildPods(ctx context.Context, app *model.App) map[string]observe.Pod {
+	if s.observer == nil || !s.observer.Ready() {
+		return nil
+	}
+	pods, err := s.observer.BuildPods(ctx, app.Namespace, app.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "could not read build pods; builds are reported without them",
+			"app", app.ID, "error", err)
+		return nil
+	}
+	return pods
 }
 
 func (s *Server) handleListBuilds(w http.ResponseWriter, r *http.Request) {
@@ -376,9 +427,11 @@ func (s *Server) handleListBuilds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pods := s.buildPods(r.Context(), app)
+
 	out := make([]buildResponse, 0, len(builds))
 	for _, b := range builds {
-		out = append(out, toBuildResponse(b))
+		out = append(out, toBuildResponse(b, pods))
 	}
 	respond(w, http.StatusOK, out)
 }

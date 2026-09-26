@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -17,13 +18,18 @@ import (
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/deploy"
+	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
 // newObserveServer builds a Server with an observer over a fake cluster.
-func newObserveServer(t *testing.T) (*api.Server, *fake.Clientset) {
+//
+// The store comes back too, because a test that needs a build record has to
+// write one: a build only exists in the bucket and in the Job, and there is no
+// endpoint that would create one here without a build engine.
+func newObserveServer(t *testing.T) (*api.Server, *fake.Clientset, *store.Store) {
 	t.Helper()
 
 	dataDir := t.TempDir()
@@ -59,7 +65,7 @@ func newObserveServer(t *testing.T) (*api.Server, *fake.Clientset) {
 		WithDeployer(deployer).
 		WithMetrics(api.NewMetrics())
 
-	return srv, client
+	return srv, client, st
 }
 
 // createAppForObserve creates an app so the observability endpoints have
@@ -74,7 +80,7 @@ func createAppForObserve(t *testing.T, h http.Handler, appID string) {
 
 // TestPodsEndpointReportsState asserts the pod list carries what a caller needs.
 func TestPodsEndpointReportsState(t *testing.T) {
-	srv, client := newObserveServer(t)
+	srv, client, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -132,7 +138,7 @@ func TestPodsEndpointReportsState(t *testing.T) {
 // TestPodsEndpointIsEmptyForAnUndeployedApp asserts an app with no pods reports
 // zero rather than failing, since that is a normal state.
 func TestPodsEndpointIsEmptyForAnUndeployedApp(t *testing.T) {
-	srv, _ := newObserveServer(t)
+	srv, _, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -150,10 +156,150 @@ func TestPodsEndpointIsEmptyForAnUndeployedApp(t *testing.T) {
 	}
 }
 
+// makePod creates a pod in the app's namespace, with the labels given.
+func makePod(t *testing.T, client *fake.Clientset, name string, labels map[string]string) {
+	t.Helper()
+
+	_, err := client.CoreV1().Pods("ops-system").Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ops-system", Labels: labels},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "image:abc"}}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod %s: %v", name, err)
+	}
+}
+
+// TestPodsEndpointExcludesBuildPods covers the app's own pod list, which must not
+// contain a build's pod.
+//
+// A build Job's pod carries the app's label as well as the build's — that is how
+// the uninstall sweep finds it — so a listing that filtered on the app label
+// alone returned it, and every build in flight showed up among the app's
+// replicas as a pod that is running but not ready.
+func TestPodsEndpointExcludesBuildPods(t *testing.T) {
+	srv, client, _ := newObserveServer(t)
+	h := srv.Handler()
+	createAppForObserve(t, h, "shop")
+
+	makePod(t, client, "applab-shop-1", map[string]string{"applab.io/app": "shop"})
+	makePod(t, client, "applab-build-shop-abc", map[string]string{
+		"applab.io/app":   "shop",
+		"applab.io/build": "abc",
+	})
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/pods", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pods: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		Count int `json:"count"`
+		Pods  []struct {
+			Name string `json:"name"`
+		} `json:"pods"`
+	}
+	decodeData(t, rec, &result)
+
+	if result.Count != 1 || result.Pods[0].Name != "applab-shop-1" {
+		t.Errorf("pods = %+v; a build's pod is not an instance of the app", result.Pods)
+	}
+}
+
+// TestPodsEndpointFiltersByLabel covers the label selection.
+//
+// The pods of one revision are told from another by the commit they carry, so
+// this is the check that a rollout can be inspected from any surface: the
+// selector is applied here, and the console and the CLI both send this query.
+func TestPodsEndpointFiltersByLabel(t *testing.T) {
+	srv, client, _ := newObserveServer(t)
+	h := srv.Handler()
+	createAppForObserve(t, h, "shop")
+
+	makePod(t, client, "applab-shop-old", map[string]string{
+		"applab.io/app": "shop", "applab.io/commit": "aaa1111",
+	})
+	makePod(t, client, "applab-shop-new", map[string]string{
+		"applab.io/app": "shop", "applab.io/commit": "bbb2222",
+	})
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/pods?label=applab.io%2Fcommit%3Dbbb2222", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pods: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		Pods []struct {
+			Name string `json:"name"`
+		} `json:"pods"`
+	}
+	decodeData(t, rec, &result)
+
+	if len(result.Pods) != 1 || result.Pods[0].Name != "applab-shop-new" {
+		t.Errorf("pods = %+v, want only the new revision", result.Pods)
+	}
+
+	// A selector that cannot be parsed is a caller's mistake and is reported as
+	// one, rather than matching nothing — an empty list would read as "no such
+	// pod", which is a different and misleading answer.
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/pods?label=!!bad", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d for an unparseable selector, want 400", rec.Code)
+	}
+}
+
+// TestBuildListCarriesTheBuildsPod asserts a build reports the pod it ran in, and
+// that the app's pod list does not — the two halves of "a build's pod belongs to
+// the build".
+func TestBuildListCarriesTheBuildsPod(t *testing.T) {
+	srv, client, st := newObserveServer(t)
+	h := srv.Handler()
+	createAppForObserve(t, h, "shop")
+
+	// A build record with a known id, so the pod's label can name it. There is no
+	// endpoint that creates one here: starting a build needs a build engine, and
+	// what is under test is the listing rather than the start.
+	buildID := "abcdef1234567890"
+	if err := st.CreateBuild(context.Background(), &model.Build{
+		ID: buildID, AppID: "shop", CommitSHA: strings.Repeat("a", 40),
+		Status: model.BuildStatusRunning, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("record a build: %v", err)
+	}
+
+	makePod(t, client, "applab-build-shop-abc", map[string]string{
+		"applab.io/app":   "shop",
+		"applab.io/build": buildID,
+	})
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/builds", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("builds: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var builds []struct {
+		ID  string `json:"id"`
+		Pod *struct {
+			Name string `json:"name"`
+		} `json:"pod"`
+	}
+	decodeData(t, rec, &builds)
+
+	if len(builds) != 1 {
+		t.Fatalf("got %d builds, want 1", len(builds))
+	}
+	if builds[0].Pod == nil {
+		t.Fatal("the build reports no pod; a build in flight has one to show")
+	}
+	if builds[0].Pod.Name != "applab-build-shop-abc" {
+		t.Errorf("pod = %q, want the build's own pod", builds[0].Pod.Name)
+	}
+}
+
 // TestEventsEndpointCountsWarnings asserts the warnings count is reported, since
 // "is anything wrong" is the question a caller is actually asking.
 func TestEventsEndpointCountsWarnings(t *testing.T) {
-	srv, client := newObserveServer(t)
+	srv, client, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -225,7 +371,7 @@ func TestEventsEndpointCountsWarnings(t *testing.T) {
 // TestDiagnoseExplainsAnUndeployedApp asserts the diagnosis answers without
 // needing the cluster when the record already explains it.
 func TestDiagnoseExplainsAnUndeployedApp(t *testing.T) {
-	srv, _ := newObserveServer(t)
+	srv, _, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -252,7 +398,7 @@ func TestDiagnoseExplainsAnUndeployedApp(t *testing.T) {
 // TestDiagnoseReportsNoPods asserts a deployed app with no pods is diagnosed,
 // with the events that explain it attached.
 func TestDiagnoseReportsNoPods(t *testing.T) {
-	srv, client := newObserveServer(t)
+	srv, client, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -277,7 +423,7 @@ func TestDiagnoseReportsNoPods(t *testing.T) {
 // TestDiagnoseReportsUnreadyPodsWithLogs asserts the useful case: pods exist but
 // are not ready, and the answer carries the log that explains why.
 func TestDiagnoseReportsUnreadyPodsWithLogs(t *testing.T) {
-	srv, client := newObserveServer(t)
+	srv, client, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -339,7 +485,7 @@ func TestDiagnoseReportsUnreadyPodsWithLogs(t *testing.T) {
 // TestDiagnoseReportsHealthy asserts a working app says so rather than leaving
 // the caller to infer it from an empty problem field.
 func TestDiagnoseReportsHealthy(t *testing.T) {
-	srv, client := newObserveServer(t)
+	srv, client, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -383,7 +529,7 @@ func TestDiagnoseReportsHealthy(t *testing.T) {
 
 // TestObservabilityRequiresAKey asserts the new routes are not accidentally open.
 func TestObservabilityRequiresAKey(t *testing.T) {
-	srv, _ := newObserveServer(t)
+	srv, _, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -434,7 +580,7 @@ func TestObservabilityWithoutClusterIs501(t *testing.T) {
 // describe the platform rather than any app — so the trade is asserted rather
 // than left to drift.
 func TestMetricsEndpointIsOpenAndWellFormed(t *testing.T) {
-	srv, _ := newObserveServer(t)
+	srv, _, _ := newObserveServer(t)
 	h := srv.Handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -465,7 +611,7 @@ func TestMetricsEndpointIsOpenAndWellFormed(t *testing.T) {
 // TestMetricsCountsRequests asserts the counters actually move, since a metric
 // that is registered but never incremented looks the same as a quiet system.
 func TestMetricsCountsRequests(t *testing.T) {
-	srv, _ := newObserveServer(t)
+	srv, _, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -493,7 +639,7 @@ func TestMetricsCountsRequests(t *testing.T) {
 // TestMetricsCountsAuthRejections asserts refusals are counted, since a steady
 // rate is the one signal that distinguishes probing from a misconfigured client.
 func TestMetricsCountsAuthRejections(t *testing.T) {
-	srv, _ := newObserveServer(t)
+	srv, _, _ := newObserveServer(t)
 	h := srv.Handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/apps", nil)
@@ -513,7 +659,7 @@ func TestMetricsCountsAuthRejections(t *testing.T) {
 // TestMetricsExcludesItself asserts scraping does not inflate the request
 // counter, which would measure the scraping rather than the traffic.
 func TestMetricsExcludesItself(t *testing.T) {
-	srv, _ := newObserveServer(t)
+	srv, _, _ := newObserveServer(t)
 	h := srv.Handler()
 
 	for i := 0; i < 3; i++ {
@@ -535,7 +681,7 @@ func TestMetricsExcludesItself(t *testing.T) {
 // is how the console lists the deployment serving it, and it must not list an
 // app's pods — the fake cluster holds both, in one namespace, as a real one does.
 func TestPlatformPodsEndpointReportsAppLabsOwn(t *testing.T) {
-	srv, client := newObserveServer(t)
+	srv, client, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
@@ -594,7 +740,7 @@ func TestPlatformPodsEndpointReportsAppLabsOwn(t *testing.T) {
 // text/plain body, so a client that can read an app's log can read this one with
 // nothing new to learn.
 func TestPlatformLogsEndpointServesText(t *testing.T) {
-	srv, client := newObserveServer(t)
+	srv, client, _ := newObserveServer(t)
 	h := srv.Handler()
 
 	ctx := context.Background()

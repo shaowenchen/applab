@@ -682,6 +682,11 @@ type Build struct {
 	JobName   string    `json:"job_name"`
 	Reason    string    `json:"reason"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// Pod is the pod the build ran in, present only while it exists: a finished
+	// build's Job is collected by its TTL. It is reported here rather than in the
+	// app's pod list because a build's pod is not an instance of the app.
+	Pod *Pod `json:"pod"`
 }
 
 // StartBuild starts a build of a commit. An empty commit builds the current tip.
@@ -886,6 +891,9 @@ type Pod struct {
 	Reason   string `json:"reason"`
 	Message  string `json:"message"`
 
+	// Labels are the pod's own, which is what a caller filters by.
+	Labels map[string]string `json:"labels"`
+
 	Containers []struct {
 		Name                 string `json:"name"`
 		Ready                bool   `json:"ready"`
@@ -904,10 +912,18 @@ type PodList struct {
 	Count int    `json:"count"`
 }
 
-// Pods lists an app's pods.
-func (c *Client) Pods(ctx context.Context, appID string) (*PodList, error) {
+// Pods lists an app's pods, filtered by a label selector when one is given.
+//
+// The selector is a Kubernetes label selector and is applied by the server, so
+// the same string works from the console, the API and here.
+func (c *Client) Pods(ctx context.Context, appID, labelSelector string) (*PodList, error) {
+	path := "/api/v1/apps/" + appID + "/pods"
+	if labelSelector != "" {
+		path += "?label=" + url.QueryEscape(labelSelector)
+	}
+
 	var out PodList
-	if err := c.do(ctx, http.MethodGet, "/api/v1/apps/"+appID+"/pods", nil, "", &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, "", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

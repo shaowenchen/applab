@@ -157,22 +157,37 @@ func anyNonZero(counts []count) bool {
 // had no command, so the per-container state that explains a pod which is not
 // ready was reachable only from the console.
 func podsCommand(urlFlag, keyFlag *string) *cobra.Command {
-	return &cobra.Command{
+	var labelSelector string
+
+	cmd := &cobra.Command{
 		Use:   "pods <app>",
 		Short: "List an app's pods and their container state",
-		Args:  cobra.ExactArgs(1),
+		Long: `List an app's pods, newest first.
+
+A build's pod is not here: it carries the app's label but is not an instance of
+the app. A build's pod is shown by ` + "`applab builds <app>`" + ` instead.
+
+--label filters by a Kubernetes label selector against each pod's own labels.
+The pods of one revision are selected with the commit they were built from:
+
+  applab pods shop --label applab.io/commit=abc1234`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := newClient(*urlFlag, *keyFlag)
 			if err != nil {
 				return err
 			}
 
-			result, err := c.Pods(cmd.Context(), args[0])
+			result, err := c.Pods(cmd.Context(), args[0], labelSelector)
 			if err != nil {
 				return err
 			}
 			if len(result.Pods) == 0 {
-				fmt.Printf("no pods for %s; deploy it with: applab deploy %s\n", args[0], args[0])
+				if labelSelector != "" {
+					fmt.Printf("no pod of %s matches %s\n", args[0], labelSelector)
+				} else {
+					fmt.Printf("no pods for %s; deploy it with: applab deploy %s\n", args[0], args[0])
+				}
 				return nil
 			}
 
@@ -218,6 +233,9 @@ func podsCommand(urlFlag, keyFlag *string) *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&labelSelector, "label", "", "only pods matching a label selector, e.g. applab.io/commit=abc1234")
+	return cmd
 }
 
 // eventsCommand lists an app's events.

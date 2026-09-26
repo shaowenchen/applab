@@ -389,6 +389,12 @@ type Observer interface {
 	// Pods lists an app's pods, newest first.
 	Pods(ctx context.Context, namespace, appID string, limit int) ([]observe.Pod, error)
 
+	// BuildPods lists an app's build pods, keyed by build id.
+	BuildPods(ctx context.Context, namespace, appID string) (map[string]observe.Pod, error)
+
+	// AllBuildPods lists every app's build pods in a namespace, keyed by build id.
+	AllBuildPods(ctx context.Context, namespace string) (map[string]observe.Pod, error)
+
 	// Logs returns a container's log.
 	Logs(ctx context.Context, namespace, appID string, opts observe.LogOptions) (string, error)
 
@@ -920,7 +926,7 @@ func (s *Server) routes() []route {
 			Pattern: "GET /api/v1/apps/{app}/pods",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "The app's pods, newest first, with per-container state. A pod that is not Running carries the reason — `CrashLoopBackOff`, `ImagePullBackOff` — and a crash loop's cause is reported from the *previous* container, since the current one is only restarting. `?limit=` (default 100, max 1000).",
+			Doc:     "The app's pods, newest first, with per-container state. A pod that is not Running carries the reason — `CrashLoopBackOff`, `ImagePullBackOff` — and a crash loop's cause is reported from the *previous* container, since the current one is only restarting. A build's pod is deliberately not here: it carries the app's label but is not an instance of the app, and it is reported on the build instead (see the builds endpoint's `pod`). `?limit=` (default 100, max 1000). `?label=` filters by a label selector against each pod's own labels, e.g. `?label=applab.io/commit%3Dabc1234` for the pods of one revision during a rollout.",
 			Handler: s.handleListPods,
 		},
 		{

@@ -126,7 +126,7 @@ func (s *Server) deployResolved(w http.ResponseWriter, r *http.Request, app *mod
 		// Nothing records that a build started: the build's own record is what
 		// says so, and it is what appStatus reads to report the app as building.
 		respond(w, http.StatusAccepted, map[string]any{
-			"build":  toBuildResponse(build),
+			"build":  toBuildResponse(build, s.buildPods(r.Context(), app)),
 			"commit": resolved,
 			"status": "building",
 			"next":   "follow the build at /api/v1/apps/" + app.ID + "/builds/" + build.ID + "/logs",

@@ -176,6 +176,46 @@ func TestPodsAreScopedToTheApp(t *testing.T) {
 	}
 }
 
+// TestPodsExcludeABuildJobsPod is the regression guard for the app's instance
+// list showing builds as instances.
+//
+// A build Job's pod carries the app's label as well as the build's, because that
+// is how the uninstall sweep finds it. So a pod listing that filters on the app
+// label alone returns the build too, and a build in flight appears among the
+// app's replicas as a pod that is running but not ready — which reads as the app
+// being broken rather than as something else working.
+//
+// The assertion is deliberately about which selector, not merely that some
+// filtering happened: "applab.io/build!=" also parses and also looks like an
+// exclusion, but it means "the label is present and not empty", which a build
+// pod always satisfies. This test fails under that spelling.
+func TestPodsExcludeABuildJobsPod(t *testing.T) {
+	app := appPod("applab-shop-1", corev1.PodRunning, true)
+
+	build := appPod("applab-shop-build-abc123", corev1.PodRunning, false)
+	build.Labels["applab.io/build"] = "abc123"
+
+	o, _ := newTestObserver(t, app, build)
+
+	pods, err := o.Pods(context.Background(), "ops-system", "shop", 10)
+	if err != nil {
+		t.Fatalf("Pods: %v", err)
+	}
+	if len(pods) != 1 || pods[0].Name != "applab-shop-1" {
+		t.Errorf("got %v, want only the app's pod; a build Job's pod is not an instance of the app",
+			podNames(pods))
+	}
+}
+
+// podNames renders a pod list for a failure message.
+func podNames(pods []Pod) []string {
+	out := make([]string, 0, len(pods))
+	for _, p := range pods {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
 // TestPodsNewestFirst asserts the current revision is what a caller reads first,
 // which matters during a rollout when both revisions have pods.
 func TestPodsNewestFirst(t *testing.T) {
