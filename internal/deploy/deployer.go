@@ -333,6 +333,38 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image, c
 					// AppLab's own credentials is gone, so the token has to go with
 					// it.
 					AutomountServiceAccountToken: ptr(false),
+
+					// An app on a low port needs its own namespace to allow it.
+					//
+					// An app's port defaults to 80 — the port an image built for a
+					// platform that serves HTTP conventionally EXPOSEs — and most
+					// images do not run as root. Since Linux 5.7 a bind below 1024
+					// is refused unless the pod's network namespace lowers
+					// ip_unprivileged_port_start, so without this an app that
+					// listened on the port it was created with would exit on
+					// start-up with "permission denied" — against a Deployment
+					// that looks healthy and a default that looks reasonable.
+					//
+					// A capability is not the answer and would be a worse one:
+					// securityContext.capabilities.add reaches only the bounding
+					// set for a non-root container, so it grants nothing at
+					// runtime, and the alternative that did work would be running
+					// uploaded code as root. This is one pod relaxing one setting
+					// in its own network namespace.
+					//
+					// It reaches uploaded code, so it is worth being explicit
+					// about what it does not do: it lets the app bind any port in
+					// its own namespace, which it could already do above 1024, and
+					// nothing outside that namespace changes. It is in
+					// Kubernetes' safe sysctl set, so no kubelet flag is needed
+					// and the baseline and restricted pod security standards both
+					// allow it.
+					SecurityContext: &corev1.PodSecurityContext{
+						Sysctls: []corev1.Sysctl{{
+							Name:  "net.ipv4.ip_unprivileged_port_start",
+							Value: "0",
+						}},
+					},
 					Containers: []corev1.Container{{
 						Name:  "app",
 						Image: image,

@@ -235,22 +235,52 @@ fi
 # The server's low port has to be one the container may bind.
 #
 # AppLab listens on 80 by default, which is the port it is reached at — so the
-# Service, the container port and APPLAB_LISTEN all agree. Binding it as an
-# unprivileged user needs CAP_NET_BIND_SERVICE: the container drops everything
-# and adds that one back. Without it the bind is refused at startup, and the
-# failure is a CrashLoopBackOff whose reason is "permission denied" rather than
-# anything naming this value.
+# Service, the container port and APPLAB_LISTEN all agree. The container runs as
+# uid 1000, and since Linux 5.7 a bind below 1024 is refused unless the pod's own
+# network namespace lowers ip_unprivileged_port_start. Without that the bind
+# fails at startup and the failure is a CrashLoopBackOff whose reason is
+# "permission denied" rather than anything naming this value.
 #
-# Asserted as a pair, because either half alone looks fine: dropping ALL without
-# adding the capability leaves a container that cannot bind, and adding the
-# capability without dropping the rest is a broader grant than the port needs.
+# The capability route is checked *against*, because it is the obvious fix and it
+# does not work: securityContext.capabilities.add reaches only the bounding set
+# for a non-root container, so NET_BIND_SERVICE is present and grants nothing —
+# the kernel recomputes permitted and effective at execve, and a non-root process
+# with no file capabilities gets an empty effective set. Ambient capabilities
+# would work and Kubernetes cannot express them. An installation that granted the
+# capability bound 80 and exited with "bind: permission denied", which is why
+# this asserts the sysctl and refuses the capability.
 listen_port="$(render --set auth.key=x | grep -m1 'APPLAB_LISTEN' | sed 's/.*:\([0-9]*\)".*/\1/')"
 if [ "$listen_port" = "80" ]; then
-  caps="$(render --set auth.key=x | grep -A4 'capabilities:')"
-  grep -q 'NET_BIND_SERVICE' <<<"$caps" \
-    || fail "AppLab listens on 80 but the container is not granted NET_BIND_SERVICE, so the bind is refused unless the node allows unprivileged low ports"
-  grep -q 'drop:' <<<"$caps" \
-    || fail "the container grants NET_BIND_SERVICE without dropping the rest; a low port needs exactly that one capability"
+  sysobj="$(render --set auth.key=x | python3 -c '
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+deploy = [d for d in docs if d.get("kind") == "Deployment"]
+if not deploy:
+    print("none")
+    sys.exit(0)
+pod = deploy[0]["spec"]["template"]["spec"]
+sysctls = pod.get("securityContext", {}).get("sysctls") or []
+hit = [s for s in sysctls if s.get("name") == "net.ipv4.ip_unprivileged_port_start"]
+if not hit:
+    print("missing")
+elif str(hit[0].get("value")) != "0":
+    print("value:" + str(hit[0].get("value")))
+else:
+    print("ok")
+')"
+  case "$sysobj" in
+    ok) ;;
+    *) fail "AppLab listens on 80 but the pod does not set net.ipv4.ip_unprivileged_port_start=0 (got: $sysobj), so an unprivileged bind to 80 is refused and the container crash-loops with 'permission denied'" ;;
+  esac
+
+  # And the capability is not silently offered as the answer instead. Adding it
+  # back would read as a fix in the rendered manifest while doing nothing at
+  # runtime, which is a worse state than either working arrangement.
+  if render --set auth.key=x | grep -A6 'capabilities:' | grep -q 'NET_BIND_SERVICE'; then
+    fail "the container is granted NET_BIND_SERVICE for its port 80 bind, which does not work for a non-root container: the capability reaches only the bounding set, so the bind still fails. Remove it — podSecurityContext.sysctls is what allows the low port"
+  fi
+  grep -q 'drop:' <<<"$(render --set auth.key=x | grep -A4 'capabilities:')" \
+    || fail "the container does not drop capabilities; an applab container needs none of them"
 fi
 
 # The uninstall cleanup has to be there, and has to be a pre-delete hook.

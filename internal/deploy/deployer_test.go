@@ -591,6 +591,57 @@ func TestAppPodsGetNoAPIToken(t *testing.T) {
 	}
 }
 
+// TestAppPodsMayBindTheirOwnPort asserts an app can listen on the port it was
+// created with.
+//
+// The default is 80, which is the port an image built for a platform like this
+// conventionally EXPOSEs — and most such images do not run as root. Since Linux
+// 5.7 a bind below 1024 is refused unless the pod's own network namespace lowers
+// ip_unprivileged_port_start, so without this an app created with the default
+// port exits on start-up with "permission denied" while its Deployment reports
+// as running: the pod starts, the container fails, and nothing in the app's
+// configuration looks wrong.
+//
+// It is a sysctl and not a capability on purpose. capabilities.add reaches only
+// the bounding set for a non-root container — the kernel recomputes permitted and
+// effective at execve, so the capability is present and grants nothing — and the
+// arrangement that would work is running uploaded code as root, which is worse
+// than relaxing a namespaced sysctl by one setting.
+func TestAppPodsMayBindTheirOwnPort(t *testing.T) {
+	d, _ := newTestDeployer(t, testConfig())
+
+	app := testApp()
+	// The port an app is created with when the caller names none.
+	app.Port = 80
+
+	podSpec := buildDeploymentForTest(t, d, app).Spec.Template.Spec
+	if podSpec.SecurityContext == nil {
+		t.Fatal("the app pod has no security context, so an unprivileged bind to its port is refused")
+	}
+
+	var found bool
+	for _, sysctl := range podSpec.SecurityContext.Sysctls {
+		if sysctl.Name == "net.ipv4.ip_unprivileged_port_start" {
+			found = true
+			if sysctl.Value != "0" {
+				t.Errorf("net.ipv4.ip_unprivileged_port_start = %q, want 0", sysctl.Value)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the app pod does not lower net.ipv4.ip_unprivileged_port_start, so an app on port %d cannot bind it", app.Port)
+	}
+
+	// And the container keeps dropping everything: the sysctl is what allows the
+	// low port, not a capability.
+	container := podSpec.Containers[0]
+	for _, cap := range container.SecurityContext.Capabilities.Add {
+		if cap == "NET_BIND_SERVICE" {
+			t.Error("the app container is granted NET_BIND_SERVICE, which does nothing for a non-root container; the sysctl is what allows the port")
+		}
+	}
+}
+
 // TestPodSecurityHardening asserts an uploaded app cannot escalate privilege.
 // An app's code comes from whoever pushed the source, so it is untrusted by
 // construction.

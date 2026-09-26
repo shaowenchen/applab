@@ -43,17 +43,26 @@ worked until the filesystem it chose is gone. `APPLAB_DATA_DIR` still exists, bu
 it is only scratch space for `git`, which needs a real filesystem.
 
 **Port 80 needs privilege.** AppLab listens on 80 by default — the same port it is
-reached at — and binding it as an unprivileged user is refused unless the host
-allows it (`net.ipv4.ip_unprivileged_port_start=0`, the default since Linux 5.7)
-or the process has `CAP_NET_BIND_SERVICE`, which the chart grants. On a machine
-that allows neither, a local run needs a different port:
+reached at — and AppLab runs as an unprivileged user, so binding it is refused
+unless the process's own network namespace allows it
+(`net.ipv4.ip_unprivileged_port_start=0`, the default since Linux 5.7). On a
+machine that does not, a local run needs a different port:
 
 ```bash
 APPLAB_LISTEN=:8080 ./bin/applab
 ```
 
-The chart handles this for you: it grants the one capability a low port needs, so
-a deployment does not depend on the node's setting.
+A Kubernetes deployment cannot rely on the node's setting, and cannot fix it with
+a capability: `securityContext.capabilities.add: [NET_BIND_SERVICE]` reaches only
+the *bounding* set for a non-root container, and the kernel recomputes the
+permitted and effective sets at `execve` — so the capability is present and
+grants nothing. Making it effective would need an ambient capability, which
+Kubernetes' `Capabilities` type cannot express.
+
+So the chart lowers `ip_unprivileged_port_start` for the pod instead, through the
+safe sysctl `net.ipv4.ip_unprivileged_port_start=0`. It applies to that pod's own
+network namespace and nothing else, needs no kubelet flag, and is allowed by both
+the baseline and restricted Pod Security Standards.
 
 Then, from the project you want to deploy:
 
