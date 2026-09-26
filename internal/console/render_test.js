@@ -69,6 +69,12 @@ function makeElement(id = "") {
     focus() {},
     addEventListener() {},
     querySelector() { return null; },
+    // The app page's section watcher asks an element for the cards it holds, so
+    // the stub has to answer. Empty rather than null-or-undefined: a real
+    // element always returns an iterable, and code that spreads the result is
+    // correct against a browser — failing here would be the stub reporting its
+    // own gap as a bug in the console.
+    querySelectorAll() { return []; },
     // The theme and language controls label themselves with setAttribute, and
     // boot applies both before it renders anything — so an element without this
     // makes the whole script throw before the form is ever shown, which is a
@@ -733,6 +739,11 @@ async function render(apps) {
       // whatever the API returned. Every value of model.BuildStatus has to be
       // here or a build shows its raw API word.
       "cancelled",
+      // The log dialog's heading, reached as t(panel.title) from the LOG_PANELS
+      // declaration. "Platform log" is still found statically — it is also the
+      // card's own heading — but "Build log" is only ever a dialog title now
+      // that the build's output moved into one.
+      "Build log",
     ]);
     const unreferenced = Object.keys(zh).filter((k) => !wanted.has(k) && !viaVariable.has(k));
     check(
@@ -1186,6 +1197,118 @@ async function render(apps) {
     // puts the heading under the header.
     check("the nav sticks", /\.app-nav\s*\{[^}]*position:\s*sticky/.test(markup), true);
     check("and an anchored card clears the header", /scroll-margin-top/.test(markup), true);
+  }
+
+  // One failing panel must not leave the rest of a view half-built.
+  //
+  // Every loader on the app view used to be awaited with Promise.all, which
+  // rejects on the first failure — so a single failing endpoint skipped every
+  // line after it. The app view has moved on since (its log opens from a button
+  // rather than on load), but the loaders are still awaited together, and a
+  // generic loader failing is still the difference between a page with one
+  // broken panel and a page that stopped drawing.
+  //
+  // Asserted on what rendered rather than on how: the app's own fields come from
+  // loadAppState, and they have to be there even though loadPods blew up.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url) => {
+      const target = String(url);
+      ctx.requests.push(target);
+      // One panel fails; everything else answers.
+      if (target.includes("/pods")) {
+        return {
+          ok: false,
+          status: 500,
+          statusText: "Server Error",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ error: "boom" }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { id: "shop", port: 8080, replicas: 2 } }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = "k";', ctx);
+
+    let threw = "";
+    try {
+      await vm.runInContext("openApp", ctx)("shop");
+    } catch (err) {
+      threw = String(err && err.message);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+
+    check("a failing panel does not abort the app view", threw, "");
+    check(
+      "and the panels that did answer are still read",
+      ctx.requests.some((u) => u.includes("/api/v1/apps/shop/commits")),
+      true
+    );
+  }
+
+  // The log dialog is opened by a button, and it is the only thing that starts a
+  // stream.
+  //
+  // This is the shape the console settled on after the log was moved out of the
+  // page: a log is read by scrolling a long way and then closed, which is what a
+  // dialog is for, and an always-present panel pushed everything below it off
+  // the screen. What has to hold is that opening the dialog reads, and that
+  // nothing reads before it — a stream started on view entry would open a dialog
+  // nobody clicked.
+  //
+  // Both halves matter because the ids moved when the dialog was introduced:
+  // LOG_PANELS still pointed at the old in-page elements after they were
+  // removed, and because the panel description is read before the fetch, a
+  // missing element threw and the log came up empty with nothing to say why.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { id: "shop", pod: "shop-1" } }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = "k";', ctx);
+
+    await vm.runInContext("openApp", ctx)("shop");
+    await new Promise((r) => setTimeout(r, 0));
+
+    check(
+      "opening the app view does not read a log",
+      ctx.requests.filter((u) => u.includes("/logs")).length,
+      0
+    );
+
+    // Every panel's output element has to exist, or the stream throws before it
+    // writes anything — which presents as an empty log rather than as an error.
+    const described = vm.runInContext("Object.values(LOG_PANELS).map((p) => p.output)", ctx);
+    const missing = described.filter((id) => !markup.includes(`id="${id}"`));
+    check("every log panel points at an element that is in the page", missing.join(", "), "");
+
+    const opened = vm.runInContext("openDialogOn", ctx);
+    opened("platform");
+    await new Promise((r) => setTimeout(r, 0));
+
+    check(
+      "and the dialog's open control is what reads one",
+      ctx.requests.some((u) => u.includes("/api/v1/platform/logs")),
+      true
+    );
   }
 
   if (failures > 0) {

@@ -205,7 +205,7 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 	live := s.liveStatusesFor(r.Context(), app)
 	diagnosis := map[string]any{
 		"app_id": app.ID,
-		"status": string(appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(r.Context(), app.ID))),
+		"status": string(appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(r.Context(), app))),
 	}
 	if live.Message != "" {
 		diagnosis["status_reason"] = live.Message

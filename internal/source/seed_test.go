@@ -394,7 +394,13 @@ func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
 		{"PUT", "/env"},
 		{"DELETE", "/env/"},
 		{"GET", "/key"},
-		{"GET", "/logs?"},
+		// No trailing "?" on this one. It used to be "/logs?", which pinned the
+		// fact that the console built its query inline — the dialog refactor
+		// assembles it with URLSearchParams instead, so the literal stopped
+		// appearing and this entry reported the console as having dropped the
+		// route. The route is what matters here; how a client spells the query
+		// is not.
+		{"GET", "/logs"},
 		{"GET", "/pods"},
 		{"POST", "/restart"},
 		{"POST", "/rollback"},

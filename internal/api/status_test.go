@@ -195,13 +195,9 @@ func TestBuildInFlightOutranksTheCluster(t *testing.T) {
 		{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
 	}, "abc123def456789012345678901234567890abcd")
 
-	// A build that has not finished.
-	if err := st.CreateBuild(ctx, &model.Build{
-		ID: "b1", AppID: "shop", CommitSHA: "0123456789012345678901234567890123456789",
-		Status: model.BuildStatusRunning, JobName: "job-b1",
-	}); err != nil {
-		t.Fatalf("create build: %v", err)
-	}
+	// A build that has not finished: a Job still running, which is the only kind
+	// of build record there is.
+	makeBuildJob(t, client, "shop", "b1", "job-b1")
 
 	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
 	var app struct {
@@ -229,11 +225,13 @@ func TestAFreshInstallDoesNotBuildAnything(t *testing.T) {
 		t.Fatalf("create app: %v", err)
 	}
 
-	// What the server does at startup.
-	srv.ReconcileBuilds(context.Background())
+	// Nothing in AppLab builds on startup any more. There is no reconcile pass
+	// to invoke, so what this pins is that reading an existing app is inert: the
+	// request below is the whole of what happens, and it must not start anything.
+	rec := doRequest(t, srv.Handler(), http.MethodGet, "/api/v1/apps", nil)
 
 	if got := engine.startedJobs(); len(got) != 0 {
-		t.Errorf("startup started %d builds; recreating workloads is explicit", len(got))
+		t.Errorf("reading the app list started %d builds; recreating workloads is explicit", len(got))
 	}
 
 	// And the app is still listed, with its settings.
@@ -242,7 +240,6 @@ func TestAFreshInstallDoesNotBuildAnything(t *testing.T) {
 		Port   int32  `json:"port"`
 		Status string `json:"status"`
 	}
-	rec := doRequest(t, srv.Handler(), http.MethodGet, "/api/v1/apps", nil)
 	decodeData(t, rec, &list)
 	if len(list) != 1 || list[0].ID != "shop" || list[0].Port != 8080 {
 		t.Errorf("the app was not listed with its settings: %+v", list)
@@ -257,7 +254,7 @@ func TestADeployRecreatesADeploymentThatIsGone(t *testing.T) {
 	ctx := context.Background()
 
 	commit := setupAppWithCommit(t, srv, h, "shop")
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
+	registerBuildJob(t, srv, st, "shop", commit)
 
 	// Nothing is running to begin with, which is the fresh-install state.
 	if _, err := client.AppsV1().Deployments("ops-system").Get(ctx, "applab-shop", metav1.GetOptions{}); err == nil {

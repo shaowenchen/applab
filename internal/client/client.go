@@ -685,6 +685,7 @@ type Build struct {
 	ID        string    `json:"id"`
 	AppID     string    `json:"app_id"`
 	CommitSHA string    `json:"commit_sha"`
+	Branch    string    `json:"branch"`
 	Status    string    `json:"status"`
 	Image     string    `json:"image"`
 	JobName   string    `json:"job_name"`

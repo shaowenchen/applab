@@ -10,12 +10,10 @@ import (
 
 // appStatus derives an app's status from what is actually there.
 //
-// The cluster is the authority on what is running, and the bucket's build
-// records supply the one thing the cluster cannot know: that a build is in
-// flight. Everything else — whether a Deployment exists, whether it is up,
-// whether it cannot progress — is read from the cluster rather than remembered,
-// because remembering it is what made a fresh install report every app as
-// running with nothing behind it.
+// Everything it uses is a fact about the cluster: whether a Deployment exists,
+// whether it is up, whether it cannot progress, and whether a build is running.
+// AppLab records none of it, because recording it is what made a fresh install
+// report every app as running with nothing behind it.
 //
 // buildInFlight is passed in rather than looked up here so a listing pays for it
 // once. The routine is pure otherwise, which is what lets the list and the
@@ -118,25 +116,43 @@ func (s *Server) liveStatus(ctx context.Context, appIDs ...string) map[string]de
 }
 
 // buildInFlight reports whether one app has a build that has not finished.
-func (s *Server) buildInFlight(ctx context.Context, appID string) bool {
-	builds, err := s.store.ListUnfinishedBuildsForApp(ctx, appID)
-	if err != nil {
-		slog.DebugContext(ctx, "could not list unfinished builds for an app", "app", appID, "error", err)
+//
+// It reads the build Jobs, which are the only record of a build: a Job that is
+// still running is a build that is still running, and there is nothing to
+// consult beside it.
+func (s *Server) buildInFlight(ctx context.Context, app *model.App) bool {
+	if !s.canBuild() {
 		return false
 	}
-	return len(builds) > 0
+	unfinished, err := s.build.Unfinished(ctx, app.Namespace, app.ID)
+	if err != nil {
+		slog.DebugContext(ctx, "could not list an app's unfinished builds", "app", app.ID, "error", err)
+		return false
+	}
+	return len(unfinished) > 0
 }
 
 // buildsInFlight reports which apps have a build that has not finished.
 //
-// This is the one piece of status that is not the cluster's to answer. A build
-// Job exists while it runs, but its outcome after it is collected is recorded in
-// the bucket — see store.ListUnfinishedBuilds — and "is a build running" is a
-// question about AppLab's own queue rather than about the cluster.
+// One listing answers for every app rather than one per app: build Jobs carry
+// the app label, so a page of apps costs the same single read a page of one app
+// does.
 func (s *Server) buildsInFlight(ctx context.Context, apps []*model.App) map[string]bool {
-	out := map[string]bool{}
+	out := make(map[string]bool, len(apps))
+	if !s.canBuild() {
+		for _, app := range apps {
+			out[app.ID] = false
+		}
+		return out
+	}
+
+	inFlight, err := s.build.InFlight(ctx, s.cfg.Namespace)
+	if err != nil {
+		slog.DebugContext(ctx, "could not list the builds in flight", "error", err)
+	}
+
 	for _, app := range apps {
-		out[app.ID] = s.buildInFlight(ctx, app.ID)
+		out[app.ID] = inFlight[app.ID]
 	}
 	return out
 }

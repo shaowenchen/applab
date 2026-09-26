@@ -452,6 +452,48 @@
   }
   .empty { color: var(--text-muted); padding: 24px; text-align: center; }
   .hidden { display: none !important; }
+
+  /* The log dialog. A log is read by scrolling a long way and then closed, which
+     is the shape a dialog is for: on the page it pushed everything below it off
+     the screen and left a mostly-empty box behind afterwards. The panel is
+     sized to the viewport rather than to its content, so a long log scrolls
+     inside it instead of growing the dialog past the bottom of the screen. */
+  .log-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .log-modal-scrim {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+  }
+  .log-modal-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: min(1100px, 100%);
+    max-height: 100%;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+  }
+  .log-modal-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .log-modal-head h2 { margin: 0; flex: 1; font-size: 14px; font-weight: 600; }
+  /* The output takes the remaining height and scrolls itself, so the head stays
+     put while the log moves under it. */
+  .log-modal-panel pre { flex: 1; min-height: 0; margin: 0; }
   a { color: var(--accent); }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
   dt { color: var(--text-muted); }
@@ -646,15 +688,16 @@
          a dashboard whose job is to be read at a glance, and a 480px box pushed
          the build list off the first screen. The lines scroll inside it, so
          nothing is lost — only the amount visible without scrolling. -->
+    <!-- Opening the log is what this card offers; the log itself is in the
+         dialog at the end of the page, which is shared with the other two
+         surfaces that stream. The card keeps a line of the description so it
+         still says what it is for rather than being a bare button. -->
     <div class="card">
       <div class="card-head">
         <h2 data-i18n="Platform log">Platform log</h2>
-        <label class="muted" style="font-size:13px">
-          <input type="checkbox" id="platform-logs-previous"> <span data-i18n="previous instance">previous instance</span>
-        </label>
-        <button id="platform-logs-toggle" data-i18n="Follow">Follow</button>
+        <button id="platform-logs-open" data-i18n="View log">View log</button>
       </div>
-      <pre id="platform-logs" style="margin:0;max-height:240px" data-i18n="(not started)">(not started)</pre>
+      <p data-i18n="AppLab's own log: the deployment serving this page.">AppLab's own log: the deployment serving this page.</p>
     </div>
   </section>
 
@@ -781,8 +824,7 @@
 
       <!-- Whether a push ships on its own. Unlike the settings in the Instances
            card this one takes effect immediately, because it is read when a push
-           arrives rather than applied by the deployer — which is why it is not
-           sitting under the "takes effect on the next deploy" note.
+           arrives rather than applied by the deployer.
 
            On by default, and the box shows the app's real setting rather than a
            stored preference: the API reports the resolved value, so an app that
@@ -826,11 +868,9 @@
            when the instances are the problem: the wrong branch is the wrong code
            running, and the wrong port is every copy unreachable.
 
-           All three take effect on the next deploy, said once beside the group
-           rather than repeated under each. Nothing here applies them; the
-           deployer does, exactly as it applies the image. `applab update` behaves
-           the same way, which is what keeps the three surfaces telling the same
-           story. -->
+           Nothing here applies them; the deployer does, exactly as it applies
+           the image. `applab update` behaves the same way, which is what keeps
+           the three surfaces telling the same story. -->
       <div class="state-actions">
         <label class="field">
           <span data-i18n="Branch">Branch</span>
@@ -842,11 +882,8 @@
           <input id="app-port" type="number" min="1" max="65535" size="5" style="width:88px">
           <button id="app-port-set" data-i18n="Set">Set</button>
         </label>
-        <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
-        <!-- Switching replaces what is serving, said out loud beside the button:
-             an app that quietly swapped its code on a control that reads like a
-             filter would be a surprise. -->
-        <span class="muted" style="font-size:12px" data-i18n="switching replaces what is running">switching replaces what is running</span>
+        <!-- Switching replaces what is serving, so it is not a filter: the
+             button says Switch rather than anything that sounds like a view. -->
       </div>
 
       <table>
@@ -860,12 +897,9 @@
     <div class="card" id="card-log">
       <div class="card-head">
         <h2 data-i18n="Log">Log</h2>
-        <label class="muted" style="font-size:13px">
-          <input type="checkbox" id="logs-previous"> <span data-i18n="previous instance">previous instance</span>
-        </label>
-        <button id="logs-toggle" data-i18n="Follow">Follow</button>
+        <button id="logs-open" data-i18n="View log">View log</button>
       </div>
-      <pre id="logs" style="margin:0" data-i18n="(not started)">(not started)</pre>
+      <p data-i18n="What this app's container is writing.">What this app's container is writing.</p>
     </div>
 
     <div class="card" id="card-env">
@@ -880,10 +914,8 @@
         <button id="config-env-add" class="icon" data-i18n-title="Add an environment variable" aria-label="Add an environment variable">+</button>
       </div>
 
-      <!-- The "takes effect on the next deploy" note that used to sit here, and
-           the row of inputs under the table, are both gone: the note repeated
-           what every other setting on this page says, and the inputs are behind
-           the button above. -->
+      <!-- The row of inputs that used to sit under the table is gone: the
+           fields are behind the button above. -->
       <table id="config-env-table" class="hidden">
         <thead><tr><th data-i18n="Name">Name</th><th data-i18n="Value">Value</th><th></th><th></th></tr></thead>
         <tbody id="config-env"></tbody>
@@ -939,12 +971,10 @@
          that is empty almost always. It has its own heading rather than reusing
          the runtime log's, because the two are different streams and reading the
          wrong one is how a build failure looks like an app failure. -->
-    <div id="build-logs-card" class="card hidden">
-      <div class="card-head">
-        <h2><span data-i18n="Build log">Build log</span> <span class="mono muted" id="build-logs-label"></span></h2>
-      </div>
-      <pre id="build-logs" style="margin:0"></pre>
-    </div>
+    <!-- The build log has no card of its own any more: it opens in the shared
+         dialog below, like the other two streams. It used to sit here as a card
+         that appeared on demand, which meant the page grew a panel under the
+         table and then kept it there, empty, for the rest of the visit. -->
 
     <div class="card" id="card-history">
       <h2 data-i18n="History">History</h2>
@@ -954,6 +984,36 @@
       </table>
     </div>
 
+    <!-- The log dialog, shared by all three surfaces that stream: the platform's
+         own log, an app's runtime log, and a single build's output. One dialog
+         rather than three, because they are the same thing to read — a lot of
+         text that scrolls — and three would be three places to fix every
+         streaming bug.
+
+         The <pre> each stream writes into lives here and only the active one is
+         shown, so the element being written to is the element on screen. Closing
+         stops the stream: the dialog is the only thing reading it, and a stream
+         left running behind a closed dialog would keep the connection open for
+         output nobody can see.
+
+         It sits outside .app-body so it is not part of the scrolling column —
+         position: fixed takes it out of the flow either way, but a dialog nested
+         in the layout would still be found by the nav's IntersectionObserver. -->
+    <div id="log-modal" class="log-modal hidden" role="dialog" aria-modal="true" aria-labelledby="log-modal-title">
+      <div class="log-modal-scrim" id="log-modal-scrim"></div>
+      <div class="log-modal-panel">
+        <div class="log-modal-head">
+          <h2 id="log-modal-title">Log</h2>
+          <span class="mono muted" id="build-logs-label"></span>
+          <label class="muted" style="font-size:13px" id="log-modal-previous-wrap">
+            <input type="checkbox" id="log-modal-previous"> <span data-i18n="previous instance">previous instance</span>
+          </label>
+          <button id="log-modal-follow" data-i18n="Follow">Follow</button>
+          <button id="log-modal-close" data-i18n="Close">Close</button>
+        </div>
+        <pre id="platform-logs" class="hidden" data-i18n="(not started)">(not started)</pre>
+        <pre id="logs" class="hidden" data-i18n="(not started)">(not started)</pre>
+        <pre id="build-logs" class="hidden"></pre>
       </div>
     </div>
   </section>
@@ -1012,6 +1072,9 @@ const state = {
   logAbort: null,
   logPanel: "",
   logFollowing: false,
+  // The build the dialog is showing, so its heading can name it. Empty when the
+  // dialog is on one of the two live logs.
+  logBuild: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1095,6 +1158,9 @@ const ZH = {
   "Refresh": "刷新",
   "Recent builds": "最近构建",
   "Platform log": "平台日志",
+  "View log": "查看日志",
+  "Close": "关闭",
+  "AppLab's own log: the deployment serving this page.": "AppLab 自身的日志：提供本页面的这套部署。",
   "This deployment cannot read logs: no cluster client is configured.": "这个部署无法读取日志：没有配置集群客户端。",
   "No builds yet. Push an app with": "还没有构建。用这个命令推送一个应用：",
   "Needs attention": "需要处理",
@@ -1157,12 +1223,10 @@ const ZH = {
   "Copy": "复制",
   "Copied": "已复制",
   "Replicas": "副本数",
-  "takes effect on the next deploy": "下次部署时生效",
   "Build latest": "构建最新",
   "Deploy latest": "部署最新",
   "Branch": "分支",
   "Switch": "切换",
-  "switching replaces what is running": "切换会替换当前运行的版本",
   "Switch {app} to {branch}? This replaces what is running.": "将 {app} 切换到 {branch}？这会替换当前运行的版本。",
   "Could not switch branch: {error}": "切换分支失败：{error}",
   "This app has no source yet. Upload some before building it.": "该应用还没有代码，请先上传。",
@@ -1204,6 +1268,7 @@ const ZH = {
   "Builds": "构建",
   "Build pod": "构建 Pod",
   "Build log": "构建日志",
+  "What this app's container is writing.": "该应用容器正在输出的内容。",
   "Deploy": "部署",
   "(loading)": "（加载中）",
   "Could not stop the build: {error}": "无法停止构建：{error}",
@@ -1215,8 +1280,6 @@ const ZH = {
   "cluster": "集群",
   "nothing deployed": "未部署任何内容",
   "running image": "运行中的镜像",
-  "{ready}/{desired} ready": "{ready}/{desired} 就绪",
-  " (available)": "（可用）",
   "url": "地址",
 
   // -- Statuses -------------------------------------------------------------
@@ -1230,6 +1293,7 @@ const ZH = {
   "succeeded": "成功",
   "cancelled": "已取消",
   "pending": "等待中",
+  "replicas": "副本",
   "ready": "就绪",
   "not ready": "未就绪",
   "deployed": "已部署",
@@ -1825,12 +1889,13 @@ async function showOverview() {
   stopLogs();
   state.app = "";
   navTo("overview");
-  await loadOverview();
-  // Followed from the moment the view opens, like an app's log: the panel is
-  // there to be read while something is going wrong, and asking someone to press
-  // Follow first means the lines they wanted are the ones that scrolled past
-  // before they did.
-  startLogs("platform");
+  // allSettled for the same reason the app view uses it: a panel that fails
+  // must not leave the rest of the dashboard half-built.
+  await Promise.allSettled([loadOverview()]);
+  // Nothing is read until it is asked for. The platform log used to start
+  // streaming the moment this view opened, into a panel that was always on the
+  // page; it is a dialog now, so starting it here would open a dialog nobody
+  // clicked. The card's button is how it starts.
 }
 
 async function showApps() {
@@ -2067,20 +2132,23 @@ async function cancelBuild(buildID) {
   await loadAppBuilds();
 }
 
-// showBuildLog switches the log panel below the table to one build's output and
-// scrolls to it.
+// showBuildLog opens one build's output in the shared dialog.
 //
-// The output is fetched once with follow=false rather than streamed: a build's
-// Job has usually finished by the time anyone opens this, and the streaming
-// endpoint exists for watching a run in progress. The app's own runtime log —
-// the more common thing to want — is the panel above, which does stream.
+// It does not go through startLogs: a build's output is fetched once with
+// follow=false rather than streamed, because a build's Job has usually finished
+// by the time anyone opens this and the streaming endpoint exists for watching a
+// run in progress. The app's own runtime log — the more common thing to want —
+// is the surface that does stream, and it opens the same dialog.
 async function showBuildLog(buildID) {
+  state.logBuild = buildID;
+  openLogDialog("build");
+
   const el = $("build-logs");
   el.textContent = t("(loading)");
 
   try {
     const response = await fetch(
-      state.url + "/api/v1/apps/" + state.app + "/builds/" + buildID + "/logs?follow=false",
+      state.url + LOG_PANELS.build.path(buildID) + "?follow=false",
       { headers: { "Authorization": "Bearer " + state.key } }
     );
     if (!response.ok) {
@@ -2095,10 +2163,6 @@ async function showBuildLog(buildID) {
   } catch (err) {
     el.textContent = tf("Could not read the log: {error}", { error: err.message });
   }
-
-  show($("build-logs-card"), true);
-  $("build-logs-label").textContent = shortSHA(buildID);
-  $("build-logs-card").scrollIntoView({ block: "nearest" });
 }
 
 
@@ -2483,7 +2547,13 @@ async function openApp(id) {
 
   stopLogs();
 
-  await Promise.all([
+  // allSettled, not all: these are independent panels, and one of them failing
+  // must not take the others with it. With `all`, a single rejection — an
+  // endpoint this deployment does not serve, a momentary 500 — skipped every
+  // line after it, so the page came up with one panel showing an error and the
+  // rest of the view half-built. All that is lost now is the one panel that
+  // failed, which reports itself.
+  await Promise.allSettled([
     loadAppState(),
     loadPods(),
     loadCommits(),
@@ -2492,13 +2562,15 @@ async function openApp(id) {
     loadRepository(),
     loadBranches(),
   ]);
-  startLogs("app");
-
-  // The build log panel belongs to the app that was open, so it goes with it.
-  // Left as it was, the next app's page would open showing the previous app's
-  // build output under a heading naming a build that is not its own.
-  show($("build-logs-card"), false);
-  $("build-logs").textContent = "";
+  // The log lives in a dialog now rather than in a card on the page, so opening
+  // an app no longer starts reading one — the reader asks for it. Nothing is
+  // left streaming from the app that was open either: `stopLogs` above aborted
+  // it. Its output is cleared, or the next app's dialog would open showing the
+  // previous app's container output under this app's name.
+  show($("log-modal"), false);
+  for (const panel of Object.values(LOG_PANELS)) $(panel.output).textContent = "";
+  $("build-logs-label").textContent = "";
+  state.logBuild = "";
 }
 
 // loadAppConfig renders the app's environment variables.
@@ -2739,10 +2811,11 @@ async function loadAppState() {
   } else {
     if (status.live.commit_sha) add(t("commit"), status.live.commit_sha);
     if (status.live.current_image) add(t("running image"), status.live.current_image);
-    add(t("cluster"), tf("{ready}/{desired} ready", {
-      ready: status.live.ready_replicas,
-      desired: status.live.desired_replicas,
-    }) + (status.live.available ? t(" (available)") : ""));
+    // Just the count. "(available)" used to follow it, which restated what the
+    // status row above already says — an app whose replicas are ready is the
+    // app the status calls running — and it read as a parenthetical after a
+    // number, which is a shape that says "aside" rather than "fact".
+    add(t("replicas"), status.live.ready_replicas + "/" + status.live.desired_replicas);
   }
 
   // Last, so the repository reads as part of the record rather than as a
@@ -3157,37 +3230,93 @@ const LOG_PANELS = {
     // The open app's log: which app is state.app, read at call time.
     path: () => "/api/v1/apps/" + state.app + "/logs",
     output: "logs",
-    toggle: "logs-toggle",
-    previous: "logs-previous",
+    title: "Log",
+    // An app's runtime log is the one that streams and has a previous instance
+    // to switch to; the other two are fetched once.
+    streams: true,
   },
   platform: {
     // AppLab's own log: the deployment serving this page. No app in the path,
     // because it is not about one.
     path: () => "/api/v1/platform/logs",
     output: "platform-logs",
-    toggle: "platform-logs-toggle",
-    previous: "platform-logs-previous",
+    title: "Platform log",
+    streams: true,
+  },
+  build: {
+    // One build's output. Not streamed: a build's Job has usually finished by
+    // the time anyone opens this, and the streaming endpoint exists for watching
+    // a run in progress. The path carries the build chosen, so it is a function
+    // of the id rather than of the app.
+    path: (id) => "/api/v1/apps/" + state.app + "/builds/" + id + "/logs",
+    output: "build-logs",
+    title: "Build log",
+    streams: false,
   },
 };
 
-function stopLogs() {
+// openLogDialog shows the dialog on one panel, hiding the other outputs.
+//
+// The three <pre> elements are siblings in one dialog and exactly one is shown,
+// so what a stream writes into is what is on screen.
+function openLogDialog(name) {
+  const panel = LOG_PANELS[name];
+  if (!panel) return;
+
+  for (const other of Object.values(LOG_PANELS)) {
+    show($(other.output), other.output === panel.output);
+  }
+
+  // The title names which log this is: three surfaces share one dialog, so
+  // without it "Log" would be ambiguous from inside the app's page or the
+  // overview.
+  $("log-modal-title").textContent = t(panel.title);
+
+  // Controls that only apply to a streaming log. A build's output is fetched
+  // once, so Follow and "previous instance" would be controls that do nothing.
+  show($("log-modal-follow"), panel.streams);
+  show($("log-modal-previous-wrap"), panel.streams);
+  $("log-modal-follow").textContent = t("Follow");
+
+  // The build's short SHA labels the dialog; the other two have no such id.
+  $("build-logs-label").textContent = name === "build" ? shortSHA(state.logBuild) : "";
+
+  show($("log-modal"), true);
+  $("log-modal-close").focus();
+}
+
+// closeLogDialog closes the dialog, which stops the stream with it.
+function closeLogDialog() {
+  stopLogs();
+}
+
+// stopLogStream aborts whatever is streaming and puts the Follow button back.
+//
+// Split from stopLogs below because startLogs calls it to clear the previous
+// stream — and it must not take the dialog down with it, since the dialog is
+// what startLogs was asked to fill.
+function stopLogStream() {
   if (state.logAbort) {
     state.logAbort.abort();
     state.logAbort = null;
   }
   state.logFollowing = false;
-  // Only the panel that owns the stream needs putting back; the other is not
-  // following anything, and its button already says so.
-  const panel = LOG_PANELS[state.logPanel];
-  if (panel) {
-    const toggle = $(panel.toggle);
-    if (toggle) toggle.textContent = t("Follow");
-  }
   state.logPanel = "";
+  $("log-modal-follow").textContent = t("Follow");
+}
+
+// stopLogs stops the stream and closes the dialog.
+//
+// Called when the view changes: a dialog left open over another view would be
+// showing output from a surface that is no longer on the page, and it is fixed
+// to the viewport, so it would sit there over the view that replaced it.
+function stopLogs() {
+  stopLogStream();
+  show($("log-modal"), false);
 }
 
 async function startLogs(name) {
-  stopLogs();
+  stopLogStream();
 
   const panel = LOG_PANELS[name];
   if (!panel) return;
@@ -3199,10 +3328,10 @@ async function startLogs(name) {
   state.logAbort = controller;
   state.logPanel = name;
   state.logFollowing = true;
-  $(panel.toggle).textContent = t("Stop");
+  $("log-modal-follow").textContent = t("Stop");
 
   const params = new URLSearchParams({ follow: "false", tail: "500" });
-  if ($(panel.previous).checked) params.set("previous", "true");
+  if ($("log-modal-previous").checked) params.set("previous", "true");
 
   try {
     const response = await fetch(
@@ -3242,7 +3371,7 @@ async function startLogs(name) {
       state.logAbort = null;
       state.logPanel = "";
       state.logFollowing = false;
-      $(panel.toggle).textContent = t("Follow");
+      $("log-modal-follow").textContent = t("Follow");
     }
   }
 }
@@ -3473,17 +3602,37 @@ $("config-env-set").onclick = () => {
   $("config-env-value").value = "";
 };
 
-// Both panels' controls, wired the same way. The toggle is per panel but the
-// stream is not, so a panel's Follow stops whatever is running — which is that
-// panel's own stream, since only one view is ever on screen.
-for (const [name, panel] of Object.entries(LOG_PANELS)) {
-  $(panel.toggle).onclick = () => {
-    if (state.logFollowing) stopLogs();
-    else startLogs(name);
-  };
-  // Re-reads to apply the new setting, rather than reopening a second stream.
-  $(panel.previous).onchange = () => { if (state.logFollowing) startLogs(name); };
+// The two surfaces with a card of their own open the dialog on their log. The
+// third — a build — is opened from the build list below, which has the build id
+// to name.
+$("logs-open").onclick = () => openDialogOn("app");
+$("platform-logs-open").onclick = () => openDialogOn("platform");
+
+// openDialogOn shows the dialog and starts reading, for the two surfaces that
+// stream. Kept as one function because they differ only in which panel it is.
+function openDialogOn(name) {
+  openLogDialog(name);
+  startLogs(name);
 }
+
+// The dialog's own controls. Follow toggles the stream that is open, and the
+// previous-instance box re-reads rather than opening a second stream.
+$("log-modal-follow").onclick = () => {
+  if (state.logFollowing) stopLogStream();
+  else startLogs(state.logPanel);
+};
+$("log-modal-previous").onchange = () => {
+  if (state.logFollowing) startLogs(state.logPanel);
+};
+$("log-modal-close").onclick = closeLogDialog;
+$("log-modal-scrim").onclick = closeLogDialog;
+// Escape closes it, which is what a dialog is expected to do. Bound on the
+// dialog rather than the document: focus is moved to Close when it opens, so
+// the dialog is where the key event lands, and a document-level listener would
+// be a global the harness has to model for one key.
+$("log-modal").onkeydown = (e) => {
+  if (e.key === "Escape") closeLogDialog();
+};
 
 // On boot: work out the deployment's address from this page, and use a saved key
 // if there is one.

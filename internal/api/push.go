@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/model"
-	"github.com/shaowenchen/applab/internal/store"
 )
 
 // detachedContext carries the values of a request context without its
@@ -113,7 +113,7 @@ func (s *Server) AfterGitPush(ctx context.Context, appID, branch string) {
 // unchanged commit is an unchanged image, and this is what makes pushing a
 // branch that was already built cheap.
 func (s *Server) StartPushBuild(ctx context.Context, appID, branch string) {
-	if s.build == nil || !s.build.Ready() {
+	if !s.canBuild() {
 		return
 	}
 	if s.deployer == nil || !s.deployer.Ready() {
@@ -161,24 +161,24 @@ func (s *Server) StartPushBuild(ctx context.Context, appID, branch string) {
 	// case this catches is not "the app is already running this" but "this commit
 	// was built before and was never deployed" — a push that was followed by a
 	// build that failed to deploy, or a deploy of another commit that was rolled
-	// back. Reading the image and deploying it is what makes a push mean "this
-	// source is live", whether or not the build had to happen.
-	if existing, err := s.store.FindSucceededBuild(ctx, appID, head); err == nil {
+	// back. Deploying it is what makes a push mean "this source is live", whether
+	// or not the build had to happen.
+	if existing, err := s.build.FindSucceeded(ctx, app.Namespace, app.ID, head); err == nil {
 		slog.InfoContext(ctx, "a pushed commit already has an image; deploying it without rebuilding",
 			"app", appID, "branch", branch, "commit", shortSHA(head), "build", existing.ID)
 		s.goRun(func() { s.deployBuiltCommit(ctx, appID, branch, head, existing.ID) })
 		return
-	} else if !errors.Is(err, store.ErrNotFound) {
+	} else if !errors.Is(err, build.ErrBuildNotFound) {
 		slog.WarnContext(ctx, "could not look up an existing build for a pushed commit",
 			"app", appID, "commit", shortSHA(head), "error", err)
 		return
 	}
 
-	// The build is recorded and started first, and the deploy follows only if it
-	// succeeded. A build and a deploy are two operations with two outcomes, and
-	// this is the only place that can see both; doing it in one call would mean
-	// holding a request open for the length of a build.
-	build, apiErr := s.startBuild(ctx, app, branch, head)
+	// The build is started first, and the deploy follows only if it succeeded. A
+	// build and a deploy are two operations with two outcomes, and this is the
+	// only place that can see both; doing it in one call would mean holding a
+	// request open for the length of a build.
+	buildID, _, apiErr := s.startBuild(ctx, app, branch, head)
 	if apiErr != nil {
 		slog.ErrorContext(ctx, "could not start the build a push asked for",
 			"app", appID, "branch", branch, "commit", shortSHA(head), "error", apiErr)
@@ -186,29 +186,35 @@ func (s *Server) StartPushBuild(ctx context.Context, appID, branch string) {
 	}
 
 	slog.InfoContext(ctx, "a push started a build",
-		"app", appID, "branch", branch, "commit", shortSHA(head), "build", build.ID)
+		"app", appID, "branch", branch, "commit", shortSHA(head), "build", buildID)
 
-	s.goRun(func() { s.awaitBuildThenDeploy(ctx, appID, branch, head, build.ID) })
+	s.goRun(func() { s.awaitBuildThenDeploy(ctx, appID, branch, head, buildID) })
 }
 
 // awaitBuildThenDeploy waits for a pushed build to finish and deploys it if it
 // succeeded.
 //
 // Waiting is the whole difficulty. AppLab has no controller watching Jobs, so a
-// build's outcome is recorded only when something asks — the log endpoint while
-// someone follows it, or the reconcile at startup. A build nobody follows is
-// therefore never noticed at all, which is exactly the case a push creates. So
-// the push watches its own build.
+// build's outcome is noticed only when something asks — this loop, or a caller
+// following the log. A build nobody follows is therefore never noticed at all,
+// which is exactly the case a push creates. So the push watches its own build.
 //
 // The cost is a polling goroutine per pushed build, alive for as long as the
 // build runs. That is the price of not having a controller, and it is bounded:
 // the loop gives up after pushBuildWait, and the build's own Job has a deadline
 // of its own.
 //
-// The read is one Job by name every few seconds, which is small; the alternative
-// — a controller watching every build in the cluster — is a component to operate,
-// and this is not yet worth one.
+// The read is one listing of one app's build Jobs every few seconds, which is
+// small; the alternative — a controller watching every build in the cluster — is
+// a component to operate, and this is not yet worth one.
 func (s *Server) awaitBuildThenDeploy(ctx context.Context, appID, branch, commitSHA, buildID string) {
+	app, err := s.loadAppByID(ctx, appID)
+	if err != nil {
+		slog.WarnContext(ctx, "could not read the app of the build a push started",
+			"app", appID, "build", buildID, "error", err)
+		return
+	}
+
 	deadline := time.Now().Add(pushBuildWait)
 	ticker := time.NewTicker(pushBuildPollInterval)
 	defer ticker.Stop()
@@ -220,17 +226,21 @@ func (s *Server) awaitBuildThenDeploy(ctx context.Context, appID, branch, commit
 		case <-ticker.C:
 		}
 
-		build, err := s.store.GetBuild(ctx, appID, buildID)
+		result, err := s.build.Get(ctx, app.Namespace, appID, buildID)
 		if err != nil {
+			if errors.Is(err, build.ErrBuildNotFound) {
+				// The Job is gone: its TTL elapsed, or a newer upload superseded
+				// it. Either way this build will not deploy, and polling for it
+				// would run to the deadline for nothing.
+				slog.InfoContext(ctx, "the build a push started is no longer in the cluster, so nothing was deployed",
+					"app", appID, "build", buildID)
+				return
+			}
 			slog.WarnContext(ctx, "could not read the build a push started", "build", buildID, "error", err)
 			return
 		}
 
-		// refreshBuild reads the cluster and records what it finds, which is what
-		// moves the build off "running" — nothing else is watching this one.
-		s.refreshBuild(ctx, build)
-
-		if !build.Status.Terminal() {
+		if !result.Status.Terminal() {
 			if time.Now().After(deadline) {
 				slog.WarnContext(ctx, "gave up waiting for the build a push started; it may still finish",
 					"app", appID, "build", buildID)
@@ -239,12 +249,12 @@ func (s *Server) awaitBuildThenDeploy(ctx context.Context, appID, branch, commit
 			continue
 		}
 
-		if build.Status != model.BuildStatusSucceeded {
+		if result.Status != model.BuildStatusSucceeded {
 			// Reported, not retried. A build that failed is the pusher's to look
 			// at — the build's own reason says why — and retrying would loop on a
 			// Dockerfile that fails deterministically.
 			slog.InfoContext(ctx, "the build a push started did not succeed, so nothing was deployed",
-				"app", appID, "build", buildID, "status", build.Status, "reason", build.Reason)
+				"app", appID, "build", buildID, "status", result.Status, "reason", result.Reason)
 			return
 		}
 
@@ -255,10 +265,11 @@ func (s *Server) awaitBuildThenDeploy(ctx context.Context, appID, branch, commit
 
 // deployBuiltCommit deploys a pushed commit whose build succeeded.
 //
-// The image is re-read rather than carried from the build record read above: a
-// deploy is what makes the image live, and reading it here means an image that
-// was not recorded is a deploy that did not happen rather than one pointed at a
-// tag nothing pushed.
+// The image is derived from the commit rather than carried from the build read
+// above, because that is what it is: a function of the app, the commit and the
+// build configuration. Nothing recorded it and nothing needs to — the tag a
+// build pushes to is the tag a deploy pulls from, and both are computed from the
+// same inputs by the same function.
 func (s *Server) deployBuiltCommit(ctx context.Context, appID, branch, commitSHA, buildID string) {
 	app, err := s.loadAppByID(ctx, appID)
 	if err != nil {
@@ -267,10 +278,10 @@ func (s *Server) deployBuiltCommit(ctx context.Context, appID, branch, commitSHA
 		return
 	}
 
-	build, err := s.store.GetBuild(ctx, appID, buildID)
-	if err != nil || build.Image == "" {
-		slog.WarnContext(ctx, "built a pushed commit but its image was not recorded, so nothing was deployed",
-			"app", appID, "build", buildID, "error", err)
+	image := s.imageFor(appID, commitSHA)
+	if image == "" {
+		slog.WarnContext(ctx, "built a pushed commit but this deployment cannot name its image, so nothing was deployed",
+			"app", appID, "build", buildID)
 		return
 	}
 
@@ -288,14 +299,14 @@ func (s *Server) deployBuiltCommit(ctx context.Context, appID, branch, commitSHA
 		return
 	}
 
-	if _, apiErr := s.deployCommit(ctx, app, commitSHA, build.Image); apiErr != nil {
+	if _, apiErr := s.deployCommit(ctx, app, commitSHA, image); apiErr != nil {
 		slog.ErrorContext(ctx, "could not deploy the commit a push built",
 			"app", appID, "build", buildID, "commit", shortSHA(commitSHA), "error", apiErr)
 		return
 	}
 
 	slog.InfoContext(ctx, "a pushed commit is deployed",
-		"app", appID, "branch", branch, "commit", shortSHA(commitSHA), "image", build.Image)
+		"app", appID, "branch", branch, "commit", shortSHA(commitSHA), "image", image)
 }
 
 const (

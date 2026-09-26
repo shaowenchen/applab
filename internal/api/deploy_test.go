@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,6 +24,7 @@ import (
 
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/k8s"
@@ -80,12 +84,103 @@ func newDeployServerWithDynamic(t *testing.T) (*api.Server, *fake.Clientset, *st
 
 	cluster := k8s.NewWithClientset(client, cfg.Namespace)
 
+	// The real build engine, over the same fake clientset. Attaching it here
+	// rather than in the tests that want one means the deploy path's build
+	// lookups — "has this commit been built", "what image did it produce" — run
+	// against the code that will actually answer them, instead of against a
+	// stand-in written to agree with the test's assumption.
+	buildEngine := build.New(client, build.Config{
+		Registry:    "registry.example.com/apps",
+		KanikoImage: "gcr.io/kaniko-project/executor:v1.23.2",
+		AppLabURL:   "http://applab.ops-system.svc.cluster.local",
+	})
+
 	srv := api.New(cfg, st, auth.New(cfg.Keys)).
 		WithSource(src).
+		WithBuild(buildEngine).
 		WithDeployer(deployer).
 		WithAppObjectsDeleter(cluster.DeleteAppObjects)
 
+	// Recorded so a helper can drive the same objects the server reads. The
+	// alternative — a test building its own clientset — would see none of what
+	// the server created, which is a mistake that presents as a passing test
+	// asserting nothing.
+	testWiring.Store(srv, wiring{client: client, engine: buildEngine})
+
 	return srv, client, st, dyn
+}
+
+// wiring is what a test server was built with, for helpers that need to drive
+// the same fake cluster and build engine the server itself uses.
+type wiring struct {
+	client *fake.Clientset
+	engine *build.Engine
+}
+
+// testWiring maps a test server to the fake cluster behind it.
+var testWiring sync.Map
+
+// clientsetFor returns the fake clientset a test server was built over.
+func clientsetFor(srv *api.Server) *fake.Clientset {
+	w, ok := testWiring.Load(srv)
+	if !ok {
+		panic("this server was not built by newDeployServer, so its cluster is not reachable from a test")
+	}
+	return w.(wiring).client
+}
+
+// testBuildEngine returns the build engine a test server was built with.
+func testBuildEngine(srv *api.Server) *build.Engine {
+	w, ok := testWiring.Load(srv)
+	if !ok {
+		panic("this server was not built by newDeployServer, so its build engine is not reachable from a test")
+	}
+	return w.(wiring).engine
+}
+
+// registerBuildJob starts a real build Job and marks it complete, so the deploy
+// path finds an image for a commit.
+//
+// It is how a test stands in for a finished build now that there is no build
+// record to write: the Job is the record. It goes through the engine's own Start
+// rather than assembling a Job here, so the labels and annotations the readers
+// look for are the ones the writer actually puts on — a hand-built Job would be
+// this test asserting its own idea of the label scheme, which is exactly the
+// kind of test that passed while the platform log endpoint was broken.
+func registerBuildJob(t *testing.T, srv *api.Server, st *store.Store, appID, commit string) string {
+	t.Helper()
+
+	ctx := context.Background()
+	app, err := st.GetApp(ctx, appID)
+	if err != nil {
+		t.Fatalf("read the app to register a build for: %v", err)
+	}
+
+	engine := testBuildEngine(srv)
+	id, err := model.NewID()
+	if err != nil {
+		t.Fatalf("generate build id: %v", err)
+	}
+
+	branch := app.ActiveBranch()
+	jobName, err := engine.Start(ctx, app, branch, id, commit, "test-app-key")
+	if err != nil {
+		t.Fatalf("start the build job: %v", err)
+	}
+
+	// Marked complete, which is what the cluster does when kaniko finishes.
+	job, err := clientsetFor(srv).BatchV1().Jobs(app.Namespace).Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("read back the build job: %v", err)
+	}
+	job.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
+	}}
+	job.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+	if _, err := clientsetFor(srv).BatchV1().Jobs(app.Namespace).UpdateStatus(ctx, job, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("finish the build job: %v", err)
+	}
+	return id
 }
 
 // fakeDynamic returns a dynamic client over the resources AppLab publishes with,
@@ -174,12 +269,9 @@ func TestDeployCreatesResources(t *testing.T) {
 	}
 	app.Namespace = "ops-system"
 
-	// Stand in for a completed build: a successful record carrying an image.
-	build, err := st.FindSucceededBuild(context.Background(), "shop", commit)
-	if err == nil {
-		t.Fatalf("a build already exists unexpectedly: %v", build)
-	}
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
+	// Stand in for a completed build: a Job that succeeded, which is the only
+	// record of one there is.
+	registerBuildJob(t, srv, st, "shop", commit)
 
 	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{})
 	if rec.Code != http.StatusOK {
@@ -252,8 +344,8 @@ func TestRollbackToUnbuiltCommitIsAConflict(t *testing.T) {
 		Error string `json:"error"`
 	}
 	json.Unmarshal(rec.Body.Bytes(), &body)
-	if !strings.Contains(body.Error, "no image exists") {
-		t.Errorf("the error should say no image exists for that commit: %q", body.Error)
+	if !strings.Contains(body.Error, "no successful build") {
+		t.Errorf("the error should say nothing was ever built for that commit: %q", body.Error)
 	}
 }
 
@@ -264,7 +356,7 @@ func TestRollbackToDeployedCommitIsRefused(t *testing.T) {
 	h := srv.Handler()
 
 	commit := setupAppWithCommit(t, srv, h, "shop")
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
+	registerBuildJob(t, srv, st, "shop", commit)
 
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{}); rec.Code != http.StatusOK {
 		t.Fatalf("deploy: %d (%s)", rec.Code, rec.Body.String())
@@ -284,7 +376,7 @@ func TestStopRemovesResources(t *testing.T) {
 	ctx := context.Background()
 
 	commit := setupAppWithCommit(t, srv, h, "shop")
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:x")
+	registerBuildJob(t, srv, st, "shop", commit)
 
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{}); rec.Code != http.StatusOK {
 		t.Fatalf("deploy: %d (%s)", rec.Code, rec.Body.String())
@@ -385,8 +477,50 @@ func TestDeployWithBuildStartsABuild(t *testing.T) {
 
 	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{"build": true})
 
-	// This server has no build engine, so the honest answer is 501 naming the
-	// reason — not a 500 and not a silent no-op.
+	// 202 with the build, not 200: the build runs as a Job and the caller follows
+	// it. Holding the request until it finished would make a slow build
+	// indistinguishable from a hung server.
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	var body struct {
+		Data struct {
+			Build struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"build"`
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+
+	if body.Data.Build.ID == "" {
+		t.Errorf("the response carries no build id, so the caller cannot follow it: %s", rec.Body.String())
+	}
+	if body.Data.Status != "building" {
+		t.Errorf("status = %q, want building", body.Data.Status)
+	}
+}
+
+// TestDeployWithBuildWithoutABuildHalfIs501 asserts the honest refusal when a
+// deployment cannot build: `build:true` is a request this installation cannot
+// satisfy, and a 500 or a silent no-op would both be worse.
+func TestDeployWithBuildWithoutABuildHalfIs501(t *testing.T) {
+	// A server with a cluster and a deployer but no build engine: the registry is
+	// not configured, which is a way AppLab is meant to run.
+	srv, client, st := newDeployServer(t)
+	srv.WithBuild(nil)
+	h := srv.Handler()
+
+	commit := setupAppWithCommit(t, srv, h, "shop")
+	registerBuildJob(t, srv, st, "shop", commit)
+	// The Job is the record, but the engine is gone — so a deploy of a commit
+	// with no build finds nothing and has nothing to fall back on.
+	clientsetFor(srv).BatchV1().Jobs("ops-system").DeleteCollection(
+		context.Background(), metav1.DeleteOptions{}, metav1.ListOptions{})
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{"build": true})
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotImplemented, rec.Body.String())
 	}
@@ -398,6 +532,7 @@ func TestDeployWithBuildStartsABuild(t *testing.T) {
 	if !strings.Contains(body.Error, "no image exists") {
 		t.Errorf("the error should explain there is no image: %q", body.Error)
 	}
+	_ = client
 }
 
 // TestDeployRequiresDeployer asserts a deployment with no cluster answers 501
@@ -418,33 +553,6 @@ func TestDeployRequiresDeployer(t *testing.T) {
 
 // --- helpers ---------------------------------------------------------------
 
-// recordBuild writes a successful build row, standing in for a completed build.
-func recordBuild(t *testing.T, st *store.Store, appID, commit, image string) {
-	t.Helper()
-
-	ctx := context.Background()
-
-	id, err := model.NewID()
-	if err != nil {
-		t.Fatalf("generate build id: %v", err)
-	}
-
-	if err := st.CreateBuild(ctx, &model.Build{
-		ID:        id,
-		AppID:     appID,
-		CommitSHA: commit,
-		Status:    model.BuildStatusPending,
-	}); err != nil {
-		t.Fatalf("create build: %v", err)
-	}
-	if err := st.SetBuildImage(ctx, appID, id, image); err != nil {
-		t.Fatalf("set build image: %v", err)
-	}
-	if err := st.SetBuildStatus(ctx, appID, id, model.BuildStatusSucceeded, ""); err != nil {
-		t.Fatalf("set build status: %v", err)
-	}
-}
-
 // TestDeletingAnAppRemovesItsClusterObjects covers what deleting an app means
 // now that every app shares one namespace: there is no namespace to drop, so the
 // server has to find the app's objects by label and remove them.
@@ -458,14 +566,14 @@ func TestDeletingAnAppRemovesItsClusterObjects(t *testing.T) {
 	ctx := context.Background()
 
 	commit := setupAppWithCommit(t, srv, h, "shop")
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
+	registerBuildJob(t, srv, st, "shop", commit)
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{}); rec.Code != http.StatusOK {
 		t.Fatalf("deploy: %d (%s)", rec.Code, rec.Body.String())
 	}
 
 	// A second app, deployed into the same namespace, plus AppLab itself.
 	otherCommit := setupAppWithCommit(t, srv, h, "blog")
-	recordBuild(t, st, "blog", otherCommit, "registry.example.com/apps/blog:"+otherCommit[:12])
+	registerBuildJob(t, srv, st, "blog", otherCommit)
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/blog/deploy", map[string]any{}); rec.Code != http.StatusOK {
 		t.Fatalf("deploy blog: %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -570,7 +678,7 @@ func TestDeploymentHasNoStaleObjectsAfterRedeploy(t *testing.T) {
 	ctx := context.Background()
 
 	commit := setupAppWithCommit(t, srv, h, "shop")
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:one")
+	registerBuildJob(t, srv, st, "shop", commit)
 
 	for i := 0; i < 3; i++ {
 		if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{}); rec.Code != http.StatusOK {
@@ -596,7 +704,7 @@ func TestStatusReportsLiveClusterState(t *testing.T) {
 	ctx := context.Background()
 
 	commit := setupAppWithCommit(t, srv, h, "shop")
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:x")
+	registerBuildJob(t, srv, st, "shop", commit)
 
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{}); rec.Code != http.StatusOK {
 		t.Fatalf("deploy: %d (%s)", rec.Code, rec.Body.String())
@@ -691,7 +799,7 @@ func TestNamespaceIsFilledOnLoad(t *testing.T) {
 
 	// The deploy path is where an empty namespace would actually do damage, so
 	// it is exercised rather than only the read paths.
-	recordBuild(t, st, "shop", commit, "registry.example.com/apps/shop:"+commit[:12])
+	registerBuildJob(t, srv, st, "shop", commit)
 
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/deploy", map[string]any{}); rec.Code != http.StatusOK {
 		t.Fatalf("deploy: %d (%s)", rec.Code, rec.Body.String())

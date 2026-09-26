@@ -8,13 +8,21 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/client-go/kubernetes/fake"
+
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
-// newTestServer builds a Server backed by a temporary database.
+// newTestServer builds the minimal Server: a bucket, a key, and nothing attached.
+//
+// Deliberately nothing optional — no cluster, no build half, no console. It is
+// what the route and auth tests want, because what they assert is the shape of
+// the API rather than what any half does; a test that needs a cluster uses
+// newDeployServer instead.
 func newTestServer(t *testing.T) (*api.Server, *store.Store) {
 	t.Helper()
 
@@ -29,6 +37,22 @@ func newTestServer(t *testing.T) (*api.Server, *store.Store) {
 
 	srv := api.New(cfg, st, auth.New(cfg.Keys))
 	return srv, st
+}
+
+// newRealBuildEngine returns the engine AppLab itself uses, over a clientset a
+// test can also write to.
+//
+// The real one rather than a stub, because build history is read from the Jobs —
+// the labels, the annotations and the ordering are the engine's own, and a stub
+// would be a test agreeing with itself about a scheme it invented.
+func newRealBuildEngine(t *testing.T, client *fake.Clientset, namespace string) *build.Engine {
+	t.Helper()
+
+	return build.New(client, build.Config{
+		Registry:    "registry.example.com/apps",
+		KanikoImage: "gcr.io/kaniko-project/executor:v1.23.2",
+		AppLabURL:   "http://applab." + namespace + ".svc.cluster.local",
+	})
 }
 
 // TestRouteReferenceCoversEveryDocumentedRoute is the guard that keeps the

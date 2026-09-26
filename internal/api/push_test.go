@@ -9,6 +9,7 @@ import (
 
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -59,7 +60,7 @@ func deployedCommit(t *testing.T, client *fake.Clientset, appID string) string {
 // what makes a push of a branch that had commits added by anything else still
 // build the right thing.
 func TestAPushBuildsWhatWasPushed(t *testing.T) {
-	srv, engine, st, _ := pushServer(t)
+	srv, engine, _, _ := pushServer(t)
 	h := srv.Handler()
 
 	sortAppWithCommit(t, srv, h, "shop")
@@ -68,8 +69,9 @@ func TestAPushBuildsWhatWasPushed(t *testing.T) {
 	srv.StartPushBuild(context.Background(), "shop", "main")
 	waitFor(t, func() bool { return len(engine.startedJobs()) == 1 })
 
-	// The build is recorded against the app and points at the pushed tip.
-	builds, err := st.ListBuilds(context.Background(), "shop", 0)
+	// The build is a Job in the cluster and names the pushed tip. There is no
+	// record anywhere else, which is why this reads through the engine.
+	builds, err := engine.List(context.Background(), "ops-system", "shop", 0)
 	if err != nil {
 		t.Fatalf("list builds: %v", err)
 	}
@@ -82,6 +84,9 @@ func TestAPushBuildsWhatWasPushed(t *testing.T) {
 	if !model.ValidSHA(builds[0].CommitSHA) {
 		t.Errorf("the pushed build names commit %q, which is not a commit id", builds[0].CommitSHA)
 	}
+	if builds[0].Branch != "main" {
+		t.Errorf("the pushed build names branch %q, want main", builds[0].Branch)
+	}
 }
 
 // TestAPushOfAnAlreadyBuiltCommitDeploysWithoutRebuilding is the shortcut that
@@ -92,23 +97,19 @@ func TestAPushBuildsWhatWasPushed(t *testing.T) {
 // runs: the case this is for is not "already running" but "built and never
 // deployed", and a push means "this source is live".
 func TestAPushOfAnAlreadyBuiltCommitDeploysWithoutRebuilding(t *testing.T) {
-	srv, engine, st, client := pushServer(t)
+	srv, engine, _, client := pushServer(t)
 	h := srv.Handler()
 	ctx := context.Background()
 
 	commit := sortAppWithCommit(t, srv, h, "shop")
 
-	// A build of this commit that already succeeded and recorded its image.
-	buildID, err := model.NewID()
-	if err != nil {
-		t.Fatalf("generate build id: %v", err)
-	}
-	if err := st.CreateBuild(ctx, &model.Build{
-		ID: buildID, AppID: "shop", CommitSHA: commit,
-		Status: model.BuildStatusSucceeded, Image: "registry.example.com/apps/shop:abc123",
-	}); err != nil {
-		t.Fatalf("create build: %v", err)
-	}
+	// A build of this commit that already succeeded. It is a Job, which is the
+	// only record of a build there is.
+	engine.addBuild(build.Result{
+		ID: "already-built", AppID: "shop", CommitSHA: commit, Branch: "main",
+		JobName: "job-already-built", Status: model.BuildStatusSucceeded,
+		CreatedAt: time.Now(),
+	})
 
 	srv.StartPushBuild(ctx, "shop", "main")
 
@@ -129,14 +130,17 @@ func TestAPushWithNothingToBuildOrDeployIsANoOp(t *testing.T) {
 	t.Run("no build half", func(t *testing.T) {
 		// A deployment with no registry: source and the API work, and a push is
 		// only a push.
-		srv, _, st := newDeployServerWithSource(t)
+		srv, engine, _, _ := pushServer(t)
 		h := srv.Handler()
 		sortAppWithCommit(t, srv, h, "shop")
 
+		// The build half is detached, which is the state this covers.
+		srv.WithBuild(nil)
+
 		srv.StartPushBuild(context.Background(), "shop", "main")
 
-		if builds, _ := st.ListBuilds(context.Background(), "shop", 0); len(builds) != 0 {
-			t.Errorf("a deployment that cannot build recorded %d builds from a push", len(builds))
+		if builds, _ := engine.List(context.Background(), "ops-system", "shop", 0); len(builds) != 0 {
+			t.Errorf("a deployment that cannot build started %d builds from a push", len(builds))
 		}
 	})
 
@@ -144,7 +148,7 @@ func TestAPushWithNothingToBuildOrDeployIsANoOp(t *testing.T) {
 		// A build with nowhere to run: the image would be pushed and nothing
 		// would ever use it, so the build is not worth starting either. This is a
 		// deployment with no cluster, which is a legitimate way to run AppLab.
-		srv, st := newSourceOnlyServer(t)
+		srv, _ := newSourceOnlyServer(t)
 		engine := &fakeBuildEngine{}
 		srv.WithBuild(engine)
 		h := srv.Handler()
@@ -153,8 +157,8 @@ func TestAPushWithNothingToBuildOrDeployIsANoOp(t *testing.T) {
 		srv.StartPushBuild(context.Background(), "shop", "main")
 		time.Sleep(50 * time.Millisecond)
 
-		if builds, _ := st.ListBuilds(context.Background(), "shop", 0); len(builds) != 0 {
-			t.Errorf("a deployment that cannot deploy recorded %d builds from a push", len(builds))
+		if builds, _ := engine.List(context.Background(), "ops-system", "shop", 0); len(builds) != 0 {
+			t.Errorf("a deployment that cannot deploy started %d builds from a push", len(builds))
 		}
 		if got := engine.startedJobs(); len(got) != 0 {
 			t.Errorf("a deployment that cannot deploy started %d builds", len(got))
@@ -169,7 +173,7 @@ func TestAPushWithNothingToBuildOrDeployIsANoOp(t *testing.T) {
 // every commit is not what they asked for. The push itself still succeeds — the
 // source is stored, which is what git was asked to do.
 func TestAPushToAnAppWithAutoDeployOffDoesNothing(t *testing.T) {
-	srv, engine, st, _ := pushServer(t)
+	srv, engine, _, _ := pushServer(t)
 	h := srv.Handler()
 	ctx := context.Background()
 
@@ -190,8 +194,8 @@ func TestAPushToAnAppWithAutoDeployOffDoesNothing(t *testing.T) {
 	if got := engine.startedJobs(); len(got) != 0 {
 		t.Errorf("a push to an app with auto-deploy off started %d builds, want none", len(got))
 	}
-	if builds, _ := st.ListBuilds(ctx, "shop", 0); len(builds) != 0 {
-		t.Errorf("a push to an app with auto-deploy off recorded %d builds", len(builds))
+	if builds, _ := engine.List(ctx, "ops-system", "shop", 0); len(builds) != 0 {
+		t.Errorf("a push to an app with auto-deploy off started %d builds", len(builds))
 	}
 }
 

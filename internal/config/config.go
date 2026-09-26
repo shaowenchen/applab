@@ -271,10 +271,18 @@ type Build struct {
 	// Timeout is how long a single build may run before it is killed.
 	Timeout time.Duration `yaml:"timeout"`
 
-	// TTLAfterFinished is how long a finished build's Job is kept, so its log
-	// can still be read. Zero would have the Job deleted the moment it ends,
-	// which makes every failure undiagnosable — so it is left to the engine's
-	// own default rather than being settable to nothing.
+	// TTLAfterFinished is how long a finished build's Job is kept.
+	//
+	// It is the window for two things, and both of them matter more than they
+	// look: a finished build's log can still be read, and the build itself is
+	// still part of the app's history and still counts as "this commit has an
+	// image" for a rollback. Nothing else records a build — the Job is the
+	// record — so this one setting is how far back the build list reaches and
+	// how far back a rollback can go without rebuilding.
+	//
+	// Zero would have the Job deleted the moment it ends, which makes every
+	// failure undiagnosable and leaves a rollback nothing to find, so it is left
+	// to the engine's own default rather than being settable to nothing.
 	TTLAfterFinished time.Duration `yaml:"ttl_after_finished"`
 }
 
@@ -350,12 +358,23 @@ func Default() Config {
 
 			Timeout: 30 * time.Minute,
 
-			// A day is long enough to investigate a failure and short enough
-			// that finished Jobs do not accumulate in the app's namespace.
-			// Counted from the moment the Job reaches a terminal state, so
-			// this is the window to read a failed build's log rather than a
-			// guess at how long a build takes.
-			TTLAfterFinished: 30 * time.Minute,
+			// A day, because this is no longer only about reading a failed
+			// build's log: a build Job is the *only* record of a build, so its
+			// lifetime is how far back the build list reaches and how far back a
+			// rollback can go without rebuilding from source. A day is a usable
+			// rollback window without keeping much.
+			//
+			// What it costs is worth naming, because it is more than the Job:
+			// Kubernetes collects a Job and its pod together, and a Completed
+			// pod holds its container log until it goes. So this is a day's
+			// worth of finished pods per app, on top of the Jobs — which is why
+			// it is a day rather than the week a pure "keep the history"
+			// argument would ask for.
+			//
+			// Raising it lengthens the history and the rollback window
+			// together. It is counted from the moment a Job reaches a terminal
+			// state, so a running build is never collected part-way through.
+			TTLAfterFinished: 24 * time.Hour,
 		},
 	}
 }

@@ -157,7 +157,7 @@ func (s *Server) toAppResponse(a *model.App, r *http.Request, status model.AppSt
 // appStatuses.
 func (s *Server) appResponseFor(ctx context.Context, r *http.Request, app *model.App) appResponse {
 	live := s.liveStatusesFor(ctx, app)
-	status := appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(ctx, app.ID))
+	status := appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(ctx, app))
 	return s.toAppResponse(app, r, status, live)
 }
 

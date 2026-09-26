@@ -7,18 +7,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/deploy"
-	"github.com/shaowenchen/applab/internal/model"
+	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
@@ -26,9 +27,8 @@ import (
 
 // newObserveServer builds a Server with an observer over a fake cluster.
 //
-// The store comes back too, because a test that needs a build record has to
-// write one: a build only exists in the bucket and in the Job, and there is no
-// endpoint that would create one here without a build engine.
+// A build engine comes with it, over the same clientset, because a build is a
+// Job now and a test that needs one creates the Job rather than writing a record.
 func newObserveServer(t *testing.T) (*api.Server, *fake.Clientset, *store.Store) {
 	t.Helper()
 
@@ -61,6 +61,11 @@ func newObserveServer(t *testing.T) (*api.Server, *fake.Clientset, *store.Store)
 
 	srv := api.New(cfg, st, auth.New(cfg.Keys)).
 		WithSource(src).
+		WithBuild(build.New(client, build.Config{
+			Registry:    "registry.example.com/apps",
+			KanikoImage: "gcr.io/kaniko-project/executor:v1.23.2",
+			AppLabURL:   "http://applab.ops-system.svc.cluster.local",
+		})).
 		WithObserver(observe.New(client)).
 		WithDeployer(deployer).
 		WithMetrics(api.NewMetrics())
@@ -170,6 +175,35 @@ func makePod(t *testing.T, client *fake.Clientset, name string, labels map[strin
 	}
 }
 
+// makeBuildJob creates the Job a running build is, so a listing has one to show.
+//
+// It carries the labels and annotations the engine puts on one, because the
+// listing reads builds through exactly those: a test that invented its own would
+// be asserting the reader against its own assumption rather than against what
+// the writer produces.
+func makeBuildJob(t *testing.T, client *fake.Clientset, appID, buildID, jobName string) {
+	t.Helper()
+
+	_, err := client.BatchV1().Jobs("ops-system").Create(context.Background(), &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: "ops-system",
+			Labels: map[string]string{
+				k8s.LabelApp:   appID,
+				k8s.LabelBuild: buildID,
+			},
+			Annotations: map[string]string{
+				build.AnnotationCommit: strings.Repeat("a", 40),
+				build.AnnotationBranch: "main",
+			},
+		},
+		Status: batchv1.JobStatus{Active: 1},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create build job %s: %v", jobName, err)
+	}
+}
+
 // TestPodsEndpointExcludesBuildPods covers the app's own pod list, which must not
 // contain a build's pod.
 //
@@ -252,20 +286,14 @@ func TestPodsEndpointFiltersByLabel(t *testing.T) {
 // that the app's pod list does not — the two halves of "a build's pod belongs to
 // the build".
 func TestBuildListCarriesTheBuildsPod(t *testing.T) {
-	srv, client, st := newObserveServer(t)
+	srv, client, _ := newObserveServer(t)
 	h := srv.Handler()
 	createAppForObserve(t, h, "shop")
 
-	// A build record with a known id, so the pod's label can name it. There is no
-	// endpoint that creates one here: starting a build needs a build engine, and
-	// what is under test is the listing rather than the start.
+	// A build with a known id, so the pod's label can name it. It is created as
+	// the Job a build is, because that is what a build is now.
 	buildID := "abcdef1234567890"
-	if err := st.CreateBuild(context.Background(), &model.Build{
-		ID: buildID, AppID: "shop", CommitSHA: strings.Repeat("a", 40),
-		Status: model.BuildStatusRunning, CreatedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("record a build: %v", err)
-	}
+	makeBuildJob(t, client, "shop", buildID, "applab-build-shop-abc")
 
 	makePod(t, client, "applab-build-shop-abc", map[string]string{
 		"applab.io/app":   "shop",

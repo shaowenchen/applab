@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -166,28 +168,25 @@ func createDeployment(t *testing.T, client *fake.Clientset, appID string, ready 
 // TestOverviewCarriesRecentBuildsAcrossApps asserts the cross-app build list,
 // which is the thing no existing endpoint can produce.
 func TestOverviewCarriesRecentBuildsAcrossApps(t *testing.T) {
-	srv, st := newTestServer(t)
+	srv, client, st, _ := newDeployServerWithDynamic(t)
 	ctx := context.Background()
 
 	for _, app := range []string{"shop", "blog"} {
-		if err := st.CreateApp(ctx, &model.App{ID: app, Name: app}); err != nil {
+		if err := st.CreateApp(ctx, &model.App{ID: app, Name: app, Namespace: "ops-system"}); err != nil {
 			t.Fatalf("create app %s: %v", app, err)
 		}
 	}
 
+	// Three builds across two apps, each a Job that has finished.
 	for _, b := range []struct {
-		id, app, status string
+		id, app string
+		success bool
 	}{
-		{"b1", "shop", string(model.BuildStatusSucceeded)},
-		{"b2", "blog", string(model.BuildStatusFailed)},
-		{"b3", "shop", string(model.BuildStatusSucceeded)},
+		{"b1", "shop", true},
+		{"b2", "blog", false},
+		{"b3", "shop", true},
 	} {
-		if err := st.CreateBuild(ctx, &model.Build{
-			ID: b.id, AppID: b.app, CommitSHA: "0123456789012345678901234567890123456789",
-			Status: model.BuildStatus(b.status), JobName: "job-" + b.id,
-		}); err != nil {
-			t.Fatalf("create build %s: %v", b.id, err)
-		}
+		makeFinishedBuildJob(t, client, b.app, b.id, b.success)
 	}
 
 	builds := section(t, overviewFor(t, srv), "builds")
@@ -217,6 +216,43 @@ func TestOverviewCarriesRecentBuildsAcrossApps(t *testing.T) {
 	}
 	if !seen["shop"] || !seen["blog"] {
 		t.Errorf("recent builds come from %v; both apps should appear", seen)
+	}
+}
+
+// makeFinishedBuildJob creates the Job a finished build leaves behind.
+//
+// It goes through the engine's own Start, so the labels a listing selects on and
+// the annotations it reads are exactly what the engine writes. A Job assembled
+// here by hand would assert the reader against this test's idea of the scheme.
+func makeFinishedBuildJob(t *testing.T, client *fake.Clientset, appID, buildID string, success bool) {
+	t.Helper()
+
+	ctx := context.Background()
+	app := &model.App{ID: appID, Namespace: "ops-system", Port: 8080, Dockerfile: "Dockerfile"}
+
+	engine := newRealBuildEngine(t, client, "ops-system")
+	commit := strings.Repeat("a", 40)
+	jobName, err := engine.Start(ctx, app, "main", buildID, commit, "test-app-key")
+	if err != nil {
+		t.Fatalf("start build job for %s: %v", buildID, err)
+	}
+
+	job, err := client.BatchV1().Jobs("ops-system").Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("read back build job %s: %v", jobName, err)
+	}
+	if success {
+		job.Status.Conditions = []batchv1.JobCondition{{
+			Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
+		}}
+		job.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+	} else {
+		job.Status.Conditions = []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded",
+		}}
+	}
+	if _, err := client.BatchV1().Jobs("ops-system").UpdateStatus(ctx, job, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("finish build job %s: %v", jobName, err)
 	}
 }
 
@@ -311,78 +347,24 @@ func TestOverviewRequiresAKey(t *testing.T) {
 	}
 }
 
-// TestListRecentBuildsOrdersNewestFirst asserts the ordering a dashboard panel
-// depends on.
-func TestListRecentBuildsOrdersNewestFirst(t *testing.T) {
-	_, st := newTestServer(t)
-	ctx := context.Background()
+// TestOverviewAnswersWithNoBuildHalf asserts a deployment that cannot build
+// reports an empty history rather than erroring.
+//
+// That is a legitimate way to run AppLab — the API and the source half work
+// without a cluster — and a dashboard rendering "0 builds" is the right answer,
+// not a failure.
+func TestOverviewAnswersWithNoBuildHalf(t *testing.T) {
+	srv, _ := newTestServer(t)
 
-	// The app has to exist: a build lives under its app's directory, so there is
-	// nowhere to put a build for an app that is not there.
-	if err := st.CreateApp(ctx, &model.App{ID: "shop", Name: "Shop"}); err != nil {
-		t.Fatalf("create app: %v", err)
+	builds := section(t, overviewFor(t, srv), "builds")
+	if builds["total"] != float64(0) {
+		t.Errorf("builds.total = %v, want 0", builds["total"])
 	}
-
-	// Created in order, so created_at increases and the newest is last inserted.
-	for _, id := range []string{"b1", "b2", "b3"} {
-		if err := st.CreateBuild(ctx, &model.Build{
-			ID: id, AppID: "shop", CommitSHA: "0123456789012345678901234567890123456789",
-			Status: model.BuildStatusSucceeded, JobName: "job-" + id,
-		}); err != nil {
-			t.Fatalf("create build %s: %v", id, err)
-		}
+	recent, ok := builds["recent"].([]any)
+	if !ok {
+		t.Fatalf("builds.recent is %T, want an array", builds["recent"])
 	}
-
-	builds, err := st.ListRecentBuilds(ctx, 2)
-	if err != nil {
-		t.Fatalf("list recent builds: %v", err)
-	}
-	if len(builds) != 2 {
-		t.Fatalf("got %d builds, want the 2 the limit asked for", len(builds))
-	}
-	// Newest first, and the limit caps the list rather than slicing it.
-	if builds[0].CreatedAt.Before(builds[1].CreatedAt) {
-		t.Errorf("builds are not newest-first: %v then %v", builds[0].CreatedAt, builds[1].CreatedAt)
-	}
-}
-
-// TestListRecentBuildsSpansApps covers the one thing the per-app query cannot do.
-func TestListRecentBuildsSpansApps(t *testing.T) {
-	_, st := newTestServer(t)
-	ctx := context.Background()
-
-	for _, app := range []string{"shop", "blog"} {
-		if err := st.CreateApp(ctx, &model.App{ID: app, Name: app}); err != nil {
-			t.Fatalf("create app %s: %v", app, err)
-		}
-		if err := st.CreateBuild(ctx, &model.Build{
-			ID: "build-" + app, AppID: app, CommitSHA: "0123456789012345678901234567890123456789",
-			Status: model.BuildStatusSucceeded, JobName: "job-" + app,
-		}); err != nil {
-			t.Fatalf("create build for %s: %v", app, err)
-		}
-	}
-
-	builds, err := st.ListRecentBuilds(ctx, 10)
-	if err != nil {
-		t.Fatalf("list recent builds: %v", err)
-	}
-	if len(builds) != 2 {
-		t.Fatalf("got %d builds, want both apps' builds", len(builds))
-	}
-}
-
-// TestStoreAggregatesOnEmptyDatabase asserts the queries answer rather than
-// erroring when nothing has happened yet.
-func TestStoreAggregatesOnEmptyDatabase(t *testing.T) {
-	_, st := newTestServer(t)
-	ctx := context.Background()
-
-	builds, err := st.ListRecentBuilds(ctx, 10)
-	if err != nil {
-		t.Fatalf("list builds: %v", err)
-	}
-	if len(builds) != 0 {
-		t.Errorf("builds = %v, want none", builds)
+	if len(recent) != 0 {
+		t.Errorf("builds.recent has %d entries, want none", len(recent))
 	}
 }

@@ -608,11 +608,11 @@ func TestDeadlineBoundsTheBuild(t *testing.T) {
 // TestFinishedJobsAreCollected pins how long a finished build's Job is kept.
 //
 // It is a two-sided assertion, because both directions are failures. Too short
-// and a failed build's log is gone before anyone reads why — the build's own
-// reason points at the Job, and the Job is what holds the output. Too long and
-// every push leaves a Job and a pod behind for a day: the TTL is measured from a
-// terminal state, and a successful build's log is worth nothing after a few
-// minutes because nothing reads it unless something went wrong.
+// and a build stops existing: the Job is the only record of it, so the build
+// disappears from the app's history, its log is gone before anyone reads why,
+// and a rollback to that commit has nothing to find. Too long and every push
+// leaves a completed Job behind for a week — the TTL is measured from a terminal
+// state, and the accepted trade is a bounded pile of Jobs for a usable history.
 func TestFinishedJobsAreCollected(t *testing.T) {
 	engine := New(fake.NewSimpleClientset(), testConfig())
 
@@ -621,8 +621,8 @@ func TestFinishedJobsAreCollected(t *testing.T) {
 	if job.Spec.TTLSecondsAfterFinished == nil {
 		t.Fatal("the finished job is never collected, so every push leaves a Job and a pod behind for good")
 	}
-	if got, want := *job.Spec.TTLSecondsAfterFinished, int32(1800); got != want {
-		t.Errorf("TTLSecondsAfterFinished = %d, want %d (30m)", got, want)
+	if got, want := *job.Spec.TTLSecondsAfterFinished, int32(24*3600); got != want {
+		t.Errorf("TTLSecondsAfterFinished = %d, want %d (24h)", got, want)
 	}
 }
 
@@ -1032,9 +1032,10 @@ func TestFailureReasonPrefersTheInstanceThatFailed(t *testing.T) {
 	}
 }
 
-// TestFailureWithoutAPodIsStillReadable asserts the pod read is best-effort. The
-// Job's TTL collects the pod, and a failure reported after that must not become
-// an error or an empty reason.
+// TestFailureWithoutAPodIsStillReadable asserts the pod read is best-effort. A
+// Job whose pod is already gone — long after the build, since the TTL keeps the
+// Job for a week but the pod is collected with it — must not turn a reported
+// failure into an error or an empty reason.
 func TestFailureWithoutAPodIsStillReadable(t *testing.T) {
 	job := jobWithStatus(batchv1.JobStatus{
 		Conditions: []batchv1.JobCondition{{

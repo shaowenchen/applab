@@ -144,14 +144,18 @@ func (s *Store) Objects() objectstore.Store { return s.objects }
 // Layout of the keys, in one place so no call site builds one by hand.
 //
 // Apps are listed by their own prefix at a fixed depth. That is what makes
-// ListApps a single listing rather than a walk: the commits and builds of every
-// app are under the same prefix but one level deeper, and are skipped without
-// being fetched.
+// ListApps a single listing rather than a walk: the commits of every app are
+// under the same prefix but one level deeper, and are skipped without being
+// fetched.
+//
+// There is no builds directory. Build history is read from the build Jobs
+// themselves — see internal/build/history.go — because a build is a fact about
+// the cluster and the object store holds only what is static: an app's settings,
+// its source and its commits.
 const (
 	appsPrefix    = "apps/"
 	appFile       = "app.json"
 	commitsDir    = "commits/"
-	buildsDir     = "builds/"
 	sourceGitDir  = "repo"
 	branchesDir   = "branches"
 	uploadsPrefix = "uploads/"
@@ -170,14 +174,6 @@ func commitKey(appID, sha string) string {
 
 func commitsPrefix(appID string) string {
 	return objectstore.Key(appPrefix(appID), commitsDir) + "/"
-}
-
-func buildKey(appID, id string) string {
-	return objectstore.Key(appPrefix(appID), buildsDir, id+".json")
-}
-
-func buildsPrefix(appID string) string {
-	return objectstore.Key(appPrefix(appID), buildsDir) + "/"
 }
 
 // SourcePrefix is the directory one app's repositories live under.

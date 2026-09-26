@@ -285,16 +285,24 @@ build:
   # on something that never answers would otherwise occupy a slot forever.
   timeout: 30m
 
-  # How long a finished build's Job is kept after it ends, so its log can still
-  # be read. Counted from the moment the Job reaches a terminal state, not from
-  # when it started.
+  # How long a finished build's Job is kept after it ends. Counted from the
+  # moment the Job reaches a terminal state, not from when it started.
   #
-  # Zero would delete it the instant it ended and make every failure
-  # undiagnosable, so it is validated as a positive duration. Half an hour is
-  # long enough for someone to notice a failed push and read why, and short
-  # enough that the Jobs and their pods do not accumulate — a build leaves a Job
-  # and a pod behind on every push.
-  ttlAfterFinished: 30m
+  # This is both the window to read a failed build's log *and* — since a build
+  # Job is the only record of a build — how far back the build history and a
+  # rollback reach. Nothing else stores a build, so lowering this shortens the
+  # app's history and the list of commits that can be returned to without
+  # rebuilding.
+  #
+  # What it costs is more than the Job: Kubernetes collects a Job and its pod
+  # together, and a Completed pod holds its container log until it goes. So a
+  # day here is a day's worth of finished pods per app. Raise it for a longer
+  # history and rollback window; a busy app accumulates in proportion.
+  #
+  # Zero would delete the Job the instant it ended, making every failure
+  # undiagnosable and leaving a rollback nothing to find, so it is validated as
+  # a positive duration.
+  ttlAfterFinished: 24h
 
 # ---------------------------------------------------------------------------
 # Deploy

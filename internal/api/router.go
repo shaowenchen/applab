@@ -12,6 +12,7 @@ import (
 	"github.com/shaowenchen/applab/internal/appconfig"
 	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/model"
@@ -126,6 +127,10 @@ type Server struct {
 // related operations sharing configuration, and because a deployment without a
 // cluster leaves it nil — in which case the build routes report "not
 // implemented" rather than failing obscurely.
+//
+// It is also where build history comes from. There is no build record in the
+// object store: a build is a Job, and what a build was of is read back off the
+// Job that ran it.
 type BuildEngine interface {
 	// Ready reports whether the engine can start builds right now.
 	Ready() bool
@@ -149,6 +154,27 @@ type BuildEngine interface {
 	// is no longer the tip, holding a build slot and a registry push that nobody
 	// asked for.
 	Cancel(ctx context.Context, namespace, jobName string) error
+
+	// List returns an app's builds, newest first. limit <= 0 means all of them.
+	List(ctx context.Context, namespace, appID string, limit int) ([]build.Result, error)
+
+	// ListAll returns every app's builds in the namespace, newest first.
+	ListAll(ctx context.Context, namespace string, limit int) ([]build.Result, error)
+
+	// Get returns one build, or build.ErrBuildNotFound.
+	Get(ctx context.Context, namespace, appID, buildID string) (*build.Result, error)
+
+	// FindSucceeded returns the most recent successful build of a commit, or
+	// build.ErrBuildNotFound.
+	FindSucceeded(ctx context.Context, namespace, appID, commitSHA string) (*build.Result, error)
+
+	// Unfinished returns an app's builds that have not reached a terminal state,
+	// oldest first.
+	Unfinished(ctx context.Context, namespace, appID string) ([]build.Result, error)
+
+	// InFlight returns the ids of every app in the namespace that has a build
+	// that has not finished, in one read.
+	InFlight(ctx context.Context, namespace string) (map[string]bool, error)
 }
 
 // Deployer is the deploy half of the pipeline.
@@ -266,6 +292,14 @@ func (s *Server) WithClusterStatus(ready func(ctx context.Context) bool) *Server
 	s.clusterReady = ready
 	return s
 }
+
+// canBuild reports whether the build half is attached and usable.
+//
+// It is a method rather than a nil test at each call site because a nil engine
+// and an engine that is not ready both mean "this deployment cannot build", and
+// the two are easy to handle differently by accident — one call site forgetting
+// the Ready check is a panic or a confusing error rather than a clear 501.
+func (s *Server) canBuild() bool { return s.build != nil && s.build.Ready() }
 
 // startBuildJob creates the build Job.
 func (s *Server) startBuildJob(ctx context.Context, app *model.App, branch, buildID, commitSHA, appKey string) (string, error) {
@@ -859,14 +893,14 @@ func (s *Server) routes() []route {
 			Pattern: "GET /api/v1/apps/{app}/builds",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "An app's builds, newest first. `?limit=` (default 20).",
+			Doc:     "An app's builds, newest first, read from the build Jobs. `?limit=` (default 20). How far back this reaches is build.ttlAfterFinished, because the Job is the record.",
 			Handler: s.handleListBuilds,
 		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/builds/{build}",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "One build. Its status is read from the cluster, so it reflects the Job rather than what applab last recorded.",
+			Doc:     "One build, read from the build Job: its commit, branch, status, and the image if it succeeded. A build whose Job has been collected by its TTL is gone — build.ttlAfterFinished sets how long that is.",
 			Handler: s.handleGetBuild,
 		},
 		{
@@ -903,7 +937,7 @@ func (s *Server) routes() []route {
 			Pattern: "GET /api/v1/apps/{app}/status",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "An app's live state in the cluster alongside what applab recorded. The two are reported separately and deliberately not reconciled: when they disagree, the cluster is right.",
+			Doc:     "An app's live state, read from the cluster: whether a Deployment exists, its ready replicas, the image and the commit it was built from. Nothing is recorded on applab's side, so there is no second opinion to reconcile.",
 			Handler: s.handleAppStatus,
 		},
 		{

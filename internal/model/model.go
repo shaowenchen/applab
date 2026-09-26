@@ -192,22 +192,6 @@ type Commit struct {
 	CreatedAt time.Time
 }
 
-// Build is one attempt to turn a commit into an image.
-type Build struct {
-	ID        string
-	AppID     string
-	CommitSHA string
-	Image     string
-	// JobName is the build Job's name in the app's namespace, recorded so a
-	// failed build's pods can still be found after the fact.
-	JobName    string
-	Status     BuildStatus
-	Reason     string
-	CreatedAt  time.Time
-	StartedAt  time.Time
-	FinishedAt time.Time
-}
-
 // Upload is an in-progress chunked source upload.
 //
 // It exists so a source tree too large for one request can be assembled from

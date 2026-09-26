@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
-	"github.com/shaowenchen/applab/internal/store"
 )
 
 // buildResponse is a build as the API presents it.
@@ -20,6 +20,7 @@ type buildResponse struct {
 	ID        string `json:"id"`
 	AppID     string `json:"app_id"`
 	CommitSHA string `json:"commit_sha"`
+	Branch    string `json:"branch,omitempty"`
 	Status    string `json:"status"`
 
 	Image   string `json:"image,omitempty"`
@@ -44,14 +45,16 @@ type buildResponse struct {
 
 // toBuildResponse renders a build. pods is the app's build pods keyed by build
 // id, and may be nil — which is what a deployment with no cluster passes, and
-// what makes the pod field absent rather than empty.
-func toBuildResponse(b *model.Build, pods map[string]observe.Pod) buildResponse {
+// what makes the pod field absent rather than empty. image is the image the
+// build produced, empty for anything that has not succeeded.
+func toBuildResponse(b *build.Result, image string, pods map[string]observe.Pod) buildResponse {
 	resp := buildResponse{
 		ID:        b.ID,
 		AppID:     b.AppID,
 		CommitSHA: b.CommitSHA,
+		Branch:    b.Branch,
 		Status:    string(b.Status),
-		Image:     b.Image,
+		Image:     image,
 		JobName:   b.JobName,
 		Reason:    b.Reason,
 		CreatedAt: b.CreatedAt,
@@ -68,6 +71,29 @@ func toBuildResponse(b *model.Build, pods map[string]observe.Pod) buildResponse 
 	return resp
 }
 
+// buildResponses renders a set of builds, reusing one pod map.
+func (s *Server) buildResponses(app *model.App, builds []build.Result, pods map[string]observe.Pod) []buildResponse {
+	out := make([]buildResponse, 0, len(builds))
+	for i := range builds {
+		out = append(out, toBuildResponse(&builds[i], s.imageForResult(app.ID, &builds[i]), pods))
+	}
+	return out
+}
+
+// imageForResult names the image a build produced.
+//
+// It is derived rather than stored, and only for a build that succeeded: the
+// image is a function of the app, the commit and the build configuration — which
+// is what makes an unchanged commit an unchanged image — and a build that has
+// not succeeded has pushed nothing, so naming one would point a caller at a tag
+// that is not in the registry.
+func (s *Server) imageForResult(appID string, b *build.Result) string {
+	if b.Status != model.BuildStatusSucceeded || b.CommitSHA == "" {
+		return ""
+	}
+	return s.imageFor(appID, b.CommitSHA)
+}
+
 // handleStartBuild starts a build of a commit.
 //
 // The commit defaults to the app's current tip, which is what a caller means by
@@ -80,7 +106,7 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, apiErr)
 		return
 	}
-	if s.build == nil || !s.build.Ready() {
+	if !s.canBuild() {
 		fail(w, r, Errorf(http.StatusNotImplemented, "this deployment cannot build: no registry, builder image or applab URL is configured"))
 		return
 	}
@@ -124,50 +150,46 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	build, apiErr := s.startBuild(r.Context(), app, branch, resolved)
+	buildID, jobName, apiErr := s.startBuild(r.Context(), app, branch, resolved)
 	if apiErr != nil {
 		fail(w, r, apiErr)
 		return
 	}
 
 	slog.InfoContext(r.Context(), "build started",
-		"app", app.ID, "build", build.ID, "commit", resolved, "job", build.JobName)
+		"app", app.ID, "build", buildID, "commit", resolved, "job", jobName)
 
 	// A build that was just started has no pod yet in almost every case — the Job
 	// was created a moment ago — so this reads for the answer rather than
 	// assuming it, and the field is simply absent when there is nothing yet.
-	respond(w, http.StatusAccepted, toBuildResponse(build, s.buildPods(r.Context(), app)))
+	s.respondBuild(w, r, http.StatusAccepted, app, buildID)
 }
 
-// startBuild creates the record and the Job for one build.
+// startBuild creates the Job for one build and returns its id and name.
 //
-// The record is written before the Job is created, so a Job that exists always
-// has something that knows about it. The reverse order would leave a running
-// build nothing is tracking if the second call failed.
+// There is no record written first, and that is the change: the Job is the
+// record. It used to be written to the object store before the Job so that a Job
+// which existed always had something that knew about it — which meant a crash
+// between the two writes left a record of a build that never ran, and a build
+// history that had to be reconciled against the cluster at every startup. A Job
+// that exists is now the only thing that says a build exists.
 //
 // The branch is what the build clones. A commit can be reachable from more than
 // one branch, and each branch is stored as its own repository, so app and commit
 // alone do not name one.
-func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitSHA string) (*model.Build, *apiError) {
+func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitSHA string) (string, string, *apiError) {
 	buildID, err := model.NewID()
 	if err != nil {
-		return nil, Errorf(http.StatusInternalServerError, "generate build id").Wrap(err)
+		return "", "", Errorf(http.StatusInternalServerError, "generate build id").Wrap(err)
 	}
 
 	// No provisioning step: the namespace already exists, because it is the one
 	// AppLab runs in, and the registry credentials a Job pushes with are already
 	// there for the same reason.
 
-	build := &model.Build{
-		ID:        buildID,
-		AppID:     app.ID,
-		CommitSHA: commitSHA,
-		Status:    model.BuildStatusPending,
-	}
-
 	// The build clones with the app's own key, read here because the Job is
 	// created a few lines below and a key that could not be read is a build that
-	// fails after it has already been recorded.
+	// fails after it has already been started.
 	//
 	// It is the app's key rather than something minted for the build. A build
 	// used to be handed a single-use token scoped to one commit, which is what
@@ -177,11 +199,7 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitS
 	// repository — every branch and commit of it — and no other app.
 	appKey, err := s.appKeys.Get(ctx, app.ID)
 	if err != nil {
-		return nil, Errorf(http.StatusInternalServerError, "read the app's key, which the build clones with").Wrap(err)
-	}
-
-	if err := s.store.CreateBuild(ctx, build); err != nil {
-		return nil, Errorf(http.StatusInternalServerError, "record the build").Wrap(err)
+		return "", "", Errorf(http.StatusInternalServerError, "read the app's key, which the build clones with").Wrap(err)
 	}
 
 	jobName, err := s.startBuildJob(ctx, app, branch, buildID, commitSHA, appKey)
@@ -189,28 +207,7 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitS
 		s.metrics.ObserveBuild(err != nil)
 	}
 	if err != nil {
-		// The record is kept and marked failed, rather than deleted: the caller
-		// asked for a build and needs to be able to see that it did not start and
-		// why.
-		s.setBuildStatus(ctx, app.ID, buildID, model.BuildStatusFailed, err.Error())
-		return nil, Errorf(http.StatusInternalServerError, "start the build job").Wrap(err)
-	}
-
-	// The Job's name is recorded against the build before anything else can be
-	// asked of it. A build whose name is not written down cannot be followed, its
-	// logs cannot be read after the Job is collected, and it cannot be stopped —
-	// so this is written first, and a failure to write it is reported rather than
-	// leaving a running Job that nothing can address.
-	//
-	// In memory too, because the caller gets this record back and the Job is
-	// already running.
-	build.JobName = jobName
-	if err := s.store.SetBuildJob(ctx, app.ID, buildID, jobName); err != nil {
-		slog.ErrorContext(ctx, "could not record the build's job name",
-			"app", app.ID, "build", buildID, "job", jobName, "error", err)
-	}
-	if err := s.store.SetBuildStatus(ctx, app.ID, buildID, model.BuildStatusPending, ""); err != nil {
-		slog.WarnContext(ctx, "could not record build status", "build", buildID, "error", err)
+		return "", "", Errorf(http.StatusInternalServerError, "start the build job").Wrap(err)
 	}
 
 	// Any other build of this app is now the older one. Stopping it here as well
@@ -218,90 +215,97 @@ func (s *Server) startBuild(ctx context.Context, app *model.App, branch, commitS
 	// start: two of them running at once would race to push the same image tag,
 	// and which one won would be whichever finished last.
 	//
-	// This build is excluded by id — it is already in the unfinished list.
+	// This build is excluded by id — it is in the unfinished list already.
 	s.supersedeOtherBuilds(ctx, app, buildID)
 
-	return build, nil
+	return buildID, jobName, nil
+}
+
+// respondBuild reads a build back from the cluster and writes it.
+//
+// The build has just been created, so this is a read of the Job that was just
+// created rather than of anything AppLab kept. A read that fails is reported as
+// a failure: the Job exists and is running, and answering with a build AppLab
+// assembled from what it remembers would be exactly the kind of second copy of a
+// cluster fact this design removes.
+func (s *Server) respondBuild(w http.ResponseWriter, r *http.Request, status int, app *model.App, buildID string) {
+	result, err := s.build.Get(r.Context(), app.Namespace, app.ID, buildID)
+	if err != nil {
+		fail(w, r, Errorf(http.StatusInternalServerError, "read back the build just started").Wrap(err))
+		return
+	}
+	respond(w, status, toBuildResponse(result, s.imageForResult(app.ID, result), s.buildPods(r.Context(), app)))
 }
 
 // supersedeOtherBuilds stops every build of an app except one.
 func (s *Server) supersedeOtherBuilds(ctx context.Context, app *model.App, exceptBuildID string) {
-	if s.build == nil {
+	if !s.canBuild() {
 		return
 	}
 
-	unfinished, err := s.store.ListUnfinishedBuildsForApp(ctx, app.ID)
+	unfinished, err := s.build.Unfinished(ctx, app.Namespace, app.ID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not list the builds in flight", "app", app.ID, "error", err)
 		return
 	}
 
-	for _, build := range unfinished {
-		if build.ID == exceptBuildID || build.JobName == "" {
+	for i := range unfinished {
+		b := &unfinished[i]
+		if b.ID == exceptBuildID || b.JobName == "" {
 			continue
 		}
-		if err := s.build.Cancel(ctx, app.Namespace, build.JobName); err != nil {
+		if err := s.build.Cancel(ctx, app.Namespace, b.JobName); err != nil {
 			slog.WarnContext(ctx, "could not stop a superseded build",
-				"app", app.ID, "build", build.ID, "job", build.JobName, "error", err)
+				"app", app.ID, "build", b.ID, "job", b.JobName, "error", err)
 			continue
 		}
-		s.setBuildStatus(ctx, app.ID, build.ID, model.BuildStatusCancelled,
-			"superseded by a newer build of "+app.ID)
 		slog.InfoContext(ctx, "stopped a superseded build",
-			"app", app.ID, "build", build.ID, "job", build.JobName)
+			"app", app.ID, "build", b.ID, "job", b.JobName)
 	}
 }
 
-// handleCancelBuild stops a running build and marks it cancelled.
+// handleCancelBuild stops a running build.
 //
 // The same operation the upload path performs, offered explicitly: someone may
 // simply want the build to stop — it is pushing a bad commit, or it is wedged —
 // without uploading anything.
 func (s *Server) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
-	build, apiErr := s.loadBuild(r)
-	if apiErr != nil {
-		fail(w, r, apiErr)
-		return
-	}
 	app, apiErr := s.loadApp(r)
 	if apiErr != nil {
 		fail(w, r, apiErr)
 		return
 	}
-
-	if build.Status.Terminal() {
-		fail(w, r, Conflict("build %s has already finished (%s)", shortSHA(build.ID), build.Status))
+	if !s.canBuild() {
+		fail(w, r, Errorf(http.StatusNotImplemented, "this deployment cannot build"))
 		return
 	}
 
-	// The cluster is consulted first, the same way reading a build does: a build
-	// whose Job ended while nothing was watching would otherwise be reported as
-	// stopped when it had in fact finished on its own.
-	s.refreshBuild(r.Context(), build)
-	if build.Status.Terminal() {
-		fail(w, r, Conflict("build %s has already finished (%s)", shortSHA(build.ID), build.Status))
+	buildID := r.PathValue("build")
+	result, apiErr := s.loadBuild(r)
+	if apiErr != nil {
+		fail(w, r, apiErr)
 		return
 	}
 
-	// A build with no Job was recorded but never started, so there is nothing in
-	// the cluster to delete and the record is the only thing to settle.
-	if build.JobName != "" {
-		if s.build == nil || !s.build.Ready() {
-			fail(w, r, Errorf(http.StatusNotImplemented, "this deployment cannot build"))
-			return
-		}
-		if err := s.build.Cancel(r.Context(), app.Namespace, build.JobName); err != nil {
-			fail(w, r, Errorf(http.StatusInternalServerError, "stop build job %s", build.JobName).Wrap(err))
-			return
-		}
+	// The cluster is the only record, so "has it already finished" is answered by
+	// reading the Job — which loadBuild has just done, and which reports a build
+	// that finished while nothing was watching as finished rather than as still
+	// running.
+	if result.Status.Terminal() {
+		fail(w, r, Conflict("build %s has already finished (%s)", shortSHA(buildID), result.Status))
+		return
 	}
 
-	s.setBuildStatus(r.Context(), app.ID, build.ID, model.BuildStatusCancelled, "stopped on request")
-	build.Status = model.BuildStatusCancelled
-	build.Reason = "stopped on request"
+	if err := s.build.Cancel(r.Context(), app.Namespace, result.JobName); err != nil {
+		fail(w, r, Errorf(http.StatusInternalServerError, "stop build job %s", result.JobName).Wrap(err))
+		return
+	}
 
-	slog.InfoContext(r.Context(), "build stopped", "app", app.ID, "build", build.ID, "job", build.JobName)
-	respond(w, http.StatusOK, toBuildResponse(build, s.buildPods(r.Context(), app)))
+	slog.InfoContext(r.Context(), "build stopped", "app", app.ID, "build", buildID, "job", result.JobName)
+
+	// Read back, so the answer is the state the cluster reports after the delete
+	// rather than what this handler believes it did.
+	s.respondBuild(w, r, http.StatusOK, app, buildID)
 }
 
 // supersedeBuilds stops whatever this app is currently building.
@@ -317,71 +321,50 @@ func (s *Server) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
 // would trade a working commit for a tidier cluster. Every failure is logged and
 // the upload proceeds.
 //
-// The record is marked cancelled rather than deleted, because it happened: the
-// builds table is a history, and a build that was stopped is part of it — which
-// is also what keeps someone from reading a vanished build as "the build I asked
-// for never started".
-//
-// Only builds with a Job are touched. One with no JobName is either still being
-// created — `startBuild` writes the record before the Job, so there is a real
-// window — or was left behind by a restart, and deleting a Job name that was
-// never created would be a delete of "" against the cluster. The restart case is
-// already handled: `ReconcileBuilds` fails those at startup.
+// Nothing is marked cancelled, and nothing needs to be: deleting the Job is the
+// whole of it. There is no record to relabel, and the build will not reappear in
+// a listing, because a listing reads Jobs and this one is gone.
 func (s *Server) supersedeBuilds(ctx context.Context, app *model.App) {
-	if s.build == nil {
+	if !s.canBuild() {
 		return
 	}
 
-	unfinished, err := s.store.ListUnfinishedBuildsForApp(ctx, app.ID)
+	unfinished, err := s.build.Unfinished(ctx, app.Namespace, app.ID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not list the builds in flight", "app", app.ID, "error", err)
 		return
 	}
 
-	for _, build := range unfinished {
-		if build.JobName == "" {
+	for i := range unfinished {
+		b := &unfinished[i]
+		if b.JobName == "" {
 			continue
 		}
 
-		if err := s.build.Cancel(ctx, app.Namespace, build.JobName); err != nil {
-			// The Job is recorded as failed rather than cancelled, because it was
-			// not stopped: whatever it is doing, it is still doing it.
+		if err := s.build.Cancel(ctx, app.Namespace, b.JobName); err != nil {
 			slog.WarnContext(ctx, "could not stop the build in flight",
-				"app", app.ID, "build", build.ID, "job", build.JobName, "error", err)
+				"app", app.ID, "build", b.ID, "job", b.JobName, "error", err)
 			continue
 		}
 
-		s.setBuildStatus(ctx, app.ID, build.ID, model.BuildStatusCancelled,
-			"superseded by a newer upload of "+app.ID)
 		slog.InfoContext(ctx, "stopped the build in flight to make way for an upload",
-			"app", app.ID, "build", build.ID, "job", build.JobName)
-
-		// There is nothing to revert on the app itself: "building" is derived
-		// from there being an unfinished build, and this one has just been
-		// cancelled, so the next read of the app reports what the cluster is
-		// actually running.
+			"app", app.ID, "build", b.ID, "job", b.JobName)
 	}
 }
 
 func (s *Server) handleGetBuild(w http.ResponseWriter, r *http.Request) {
-	build, apiErr := s.loadBuild(r)
-	if apiErr != nil {
-		fail(w, r, apiErr)
-		return
-	}
-
-	// The cluster is the source of truth for whether the build is still running,
-	// so its state is read before answering — otherwise a caller polling this
-	// endpoint would see "pending" forever after a crash-restart of applab.
-	s.refreshBuild(r.Context(), build)
-
 	app, apiErr := s.loadApp(r)
 	if apiErr != nil {
 		fail(w, r, apiErr)
 		return
 	}
+	result, apiErr := s.loadBuild(r)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
 
-	respond(w, http.StatusOK, toBuildResponse(build, s.buildPods(r.Context(), app)))
+	respond(w, http.StatusOK, toBuildResponse(result, s.imageForResult(app.ID, result), s.buildPods(r.Context(), app)))
 }
 
 // buildPods reads the pods the app's builds are running in, keyed by build id.
@@ -392,9 +375,9 @@ func (s *Server) handleGetBuild(w http.ResponseWriter, r *http.Request) {
 // way.
 //
 // An unreachable cluster is logged and reported as no pods rather than as a
-// failure, because the build records themselves come from the store and are
-// still worth serving — failing the whole listing because the cluster blinked
-// would hide builds that are perfectly well recorded.
+// failure. This is the one read on the build path that is decoration: the builds
+// themselves come from the Jobs, and failing a listing because the pod half
+// blinked would hide builds that are perfectly well recorded.
 func (s *Server) buildPods(ctx context.Context, app *model.App) map[string]observe.Pod {
 	if s.observer == nil || !s.observer.Ready() {
 		return nil
@@ -421,30 +404,32 @@ func (s *Server) handleListBuilds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	builds, err := s.store.ListBuilds(r.Context(), app.ID, limit)
+	if !s.canBuild() {
+		// No cluster, so no Jobs and no history. An empty list rather than 501:
+		// "this app has no builds" is true, and a listing that failed would make
+		// a console render an error where a plain empty table belongs.
+		respond(w, http.StatusOK, []buildResponse{})
+		return
+	}
+
+	builds, err := s.build.List(r.Context(), app.Namespace, app.ID, limit)
 	if err != nil {
 		fail(w, r, Errorf(http.StatusInternalServerError, "list builds").Wrap(err))
 		return
 	}
 
-	pods := s.buildPods(r.Context(), app)
-
-	out := make([]buildResponse, 0, len(builds))
-	for _, b := range builds {
-		out = append(out, toBuildResponse(b, pods))
-	}
-	respond(w, http.StatusOK, out)
+	respond(w, http.StatusOK, s.buildResponses(app, builds, s.buildPods(r.Context(), app)))
 }
 
 // handleBuildLogs streams a build's log.
 //
 // The log is followed while the build runs and the response ends when it
 // finishes, so a caller can watch a build with one request rather than polling.
-// When the build has already finished the recorded log is returned and the
-// response closes immediately — the same call works either way, which is what
-// makes it usable from a script that does not know the build's state.
+// When the build has already finished the log is returned and the response
+// closes immediately — the same call works either way, which is what makes it
+// usable from a script that does not know the build's state.
 func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
-	build, apiErr := s.loadBuild(r)
+	result, apiErr := s.loadBuild(r)
 	if apiErr != nil {
 		fail(w, r, apiErr)
 		return
@@ -463,7 +448,7 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 
 	follow := r.URL.Query().Get("follow") != "false"
 
-	if err := s.streamBuildLog(r.Context(), w, flusher, build, follow); err != nil {
+	if err := s.streamBuildLog(r.Context(), w, flusher, result, follow); err != nil {
 		// Headers are already sent, so the only honest signal left is a marker in
 		// the body. It is written in a form a reader will notice rather than as a
 		// bare error code.
@@ -473,14 +458,13 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // streamBuildLog writes a build's log, optionally following it to completion.
-func (s *Server) streamBuildLog(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, build *model.Build, follow bool) error {
-	if s.build == nil || build.JobName == "" {
-		return s.writeRecordedLog(ctx, w, flusher, build)
-	}
-
+func (s *Server) streamBuildLog(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, build *build.Result, follow bool) error {
 	app, err := s.loadAppByID(ctx, build.AppID)
 	if err != nil {
-		return s.writeRecordedLog(ctx, w, flusher, build)
+		return fmt.Errorf("read the app this build belongs to: %w", err)
+	}
+	if build.JobName == "" {
+		return fmt.Errorf("this build has no job to read a log from")
 	}
 
 	// The pod may not exist yet: a Job's pod takes a moment to be admitted, and
@@ -561,90 +545,33 @@ func (s *Server) streamBuildLog(ctx context.Context, w http.ResponseWriter, flus
 	}
 }
 
-// writeRecordedLog emits what AppLab recorded about a build whose Job is gone.
-func (s *Server) writeRecordedLog(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, build *model.Build) error {
-	_, _ = fmt.Fprintf(w, "[AppLab] no live build job for this build\n")
-	_, _ = fmt.Fprintf(w, "[AppLab] status: %s\n", build.Status)
-	if build.Reason != "" {
-		_, _ = fmt.Fprintf(w, "[AppLab] reason: %s\n", build.Reason)
-	}
-	flusher.Flush()
-	return nil
-}
-
-// refreshBuild brings a build's recorded status up to date with the cluster.
-func (s *Server) refreshBuild(ctx context.Context, build *model.Build) {
-	if s.build == nil || build.JobName == "" || build.Status.Terminal() {
-		return
-	}
-
-	app, err := s.loadAppByID(ctx, build.AppID)
-	if err != nil {
-		return
-	}
-
-	status, reason, err := s.buildStatus(ctx, app.Namespace, build.JobName)
-	if err != nil {
-		slog.DebugContext(ctx, "could not read build status from the cluster",
-			"build", build.ID, "error", err)
-		return
-	}
-	// An empty status means the Job is gone; the recorded state is the better
-	// answer and is left alone.
-	if status == "" || status == build.Status {
-		return
-	}
-
-	if err := s.store.SetBuildStatus(ctx, build.AppID, build.ID, status, reason); err != nil {
-		slog.WarnContext(ctx, "could not record build status", "build", build.ID, "error", err)
-		return
-	}
-	build.Status = status
-	build.Reason = reason
-
-	// Mark the image only once the build has pushed it, so nothing refers to an
-	// image that does not exist yet.
-	if status == model.BuildStatusSucceeded {
-		image := s.imageFor(build.AppID, build.CommitSHA)
-		if err := s.store.SetBuildImage(ctx, build.AppID, build.ID, image); err != nil {
-			slog.WarnContext(ctx, "could not record build image", "build", build.ID, "error", err)
-		}
-		build.Image = image
-	}
-}
-
-// loadBuild reads the {build} path value and loads it.
+// loadBuild reads the {build} path value and loads it from the cluster.
 //
-// The app id comes from the path, because the layout is one directory per app: a
-// build is addressed under its app in every URL, and its object key contains the
-// app it belongs to. That is also what makes the app in the path a real check
-// rather than a redundancy — a build id from one app cannot be read through
-// another app's path, because the read is scoped to that app's directory and the
-// object is simply not there.
-func (s *Server) loadBuild(r *http.Request) (*model.Build, *apiError) {
+// The app id comes from the path, and it is a real check rather than a
+// redundancy: the Job is looked up by a selector naming both, so a build id from
+// one app cannot be read through another app's path — the Job is simply not
+// selected.
+func (s *Server) loadBuild(r *http.Request) (*build.Result, *apiError) {
 	id := r.PathValue("build")
 	if id == "" {
 		return nil, BadRequest("no build id in the request path")
 	}
-	appID := r.PathValue("app")
-	if appID == "" {
-		return nil, BadRequest("no app id in the request path")
+	app, apiErr := s.loadApp(r)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	if !s.canBuild() {
+		return nil, Errorf(http.StatusNotImplemented, "this deployment cannot build")
 	}
 
-	build, err := s.store.GetBuild(r.Context(), appID, id)
+	result, err := s.build.Get(r.Context(), app.Namespace, app.ID, id)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, build.ErrBuildNotFound) {
 			return nil, NotFound("build %q", id)
 		}
 		return nil, Errorf(http.StatusInternalServerError, "read build").Wrap(err)
 	}
-	return build, nil
-}
-
-func (s *Server) setBuildStatus(ctx context.Context, appID, buildID string, status model.BuildStatus, reason string) {
-	if err := s.store.SetBuildStatus(ctx, appID, buildID, status, reason); err != nil {
-		slog.WarnContext(ctx, "could not record build status", "build", buildID, "status", status, "error", err)
-	}
+	return result, nil
 }
 
 // shortSHA abbreviates a commit for a human-readable status message.

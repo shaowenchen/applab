@@ -42,6 +42,24 @@ import (
 	"github.com/shaowenchen/applab/internal/model"
 )
 
+// The annotations a build Job carries, naming what the build is of.
+//
+// They are the whole of build history now that there is no build record: a
+// listing reads the Jobs and reconstructs each build from these. That makes them
+// a compatibility surface rather than a convenience — a build started by an
+// older AppLab has neither, and reads as a build of an unknown commit rather
+// than as no build at all.
+const (
+	// AnnotationCommit is the commit the build built.
+	AnnotationCommit = "applab.io/commit"
+
+	// AnnotationBranch is the branch the build cloned.
+	//
+	// An annotation rather than a label because a branch name may contain '/',
+	// which a label value may not.
+	AnnotationBranch = "applab.io/branch"
+)
+
 // Config describes one deployment's build environment.
 type Config struct {
 	// KanikoImage is the image providing the kaniko executor. Empty disables
@@ -102,9 +120,12 @@ type Config struct {
 	// ActiveDeadline bounds a build's wall clock.
 	ActiveDeadline time.Duration
 
-	// TTLAfterFinished is how long a finished Job's pods are kept, so a failed
-	// build's log can still be read. Zero means delete as soon as it finishes,
-	// which would make a failure undiagnosable.
+	// TTLAfterFinished is how long a finished Job is kept.
+	//
+	// It is what bounds a build's history: the Job is the record of the build, so
+	// there is nothing else to read once it is gone — see HISTORY in
+	// internal/build/history.go. Zero means delete as soon as it finishes, which
+	// makes a failure undiagnosable and leaves rollback nothing to find.
 	TTLAfterFinished time.Duration
 }
 
@@ -120,10 +141,12 @@ func New(client kubernetes.Interface, cfg Config) *Engine {
 		cfg.ActiveDeadline = 30 * time.Minute
 	}
 	if cfg.TTLAfterFinished == 0 {
-		// Long enough to read a failure's log after the fact, short enough that
-		// pods do not accumulate: every build leaves a Job and a pod behind, and
-		// a push makes one.
-		cfg.TTLAfterFinished = 30 * time.Minute
+		// A day, because this is not only about reading a failed build's log: a
+		// build Job is the sole record of a build, so its lifetime is how far
+		// back the build list reaches and how far back a rollback can go without
+		// rebuilding. See the matching field on config.Build, which is where an
+		// operator sets it and where the cost of raising it is set out.
+		cfg.TTLAfterFinished = 24 * time.Hour
 	}
 	if cfg.WorkspaceSizeLimit == "" {
 		// Kaniko unpacks the base image and every intermediate layer and filesystem
@@ -334,6 +357,24 @@ func (e *Engine) jobSpec(app *model.App, jobName, branch, buildID, commitSHA, im
 		k8s.LabelBuild:                 buildID,
 	}
 
+	// What the build is of, recorded on the Job because the Job is where a build
+	// is read from now: AppLab keeps no build record of its own, so a build's
+	// commit has to be recoverable from the object that ran it.
+	//
+	// Annotations rather than labels, and the branch is why. A label value is
+	// restricted to alphanumerics, '-', '_' and '.', and a branch name may
+	// contain '/' — "feature/x" is an ordinary branch and an illegal label, so a
+	// label-based branch would either be rejected by the API server or silently
+	// mangle the name it was supposed to record. An annotation takes any value.
+	//
+	// The commit could be a label, since a SHA is hex. It is not one because
+	// nothing selects on it: a label nothing queries is a second place for the
+	// same fact to live, and the two would eventually disagree.
+	annotations := map[string]string{
+		AnnotationCommit: commitSHA,
+		AnnotationBranch: branch,
+	}
+
 	// No shared workspace volume, unlike the two-container Job this replaces.
 	// Kaniko clones its own context and unpacks the image it is building into its
 	// own root filesystem, so there is nothing for a second container to hand it
@@ -345,9 +386,10 @@ func (e *Engine) jobSpec(app *model.App, jobName, branch, buildID, commitSHA, im
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: namespace,
-			Labels:    labels,
+			Name:        jobName,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: batchv1.JobSpec{
 			// One retry, not the default six. A build that fails is almost always
@@ -618,25 +660,67 @@ func (e *Engine) Status(ctx context.Context, namespace, jobName string) (model.B
 		return "", "", fmt.Errorf("read build job %s: %w", jobName, err)
 	}
 
-	for _, condition := range job.Status.Conditions {
+	status, reason := e.jobStatus(ctx, namespace, job)
+	return status, reason, nil
+}
+
+// jobStatus reads a Job's state as a build status, with the detail a failure
+// deserves.
+//
+// It takes the Job rather than its name because a listing already holds every
+// Job it is about to interpret, and reading each one again by name would be a
+// request per row.
+//
+// A failed build costs one further read — the pod, which is where the reason
+// usually is — and that is the price of a failure being diagnosable at all. It
+// is paid only for a build that failed, and a page renders a bounded number of
+// builds, so the cost is bounded by the page rather than by the history. A
+// caller that only needs the phase, without that read, uses jobPhase.
+func (e *Engine) jobStatus(ctx context.Context, namespace string, job *batchv1.Job) (model.BuildStatus, string) {
+	status, condition := jobPhase(job)
+	if status == model.BuildStatusFailed {
+		return status, e.failureReason(ctx, namespace, job.Name, *condition)
+	}
+	return status, ""
+}
+
+// jobPhase reads a Job's state without reading anything else.
+//
+// It is what a caller that needs only "is this build still going" uses, and it
+// exists because the full status of a failed build costs a pod read: answering
+// "which apps are building" by looking at failures would read the cluster once
+// per failed build in history, which is the whole history rather than the page.
+//
+// The second return is the failure condition, and it is non-nil only when the
+// status is failed.
+func jobPhase(job *batchv1.Job) (model.BuildStatus, *batchv1.JobCondition) {
+	for i := range job.Status.Conditions {
+		condition := &job.Status.Conditions[i]
 		if condition.Status != corev1.ConditionTrue {
 			continue
 		}
 		switch condition.Type {
 		case batchv1.JobComplete:
-			return model.BuildStatusSucceeded, condition.Message, nil
+			return model.BuildStatusSucceeded, nil
 		case batchv1.JobFailed:
-			return model.BuildStatusFailed, e.failureReason(ctx, namespace, jobName, condition), nil
+			return model.BuildStatusFailed, condition
 		}
 	}
 
+	// A Job being deleted — by its TTL expiring, or by a cancel — is not going to
+	// run again, and reporting it as running would leave a caller waiting for a
+	// build nothing is running.
+	if job.DeletionTimestamp != nil {
+		return model.BuildStatusCancelled, nil
+	}
+
 	if job.Status.Active > 0 {
-		return model.BuildStatusRunning, "", nil
+		return model.BuildStatusRunning, nil
 	}
 
 	// No condition and nothing active: the Job was created but its pod has not
 	// started yet.
-	return model.BuildStatusPending, "", nil
+	return model.BuildStatusPending, nil
 }
 
 // failureReason says why a build failed, in as much detail as the cluster can

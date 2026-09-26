@@ -320,13 +320,12 @@ func run() error {
 		}))
 	}
 
-	// Bring any build left in flight by a previous process up to date with the
-	// cluster. Without this a build interrupted by a restart would read as
-	// "running" forever, and a caller polling it would wait for a Job that
-	// finished minutes ago.
-	reconcileCtx, cancelReconcile := context.WithTimeout(ctx, 60*time.Second)
-	srv.ReconcileBuilds(reconcileCtx)
-	cancelReconcile()
+	// There is no build reconcile here, and its absence is the change. A build
+	// used to be recorded in the object store and its outcome noticed only when
+	// something asked, so a restart while one was running left a record reading
+	// "running" forever — which a startup pass had to repair against the cluster.
+	// A build is now its Job, so a build interrupted by a restart reads as
+	// whatever the Job says the moment it is listed, with nothing to repair.
 
 	httpServer := &http.Server{
 		Addr:    cfg.Listen,

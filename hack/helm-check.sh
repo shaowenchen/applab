@@ -83,7 +83,7 @@ grep -q 'APPLAB_BUILD_SECRET: "regcred"' <<<"$out" \
 if grep -qE 'APPLAB_(DEPLOY_IMAGE_PULL_SECRET|BUILD_PUSH_SECRET)' <<<"$out"; then
   fail "a second registry-credential setting is rendered again; there is one Secret"
 fi
-grep -q 'APPLAB_BUILD_TTL_AFTER_FINISHED: "30m"' <<<"$out" \
+grep -q 'APPLAB_BUILD_TTL_AFTER_FINISHED: "24h"' <<<"$out" \
   || fail "build.ttlAfterFinished is not passed to the server"
 
 # Every environment variable the server reads must appear in the rendered

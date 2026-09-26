@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/deploy"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/source"
-	"github.com/shaowenchen/applab/internal/store"
 )
 
 // handleDeploy deploys a commit.
@@ -85,51 +85,58 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 // branch being switched to. Duplicating this would mean two copies of the
 // image lookup, the build-or-refuse decision and the response shape — and the
 // two would drift in exactly the case that matters, which is the failure path.
-func (s *Server) deployResolved(w http.ResponseWriter, r *http.Request, app *model.App, branch, resolved string, build bool) {
-	// Deploying means the image needs a build and the resources need creating,
-	// in that order. The namespace is not among them: every app shares AppLab's
-	// own, which exists by definition.
+func (s *Server) deployResolved(w http.ResponseWriter, r *http.Request, app *model.App, branch, resolved string, allowBuild bool) {
+	// A successful build of this commit, if one exists, means the image is
+	// already in the registry: the tag names the commit, so an unchanged commit
+	// is an unchanged image and rebuilding it would push exactly what is there.
 	//
-	// A successful build of this commit, if one exists, supplies the image.
-	image := ""
-	if existing, err := s.store.FindSucceededBuild(r.Context(), app.ID, resolved); err == nil {
-		image = existing.Image
-	} else if !errors.Is(err, store.ErrNotFound) {
-		fail(w, r, Errorf(http.StatusInternalServerError, "look up an existing build").Wrap(err))
-		return
+	// The check is on the build, not on the image name. The name is derivable
+	// from the commit alone, under a configuration that has not changed — so a
+	// name is always available for any commit, and treating that as "already
+	// built" would deploy a tag nothing had ever pushed.
+	var image string
+	if s.canBuild() {
+		if existing, err := s.build.FindSucceeded(r.Context(), app.Namespace, app.ID, resolved); err == nil {
+			image = s.imageFor(app.ID, existing.CommitSHA)
+		} else if !errors.Is(err, build.ErrBuildNotFound) {
+			fail(w, r, Errorf(http.StatusInternalServerError, "look up an existing build").Wrap(err))
+			return
+		}
 	}
 
 	// No image yet. Either build one now, or tell the caller what to do — a
 	// deploy that silently builds would make the response time unpredictable and
 	// hide a failure behind a different operation.
 	if image == "" {
-		if !build {
+		if !allowBuild {
 			fail(w, r, Conflict(
 				"no image exists for commit %s; build it first with POST /api/v1/apps/%s/builds, or deploy with {\"build\":true}",
 				shortSHA(resolved), app.ID))
 			return
 		}
-		if s.build == nil || !s.build.Ready() {
+		if !s.canBuild() {
 			fail(w, r, Errorf(http.StatusNotImplemented, "no image exists for commit %s and this deployment cannot build", shortSHA(resolved)))
 			return
 		}
 
-		build, apiErr := s.startBuild(r.Context(), app, branch, resolved)
+		buildID, _, apiErr := s.startBuild(r.Context(), app, branch, resolved)
 		if apiErr != nil {
 			fail(w, r, apiErr)
+			return
+		}
+		result, err := s.build.Get(r.Context(), app.Namespace, app.ID, buildID)
+		if err != nil {
+			fail(w, r, Errorf(http.StatusInternalServerError, "read back the build just started").Wrap(err))
 			return
 		}
 		// The build runs asynchronously; the caller gets its id and follows it.
 		// Deploying here would mean holding the request open for a build that may
 		// take minutes, and the caller could not tell progress from a hang.
-		//
-		// Nothing records that a build started: the build's own record is what
-		// says so, and it is what appStatus reads to report the app as building.
 		respond(w, http.StatusAccepted, map[string]any{
-			"build":  toBuildResponse(build, s.buildPods(r.Context(), app)),
+			"build":  toBuildResponse(result, "", s.buildPods(r.Context(), app)),
 			"commit": resolved,
 			"status": "building",
-			"next":   "follow the build at /api/v1/apps/" + app.ID + "/builds/" + build.ID + "/logs",
+			"next":   "follow the build at /api/v1/apps/" + app.ID + "/builds/" + buildID + "/logs",
 		})
 		return
 	}
@@ -221,9 +228,8 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// What is deployed comes from the cluster, which is the only place it is
-	// recorded now: the Deployment's annotation, stamped by the deploy that put
-	// it there.
+	// Rolled back from what is deployed, which the cluster reports: the
+	// Deployment's annotation is the only record of it.
 	current := s.liveStatusesFor(r.Context(), app).CommitSHA
 	if current == resolved {
 		// Rolling back to what is already deployed is a no-op, and saying so is
@@ -232,11 +238,18 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	build, err := s.store.FindSucceededBuild(r.Context(), app.ID, resolved)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+	// A rollback never builds, so it needs a build that has already succeeded.
+	// What it checks is whether AppLab ever built this commit, not whether the
+	// image is still in the registry — that is the registry's answer to give, and
+	// a tag that has been pruned fails at pull time with an error that names it.
+	if !s.canBuild() {
+		fail(w, r, Errorf(http.StatusNotImplemented, "no image exists for commit %s and this deployment cannot build", shortSHA(resolved)))
+		return
+	}
+	if _, err := s.build.FindSucceeded(r.Context(), app.Namespace, app.ID, resolved); err != nil {
+		if errors.Is(err, build.ErrBuildNotFound) {
 			fail(w, r, Conflict(
-				"no image exists for commit %s, so it cannot be rolled back to; build it first with POST /api/v1/apps/%s/builds",
+				"no successful build of commit %s is on record, so it cannot be rolled back to; build it first with POST /api/v1/apps/%s/builds",
 				shortSHA(resolved), app.ID))
 			return
 		}
@@ -244,7 +257,8 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	addr, apiErr := s.deployCommit(r.Context(), app, resolved, build.Image)
+	image := s.imageFor(app.ID, resolved)
+	addr, apiErr := s.deployCommit(r.Context(), app, resolved, image)
 	if apiErr != nil {
 		if s.metrics != nil {
 			s.metrics.ObserveDeploy(true)
@@ -257,14 +271,12 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.InfoContext(r.Context(), "rolled back",
-		"app", app.ID, "commit", resolved, "image", build.Image)
+		"app", app.ID, "commit", resolved, "image", image)
 
 	respond(w, http.StatusOK, map[string]any{
 		"app":              s.appResponseFor(r.Context(), r, app),
 		"commit":           resolved,
-		"image":            build.Image,
-		"host":             addr.Host,
-		"path":             addr.Path,
+		"image":            image,
 		"url":              addr.URL(s.scheme(r)),
 		"rolled_back_from": current,
 	})
@@ -369,7 +381,7 @@ func (s *Server) handleAppStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	live := s.liveStatusesFor(r.Context(), app)
-	status := appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(r.Context(), app.ID))
+	status := appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(r.Context(), app))
 
 	resp := appStatusResponse{
 		AppID:  app.ID,

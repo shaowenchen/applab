@@ -4,23 +4,35 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shaowenchen/applab/internal/api"
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/store"
 )
 
-// fakeBuildEngine is the build half of the pipeline, recording what was asked of
-// it. It exists because the behaviour under test is *which Jobs get deleted*,
-// and the real engine would try to delete them from a cluster.
+// fakeBuildEngine is the build half of the pipeline, standing in for the cluster
+// with a set of builds it holds itself. It exists because the behaviour under
+// test is *which Jobs get deleted* and *what a listing shows*, and the real
+// engine would try to do both against a cluster.
+//
+// It holds build.Result values rather than records of its own, because that is
+// what the build half is now: there is no build record anywhere but the cluster,
+// so a fake that kept its own would be testing a design the code no longer has.
 type fakeBuildEngine struct {
 	mu        sync.Mutex
 	cancelled []string
 	cancelErr error
 	started   []string
+
+	// builds is what a listing reads, keyed by build id. A test inserts what it
+	// wants read back; startJob inserts what Start was asked for.
+	builds map[string]build.Result
 }
 
 func (f *fakeBuildEngine) Ready() bool { return true }
@@ -30,6 +42,10 @@ func (f *fakeBuildEngine) Start(ctx context.Context, app *model.App, branch, bui
 	defer f.mu.Unlock()
 	name := "job-" + buildID
 	f.started = append(f.started, name)
+	f.put(build.Result{
+		ID: buildID, AppID: app.ID, CommitSHA: commitSHA, Branch: branch,
+		JobName: name, Status: model.BuildStatusPending, CreatedAt: time.Now(),
+	})
 	return name, nil
 }
 
@@ -52,7 +68,96 @@ func (f *fakeBuildEngine) Cancel(ctx context.Context, namespace, jobName string)
 		return f.cancelErr
 	}
 	f.cancelled = append(f.cancelled, jobName)
+	// A cancelled build's Job is gone, which is the whole of what a cancel does
+	// now: there is no record to relabel, and the build stops being listed
+	// because the thing being listed is gone.
+	for id, b := range f.builds {
+		if b.JobName == jobName {
+			delete(f.builds, id)
+		}
+	}
 	return nil
+}
+
+// put records a build. The caller holds the lock.
+func (f *fakeBuildEngine) put(b build.Result) {
+	if f.builds == nil {
+		f.builds = map[string]build.Result{}
+	}
+	f.builds[b.ID] = b
+}
+
+// addBuild inserts a build a test wants read back.
+func (f *fakeBuildEngine) addBuild(b build.Result) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.put(b)
+}
+
+func (f *fakeBuildEngine) List(ctx context.Context, namespace, appID string, limit int) ([]build.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.list(func(b build.Result) bool { return b.AppID == appID }, limit), nil
+}
+
+func (f *fakeBuildEngine) ListAll(ctx context.Context, namespace string, limit int) ([]build.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.list(func(build.Result) bool { return true }, limit), nil
+}
+
+func (f *fakeBuildEngine) Get(ctx context.Context, namespace, appID, buildID string) (*build.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.builds[buildID]
+	if !ok || b.AppID != appID {
+		return nil, build.ErrBuildNotFound
+	}
+	return &b, nil
+}
+
+func (f *fakeBuildEngine) FindSucceeded(ctx context.Context, namespace, appID, commitSHA string) (*build.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, b := range f.list(func(b build.Result) bool {
+		return b.AppID == appID && b.CommitSHA == commitSHA && b.Status == model.BuildStatusSucceeded
+	}, 1) {
+		return &b, nil
+	}
+	return nil, build.ErrBuildNotFound
+}
+
+func (f *fakeBuildEngine) Unfinished(ctx context.Context, namespace, appID string) ([]build.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.list(func(b build.Result) bool { return b.AppID == appID && !b.Status.Terminal() }, 0), nil
+}
+
+func (f *fakeBuildEngine) InFlight(ctx context.Context, namespace string) (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]bool{}
+	for _, b := range f.builds {
+		if !b.Status.Terminal() {
+			out[b.AppID] = true
+		}
+	}
+	return out, nil
+}
+
+// list selects and orders builds newest first. The caller holds the lock.
+func (f *fakeBuildEngine) list(keep func(build.Result) bool, limit int) []build.Result {
+	out := make([]build.Result, 0, len(f.builds))
+	for _, b := range f.builds {
+		if keep(b) {
+			out = append(out, b)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 func (f *fakeBuildEngine) cancelledJobs() []string {
@@ -72,27 +177,26 @@ func newSupersedeServer(t *testing.T) (*api.Server, *fakeBuildEngine, *store.Sto
 	return srv, engine, st
 }
 
-// unfinishedBuild writes a build row that is still pending, with a Job name, the
-// way startBuild records one.
-func unfinishedBuild(t *testing.T, st *store.Store, appID, commit, jobName string) string {
+// unfinishedBuild adds a running build of an app to the engine, with a Job name.
+//
+// It is what a build that is still going looks like now: a Job in the cluster,
+// not a row in a store. A test that wants one asks the engine to hold one.
+func unfinishedBuild(t *testing.T, engine *fakeBuildEngine, appID, commit, jobName string) string {
 	t.Helper()
 
-	ctx := context.Background()
 	id, err := model.NewID()
 	if err != nil {
 		t.Fatalf("generate build id: %v", err)
 	}
 
-	build := &model.Build{
+	engine.addBuild(build.Result{
 		ID:        id,
 		AppID:     appID,
 		CommitSHA: commit,
 		JobName:   jobName,
-		Status:    model.BuildStatusPending,
-	}
-	if err := st.CreateBuild(ctx, build); err != nil {
-		t.Fatalf("create build: %v", err)
-	}
+		Status:    model.BuildStatusRunning,
+		CreatedAt: time.Now(),
+	})
 	return id
 }
 
@@ -101,55 +205,37 @@ func unfinishedBuild(t *testing.T, st *store.Store, appID, commit, jobName strin
 // upload stops it rather than letting it run to completion and push an image
 // nobody is waiting for.
 func TestAnUploadStopsTheBuildInFlight(t *testing.T) {
-	srv, engine, st := newSupersedeServer(t)
+	srv, engine, _ := newSupersedeServer(t)
 	h := srv.Handler()
 
 	sortAppWithCommit(t, srv, h, "shop")
-	buildID := unfinishedBuild(t, st, "shop", "aaaa", "job-in-flight")
+	unfinishedBuild(t, engine, "shop", "aaaa", "job-in-flight")
 
 	uploadSource(t, h, "shop", "second")
 
 	if got := engine.cancelledJobs(); len(got) != 1 || got[0] != "job-in-flight" {
 		t.Fatalf("cancelled jobs = %v, want [job-in-flight]", got)
 	}
-
-	build, err := st.GetBuild(context.Background(), "shop", buildID)
-	if err != nil {
-		t.Fatalf("read the build: %v", err)
-	}
-	if build.Status != model.BuildStatusCancelled {
-		t.Errorf("build status = %q, want %q", build.Status, model.BuildStatusCancelled)
-	}
-	if !strings.Contains(build.Reason, "superseded") {
-		t.Errorf("the reason should say why it stopped: %q", build.Reason)
-	}
 }
 
 // TestAnUploadDoesNotStopAFinishedBuild guards the boundary: a build that has
-// already finished is a fact, and relabelling it would erase the record of what
-// was actually built.
+// already finished is a fact, and stopping it would be stopping nothing — the
+// Job it ran in is not running anything.
 func TestAnUploadDoesNotStopAFinishedBuild(t *testing.T) {
-	srv, engine, st := newSupersedeServer(t)
+	srv, engine, _ := newSupersedeServer(t)
 	h := srv.Handler()
 
 	sortAppWithCommit(t, srv, h, "shop")
 
-	buildID := unfinishedBuild(t, st, "shop", "aaaa", "job-done")
-	if err := st.SetBuildStatus(context.Background(), "shop", buildID, model.BuildStatusSucceeded, ""); err != nil {
-		t.Fatalf("finish the build: %v", err)
-	}
+	engine.addBuild(build.Result{
+		ID: "done", AppID: "shop", CommitSHA: "aaaa", JobName: "job-done",
+		Status: model.BuildStatusSucceeded, CreatedAt: time.Now(),
+	})
 
 	uploadSource(t, h, "shop", "second")
 
 	if got := engine.cancelledJobs(); len(got) != 0 {
 		t.Fatalf("cancelled jobs = %v, want none: the build had already finished", got)
-	}
-	build, err := st.GetBuild(context.Background(), "shop", buildID)
-	if err != nil {
-		t.Fatalf("read the build: %v", err)
-	}
-	if build.Status != model.BuildStatusSucceeded {
-		t.Errorf("build status = %q, want it left as %q", build.Status, model.BuildStatusSucceeded)
 	}
 }
 
@@ -157,12 +243,12 @@ func TestAnUploadDoesNotStopAFinishedBuild(t *testing.T) {
 // app's Job would stop work that has nothing to do with this upload, and it is
 // the failure a query that forgets its WHERE clause produces.
 func TestAnUploadDoesNotStopAnotherAppsBuild(t *testing.T) {
-	srv, engine, st := newSupersedeServer(t)
+	srv, engine, _ := newSupersedeServer(t)
 	h := srv.Handler()
 
 	sortAppWithCommit(t, srv, h, "shop")
 	sortAppWithCommit(t, srv, h, "blog")
-	unfinishedBuild(t, st, "blog", "bbbb", "job-blog")
+	unfinishedBuild(t, engine, "blog", "bbbb", "job-blog")
 
 	uploadSource(t, h, "shop", "second")
 
@@ -175,11 +261,11 @@ func TestAnUploadDoesNotStopAnotherAppsBuild(t *testing.T) {
 // the upload. The source is stored by the time this runs, and refusing the
 // upload would trade a working commit for a tidier cluster.
 func TestTheUploadSurvivesAFailedCancel(t *testing.T) {
-	srv, engine, st := newSupersedeServer(t)
+	srv, engine, _ := newSupersedeServer(t)
 	h := srv.Handler()
 
 	sortAppWithCommit(t, srv, h, "shop")
-	unfinishedBuild(t, st, "shop", "aaaa", "job-stuck")
+	unfinishedBuild(t, engine, "shop", "aaaa", "job-stuck")
 	engine.cancelErr = errCancelRefused
 
 	rec := uploadSourceRecord(t, h, "shop", "second")
@@ -188,15 +274,15 @@ func TestTheUploadSurvivesAFailedCancel(t *testing.T) {
 	}
 }
 
-// TestABuildWithNoJobIsNotCancelled covers the window startBuild opens by
-// writing the record before creating the Job. Deleting the Job name of a build
-// that never got one would be a delete of "" against the cluster.
+// TestABuildWithNoJobIsNotCancelled covers a build whose Job name AppLab cannot
+// name. Deleting the Job name of a build that has none would be a delete of ""
+// against the cluster.
 func TestABuildWithNoJobIsNotCancelled(t *testing.T) {
-	srv, engine, st := newSupersedeServer(t)
+	srv, engine, _ := newSupersedeServer(t)
 	h := srv.Handler()
 
 	sortAppWithCommit(t, srv, h, "shop")
-	unfinishedBuild(t, st, "shop", "aaaa", "")
+	unfinishedBuild(t, engine, "shop", "aaaa", "")
 
 	uploadSource(t, h, "shop", "second")
 
@@ -213,11 +299,11 @@ func TestABuildWithNoJobIsNotCancelled(t *testing.T) {
 // build:true, a rollback that has to rebuild. Two builds racing to push the same
 // image tag is what this prevents.
 func TestAStartedBuildSupersedesWhatWasRunning(t *testing.T) {
-	srv, engine, st := newSupersedeServer(t)
+	srv, engine, _ := newSupersedeServer(t)
 	h := srv.Handler()
 
 	commit := sortAppWithCommit(t, srv, h, "shop")
-	unfinishedBuild(t, st, "shop", "aaaa", "job-older")
+	unfinishedBuild(t, engine, "shop", "aaaa", "job-older")
 
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/builds",
 		map[string]any{"commit_sha": commit}); rec.Code != http.StatusAccepted {
@@ -229,11 +315,11 @@ func TestAStartedBuildSupersedesWhatWasRunning(t *testing.T) {
 		t.Fatalf("cancelled jobs = %v, want [job-older]", got)
 	}
 	// The build that was just started must not be the one that was stopped.
-	if len(engine.started) == 0 {
+	if len(engine.startedJobs()) == 0 {
 		t.Fatal("no build was started")
 	}
 	for _, job := range got {
-		for _, started := range engine.started {
+		for _, started := range engine.startedJobs() {
 			if job == started {
 				t.Fatalf("the build just started (%s) was cancelled by its own start", job)
 			}

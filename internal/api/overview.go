@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/observe"
 )
@@ -95,29 +96,33 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		appCounts[status]++
 	}
 
-	buildCounts, err := s.store.CountBuildsByStatus(r.Context())
-	if err != nil {
-		fail(w, r, Errorf(http.StatusInternalServerError, "could not count builds").Wrap(err))
-		return
+	// Build history comes from the Jobs, and one listing supplies both the counts
+	// and the recent panel. The listing is bounded by the build Jobs' lifetime —
+	// build.ttl_after_finished — so this reads the whole history, not a page of
+	// it, which is what the counts have to cover.
+	allBuilds := s.buildHistory(r.Context())
+
+	buildCounts := map[model.BuildStatus]int{}
+	for i := range allBuilds {
+		buildCounts[allBuilds[i].Status]++
 	}
 
-	recentBuilds, err := s.store.ListRecentBuilds(r.Context(), overviewRecentBuilds)
-	if err != nil {
-		fail(w, r, Errorf(http.StatusInternalServerError, "could not list recent builds").Wrap(err))
-		return
+	recent := allBuilds
+	if len(recent) > overviewRecentBuilds {
+		recent = recent[:overviewRecentBuilds]
 	}
 
-	// A build in flight is the one case where the overview would otherwise report
-	// a build with nothing to show for what it is doing, so the pods are read
-	// once for the whole panel rather than per row.
+	// Ignored rather than reported: the pod half is decoration on a build row,
+	// and failing the whole overview because it blinked would hide the counts,
+	// which are the part someone acts on.
 	pods := s.allBuildPods(r.Context())
 
 	// A nil slice encodes as JSON null, which a client would have to special-case
 	// before iterating. An empty list is the honest answer for a deployment with
 	// no builds yet and needs no branch on the other side.
-	recent := make([]buildResponse, 0, len(recentBuilds))
-	for _, b := range recentBuilds {
-		recent = append(recent, toBuildResponse(b, pods))
+	rendered := make([]buildResponse, 0, len(recent))
+	for i := range recent {
+		rendered = append(rendered, toBuildResponse(&recent[i], s.imageForResult(recent[i].AppID, &recent[i]), pods))
 	}
 
 	apps := appsSummary{
@@ -143,7 +148,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		Running:   buildCounts[model.BuildStatusRunning],
 		Succeeded: buildCounts[model.BuildStatusSucceeded],
 		Failed:    buildCounts[model.BuildStatusFailed],
-		Recent:    recent,
+		Recent:    rendered,
 	}
 	for _, n := range buildCounts {
 		builds.Total += n
@@ -160,6 +165,23 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		Cluster:    cluster,
 		Deployment: s.configResponse(r),
 	})
+}
+
+// buildHistory reads every build in the namespace, newest first.
+//
+// A deployment that cannot build has no Jobs, and answers with an empty history
+// rather than an error: "this platform has no builds" is true when there is no
+// build half at all, and it needs no branch on the other side.
+func (s *Server) buildHistory(ctx context.Context) []build.Result {
+	if !s.canBuild() {
+		return nil
+	}
+	builds, err := s.build.ListAll(ctx, s.cfg.Namespace, 0)
+	if err != nil {
+		slog.WarnContext(ctx, "could not read the build history", "error", err)
+		return nil
+	}
+	return builds
 }
 
 // allBuildPods reads every app's build pods, for the recent-builds panel.

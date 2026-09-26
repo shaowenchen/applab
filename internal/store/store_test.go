@@ -52,11 +52,15 @@ func TestAppsLiveInOneDirectoryEach(t *testing.T) {
 // CLI: an app is one directory, what is inside it is told apart by the name of
 // the directory it is in, and nothing an app owns lives outside its own prefix.
 //
-// It is written by *doing* the operations — create an app, record a commit, start
-// a build — and then reading back what the bucket actually received, rather than
-// by calling the path helpers and comparing them to themselves. What it is
-// pinning is where a person will find things, so the assertion has to be over
-// objects that were really written.
+// It is written by *doing* the operations — create an app, record a commit,
+// write a repository — and then reading back what the bucket actually received,
+// rather than by calling the path helpers and comparing them to themselves. What
+// it is pinning is where a person will find things, so the assertion has to be
+// over objects that were really written.
+//
+// There is no build object here, and its absence is the assertion: a build is a
+// Job in the cluster, and the bucket holds only what is static — the app, its
+// commits and its source.
 func TestOneAppIsOneDirectory(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -66,9 +70,6 @@ func TestOneAppIsOneDirectory(t *testing.T) {
 	}
 	if err := st.RecordCommit(ctx, &model.Commit{AppID: "shop", SHA: strings.Repeat("a", 40)}); err != nil {
 		t.Fatalf("record commit: %v", err)
-	}
-	if err := st.CreateBuild(ctx, &model.Build{AppID: "shop", ID: "b1"}); err != nil {
-		t.Fatalf("create build: %v", err)
 	}
 	// A repository is a directory of git's own objects, written by the source
 	// package rather than the store, so one representative key stands in for it.
@@ -87,7 +88,6 @@ func TestOneAppIsOneDirectory(t *testing.T) {
 
 	want := []string{
 		"apps/shop/app.json",
-		"apps/shop/builds/b1.json",
 		"apps/shop/commits/" + strings.Repeat("a", 40) + ".json",
 		"apps/shop/repo/HEAD",
 	}
@@ -458,13 +458,10 @@ func TestTheStoreDoesNotOpenWithNothing(t *testing.T) {
 }
 
 // TestKeysNeverCollideAcrossApps is the isolation check: two apps with the same
-// commit sha and build id must not share an object.
+// commit sha must not share an object.
 func TestKeysNeverCollideAcrossApps(t *testing.T) {
 	if commitKey("shop", "abc") == commitKey("blog", "abc") {
 		t.Error("two apps share a commit key")
-	}
-	if buildKey("shop", "abc") == buildKey("blog", "abc") {
-		t.Error("two apps share a build key")
 	}
 	if SourcePrefix("shop") == SourcePrefix("blog") {
 		t.Error("two apps share a repository prefix")

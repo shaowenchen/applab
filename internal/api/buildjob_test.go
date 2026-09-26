@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,22 +12,19 @@ import (
 //
 // The Job's name is what every build operation after the start is addressed by:
 // the log, the status, stopping it, and the pods it left behind. It is not
-// derivable from the stored record — the record holds the app and the build id,
-// and the name is a function of those, but nothing recomputes it — so if it is
-// not written down the build is unreachable the moment the response that started
-// it has been sent. What a caller then gets is "[AppLab] no live build job for
-// this build" and "status: pending", for a build that is running perfectly well.
+// derivable from anything AppLab stores — the build id is not in it, and the
+// name is a function of the app and the id that nothing recomputes — so if the
+// Job is not created with it, the build is unreachable the moment the response
+// that started it has been sent. What a caller then gets is a build with no job
+// to read a log from, for a build that is running perfectly well.
 //
-// That was shipped, and the reason the tests did not catch it is worth stating:
-// every existing test that needed a Job name set one on the build it constructed
-// itself, which asserts that the *readers* work and says nothing about whether
-// the writer ever writes. This test builds the state the way the server does —
-// by starting a build — and reads it back from the store, so the only thing it
-// can be observing is what startBuild recorded.
+// That was shipped once, when the record and the Job were two writes that could
+// disagree. They are one write now — the Job is the record — but the property is
+// still worth asserting, because it is the property and not the mechanism that
+// matters.
 func TestABuildsJobNameIsRecorded(t *testing.T) {
-	srv, engine, st := newSupersedeServer(t)
+	srv, engine, _ := newSupersedeServer(t)
 	h := srv.Handler()
-	ctx := context.Background()
 
 	commit := setupAppWithCommit(t, srv, h, "shop")
 
@@ -44,28 +40,41 @@ func TestABuildsJobNameIsRecorded(t *testing.T) {
 
 	buildID := buildIDFrom(t, rec)
 
-	// The engine was asked to start a Job, and that Job is the one the record
-	// must name.
+	// The engine was asked to start a Job, and that Job is the one the build must
+	// be reachable by.
 	started := engine.startedJobs()
 	if len(started) != 1 {
 		t.Fatalf("the engine started %d jobs, want 1", len(started))
 	}
 
-	// Read back from the store rather than from the response: the response is
-	// built from the record the handler already holds in memory, so a name that
-	// was never persisted would still appear in it. That is exactly the shape of
-	// the bug this is guarding against.
-	build, err := st.GetBuild(ctx, "shop", buildID)
-	if err != nil {
-		t.Fatalf("read the build back: %v", err)
+	// Read through the endpoint a caller would use, and assert the Job is named
+	// in it — the field is what every later operation is addressed by.
+	got := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/builds/"+buildID, nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("read the build back: %d (%s)", got.Code, got.Body.String())
 	}
-	if build.JobName == "" {
-		t.Fatalf("the build was stored with no job name, so nothing can reach it after it is started; "+
-			"the log endpoint answers %q instead",
-			"[AppLab] no live build job for this build")
+
+	var result struct {
+		JobName string `json:"job_name"`
 	}
-	if build.JobName != started[0] {
-		t.Errorf("the stored job name is %q, but the engine started %q", build.JobName, started[0])
+	decodeData(t, got, &result)
+	if result.JobName == "" {
+		t.Fatalf("the build has no job name, so nothing can reach it after it is started")
+	}
+	if result.JobName != started[0] {
+		t.Errorf("the build reports job %q, but the engine started %q", result.JobName, started[0])
+	}
+
+	// And the log is readable through it, which is the surface the bug showed on.
+	// follow=false, so the response is the log-so-far rather than a stream that
+	// waits for a build the fake engine never actually runs.
+	logs := doRequest(t, h, http.MethodGet,
+		"/api/v1/apps/shop/builds/"+buildID+"/logs?follow=false", nil)
+	if logs.Code != http.StatusOK {
+		t.Fatalf("read the log: %d (%s)", logs.Code, logs.Body.String())
+	}
+	if strings.Contains(logs.Body.String(), "no live build job") {
+		t.Errorf("a build that was just started reports no live job:\n%s", logs.Body.String())
 	}
 }
 
@@ -103,8 +112,8 @@ func TestAStartedBuildsLogIsReadable(t *testing.T) {
 	if strings.Contains(body, "no live build job") {
 		t.Errorf("a build that was just started reports no live job:\n%s", body)
 	}
-	if strings.Contains(body, "status: pending") && !strings.Contains(body, "[AppLab] build") {
-		t.Errorf("the build reads as pending rather than as running:\n%s", body)
+	if strings.Contains(body, "no job to read a log from") {
+		t.Errorf("a build that was just started has no job to read a log from:\n%s", body)
 	}
 }
 

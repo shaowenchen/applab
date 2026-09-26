@@ -134,13 +134,13 @@ repository per branch:
 apps/<id>/app.json                    the app's settings: name, port, replicas, env, branch
 apps/<id>/key.json                    the app's API key
 apps/<id>/commits/<sha>.json          one recorded commit
-apps/<id>/builds/<id>.json            one build attempt, and the image it produced
 apps/<id>/repo/branches/<branch>/     the repository for one branch
 ```
 
-Note what is not in there: nothing about what is *running*. Whether an app is up,
-which commit it serves and which image that came from are read from the cluster's
-Deployment, so they cannot go stale. On an installation pointed at a bucket
+Note what is not in there: nothing about what is *running*, and nothing about
+what has been *built*. Whether an app is up, which commit it serves and which
+image that came from are read from the cluster's Deployment; the build history is
+read from the build Jobs themselves. On an installation pointed at a bucket
 someone else wrote, every app lists with its settings and history and reports as
 **not deployed** — and stays that way until someone deploys it:
 
@@ -151,6 +151,17 @@ applab deploy <app> --build      # or the Deploy latest button on the app's page
 Nothing is rebuilt at startup on purpose. An installation that started bringing up
 every app it found in a bucket would be a surprise on a cluster somebody else
 operates, and an app deliberately stopped would come back with it.
+
+**Build Jobs are kept for a day, and that is what bounds a build's history.**
+Because a build is a Job and nothing else records it, `build.ttlAfterFinished` is
+both the window to read a failed build's log and how far back the build list and
+a rollback reach. It costs more than the Job: Kubernetes collects a Job and its
+pod together, so this is also how long a finished build's pod lives. Raise it for
+a longer history and rollback window; lower it if a busy app accumulates more
+completed pods than you want in the namespace. A commit whose Job has been
+collected can still be deployed — the image tag is derived from the commit, so
+the deploy works — but AppLab can no longer tell you it was ever built, and a
+rollback to it is refused rather than attempted.
 
 **`branches/` is where storage multiplies.** Each branch is a repository of its
 own, holding a full copy of everything reachable from it — so an app with three
