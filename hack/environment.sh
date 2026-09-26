@@ -903,6 +903,52 @@ check_endpoint "/api/v1/describe (key)" /api/v1/describe -H "Authorization: Bear
 
 [ -z "$failed" ] || die "these did not answer 200 through the gateway:${failed}"
 
+# The chart's settings have to reach the *server*, not only the render.
+#
+# This is the check whose absence let a whole class of failure through. The
+# environment installs with build.secret blanked, because the registry here takes
+# no credentials — and the server treated an empty variable as "not set", so the
+# chart's default name survived and every build was refused for a Secret nothing
+# had created. Every chart check passed, every endpoint above answered 200, and
+# the failure only appeared when someone pushed an app.
+#
+# Only what the API reports can be asserted from here, so these are the settings
+# it does report: the address convention, which is the one that decides whether
+# the console and the apps are reachable at all. The registry credential and the
+# build pipeline are not in this response and cannot be seen from outside —
+# /api/v1/config's capabilities reports whether a build is possible, not what it
+# would use. That gap is why config has a unit test asserting the blanking
+# directly; this is the end-to-end half of the same question.
+log "confirming the settings the chart passed actually arrived"
+config_json=$(curl -s --max-time 5 -H "Host: ${TUNNEL_HOST}" \
+  "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}/api/v1/config" 2>/dev/null || true)
+
+# jq is not assumed present on a runner; the raw JSON is matched instead.
+config_problems=""
+expect_config() {
+  local label="$1" want="$2"
+  printf '%s' "$config_json" | grep -qF -- "$want" \
+    || config_problems="${config_problems} ${label}"
+}
+
+# The host and the path prefix are what this script sets, and a chart default
+# surviving in either would put the apps somewhere nobody is looking.
+expect_config "the-host" "${TUNNEL_HOST}"
+[ -z "$APPLAB_PATH_PREFIX" ] || expect_config "the-path-prefix" "${APPLAB_PATH_PREFIX}"
+expect_config "the-namespace" "${APPLAB_NAMESPACE}"
+
+# And the build pipeline has to be usable, since this environment sets a registry
+# for it. A deployment whose build half silently came up disabled still serves
+# every endpoint above, and fails only when someone pushes — which is exactly the
+# class of failure this check exists to move forward.
+printf '%s' "$config_json" | grep -q '"build":true' \
+  || config_problems="${config_problems} the-build-pipeline-is-not-enabled"
+
+[ -z "$config_problems" ] || {
+  printf '%s\n' "$config_json" | head -40 | sed 's/^/    /' >&2
+  die "the deployment's own settings did not reach the server:${config_problems} — the values above are what it reports, and the chart's defaults are what it should not"
+}
+
 # ── 6. publish ──────────────────────────────────────────────────────────────
 
 # The tunnel comes up now rather than at the start. Everything above is the

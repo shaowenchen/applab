@@ -446,8 +446,17 @@ func splitList(v string) []string {
 	return out
 }
 
+// setString applies a string environment variable.
+//
+// An empty value means empty, not "leave the default": LookupEnv is what tells
+// the two apart, and collapsing them makes a setting impossible to clear. The
+// chart depends on it — it renders APPLAB_BUILD_SECRET as "" to say this
+// registry has no credential — and so does anyone with a domain, a gateway or a
+// key prefix they want blank. The failure it caused was silent and late: the
+// default name survived, and every build was refused for a Secret nothing had
+// created, naming a default the operator had already turned off.
 func setString(dst *string, env string) {
-	if v, ok := os.LookupEnv(env); ok && strings.TrimSpace(v) != "" {
+	if v, ok := os.LookupEnv(env); ok {
 		*dst = strings.TrimSpace(v)
 	}
 }
