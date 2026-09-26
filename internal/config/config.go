@@ -25,15 +25,27 @@ type Config struct {
 	// Listen is the address the HTTP server binds, e.g. ":80".
 	Listen string `yaml:"listen"`
 
-	// BaseURL is the address callers reach this service at, used wherever a URL
-	// is handed back to a client (clone URLs). Empty means
-	// derive it from the request's Host header, which is right on a cluster
-	// fronted by an ingress and wrong the moment a proxy rewrites Host — so
-	// setting it explicitly is the safer deployment.
+	// BaseURL is the address *inside the cluster* where this service is reached:
+	// the Service the build Job clones its source from, and the only address
+	// AppLab uses to talk to itself. It is set by the chart to
+	// "http://applab.<namespace>.svc:80<basePath>" and is deliberately not the
+	// public one — a build pod cannot resolve, or should not depend on, whatever
+	// DNS a person uses.
 	//
 	// It includes BasePath when there is one: this is the whole address, not a
 	// hostname.
 	BaseURL string `yaml:"base_url"`
+
+	// PublicURL is the address *people* reach this service at, e.g.
+	// "https://applab.example.com/applab". It exists for one job: deciding the
+	// scheme of the addresses handed back to a client, so an app's URL is
+	// "https://shop.example.com" on an installation served over TLS rather than
+	// the "http://" that the in-cluster service address would imply.
+	//
+	// Empty means fall back to the request — its TLS state, then
+	// X-Forwarded-Proto — which is right for a deployment reached directly and
+	// an assumption for one behind a proxy that strips either.
+	PublicURL string `yaml:"public_url"`
 
 	// BasePath is the path prefix this service is served under, e.g. "/applab".
 	//
@@ -411,6 +423,7 @@ func Load() (Config, error) {
 func applyEnv(cfg *Config) {
 	setString(&cfg.Listen, "APPLAB_LISTEN")
 	setString(&cfg.BaseURL, "APPLAB_BASE_URL")
+	setString(&cfg.PublicURL, "APPLAB_PUBLIC_URL")
 	setString(&cfg.BasePath, "APPLAB_BASE_PATH")
 	setString(&cfg.DataDir, "APPLAB_DATA_DIR")
 	setString(&cfg.ObjectStore.Endpoint, "APPLAB_OBJECT_STORE_ENDPOINT")

@@ -302,6 +302,16 @@ listener whose certificate covers the host. For a subdomain-per-app install that
 certificate must be a wildcard (`*.applab.example.com`); for a `pathPrefix`
 install a single-host certificate is enough, which is the reason to prefer it.
 
+**What an app's URL is reported as** follows the same listener. The chart passes
+the console's own address to the server as `APPLAB_PUBLIC_URL`, and only its
+scheme is used: `https` when `ingress.tls` is set, `http` otherwise. That is why
+an app's address in the console reads `https://shop.applab.example.com` on a
+TLS-terminating install rather than the plain-http address the in-cluster Service
+would imply — the two are different addresses and only one of them is about how
+a browser arrives. The console also re-schemes the link it renders to match the
+page it is on, so a proxied install whose headers are rewritten still links
+correctly.
+
 #### When the console has its own Ingress
 
 The console and API are reached through a plain Kubernetes Ingress by default

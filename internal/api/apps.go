@@ -787,10 +787,27 @@ const maxJSONBody = 1 << 20
 
 // scheme reports the URL scheme a client reached this service with, for the
 // links handed back to it.
+//
+// The order is the order of how much each source actually knows:
+//
+//  1. APPLAB_PUBLIC_URL, when the operator has set it. This is the one source
+//     that is authoritative rather than inferred, and it exists because the
+//     others are both wrong in the normal deployment: the request arrives from
+//     the cluster's own ingress, and BaseURL is the in-cluster Service address.
+//  2. The request itself — its TLS state, then X-Forwarded-Proto, which is what
+//     an ingress sets when it terminates TLS and forwards plain HTTP.
+//  3. Plain http, which is what a request that is neither of the above actually
+//     is.
+//
+// BaseURL is deliberately not consulted, and it used to be. It is the address a
+// build pod clones from — "http://applab.ops-system.svc:80" — so taking a scheme
+// from it made every app's URL http on an installation served over TLS, which is
+// the opposite of what a link into a browser should be. The two addresses answer
+// different questions and only one of them is about how a person arrives.
 func (s *Server) scheme(r *http.Request) string {
-	if s.cfg.BaseURL != "" {
-		if i := strings.Index(s.cfg.BaseURL, "://"); i > 0 {
-			return s.cfg.BaseURL[:i]
+	if s.cfg.PublicURL != "" {
+		if i := strings.Index(s.cfg.PublicURL, "://"); i > 0 {
+			return s.cfg.PublicURL[:i]
 		}
 	}
 	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {

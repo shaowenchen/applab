@@ -22,6 +22,11 @@ data:
   # server wrote itself.
   APPLAB_BASE_URL: {{ include "applab.internalURL" . | quote }}
 
+  # Where people reach this deployment, as opposed to APPLAB_BASE_URL above,
+  # which is where a build pod does. Only the scheme of this is used — it decides
+  # whether an app's address is reported as http or https.
+  APPLAB_PUBLIC_URL: {{ include "applab.publicURL" . | quote }}
+
   # The path applab itself is served under, when it is not the root.
   #
   # It is ingress.path, because that is what the server has to expect: an Ingress

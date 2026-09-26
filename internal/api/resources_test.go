@@ -3,6 +3,8 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +14,8 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/shaowenchen/applab/internal/api"
+	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/store"
@@ -349,4 +353,100 @@ func deploymentResources(t *testing.T, client *fake.Clientset, appID string) cor
 		t.Fatalf("the deployment for %s has no containers", appID)
 	}
 	return deployment.Spec.Template.Spec.Containers[0].Resources
+}
+
+// TestAppURLsUseTheDeploymentsPublicScheme is the check that an app's address is
+// handed back over the scheme a person actually reaches the deployment with.
+//
+// It used to be inferred from BaseURL — the in-cluster Service address a build
+// pod clones from, "http://applab.ops-system.svc:80" — so every app's URL came
+// back as http on an installation served over TLS. The two addresses answer
+// different questions and only one of them is about how a browser arrives.
+//
+// Driven through the app route rather than by calling scheme directly, so what is
+// asserted is the URL a caller is actually handed.
+func TestAppURLsUseTheDeploymentsPublicScheme(t *testing.T) {
+	// The test server's BaseURL is the in-cluster address a chart sets, and its
+	// app is served at http://shop.apps.example.com when nothing says otherwise.
+	cases := []struct {
+		name      string
+		publicURL string
+		forwarded string
+		want      string
+	}{
+		{
+			name:      "a configured public URL sets the scheme",
+			publicURL: "https://applab.example.com/applab",
+			want:      "https://shop.apps.example.com",
+		},
+		{
+			// The regression this exists for: the in-cluster Service address is
+			// http, and it must not drag an app's URL down with it.
+			name: "the in-cluster address never sets the scheme",
+			want: "http://shop.apps.example.com",
+		},
+		{
+			name:      "an ingress that terminates TLS is believed",
+			forwarded: "https",
+			want:      "https://shop.apps.example.com",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// A server built with the config under test, rather than one mutated
+			// afterwards: the config is read at construction and a test that
+			// reached in to change it would be asserting on a state the server
+			// never has.
+			srv, _ := newServerWithConfig(t, func(cfg *config.Config) {
+				cfg.PublicURL = c.publicURL
+				cfg.BaseURL = "http://applab.ops-system.svc:80"
+			})
+			h := srv.Handler()
+
+			if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+				t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/apps/shop", nil)
+			req.Header.Set("Authorization", "Bearer test-key")
+			if c.forwarded != "" {
+				req.Header.Set("X-Forwarded-Proto", c.forwarded)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			var app struct {
+				URL string `json:"url"`
+			}
+			decodeData(t, rec, &app)
+
+			if app.URL != c.want {
+				t.Errorf("url = %q, want %q", app.URL, c.want)
+			}
+		})
+	}
+}
+
+// newServerWithConfig builds the minimal server over a config the test adjusts,
+// for the checks that are about what the deployment is rather than what is
+// attached to it.
+//
+// A server cannot be reconfigured after New, and that is deliberate — the
+// configuration is read once — so a test that needs a different one builds it.
+func newServerWithConfig(t *testing.T, tweak func(*config.Config)) (*api.Server, *store.Store) {
+	t.Helper()
+
+	st, err := store.OpenLocal(context.Background(), filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.Keys = []string{"test-key"}
+	cfg.Namespace = "ops-system"
+	cfg.BaseDomain = "apps.example.com"
+	tweak(&cfg)
+
+	return api.New(cfg, st, auth.New(cfg.Keys)), st
 }

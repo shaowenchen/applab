@@ -204,6 +204,26 @@ case, which is the point.
 {{- end }}
 
 {{/*
+The address *people* reach this deployment at, for the API to use as the scheme
+of the links it hands back.
+
+It is the same address the console is served at — one installation, one way in —
+so it is derived from the same helper rather than from a second setting that
+could disagree with it. It exists as its own environment variable rather than
+being folded into applab.internalURL because the two answer different questions:
+`internalURL` is where a build pod clones its source from, and this is where a
+browser arrives. Taking the scheme from the internal address made every app's URL
+http on an installation served over TLS.
+
+Empty when there is no host at all. The API then falls back to the request, which
+is the best available answer for a deployment reached only from inside the
+cluster.
+*/}}
+{{- define "applab.publicURL" -}}
+{{- include "applab.consoleURL" . -}}
+{{- end }}
+
+{{/*
 Fail early on a configuration that would produce a broken deployment, rather
 than letting it fail at runtime where the cause is much harder to see.
 */}}

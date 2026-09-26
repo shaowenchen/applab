@@ -1215,8 +1215,28 @@ function baseURL() {
 // sent, and to prefer the API's url once there was one — two answers to the same
 // question, and the computed one was only right for a deployment with no path
 // prefix.
+//
+// The scheme is taken from the page rather than from the API's answer, which is
+// the one thing here the console knows better. The server infers it from the
+// request, and an installation behind a proxy that rewrites the headers — or one
+// whose PUBLIC_URL is unset — can get that wrong; this page is by definition
+// loaded over the scheme a person reached the deployment with, so a link from it
+// cannot be less right than the server's guess and is usually more so. Nothing
+// else about the address is touched: the host is the API's, because with a path
+// prefix every app shares the deployment's host and only the server knows which
+// app got which.
 function appURL(app) {
-  return app.url || "";
+  return withPageScheme(app.url || "");
+}
+
+// withPageScheme swaps the scheme of an absolute URL for the page's own.
+//
+// Anything that is not an absolute http(s) URL is returned untouched, so a
+// relative path or an empty string passes through without a scheme being
+// invented for it.
+function withPageScheme(url) {
+  if (!/^https?:\/\//i.test(url)) return url;
+  return (window.location.protocol || "http:") + url.replace(/^https?:/i, "");
 }
 
 // statusURL is where an app's status says it is served, and is empty when the
@@ -1226,7 +1246,7 @@ function appURL(app) {
 // No derivation from parts any more: the API reports the address as one field on
 // both an app and its status, so there is nothing here to get wrong.
 function statusURL(status) {
-  return status.url || "";
+  return withPageScheme(status.url || "");
 }
 
 // ---------------------------------------------------------------------------

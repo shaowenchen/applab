@@ -167,7 +167,11 @@ const sandbox = {
   // and a deployment served under a path (ingress.path, the default) would be
   // offered the wrong one if only the origin were read.
   window: {
-    location: { origin: "https://applab.example.com", pathname: "/applab/" },
+    // protocol is included because the console reads it: an app's address is
+    // offered over the scheme the page was loaded with. A stub without it would
+    // make the console look like it mangles every URL, which is the harness
+    // missing a field rather than the console having a bug.
+    location: { protocol: "https:", origin: "https://applab.example.com", pathname: "/applab/" },
     // The clipboard fallback selects the value in the document, so the selection
     // API has to exist for that path to run at all.
     getSelection: () => ({ removeAllRanges() {}, addRange(r) { this._range = r; } }),
@@ -1112,6 +1116,47 @@ async function render(apps) {
     // A large limit is not rendered in scientific notation, which a number input
     // would refuse to hold.
     check("a 64 GiB limit renders as a plain number", conv("toGi", "68719476736"), "64");
+  }
+
+  // An app's address is offered over the scheme this page was loaded with.
+  //
+  // The API infers the scheme from the request, which is right when the
+  // deployment is reached directly and a guess when something terminates TLS in
+  // front of it. The page is by definition loaded over the scheme a person
+  // reached the deployment with, so it is the better of the two — and a link
+  // that opens a plain-http app from an https page is a mixed-content browser
+  // warning rather than a working link.
+  //
+  // Only the scheme moves: the host is the API's, because with a path prefix
+  // every app shares the deployment's host and only the server knows which app
+  // got which.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    const url = (u) => vm.runInContext("withPageScheme", ctx)(u);
+
+    check(
+      "an app address reported as http is offered as https on an https page",
+      url("http://shop.apps.example.com"),
+      "https://shop.apps.example.com"
+    );
+    check(
+      "and the host and path are left alone",
+      url("http://applab.example.com/applab/apps/shop"),
+      "https://applab.example.com/applab/apps/shop"
+    );
+    check(
+      "an address that is already https is unchanged",
+      url("https://shop.apps.example.com"),
+      "https://shop.apps.example.com"
+    );
+    // An installation with no base domain reports no address, and inventing a
+    // scheme for an empty string would turn "nothing" into a link that resolves
+    // nowhere.
+    check("an empty address stays empty", url(""), "");
+    check("and a relative path is not given a scheme", url("/apps/shop"), "/apps/shop");
   }
 
   // The instances list asks for the app's pods, and reports an empty answer as
