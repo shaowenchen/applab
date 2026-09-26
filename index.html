@@ -231,12 +231,22 @@ credential; now they are in the same place as the source.</li>
 </ul>
 <p>The layout inside the bucket is one directory per app, and its source is one
 repository per branch:</p>
-<pre><code>apps/&lt;id&gt;/app.json                    the app: name, port, env, status, deployed commit
+<pre><code>apps/&lt;id&gt;/app.json                    the app's settings: name, port, replicas, env, branch
 apps/&lt;id&gt;/key.json                    the app's API key
 apps/&lt;id&gt;/commits/&lt;sha&gt;.json          one recorded commit
-apps/&lt;id&gt;/builds/&lt;id&gt;.json            one build attempt
+apps/&lt;id&gt;/builds/&lt;id&gt;.json            one build attempt, and the image it produced
 apps/&lt;id&gt;/repo/branches/&lt;branch&gt;/     the repository for one branch
 </code></pre>
+<p>Note what is not in there: nothing about what is <em>running</em>. Whether an app is up,
+which commit it serves and which image that came from are read from the cluster's
+Deployment, so they cannot go stale. On an installation pointed at a bucket
+someone else wrote, every app lists with its settings and history and reports as
+<strong>not deployed</strong> — and stays that way until someone deploys it:</p>
+<pre><code class="language-bash">applab deploy &lt;app&gt; --build      # or the Deploy latest button on the app's page
+</code></pre>
+<p>Nothing is rebuilt at startup on purpose. An installation that started bringing up
+every app it found in a bucket would be a surprise on a cluster somebody else
+operates, and an app deliberately stopped would come back with it.</p>
 <p><strong><code>branches/</code> is where storage multiplies.</strong> Each branch is a repository of its
 own, holding a full copy of everything reachable from it — so an app with three
 live branches occupies roughly three times one branch's repository. Measured: a
