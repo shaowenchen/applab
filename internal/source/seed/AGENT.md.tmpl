@@ -56,7 +56,7 @@ nothing to install. The header of `applab.sh` lists every command it calls.
     ./applab.sh push              # upload, build, deploy — the whole path
     ./applab.sh status            # what is running, and where
     ./applab.sh logs -f           # watch it
-    ./applab.sh diagnose          # why it is not working, if it is not
+    ./applab.sh diagnose          # why it is not working, if it is not — start here
     ./applab.sh history           # commits you can deploy or roll back to
     ./applab.sh rollback <commit> # go back to an earlier one
     ./applab.sh help              # everything else
@@ -69,6 +69,9 @@ operations against the same API:
     ./applab.sh url               # just the address it is served at
     ./applab.sh show              # port, replicas, domain, address
     ./applab.sh pods              # the pods, and why one is not ready
+    ./applab.sh logs              # the newest pod's log; --pod names one
+    ./applab.sh build-logs        # the newest build's output; an id names one
+    ./applab.sh events            # why a pod never started
     ./applab.sh config            # env vars, and the names of the secrets
     ./applab.sh replicas 3        # how many copies to run (no argument: print it)
     ./applab.sh env set K=V ...   # set environment variables
@@ -155,9 +158,40 @@ replicas are ready, the image it runs and the commit that image was built from.
 Nothing is recorded on AppLab's side, so there is no second answer to reconcile —
 the cluster is the only one.
 
+## Debugging, which is most of what you will actually do
+
 `GET /api/v1/apps/{{APP}}/diagnose` answers "why is it not working" in one call —
 pods, events and the relevant log, most likely cause first. Reach for it before
-reading the individual endpoints.
+reading the individual endpoints, and reach for the ones below when its answer
+needs more detail.
+
+**The app's log.** `?follow=false` returns what exists and closes; the default
+follows. `?pod=` and `?container=` narrow it, `?tail=` (default 500) and
+`?since=5m` bound it, and `?previous=true` reads the *previous* container
+instance — which is where a crash loop's reason is written, because the current
+one is only restarting.
+
+    curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/logs?follow=false&tail=500&pod=<pod>" \
+      -H "Authorization: Bearer $APPLAB_KEY"
+
+**A build's log.** One build's output, by build id — the id from the builds
+listing. It follows while the build runs and ends when it finishes, and works
+unchanged for a build that already finished.
+
+    curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/builds/<build-id>/logs?follow=false" \
+      -H "Authorization: Bearer $APPLAB_KEY"
+
+**Events.** Why a pod never started: a failed scheduling, an image pull that was
+refused, a probe that killed a container. They expire after about an hour, so
+they answer "what just happened" rather than "what happened last week". The
+`warnings` count is reported beside the list, because that is the question.
+
+    curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/events?limit=50" \
+      -H "Authorization: Bearer $APPLAB_KEY"
+
+`./applab.sh` wraps all three: `logs` (with `--pod`, `--previous`, `-f`),
+`build-logs [id]`, and `events`. `applab logs`, `applab builds <app> --logs` and
+`applab diagnose` are the CLI's equivalents.
 
 ## Configuration travels with the code
 

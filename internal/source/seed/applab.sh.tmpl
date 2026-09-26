@@ -200,7 +200,9 @@ Looking
   status             what is running, and where
   url                just the address the app is served at
   show               the app itself: port, replicas, domain, address
-  logs [-f]          the app's log; -f follows it
+  logs [flags]       the app's log; see "logs" below for --pod and --previous
+  build-logs [build] a build's output (default: the newest build)
+  events             recent Kubernetes events — why a pod never started
   pods               the pods, and why one is not ready
   diagnose           why the app is not working, if it is not
   history            the commit history
@@ -232,6 +234,21 @@ Branches
   git clone "https://x:$APPLAB_KEY@<host>/git/<app>@dev.git"    the branch dev
 
   See AGENT.md for more, and the app's page in the console has both addresses.
+
+Debugging
+  logs               the newest pod's log, which is usually the one you want
+  logs --pod <name>  one pod's log, by name from "pods"
+  logs --previous    the previous container instance — where a crash loop's
+                     reason is written, since the current one is only restarting
+  logs -f            follow it as it arrives
+  build-logs         the newest build's output, where a failed build is explained
+  build-logs <id>    one build's output, by id from "builds"
+  events             what the cluster says went wrong: a failed scheduling, an
+                     image pull that was refused, a probe that killed a container
+  diagnose           all of the above, ordered so the most likely cause is first
+
+  Start with "diagnose". It answers "why is this not working" in one call, and
+  the commands above are what to reach for when its answer needs more detail.
 
 Keys and upkeep
   key                print this app's key
@@ -427,8 +444,51 @@ case "${1:-help}" in
     ;;
   logs)
     shift
-    if [ "${1:-}" = "-f" ]; then follow=true; else follow=false; fi
-    api GET "/api/v1/apps/$APP/logs?follow=$follow&tail=500"
+    # Flags rather than positionals: a pod name is a string and "-f" is not a
+    # pod, so the two cannot share a slot without the script guessing which one
+    # it was handed.
+    follow=false
+    pod=""
+    previous=false
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -f|--follow) follow=true ;;
+        --pod)
+          shift
+          [ -n "${1:-}" ] || { echo "--pod needs a pod name; see ./applab.sh pods" >&2; exit 2; }
+          pod="$1"
+          ;;
+        --previous) previous=true ;;
+        *)
+          echo "unknown flag for logs: $1 (see ./applab.sh help)" >&2
+          exit 2
+          ;;
+      esac
+      shift
+    done
+
+    path="/api/v1/apps/$APP/logs?follow=$follow&tail=500&previous=$previous"
+    # The pod is named only when one was given. Sending pod= empty would ask the
+    # server for a pod whose name is the empty string, which it refuses, rather
+    # than for the newest one — which is what no pod means.
+    [ -n "$pod" ] && path="$path&pod=$(urlencode "$pod")"
+    api GET "$path"
+    ;;
+
+  build-logs)
+    shift
+    # The newest build unless one is named, which is what someone who has just
+    # watched a push fail means by it. An id from "builds" names a specific one.
+    build="${1:-}"
+    if [ -z "$build" ]; then
+      build=$(api GET "/api/v1/apps/$APP/builds?limit=1" | json_field id)
+      [ -n "$build" ] || { echo "this app has no builds yet" >&2; exit 1; }
+    fi
+    api GET "/api/v1/apps/$APP/builds/$build/logs?follow=false"
+    ;;
+
+  events)
+    api GET "/api/v1/apps/$APP/events?limit=50"
     ;;
   diagnose)
     api GET "/api/v1/apps/$APP/diagnose"

@@ -801,3 +801,56 @@ func firstLines(body string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TestTheSeededScriptCanReachBothLogsAndTheEvents asserts the four commands a
+// debugging session actually needs are in the script, and reach the right
+// endpoints.
+//
+// The two logs are different endpoints and it is easy to write a script that
+// offers only one of them: an app's log comes from its pods and a build's from
+// its Job, and a failed build is diagnosed from the second while a crash loop is
+// diagnosed from the first. A script that could only read one would send whoever
+// hit the other to the API by hand, which is the round trip these files exist to
+// remove.
+//
+// Asserted on the rendered script rather than by running it, because what would
+// break is the routing — a command that fell through to the app's log while
+// looking like it read the build's — and that is visible in the request it
+// builds.
+func TestTheSeededScriptCanReachBothLogsAndTheEvents(t *testing.T) {
+	script := ""
+	for _, f := range seedFor(SeedValues{App: "shop"}) {
+		if strings.HasSuffix(f.Name, ".sh") {
+			script = f.Body
+		}
+	}
+	if script == "" {
+		t.Fatal("no seeded script")
+	}
+
+	for _, want := range []struct {
+		name string
+		path string
+	}{
+		{"an app's log", `/api/v1/apps/$APP/logs`},
+		{"one pod's log", "pod=$(urlencode"},
+		{"a build's log", `/api/v1/apps/$APP/builds/$build/logs`},
+		{"the app's events", `/api/v1/apps/$APP/events`},
+	} {
+		if !strings.Contains(script, want.path) {
+			t.Errorf("the seeded script cannot reach %s (no %q)", want.name, want.path)
+		}
+	}
+
+	// The commands are named in the usage, or they are unreachable in practice:
+	// the script is read by someone deciding what to type, and a command that is
+	// only in the case statement is one nobody finds.
+	for _, cmd := range []string{"build-logs", "--previous", "events"} {
+		if !strings.Contains(script, cmd) {
+			t.Errorf("%q is not in the script at all", cmd)
+		}
+	}
+	if !strings.Contains(script, "Start with \"diagnose\"") {
+		t.Error("the usage does not say where to start; the four commands are only useful if the first one to reach for is named")
+	}
+}
