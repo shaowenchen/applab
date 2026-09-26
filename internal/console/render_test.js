@@ -309,7 +309,7 @@ async function render(apps) {
     // column is what says whether the app is serving.
     check("with nothing appended to it", text.includes("not deployed"), false);
 
-    const link = body.children[0].children[4].children.find((c) => c.tagName === "A");
+    const link = body.children[0].children[3].children.find((c) => c.tagName === "A");
     check("and the address is a link even before it is serving", link !== undefined, true);
     check(
       "pointing at where the app will be",
@@ -319,6 +319,20 @@ async function render(apps) {
     // The scheme comes from the page: a deployment served over https serves its
     // apps over https, through the same gateway.
     check("over the same scheme as the console", link && link.href.startsWith("https://"), true);
+
+    // Four cells, and no commit among them.
+    //
+    // The deployed commit is a fact about one app, and it is on that app's page
+    // next to the history it belongs to. Repeating it down a list whose job is
+    // to say which apps exist and what state they are in made the row wide
+    // enough to wrap and told nobody anything they could act on.
+    const cells = body.children[0].children;
+    check("an app row has four cells", cells.length, 4);
+    check(
+      "and none of them is a commit",
+      cells.map((c) => c.textContent).join(" | ").includes("1234567890ab"),
+      false
+    );
   }
 
   // No domain configured at all: the row must not render "null" or "undefined".

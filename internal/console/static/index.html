@@ -750,8 +750,13 @@
                questions and fail independently: a build can fail while the
                previous revision keeps serving, and a build can succeed while
                nothing new is deployed. One column that showed only one of them
-               was wrong about the other half the time. -->
-          <tr><th data-i18n="App">App</th><th data-i18n="Running">Running</th><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Where">Where</th></tr>
+               was wrong about the other half the time.
+
+               No commit column: the deployed commit is a fact about one app,
+               and it is on that app's page — where the history it belongs to
+               is — rather than repeated down a list whose job is to say which
+               apps exist and what state they are in. -->
+          <tr><th data-i18n="App">App</th><th data-i18n="Running">Running</th><th data-i18n="Build">Build</th><th data-i18n="Where">Where</th></tr>
         </thead>
         <tbody id="apps"></tbody>
       </table>
@@ -2480,11 +2485,6 @@ async function loadApps() {
       built.textContent = "—";
     }
     tr.appendChild(built);
-
-    const commit = document.createElement("td");
-    commit.className = "mono";
-    commit.textContent = shortSHA(app.commit_sha);
-    tr.appendChild(commit);
 
     const where = document.createElement("td");
     // The address is the one thing on this row anyone wants to *use* — it is
