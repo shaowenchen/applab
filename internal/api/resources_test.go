@@ -164,7 +164,11 @@ func TestAMalformedQuantityIsRefused(t *testing.T) {
 	}
 
 	// And a well-formed one is accepted, so the check is not refusing everything.
-	for _, good := range []string{"512Mi", "256m", "1", "1Gi"} {
+	// A bare number is accepted, and it is worth naming why it appears here: the
+	// console sends memory as a byte count — that is what its GiB field converts
+	// to — so this is the exact spelling the console produces, and a value the
+	// API refused would break the form rather than a test.
+	for _, good := range []string{"512Mi", "256m", "1", "1Gi", "536870912", "500m"} {
 		if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{
 			"resources": map[string]any{"memory_limit": good},
 		}); rec.Code != http.StatusOK {

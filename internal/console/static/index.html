@@ -333,16 +333,29 @@
   .field { display: flex; align-items: center; gap: 8px; }
   .field > span { color: var(--text-muted); font-size: 13px; }
 
-  /* Two columns of small fields, for the resource bounds. A grid rather than a
-     row, so CPU and memory line up as pairs and the four inputs read as two
-     decisions — request and limit — rather than as one list of four. */
+  /* Two columns of small fields, for the usage readings. A grid rather than a
+     row, so the two readings sit as equal halves and wrap on a narrow screen. */
   .grid-2 {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 12px 16px;
   }
-  .grid-2 .field { justify-content: space-between; }
-  .grid-2 .field input { width: 110px; font-variant-numeric: tabular-nums; }
+
+  /* The bounds, as a table: a row per resource, request and limit as columns.
+     Auto width rather than full, so the inputs sit together rather than being
+     flung to the far edges of a wide card — the alignment is what makes the two
+     columns readable, and stretching them breaks it. */
+  .resources-table { width: auto; }
+  .resources-table th[scope="row"] {
+    /* The row's own name, so it is not shouted like a column header. It keeps
+       the muted small-caps treatment, which is what marks it as a label rather
+       than a value. */
+    padding-right: 24px;
+    white-space: nowrap;
+  }
+  .resources-table td { padding: 6px 10px 6px 0; border-bottom: none; }
+  .resources-table tbody tr:hover { background: transparent; }
+  .resources-table input { width: 110px; font-variant-numeric: tabular-nums; }
 
   /* A reading and its bound. The value is the larger of the two because it is
      what changes; the bound sits beside it at muted weight, so the pair reads as
@@ -874,38 +887,52 @@
            resolved onto the fields the app left empty. -->
       <div class="grid-2" id="app-usage">
         <div class="metric">
-          <div class="metric-label" data-i18n="CPU">CPU</div>
+          <div class="metric-label" data-i18n="CPU (cores)">CPU (cores)</div>
           <div class="metric-value"><span id="usage-cpu">–</span><span class="muted metric-of" id="usage-cpu-limit"></span></div>
         </div>
         <div class="metric">
-          <div class="metric-label" data-i18n="Memory">Memory</div>
+          <div class="metric-label" data-i18n="Memory (GiB)">Memory (GiB)</div>
           <div class="metric-value"><span id="usage-memory">–</span><span class="muted metric-of" id="usage-memory-limit"></span></div>
         </div>
       </div>
       <p id="usage-note" class="muted" style="font-size:13px;margin-bottom:0"></p>
 
-      <!-- The bounds, as the app has set them rather than as they resolved. A
-           field left empty means "this deployment's default", which is what the
-           placeholder says — filling it with the resolved number would turn a
-           default into an explicit setting the first time anyone pressed save. -->
-      <div class="grid-2" style="margin-top:16px">
-        <label class="field">
-          <span data-i18n="CPU request">CPU request</span>
-          <input id="resources-cpu-request" placeholder="100m" size="10">
-        </label>
-        <label class="field">
-          <span data-i18n="CPU limit">CPU limit</span>
-          <input id="resources-cpu-limit" placeholder="2" size="10">
-        </label>
-        <label class="field">
-          <span data-i18n="Memory request">Memory request</span>
-          <input id="resources-memory-request" placeholder="128Mi" size="10">
-        </label>
-        <label class="field">
-          <span data-i18n="Memory limit">Memory limit</span>
-          <input id="resources-memory-limit" placeholder="2Gi" size="10">
-        </label>
-      </div>
+      <!-- The bounds, arranged the way they are thought about: a row per
+           resource, request and limit in fixed columns beside it.
+
+           A row per resource rather than a label per input, because "CPU
+           request" and "CPU limit" are not two settings — they are one resource
+           seen two ways, and a reader checking a memory limit should be able to
+           run down a single column rather than pick the right pair out of four
+           equally-weighted boxes.
+
+           The column headers carry request and limit, so the inputs do not have
+           to: with them, every column is a case of the same decision, and the
+           two columns line up down the card. A field left empty means "this
+           deployment's default", which is what the placeholder shows — filling
+           it with the resolved number would turn a default into an explicit
+           setting the first time anyone pressed save. -->
+      <table class="resources-table" style="margin-top:16px">
+        <thead>
+          <tr>
+            <th></th>
+            <th data-i18n="Request">Request</th>
+            <th data-i18n="Limit">Limit</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row" data-i18n="CPU (cores)">CPU (cores)</th>
+            <td><input id="resources-cpu-request" type="number" step="any" min="0" placeholder="0.1" size="8" aria-label="CPU request, in cores"></td>
+            <td><input id="resources-cpu-limit" type="number" step="any" min="0" placeholder="2" size="8" aria-label="CPU limit, in cores"></td>
+          </tr>
+          <tr>
+            <th scope="row" data-i18n="Memory (GiB)">Memory (GiB)</th>
+            <td><input id="resources-memory-request" type="number" step="any" min="0" placeholder="0.125" size="8" aria-label="Memory request, in GiB"></td>
+            <td><input id="resources-memory-limit" type="number" step="any" min="0" placeholder="2" size="8" aria-label="Memory limit, in GiB"></td>
+          </tr>
+        </tbody>
+      </table>
 
       <div class="state-actions">
         <span class="muted" style="font-size:12px" data-i18n="empty means this deployment's default">empty means this deployment's default</span>
@@ -936,14 +963,13 @@
           <input id="app-replicas" type="number" min="1" max="50" size="3" style="width:72px">
           <button id="app-replicas-set" data-i18n="Set">Set</button>
         </label>
-        <!-- Filtering the instances by label, which is how one revision is told
-             from another during a rollout: every pod an app runs carries the
-             commit it was built from. Applied by the server, so the same
-             selection works from the API (`?label=`) and the CLI (`--label`) —
-             one feature with three front ends rather than three implementations. -->
-        <label class="field">
-          <input id="pods-label" placeholder="applab.io/commit=abc1234" size="26" class="mono">
-        </label>
+        <!-- No label filter here. It used to be an input taking a selector, and
+             the API and the CLI still take one (`?label=`, `--label`) — the
+             selection is genuinely useful to a script telling one revision's
+             pods from another's mid-rollout. It is not useful on this card: the
+             text it expected was a Kubernetes label expression, which is a thing
+             to look up rather than a thing to know, and reading it here meant
+             knowing the label scheme before you could ask your first question. -->
         <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
       </div>
 
@@ -1272,12 +1298,10 @@ const ZH = {
   "Instance": "实例",
   "Instances": "实例",
   "Resources": "资源",
-  "CPU": "CPU",
-  "Memory": "内存",
-  "CPU request": "CPU 请求",
-  "CPU limit": "CPU 上限",
-  "Memory request": "内存请求",
-  "Memory limit": "内存上限",
+  "Request": "请求",
+  "Limit": "上限",
+  "CPU (cores)": "CPU（核心）",
+  "Memory (GiB)": "内存（GiB）",
   "empty means this deployment's default": "留空表示使用本部署的默认值",
   "Applied by the next deploy, like the other settings.": "与其他设置一样，下次部署时生效。",
   "Could not read the app's resources: {error}": "无法读取应用资源：{error}",
@@ -1348,7 +1372,6 @@ const ZH = {
   "Stop": "停止",
   "Delete": "删除",
   "Nothing is running.": "没有正在运行的实例。",
-  "No instance matches {selector}.": "没有实例匹配 {selector}。",
   "Log": "日志",
   "previous instance": "上一个实例",
   "Follow": "跟随",
@@ -1549,12 +1572,111 @@ const EYE_CLOSED =
   '<circle cx="12" cy="12" r="2.8"/>' +
   '<path d="M4 20 20 4"/></svg>';
 
-// mask replaces every character with a bullet, keeping the count. The count is
-// the only thing the mask carries: it is not an abbreviation of the value, and
-// it makes a masked credential obviously a credential rather than a short
-// string — which is what an equal number of asterisks would not.
+// mask renders a value as bullets, at a fixed width.
+//
+// It used to keep the value's length, on the reasoning that the count is what
+// makes a run of bullets read as a masked credential rather than as a short
+// string. That is true, and it is not worth what it costs: an app's key is 64
+// characters, so the clone command carried a line of 64 bullets — a wall of
+// punctuation that pushed the command itself off the row and told the reader
+// nothing they could use.
+//
+// A fixed width says "masked" just as clearly and says nothing else. That the
+// length is not disclosed is a second, smaller argument for it: a key's length
+// is a fact about the key, and there is no reason for the page to state it.
+const MASK_WIDTH = 16;
+
+// --- Resource units ---------------------------------------------------------
+//
+// The four resource fields carry a fixed unit each, and the page converts: CPU
+// is in cores, memory is in GiB. The API takes Kubernetes quantities, so only
+// the display and the form use these units.
+//
+// Fixed units because the alternative is a footgun, and the dangerous half is
+// memory. A bare number in a Kubernetes quantity means *bytes* for memory and
+// *cores* for CPU — so the same typing that gives a sane "0.5" for CPU gives
+// "0.5 bytes" for memory, which is a container OOM-killed on start with nothing
+// in the form to suggest why. A field labelled GiB cannot be misread that way,
+// and two apps can be compared at a glance.
+
+// CPU_MILLI_PER_CORE and MIB_PER_GI are what the API is given. A quantity is
+// written in the smallest unit the field can mean, so an edit that changed
+// nothing does not round.
+const CPU_MILLI_PER_CORE = 1000;
+const MIB_PER_GI = 1024;
+
+// toCores renders a CPU quantity as a number of cores.
+//
+// Everything the API reports is normalised to milli-units — 0.5 comes back as
+// "500m", 2 as "2000m" — so reading that suffix is enough, and the result is
+// rendered through trimNumber rather than printed as a float that would show as
+// 0.30000000000000004.
+function toCores(quantity) {
+  const q = String(quantity || "").trim();
+  if (!q) return "";
+
+  const milli = /^(-?[\d.]+)m$/.exec(q);
+  if (milli) return trimNumber(Number(milli[1]) / CPU_MILLI_PER_CORE);
+  return trimNumber(Number(q));
+}
+
+// toGi renders a memory quantity as a number of GiB.
+//
+// Binary suffixes are handled here because the API normalises to them: a memory
+// quantity comes back as "512Mi" or "1Gi", never as "0.5Gi". Anything without a
+// suffix is a byte count, which is its own normal form.
+function toGi(quantity) {
+  const q = String(quantity || "").trim();
+  if (!q) return "";
+
+  const binary = /^(-?[\d.]+)(Ki|Mi|Gi)$/.exec(q);
+  if (binary) {
+    const perGi = { Ki: 1 / (MIB_PER_GI * MIB_PER_GI), Mi: 1 / MIB_PER_GI, Gi: 1 }[binary[2]];
+    return trimNumber(Number(binary[1]) * perGi);
+  }
+  return trimNumber(Number(q) / (MIB_PER_GI * MIB_PER_GI * MIB_PER_GI));
+}
+
+// fromCores and fromGi are the other direction, for the form.
+//
+// A value that is not a number is passed through as empty rather than becoming
+// NaN: the reader may be mid-keystroke, and replacing what they typed with "NaN"
+// would be the form arguing with the keyboard.
+function fromCores(cores) {
+  const raw = String(cores || "").trim();
+  const n = Number(raw);
+  if (!raw || !isFinite(n)) return "";
+  return Math.round(n * CPU_MILLI_PER_CORE) + "m";
+}
+
+function fromGi(gi) {
+  const raw = String(gi || "").trim();
+  const n = Number(raw);
+  if (!raw || !isFinite(n)) return "";
+  return String(n * MIB_PER_GI * MIB_PER_GI * MIB_PER_GI);
+}
+
+// trimNumber renders a number without a trailing ".0" or float noise.
+//
+// Six decimals, which is more than a reader needs and exactly what the ordinary
+// values require: 128Mi is 0.125 GiB and must display as 0.125, not as 0.13 —
+// rounding it would change the value the next save writes back. Six is also
+// where float noise stops: 0.1 + 0.2 renders as 0.3 rather than as
+// 0.30000000000000004.
+//
+// A memory quantity that is not a whole number of MiB will still not round-trip
+// exactly, because GiB is a coarser unit than MiB and this shows GiB. That is
+// the cost of the fixed unit, and it is bounded by the six decimals above.
+function trimNumber(n) {
+  if (!isFinite(n)) return "";
+  if (n === 0) return "0";
+  return String(Number(n.toFixed(6)));
+}
+
 function mask(value) {
-  return "•".repeat(String(value).length);
+  // Never longer than the value itself, so a short one — a placeholder, a
+  // truncated field — is not padded out to look like something it is not.
+  return "•".repeat(Math.min(String(value).length, MASK_WIDTH));
 }
 
 // setRevealButton draws the eye and names it. The name is what a screen reader
@@ -2937,13 +3059,9 @@ async function loadAppState() {
 }
 
 async function loadPods() {
-  const selector = ($("pods-label").value || "").trim();
-
   let result;
   try {
-    const path = "/api/v1/apps/" + state.app + "/pods" +
-      (selector ? "?label=" + encodeURIComponent(selector) : "");
-    result = await api(path);
+    result = await api("/api/v1/apps/" + state.app + "/pods");
   } catch (err) {
     // Observability is an optional capability; a deployment without a cluster
     // reports 501 here, which is not a failure of the console.
@@ -2952,16 +3070,11 @@ async function loadPods() {
     return;
   }
 
-  // A label selector that matches nothing is not an empty app, and the two read
-  // identically from the table alone — so the filter is echoed back when it is
-  // the reason there is nothing to show.
   const body = $("pods");
   body.replaceChildren();
   show($("pods-empty"), result.pods.length === 0);
   if (result.pods.length === 0) {
-    $("pods-empty").textContent = selector
-      ? tf("No instance matches {selector}.", { selector: selector })
-      : t("Nothing is running.");
+    $("pods-empty").textContent = t("Nothing is running.");
     return;
   }
 
@@ -2971,8 +3084,10 @@ async function loadPods() {
     const name = document.createElement("td");
     name.className = "mono";
     name.textContent = pod.name;
-    // The commit the pod was built from, when it carries one, because that is
-    // the label someone filtering by revision is looking at.
+    // The commit the pod was built from, when it carries one. It is a title
+    // rather than a column because it is the same value for every pod of a
+    // revision — a column repeating one string down the table costs a reader
+    // more than it tells them.
     if (pod.labels && pod.labels["applab.io/commit"]) {
       name.title = "applab.io/commit=" + pod.labels["applab.io/commit"];
     }
@@ -3169,11 +3284,14 @@ async function loadResources() {
   }
   setResourcesProblem("");
 
+  // Converted into the units the form shows. The placeholders show the same two
+  // units, so an empty field (this deployment's default) and a typed one read
+  // alike rather than as two different scales.
   const r = (app && app.resources) || {};
-  $("resources-cpu-request").value = r.cpu_request || "";
-  $("resources-cpu-limit").value = r.cpu_limit || "";
-  $("resources-memory-request").value = r.memory_request || "";
-  $("resources-memory-limit").value = r.memory_limit || "";
+  $("resources-cpu-request").value = toCores(r.cpu_request);
+  $("resources-cpu-limit").value = toCores(r.cpu_limit);
+  $("resources-memory-request").value = toGi(r.memory_request);
+  $("resources-memory-limit").value = toGi(r.memory_limit);
 
   // A separate read, and its failure is not the form's problem: a deployment
   // with no cluster, or a cluster with no metrics-server, still has bounds to
@@ -3197,8 +3315,10 @@ async function loadResources() {
     return;
   }
 
-  $("usage-cpu").textContent = u.cpu || "0";
-  $("usage-memory").textContent = u.memory || "0";
+  // The readings are converted to the same units the form uses, so "of 2" beside
+  // "0.5" is a comparison rather than two numbers in different scales.
+  $("usage-cpu").textContent = toCores(u.cpu) || "0";
+  $("usage-memory").textContent = toGi(u.memory) || "0";
   showBounds(u);
   $("usage-note").textContent = "";
   show($("usage-note"), false);
@@ -3210,8 +3330,10 @@ async function loadResources() {
 // container is unbounded, and printing zero would say it may use nothing.
 function showBounds(u) {
   const limits = u.limited || {};
-  $("usage-cpu-limit").textContent = limits.cpu ? tf("of {value}", { value: limits.cpu }) : "";
-  $("usage-memory-limit").textContent = limits.memory ? tf("of {value}", { value: limits.memory }) : "";
+  const cpuLimit = toCores(limits.cpu);
+  const memoryLimit = toGi(limits.memory);
+  $("usage-cpu-limit").textContent = cpuLimit ? tf("of {value}", { value: cpuLimit }) : "";
+  $("usage-memory-limit").textContent = memoryLimit ? tf("of {value}", { value: memoryLimit }) : "";
 }
 
 // showUsageUnavailable marks the metrics as unknown and says why.
@@ -3234,11 +3356,14 @@ function showUsageUnavailable(reason) {
 // half-filled form cannot land between the four. An empty field is sent as an
 // empty string, which is what clears it back to this deployment's default.
 async function saveResources() {
+  // Converted back to Kubernetes quantities on the way out, and an empty field
+  // stays an empty string — which is what clears it to the deployment's default
+  // rather than writing a zero.
   const body = {
-    cpu_request: $("resources-cpu-request").value.trim(),
-    cpu_limit: $("resources-cpu-limit").value.trim(),
-    memory_request: $("resources-memory-request").value.trim(),
-    memory_limit: $("resources-memory-limit").value.trim(),
+    cpu_request: fromCores($("resources-cpu-request").value),
+    cpu_limit: fromCores($("resources-cpu-limit").value),
+    memory_request: fromGi($("resources-memory-request").value),
+    memory_limit: fromGi($("resources-memory-limit").value),
   };
 
   setResourcesProblem("");
@@ -3780,8 +3905,6 @@ $("pods-refresh").onclick = loadPods;
 // Reloading as the selector is typed would fire a request per keystroke; on
 // Enter and on blur is what someone filtering a short list does anyway, and a
 // label selector is not something to apply half-typed.
-$("pods-label").onkeydown = (event) => { if (event.key === "Enter") loadPods(); };
-$("pods-label").onblur = loadPods;
 
 // Configuration. The name and value fields are read at click time rather than
 // tracked as state, so there is nothing to keep in sync.

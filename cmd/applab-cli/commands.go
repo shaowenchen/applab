@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/spf13/cobra"
 
@@ -418,6 +421,117 @@ func printCommitChoices(cmd *cobra.Command, c *client.Client, appID string) erro
 
 	fmt.Printf("\nroll back with: applab rollback %s <commit>\n", appID)
 	return nil
+}
+
+// The units this command prints in: CPU as cores, memory as GiB. They are the
+// console's units, so the two surfaces agree, and they are fixed for the reason
+// the console fixes them — a Kubernetes quantity reads a bare number as bytes for
+// memory and cores for CPU, which is a difference nobody should have to hold in
+// their head while reading a limit.
+//
+// Parsed rather than suffix-matched, so every spelling the API may return is
+// handled: a milli-value for CPU, and for memory either a binary suffix or a byte
+// count, depending on how the bound was set.
+func cores(quantity string) string {
+	q, err := resource.ParseQuantity(strings.TrimSpace(quantity))
+	if err != nil {
+		// Passed through rather than swallowed. It cannot come from AppLab's own
+		// API, and a caller shown the raw value is better served than one shown a
+		// zero that looks like a reading.
+		return quantity
+	}
+	// -1 rather than a fixed precision: it is the shortest representation that
+	// parses back to the same float, so 0.5 prints as "0.5" rather than "0.500"
+	// and 2 prints as "2" rather than "2.000".
+	return strconv.FormatFloat(float64(q.MilliValue())/1000, 'f', -1, 64)
+}
+
+// gib renders a memory quantity as a number of GiB.
+func gib(quantity string) string {
+	q, err := resource.ParseQuantity(strings.TrimSpace(quantity))
+	if err != nil {
+		return quantity
+	}
+	const gibBytes = 1024 * 1024 * 1024
+	return strconv.FormatFloat(float64(q.Value())/gibBytes, 'f', -1, 64)
+}
+
+// bound renders one request or limit in its display unit, or a dash when it is
+// not set at all.
+//
+// A dash rather than "0": an absent request is not a request of zero — the
+// container runs with no reservation — and printing a number there would say it
+// had one.
+func bound(quantity string, render func(string) string) string {
+	if strings.TrimSpace(quantity) == "" {
+		return "-"
+	}
+	return render(quantity)
+}
+
+// resourcesCommand reports what an app is using and what it may use.
+//
+// The console has a panel for this and the seeded script has `resources`; the
+// CLI had only `update --cpu-limit=...`, which sets a bound without ever showing
+// whether the app is anywhere near it. The two readings are on one command
+// because they are one question: a limit says nothing on its own, and usage
+// without the bound it is approaching says nothing either.
+//
+// Printed in the units the console uses — cores and GiB — so the two surfaces
+// agree. The API reports Kubernetes quantities, which for memory may be "512Mi"
+// or a byte count depending on how the bound was set; converting here keeps that
+// from being something a reader has to do in their head.
+func resourcesCommand(urlFlag, keyFlag *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "resources <app>",
+		Short: "Show what an app is using, and the bounds it runs under",
+		Long: `Show what an app is using, and the bounds it runs under.
+
+Usage is read from the cluster's metrics API and is the total across the app's
+pods. Bounds are the *effective* ones, taken from the running Deployment — so an
+app that has set nothing shows this deployment's defaults rather than blanks.
+
+CPU is in cores and memory is in GiB, the same units the console shows. A cluster
+without metrics-server reports usage as unavailable rather than as zero, which is
+not a failure: the bounds are still worth reading.
+
+Set a bound with ` + "`applab update <app> --cpu-limit=2 --memory-limit=1`" + `, in
+those same units.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newClient(*urlFlag, *keyFlag)
+			if err != nil {
+				return err
+			}
+
+			usage, err := c.AppUsage(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			// The app's own settings first, then what those resolve to on the
+			// running container, then what it is using. The order is the one the
+			// questions come in: what did I ask for, what did it become, and is it
+			// anywhere near the ceiling.
+			fmt.Printf("app      %s\n", args[0])
+			fmt.Printf("bounds   cpu %s/%s  memory %s/%s GiB\n",
+				bound(usage.Requested.CPURequest, cores),
+				bound(usage.Limited.CPULimit, cores),
+				bound(usage.Requested.MemoryRequest, gib),
+				bound(usage.Limited.MemoryLimit, gib))
+			fmt.Printf("         request/limit, as the running container has them\n")
+
+			if !usage.Available {
+				// Said out loud rather than printed as zeroes: a busy app shown as
+				// idle is a worse answer than "not known here".
+				fmt.Printf("usage    unavailable: this cluster does not report metrics\n")
+				return nil
+			}
+			fmt.Printf("cpu      %s of %s\n", cores(usage.CPU), cores(usage.Limited.CPULimit))
+			fmt.Printf("memory   %s of %s GiB\n", gib(usage.Memory), gib(usage.Limited.MemoryLimit))
+			return nil
+		},
+	}
 }
 
 // logsCommand streams an app's log.

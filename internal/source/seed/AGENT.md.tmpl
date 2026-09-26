@@ -135,8 +135,10 @@ earlier commit is a rollback.
     curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/status"  -H "Authorization: Bearer $APPLAB_KEY"
     curl -sS "$APPLAB_URL/api/v1/apps/{{APP}}/logs?follow=false&tail=500" -H "Authorization: Bearer $APPLAB_KEY"
 
-`status` reports what AppLab recorded *and* what the cluster shows, separately
-and deliberately unreconciled: when the two disagree, the cluster is right.
+`status` reports what the cluster has: whether a Deployment exists, how many
+replicas are ready, the image it runs and the commit that image was built from.
+Nothing is recorded on AppLab's side, so there is no second answer to reconcile —
+the cluster is the only one.
 
 `GET /api/v1/apps/{{APP}}/diagnose` answers "why is it not working" in one call —
 pods, events and the relevant log, most likely cause first. Reach for it before

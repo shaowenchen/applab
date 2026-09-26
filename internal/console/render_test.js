@@ -1057,14 +1057,72 @@ async function render(apps) {
     check("and a build with no pod says so rather than showing nothing", done, "—");
   }
 
-  // The instances list can be filtered by label, which is how one revision is
-  // told from another during a rollout — every pod an app runs carries the
-  // commit it was built from.
+  // The resource units, both directions.
   //
-  // The selector is applied by the server, so what this checks is that the
-  // console sends it and reports an empty result as "nothing matched" rather
-  // than as "nothing is running": the two look identical in the table, and only
-  // one of them means the app is down.
+  // The form and the readings carry fixed units — CPU in cores, memory in GiB —
+  // while the API takes Kubernetes quantities. So every value crosses the
+  // boundary twice: once to be displayed and once to be sent back. A mistake in
+  // either direction is silent and expensive: memory written as a bare number
+  // means *bytes*, so a slip here would set a 0.5 GiB limit as "0.5" and have
+  // the container OOM-killed on start with nothing on the page to explain it.
+  //
+  // Round-tripping is the assertion rather than the individual conversions: what
+  // matters is that opening an app and saving it unchanged sends back the same
+  // quantity.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    const conv = (name, arg) => vm.runInContext(name, ctx)(arg);
+
+    for (const c of [
+      { q: "500m", cores: "0.5", sent: "500m" },
+      { q: "1500m", cores: "1.5", sent: "1500m" },
+      { q: "2", cores: "2", sent: "2000m" },
+      { q: "100m", cores: "0.1", sent: "100m" },
+    ]) {
+      check(`cpu ${c.q} reads as ${c.cores} cores`, conv("toCores", c.q), c.cores);
+      check(`and ${c.cores} cores is sent back as ${c.sent}`, conv("fromCores", c.cores), c.sent);
+    }
+
+    for (const m of [
+      { q: "134217728", gi: "0.125", sent: "134217728" },
+      { q: "512Mi", gi: "0.5", sent: "536870912" },
+      { q: "1Gi", gi: "1", sent: "1073741824" },
+      { q: "2Gi", gi: "2", sent: "2147483648" },
+    ]) {
+      check(`memory ${m.q} reads as ${m.gi} GiB`, conv("toGi", m.q), m.gi);
+      check(`and ${m.gi} GiB is sent back as ${m.sent} bytes`, conv("fromGi", m.gi), m.sent);
+    }
+
+    // Empty stays empty, which is what clears a field back to the deployment's
+    // default. A conversion that turned it into "0m" or "0" would silently
+    // replace the operator's setting with an explicit nothing.
+    check("an unset cpu bound stays unset", conv("fromCores", ""), "");
+    check("an unset memory bound stays unset", conv("fromGi", ""), "");
+    check("and an absent quantity reads as nothing rather than zero", conv("toGi", ""), "");
+
+    // Six decimals, checked because the precision is load-bearing rather than
+    // cosmetic: 128Mi is 0.125 GiB and is also this deployment's own default, so
+    // rounding it to 0.13 would change the value a save wrote back.
+    check("128Mi reads as exactly 0.125 GiB", conv("toGi", "134217728"), "0.125");
+    check("and the smallest sensible memory limit is distinguishable", conv("toGi", "1048576"), "0.000977");
+
+    // A large limit is not rendered in scientific notation, which a number input
+    // would refuse to hold.
+    check("a 64 GiB limit renders as a plain number", conv("toGi", "68719476736"), "64");
+  }
+
+  // The instances list asks for the app's pods, and reports an empty answer as
+  // "nothing is running".
+  //
+  // There used to be a label filter here, sent to the server as ?label=, and
+  // this checked that the selector went out and that a filtered empty result was
+  // worded differently from an empty app. The input is gone from the card — the
+  // API and the CLI still take a selector, which is where it is useful — so what
+  // is left to assert is that the request is the plain one and that an empty
+  // list reads as an empty app rather than as a failure.
   {
     const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
     ctx.globalThis = ctx;
@@ -1082,26 +1140,15 @@ async function render(apps) {
     vm.runInContext(source, ctx, { filename: "console.js" });
     vm.runInContext('state.url = "https://applab.example.com"; state.app = "shop";', ctx);
 
-    elements.get("pods-label").value = "applab.io/commit=abc1234";
     await vm.runInContext("loadPods", ctx)();
 
     check(
-      "the instances list is filtered by the label that was typed",
+      "the instances list asks for the app's pods, unfiltered",
       ctx.requests[0],
-      "https://applab.example.com/api/v1/apps/shop/pods?label=applab.io%2Fcommit%3Dabc1234"
+      "https://applab.example.com/api/v1/apps/shop/pods"
     );
     check(
-      "and nothing matching the filter is not reported as nothing running",
-      (elements.get("pods-empty").textContent || "").includes("No instance matches"),
-      true
-    );
-
-    // With no filter, the wording is the plain one again — the filter must not
-    // leak into the next render.
-    elements.get("pods-label").value = "";
-    await vm.runInContext("loadPods", ctx)();
-    check(
-      "and an unfiltered empty list is reported as nothing running",
+      "and an empty answer reads as nothing running",
       elements.get("pods-empty").textContent,
       "Nothing is running."
     );

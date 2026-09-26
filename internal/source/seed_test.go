@@ -44,6 +44,63 @@ func TestANewAppIsCloneableWithItsSeedFiles(t *testing.T) {
 	}
 }
 
+// TestANewAppStartsWithAnExampleDockerfile asserts a freshly created app has
+// something to build.
+//
+// AppLab requires a Dockerfile to build and does not write one into an app that
+// already has source, so without this an app created and immediately deployed
+// fails with "Dockerfile not found" — a first experience that reads as the
+// platform being broken rather than as a file being absent.
+func TestANewAppStartsWithAnExampleDockerfile(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	names := treeNames(t, s, "shop")
+	if !contains(names, "Dockerfile") {
+		t.Fatalf("a new app has no Dockerfile to build; it has %v", names)
+	}
+}
+
+// TestAnUploadedDockerfileIsNotOverwritten is the test that guards the seed-once
+// rule, and it is the one whose absence would be expensive.
+//
+// The Dockerfile is the file an app's author is most certain to write — it is
+// the first thing most uploads contain. If AppLab wrote its example on every
+// upload, as it does for the files it keeps current, then every push would
+// replace the app's own build with a stock nginx and the failure would look like
+// the build system ignoring the source.
+//
+// The seed-once file is written into the opening commit and never again, so the
+// assertion is that an upload carrying its own Dockerfile wins.
+func TestAnUploadedDockerfileIsNotOverwritten(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const mine = "FROM golang:1.24-alpine\n"
+	body := buildTar(t, []tarEntry{
+		{name: "main.go", body: "package main\n"},
+		{name: "Dockerfile", body: mine},
+	})
+	if _, err := s.Ingest(ctx, "shop", main, strings.NewReader(string(body)), "my own build", "", DefaultIngestLimits); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	repo := materializeRepo(t, s, "shop")
+	got, err := s.run(ctx, repo, "show", "refs/heads/main:Dockerfile")
+	if err != nil {
+		t.Fatalf("read the Dockerfile at the tip: %v", err)
+	}
+	if string(got) != mine {
+		t.Errorf("the uploaded Dockerfile was replaced by the seeded one:\ngot:  %q\nwant: %q", string(got), mine)
+	}
+}
+
 // TestTheSeedFilesSurviveAnUpload is the test that matters most here.
 //
 // A commit is built from the uploaded tree alone, so everything an earlier

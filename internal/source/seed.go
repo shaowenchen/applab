@@ -21,9 +21,27 @@ import (
 //go:embed seed
 var seedFS embed.FS
 
-// seedPaths are the names the seeded files take in an app's tree, in a fixed
+// seedPaths are the names of the files AppLab keeps in an app's tree, in a fixed
 // order so the injection is deterministic.
+//
+// These are *kept current*: every upload rewrites them, because they describe
+// the deployment's own API and a stale copy is documentation that lies. Nothing
+// here may be a file the app's author would also write — see seedOncePaths.
 var seedPaths = []string{"applab.sh", "AGENT.md"}
+
+// seedOncePaths are the names written only into a new app's opening commit.
+//
+// They are the difference between a file AppLab owns and a file AppLab hands
+// over. The two above are AppLab's and are replaced on every upload; these are
+// the app author's from the moment they exist, and are never touched again.
+//
+// The example is why the distinction has to exist. A Dockerfile is exactly what
+// an app's first upload contains, so writing one on every upload would delete
+// the Dockerfile the app is built from — every push would replace the app's own
+// build with a static site, and the failure would look like the build system
+// ignoring the source. Written only when the repository is created, it is a
+// starting point someone either edits or deletes, and either is fine.
+var seedOncePaths = []string{"Dockerfile"}
 
 // seedCommits is how many commits a new repository starts with: the single one
 // carrying the seeded files.
@@ -66,8 +84,19 @@ type seedFile struct {
 // The substitution is a plain string replacement of a token that cannot occur in
 // the surrounding text by accident.
 func seedFor(appID string) []seedFile {
-	out := make([]seedFile, 0, len(seedPaths))
-	for _, name := range seedPaths {
+	return renderSeed(appID, seedPaths)
+}
+
+// seedForFirstCommit renders everything a brand-new repository starts with: the
+// files AppLab keeps current, plus the ones it only ever hands over.
+func seedForFirstCommit(appID string) []seedFile {
+	return renderSeed(appID, append(append([]string{}, seedPaths...), seedOncePaths...))
+}
+
+// renderSeed renders the named templates, in the order given.
+func renderSeed(appID string, names []string) []seedFile {
+	out := make([]seedFile, 0, len(names))
+	for _, name := range names {
 		raw, err := seedFS.ReadFile("seed/" + name + ".tmpl")
 		if err != nil {
 			// Unreachable: the files are embedded at build time, so a missing
@@ -88,14 +117,17 @@ func seedFor(appID string) []seedFile {
 	return out
 }
 
-// writeSeed puts the seeded files into a source tree, replacing whatever is
-// there.
+// writeSeed puts the kept-current files into a source tree, replacing whatever
+// is there.
 //
 // Replacing rather than skipping an existing one is deliberate. These files
 // describe the deployment's own API, so an app carrying a stale copy — from a
 // version before an endpoint changed — is an app whose documentation lies. The
 // copy in the tree is AppLab's to keep current, not the uploader's to preserve;
 // the files say so at the top of each.
+//
+// The seed-once files are deliberately not here. An upload is where an app's own
+// Dockerfile arrives, and rewriting it would delete the thing being built.
 func writeSeed(workTree, appID string) error {
 	for _, f := range seedFor(appID) {
 		if err := replaceWithFile(filepath.Join(workTree, f.Name), []byte(f.Body), os.FileMode(f.Mode)); err != nil {
@@ -145,8 +177,10 @@ func (s *Store) seedCommit(ctx context.Context, appID, branch, repoPath string) 
 	if err := os.MkdirAll(workTree, 0o700); err != nil {
 		return fmt.Errorf("create working tree: %w", err)
 	}
-	if err := writeSeed(workTree, appID); err != nil {
-		return err
+	for _, f := range seedForFirstCommit(appID) {
+		if err := replaceWithFile(filepath.Join(workTree, f.Name), []byte(f.Body), os.FileMode(f.Mode)); err != nil {
+			return err
+		}
 	}
 
 	const subject = "AppLab: how to work with this app"

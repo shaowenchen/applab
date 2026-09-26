@@ -1,0 +1,35 @@
+# A starting point, not a rule.
+#
+# AppLab builds whatever Dockerfile is in this directory, so this file exists so
+# that a new app has something to build before anyone has written a Dockerfile of
+# their own. Edit it, replace it, or delete it and upload your own — nothing
+# reads it except the build.
+#
+# Note what is NOT here: no COPY, and no source of its own. The image this
+# produces is a stock nginx serving its own default page, so a first build
+# succeeds and the first deploy gives you something to look at. Replacing it with
+# a real one is the first thing most apps do:
+#
+#     FROM nginx:alpine
+#     COPY . /usr/share/nginx/html
+#
+# See AGENT.md for what AppLab does with this file, and ./applab.sh for the
+# commands that build and deploy it.
+FROM nginx:1.27-alpine
+
+# nginx's own image already listens on 80 and serves /usr/share/nginx/html, so
+# there is nothing to configure. It is stated anyway because it is the one thing
+# an app has to get right and the one thing AppLab cannot guess: the app's port
+# is what the Service targets and what the gateway routes to, and an app
+# listening somewhere else is an app nothing can reach.
+#
+# The app's port is set when it is created — `applab create <app> --port 80`, or
+# the port field in the console — and reaches the container as $PORT. 80 is the
+# default there, which is why this matches out of the box.
+EXPOSE 80
+
+# No CMD: the base image's own entrypoint starts nginx in the foreground, which
+# is what a container needs. An app that overrides it has to keep the process in
+# the foreground itself — a container whose main process daemonizes and exits is
+# a container Kubernetes restarts forever, and the crash loop it produces says
+# nothing about why.
