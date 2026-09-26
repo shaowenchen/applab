@@ -117,6 +117,20 @@
     z-index: 10;
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  /* The heading is a control, and has to keep looking like a heading: same
+     weight and colour as the text it replaced, with the affordance carried by
+     the pointer and a hover that lifts it slightly rather than by a border or a
+     background, which would put a box in the header where there was a word. */
+  header h1 button {
+    font: inherit;
+    color: inherit;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    border-color: transparent;
+    background: transparent;
+  }
+  header h1 button:hover:not(:disabled) { background: var(--bg-sunken); border-color: transparent; }
+  header h1 button:disabled { cursor: default; opacity: 1; }
   header .spacer { flex: 1; }
 
   /* The header's own controls. Small, square-ish and quiet: they change a
@@ -481,7 +495,17 @@
      in place is what stops them moving: a control that jumps to a different
      corner once you sign in reads as two different controls. -->
 <header id="app-header">
-  <h1>AppLab</h1>
+  <!-- The console's own name, and the way back to where it opens.
+       A button rather than a link, because there is no address to give it: the
+       views are not routes, so a link would have to be an href="#" that fights
+       the browser's history and reloads nothing. A button says what it does.
+
+       Enabled only when it would go somewhere. On the landing view — and on the
+       sign-in screen, where the header stays for its two controls — pressing it
+       would re-render the view already showing, which reads as the page
+       flickering and doing nothing. The disabled state is the honest one: there
+       is nowhere up from here. -->
+  <h1><button id="home" type="button" disabled>AppLab</button></h1>
   <!-- Which view is showing is navigation, not decoration: it is hidden until
        there is something to navigate, since the sign-in screen has no views. -->
   <nav id="nav" class="hidden">
@@ -1725,6 +1749,29 @@ function navTo(name) {
   // An app key has exactly one destination, so there is nothing to navigate
   // between — the nav is hidden rather than shown with a single entry.
   show($("nav"), name !== "app" && state.scope !== "app");
+
+  // The header's name is the way out of a detail view, and it goes exactly where
+  // the landing view goes — so it is enabled by the same condition the nav is
+  // shown under, read the same way. Deriving it here rather than deciding again
+  // at the click is what keeps the two from disagreeing about who has a home:
+  // an app key has no overview to go to, and neither has a signed-out page.
+  $("home").disabled = name === "overview" && state.scope !== "app";
+}
+
+// goHome returns to the view the console opens on.
+//
+// It is the same destination sign-in lands on, reached by calling the same
+// function — not a third notion of "home" that could drift from it.
+function goHome() {
+  if ($("home").disabled) return;
+  if (state.scope === "app") {
+    // An app key's console is its own app, so that is what "home" means here:
+    // the landing view for its tier, which is the app rather than an overview it
+    // cannot read.
+    openApp(state.app);
+    return;
+  }
+  showOverview();
 }
 
 async function showOverview() {
@@ -3200,6 +3247,7 @@ $("theme-toggle").onclick = () => {
 $("lang-toggle").onclick = () => setLang(lang === "zh" ? "en" : "zh");
 
 $("signout").onclick = signOut;
+$("home").onclick = goHome;
 
 $("nav-overview").onclick = showOverview;
 $("nav-apps").onclick = showApps;

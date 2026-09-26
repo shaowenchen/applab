@@ -546,6 +546,99 @@ async function render(apps) {
     );
   }
 
+  // The header's name is the way back to the landing view, and it has to start
+  // out unable to do that.
+  //
+  // The header is up on the sign-in screen — its two preference controls are the
+  // whole of what that screen offers — so a name that were enabled from the
+  // start would be a control that loads the overview before there is a key to
+  // load it with. Disabled in the markup and re-derived by navTo is the pair
+  // that makes it correct on both sides: right before anything is rendered, and
+  // right after.
+  {
+    check(
+      "the header's name is a control, not static text",
+      /<h1>\s*<button id="home"[^>]*>/.test(markup),
+      true
+    );
+    // Read from the markup rather than the harness: `disabled` is a property
+    // there, and what this asserts is that the page ships it that way, since the
+    // header is visible on the sign-in screen before any script has run.
+    check(
+      "and it ships disabled",
+      /<button id="home"[^>]*\bdisabled\b/.test(markup),
+      true
+    );
+
+    // It has to be wired, and wired to a function that exists — an onclick
+    // naming nothing renders identically and does nothing when pressed. Read
+    // from the script, since the wiring is not in the markup above it.
+    const wired = /\$\("home"\)\s*\.onclick\s*=\s*(\w+)/.exec(source);
+    check("and it is wired to a handler", wired !== null, true);
+    if (wired) {
+      check(
+        `and that handler (${wired[1]}) is defined`,
+        vm.runInContext(`typeof ${wired[1]} === "function"`, context),
+        true
+      );
+    }
+
+    // And navTo has to decide its enabled state, because that is what makes it
+    // right once a view is showing.
+    check(
+      "and navTo derives its enabled state",
+      /\$\("home"\)\.disabled\s*=/.test(source),
+      true
+    );
+
+    // What it does, driven through the real view functions rather than asserted
+    // from the source. An admin's console opens on the overview; from an app's
+    // page it goes back to the overview, and on the overview itself there is
+    // nowhere up, so it is disabled rather than re-rendering what is showing.
+    {
+      const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+      ctx.globalThis = ctx;
+      const calls = [];
+      ctx.fetch = async (url) => {
+        calls.push(String(url));
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ data: [] }),
+        };
+      };
+      vm.runInContext(source, ctx, { filename: "console.js" });
+      vm.runInContext('state.scope = "admin"; state.signedIn = true;', ctx);
+
+      const navTo = vm.runInContext("navTo", ctx);
+      const goHome = vm.runInContext("goHome", ctx);
+
+      navTo("app");
+      check("the name is usable from an app's page", elements.get("home").disabled, false);
+
+      navTo("overview");
+      check("and never on the landing view, where it would reload what is showing", elements.get("home").disabled, true);
+
+      // An app key's console has one app and no overview, so its home is that
+      // app — enabled, because a detail view is somewhere it can be pressed.
+      vm.runInContext('state.scope = "app"; state.app = "shop";', ctx);
+      navTo("app");
+      check("an app key can still reach its own app", elements.get("home").disabled, false);
+
+      // Pressed on the landing view it does nothing at all, rather than firing a
+      // request for a view nobody asked for. Back to an admin, because that is
+      // the tier that has an overview to land on — an app key's home is its app,
+      // which the check above covers.
+      vm.runInContext('state.scope = "admin"; state.app = "";', ctx);
+      calls.length = 0;
+      navTo("overview");
+      await goHome();
+      check("pressing it on the landing view does nothing", calls.length, 0);
+    }
+  }
+
   // --- Translation coverage -------------------------------------------------
   //
   // Every string the interface can show must have a Chinese translation, and
