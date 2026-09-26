@@ -325,9 +325,21 @@ The certificate has to cover every host under the domain, which in practice mean
 a wildcard, and a wildcard DNS record to go with it.</p>
 <p><strong>One host, one path per app</strong> — set <code>apps.pathPrefix</code>. Every app then shares
 <code>ingress.host</code> and the path says which is meant:</p>
-<pre><code class="language-bash">--set ingress.host=applab.example.com --set apps.pathPrefix=/apps
-# shop is served at https://applab.example.com/apps/shop
+<pre><code class="language-bash">--set ingress.host=applab.example.com --set ingress.enabled=false \
+  --set deploy.gateway=istio-system/istio-ingressgateway --set apps.pathPrefix=/apps
+# shop is served at https://applab.example.com/applab/apps/shop
 </code></pre>
+<p>The apps are nested under <code>ingress.path</code> (the installation's own base path,
+<code>/applab</code> by default), because that is the path the gateway routes on: a route
+written outside it would be one nothing ever delivers to. Set <code>ingress.path=/</code>
+to serve the whole installation at the root, in which case an app is at
+<code>/apps/shop</code>.</p>
+<p><code>ingress.enabled=false</code> is part of this, and not optional. An app on a prefix is
+served by its own VirtualService on the gateway, and an Ingress routes on a path
+without being able to strip one — so an Ingress on <code>/applab</code> would match the
+apps' own path and deliver their traffic to AppLab, which answers with the
+console. The chart refuses that combination rather than deploying apps nothing
+can reach.</p>
 <p>The reason to want this is the certificate. One host needs one ordinary
 certificate, not a wildcard, and nothing has to be reissued as apps are added.
 AppLab strips the prefix before the request reaches the app, so an app sees the
@@ -379,6 +391,11 @@ nothing serves, and with no Ingress the console would have no route either.</li>
 <li><code>deploy.gateway</code> not in <code>&lt;namespace&gt;/&lt;name&gt;</code> form.</li>
 <li><code>apps.pathPrefix</code> set with <code>ingress.host</code> empty — the prefix is the only thing
 telling one app from another on that shared host.</li>
+<li><code>apps.pathPrefix</code> set with <code>ingress.enabled=true</code> — an app on a prefix is
+nested under <code>ingress.path</code>, and the Ingress routes that whole path to AppLab
+itself, so every app would be deployed and unreachable. Set
+<code>ingress.enabled=false</code> so the gateway serves the console and the apps, or
+leave <code>apps.pathPrefix</code> empty.</li>
 </ul>
 <h3 id="3-whether-the-cluster-can-build">3. Whether the cluster can build</h3>
 <p>A build runs as a Kubernetes Job whose one container is <strong>kaniko</strong>. It clones the
@@ -501,7 +518,7 @@ does and why it defaults the way it does. The ones that matter most:</p>
 <tr>
 <td><code>apps.pathPrefix</code></td>
 <td><code>&quot;&quot;</code></td>
-<td>Serves every app under one path on that host; needs no wildcard certificate</td>
+<td>Serves every app under <code>ingress.path</code> + this, on one host; needs no wildcard certificate. Needs <code>ingress.enabled=false</code></td>
 </tr>
 <tr>
 <td><code>deploy.gateway</code></td>
