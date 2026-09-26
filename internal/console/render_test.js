@@ -754,26 +754,31 @@ async function render(apps) {
     }
   }
 
-  // The overview's deployment card. What it carries is the point: identity and
-  // reachability are one card, because "what am I talking to" and "does it work"
-  // are one question — and the cluster state sitting outside it is exactly the
-  // split this merged.
+  // The overview does not carry a Deployment card.
   //
-  // The capabilities row is asserted *absent* rather than merely unrendered.
-  // It was four chips reading "on" on every healthy deployment, and the way it
-  // would come back is someone re-adding the markup while the render code stays
-  // gone, which renders nothing and passes every other check here.
+  // It reported the version, the API version, the namespace, the address
+  // template and whether the cluster answered — which is what `applab config`
+  // is for, and none of it is what someone opens a dashboard to find out. On a
+  // healthy deployment it was a card saying nothing was wrong.
+  //
+  // Asserted as absence rather than by deleting the check, because the way it
+  // would come back is the markup being restored while the render code stays
+  // gone: that renders an empty card and passes every other check here. The
+  // capabilities row below is asserted the same way and for the same reason.
   {
-    const card = markup.match(/<h2 data-i18n="Deployment"[\s\S]*?<\/dl>[\s\S]*?<\/div>\s*<\/div>/);
-    check("the Deployment card exists", card !== null, true);
-    if (card) {
-      check("it carries the deployment rows", card[0].includes('id="overview-deployment"'), true);
-      check("and the cluster state with them", card[0].includes('id="overview-cluster"'), true);
-      check("but not a capabilities row", card[0].includes("overview-caps"), false);
+    for (const gone of ['overview-deployment', 'overview-cluster', 'overview-caps']) {
+      check(`the Deployment card's ${gone} is gone from the page`, markup.includes(gone), false);
     }
     check(
-      "and the capabilities row is gone from the page entirely",
-      markup.includes("overview-caps") || markup.includes('data-i18n="Capabilities"'),
+      "and so is the card's heading",
+      markup.includes('data-i18n="Deployment"') || markup.includes('data-i18n="Capabilities"'),
+      false
+    );
+    // The rows it rendered are gone from the script too, so nothing writes into
+    // elements that no longer exist.
+    check(
+      "and nothing renders into it",
+      /overview-deployment|overview-cluster/.test(source),
       false
     );
   }

@@ -452,28 +452,6 @@
   .tile.attention .value { color: var(--bad); }
   .tile.ok .value { color: var(--ok); }
 
-  /* A one-line state indicator used for the cluster. The dot is decorative; the
-     sentence beside it is what says which state this is. */
-  .state { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
-  .state .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--text-muted); flex: none;
-    position: relative; top: -1px;
-  }
-  .state.ok .dot { background: var(--ok); }
-  .state.bad .dot { background: var(--bad); }
-  .state.warn .dot { background: var(--warn); }
-  .state .detail { color: var(--text-muted); font-size: 13px; }
-
-  /* The cluster state, below the deployment's own rows in the same card. It is
-     a different kind of fact — what this deployment is, then whether it works —
-     so a rule separates them rather than leaving one list of six rows. */
-  #overview-cluster {
-    margin-top: 14px;
-    padding-top: 14px;
-    border-top: 1px solid var(--border);
-  }
-
   /* A phone. The header is a single row of controls carrying the theme and
      language switches, the nav, and sign-out; squeezed to a phone width the
      theme control is the first thing to go over the edge, and it is half of the
@@ -483,8 +461,6 @@
     header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px; }
     main { padding: 14px; }
   }
-
-  .grid-2 { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -567,28 +543,13 @@
          add nothing. -->
     <div class="tiles" id="overview-tiles"></div>
 
-    <!-- What this deployment is, and whether it can do its job — one card, not
-         two. They were separate panels in a two-column split, which read as
-         peers when they are not: the cluster's state is the answer to "will a
-         build or a deploy actually happen", which is a fact about this
-         deployment like its namespace is, and the two together are the whole of
-         "what am I talking to and is it working". Side by side they were also
-         two columns of very different heights, since the identity half is four
-         short rows and the state half is a sentence.
-
-         The capabilities row that used to sit under this is gone. It listed
-         source, git, build and deploy as four on/off chips, which on a healthy
-         deployment is four lines saying nothing is wrong — and when one is off,
-         this card's state line is what already says why. -->
-    <div class="card">
-      <h2 data-i18n="Deployment">Deployment</h2>
-      <dl class="grid-2" id="overview-deployment"></dl>
-      <!-- The cluster: three distinct states, because "not configured" and
-           "unreachable" mean different things and only one of them is a fault.
-           Set off from the rows above by a rule, the same way an app's state
-           card separates what is readable from what is actionable. -->
-      <div id="overview-cluster"></div>
-    </div>
+    <!-- The Deployment card that used to sit here is gone. It reported the
+         version, the API version, the namespace, the address template and
+         whether the cluster answered — which is what `applab config` is for, and
+         none of it is what someone opens a dashboard to find out. The numbers
+         above answer "what is happening", the builds below answer "what went
+         wrong", and a healthy deployment saying it is healthy is a card of
+         nothing. -->
 
     <div class="card flush">
       <div class="card-head">
@@ -1057,7 +1018,6 @@ const ZH = {
 
   // -- Overview -------------------------------------------------------------
   "Refresh": "刷新",
-  "Deployment": "部署",
   "Recent builds": "最近构建",
   "Platform log": "平台日志",
   "This deployment cannot read logs: no cluster client is configured.": "这个部署无法读取日志：没有配置集群客户端。",
@@ -1070,19 +1030,11 @@ const ZH = {
   "{n} running": "{n} 个运行中",
   "{n} failed": "{n} 个失败",
   "{n} succeeded": "{n} 个成功",
-  "version": "版本",
-  "api": "API",
-  "namespace": "命名空间",
-  "apps at": "应用地址",
-  "Not configured": "未配置",
-  "Reachable": "可访问",
-  "Unreachable": "不可访问",
-  "No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run AppLab.":
-    "启动时没有附加集群客户端。API 和源码存储可用，但构建与部署不可用。这是运行 AppLab 的一种合理方式。",
-  "This deployment can reach the Kubernetes API, so builds and deploys will run here.":
-    "此部署可以访问 Kubernetes API，构建和部署会在这里运行。",
-  "A cluster client is configured but the API server is not answering. Builds and deploys will fail until this recovers.":
-    "已配置集群客户端，但 API server 没有响应。在恢复之前，构建和部署都会失败。",
+
+  // The Deployment card's rows — version, API, namespace, address template and
+  // the cluster's state — are gone with the card. They were what `applab config`
+  // reports, and a dashboard that opens on a healthy deployment saying it is
+  // healthy is a dashboard opening on nothing.
 
   // -- Tables ---------------------------------------------------------------
   "App": "应用",
@@ -1905,66 +1857,6 @@ async function loadOverview() {
       : tf("{n} succeeded", { n: builds.succeeded ?? 0 }),
     (builds.failed ?? 0) > 0 ? "attention" : ""
   ));
-
-  // The deployment panel: what this AppLab is, which otherwise means running
-  // `applab config`.
-  const d = data.deployment || {};
-  const dl = $("overview-deployment");
-  dl.replaceChildren();
-
-  const add = (term, value) => {
-    if (value === undefined || value === null || value === "") return;
-    const dt = document.createElement("dt");
-    dt.textContent = term;
-    const dd = document.createElement("dd");
-    dd.textContent = value;
-    dl.append(dt, dd);
-  };
-
-  add(t("version"), d.version);
-  add(t("api"), d.api_version);
-  add(t("namespace"), d.namespace);
-  add(t("apps at"), d.domain_template);
-
-  // The cluster state, under the rows above it in the same card. It keeps a
-  // rule of its own because it is a different kind of fact: the rows say what
-  // this deployment is, and this says whether it works.
-  const cluster = data.cluster || {};
-  const box = $("overview-cluster");
-  box.replaceChildren();
-
-  const wrap = document.createElement("div");
-  const detail = document.createElement("div");
-  detail.className = "detail";
-  detail.style.marginTop = "8px";
-
-  // The dot is decoration; the word beside it is the state. Built as a node
-  // rather than with innerHTML so the translated label is text, not markup.
-  const stateLabel = (text) => {
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    const label = document.createElement("span");
-    label.textContent = text;
-    const line = document.createElement("div");
-    line.append(dot, label);
-    return line;
-  };
-
-  if (!cluster.configured) {
-    wrap.className = "state";
-    wrap.appendChild(stateLabel(t("Not configured")));
-    detail.textContent = t("No cluster client was attached at startup. The API and source storage work; builds and deploys are unavailable. This is a legitimate way to run AppLab.");
-  } else if (cluster.reachable) {
-    wrap.className = "state ok";
-    wrap.appendChild(stateLabel(t("Reachable")));
-    detail.textContent = t("This deployment can reach the Kubernetes API, so builds and deploys will run here.");
-  } else {
-    wrap.className = "state bad";
-    wrap.appendChild(stateLabel(t("Unreachable")));
-    detail.textContent = t("A cluster client is configured but the API server is not answering. Builds and deploys will fail until this recovers.");
-  }
-
-  box.append(wrap, detail);
 
   const recent = builds.recent || [];
   const body = $("overview-builds");
