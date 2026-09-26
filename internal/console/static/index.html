@@ -333,14 +333,6 @@
   .field { display: flex; align-items: center; gap: 8px; }
   .field > span { color: var(--text-muted); font-size: 13px; }
 
-  /* Two columns of small fields, for the usage readings. A grid rather than a
-     row, so the two readings sit as equal halves and wrap on a narrow screen. */
-  .grid-2 {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 12px 16px;
-  }
-
   /* The bounds, as a table: a row per resource, request and limit as columns.
      Auto width rather than full, so the inputs sit together rather than being
      flung to the far edges of a wide card — the alignment is what makes the two
@@ -356,13 +348,6 @@
   .resources-table td { padding: 6px 10px 6px 0; border-bottom: none; }
   .resources-table tbody tr:hover { background: transparent; }
   .resources-table input { width: 110px; font-variant-numeric: tabular-nums; }
-
-  /* A reading and its bound. The value is the larger of the two because it is
-     what changes; the bound sits beside it at muted weight, so the pair reads as
-     "12m of 2" rather than as two independent numbers. */
-  .metric-label { color: var(--text-muted); font-size: 12px; margin-bottom: 2px; }
-  .metric-value { font-size: 20px; font-variant-numeric: tabular-nums; }
-  .metric-of { font-size: 13px; margin-left: 4px; }
 
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
@@ -458,6 +443,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* A row's own buttons, kept on one line.
+     A row that wraps its actions has a taller height than its neighbours, which
+     makes the table look broken rather than full — and the two buttons here
+     ("Log", "Events") will not both fit a narrow column otherwise. */
+  td.actions { white-space: nowrap; }
+  td.actions button + button { margin-left: 6px; }
 
   .pill {
     display: inline-block;
@@ -827,7 +819,15 @@
       <div class="app-body">
 
     <div class="card" id="card-state">
-      <h2 data-i18n="State">State</h2>
+      <div class="card-head">
+        <h2 data-i18n="State">State</h2>
+        <!-- The card's own actions, at the top right with every other card's.
+             They act on the app rather than on one commit: a build or a deploy
+             here means the latest commit, and the History card below is where
+             one specific commit is chosen. -->
+        <button id="app-build" data-i18n="Build latest">Build latest</button>
+        <button id="app-deploy" class="primary" data-i18n="Deploy latest">Deploy latest</button>
+      </div>
       <dl id="app-state">
         <!-- The app's own repository, as the last row of the same table: it is a
              fact about the app, like the commit and the image, and it exists from
@@ -856,16 +856,6 @@
 
       <div id="app-problem" class="error hidden" style="margin-top:12px"></div>
 
-      <!-- What can be changed, next to what is running. These act on the app
-           rather than on one commit: a build or a deploy here means the latest
-           commit, and the history table below is where one specific commit is
-           chosen. -->
-      <div class="state-actions">
-        <span class="spacer"></span>
-        <button id="app-build" data-i18n="Build latest">Build latest</button>
-        <button id="app-deploy" data-i18n="Deploy latest">Deploy latest</button>
-      </div>
-
       <!-- Whether a push ships on its own. Unlike the settings in the Instances
            card this one takes effect immediately, because it is read when a push
            arrives rather than applied by the deployer.
@@ -885,28 +875,7 @@
     <div class="card" id="card-resources">
       <div class="card-head">
         <h2 data-i18n="Resources">Resources</h2>
-        <!-- Refresh, because this is the one card on the page whose numbers are
-             sampled rather than read: usage is a reading of the last minute or
-             so, not a fact about the app, so it goes stale while the page sits
-             open. Everything else here is a setting that cannot change without
-             someone changing it. -->
-        <button id="app-resources-refresh" data-i18n="Refresh">Refresh</button>
-      </div>
-
-      <!-- What the running containers are actually using, against what they are
-           allowed. Both halves come from the cluster: usage from its metrics
-           API, the bound from the Deployment the deployer wrote — so the limit
-           shown is the *effective* one, with this deployment's defaults already
-           resolved onto the fields the app left empty. -->
-      <div class="grid-2" id="app-usage">
-        <div class="metric">
-          <div class="metric-label" data-i18n="CPU (cores)">CPU (cores)</div>
-          <div class="metric-value"><span id="usage-cpu">–</span><span class="muted metric-of" id="usage-cpu-limit"></span></div>
-        </div>
-        <div class="metric">
-          <div class="metric-label" data-i18n="Memory (GiB)">Memory (GiB)</div>
-          <div class="metric-value"><span id="usage-memory">–</span><span class="muted metric-of" id="usage-memory-limit"></span></div>
-        </div>
+        <button id="app-resources-save" class="primary" data-i18n="Save">Save</button>
       </div>
 
       <!-- The bounds, arranged the way they are thought about: a row per
@@ -946,61 +915,47 @@
         </tbody>
       </table>
 
-      <!-- A bound is written into the Deployment, so it does not move until the
-           next deploy does. The Save button says when it is saved; the settings
-           card above already carries the same caveat for the same reason. -->
-      <div class="state-actions">
-        <span class="spacer"></span>
-        <button id="app-resources-save" data-i18n="Save">Save</button>
-      </div>
       <div id="resources-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
 
     <div class="card" id="card-instances">
       <div class="card-head">
         <h2 data-i18n="Instances">Instances</h2>
-        <!-- How many copies run, beside the copies themselves. It belongs with
-             what it counts rather than with the app's other settings: a replica
-             count is a fact about the instances, and the table below is those
-             instances. Nothing here applies it — the deployer does, on the next
-             deploy — which is what the note beside it says. -->
+        <!-- What a deploy applies, next to the copies those settings produce,
+             and at the top right with every other card's controls.
+             Branch and Port were rows in the State card, among facts that are
+             read rather than changed — and both are things someone comes here to
+             set when the instances are the problem: the wrong branch is the
+             wrong code running, and the wrong port is every copy unreachable.
+
+             Nothing here applies them; the deployer does, exactly as it applies
+             the image. `applab update` behaves the same way, which is what keeps
+             the three surfaces telling the same story.
+
+             No label filter. It used to be an input taking a selector, and the
+             API and the CLI still take one (`?label=`, `--label`) — the
+             selection is genuinely useful to a script telling one revision's
+             pods from another's mid-rollout. It is not useful on this card: the
+             text it expected was a Kubernetes label expression, which is a thing
+             to look up rather than a thing to know. -->
         <label class="field">
           <span data-i18n="Replicas">Replicas</span>
           <input id="app-replicas" type="number" min="1" max="50" size="3" style="width:72px">
           <button id="app-replicas-set" data-i18n="Set">Set</button>
-        </label>
-        <!-- No label filter here. It used to be an input taking a selector, and
-             the API and the CLI still take one (`?label=`, `--label`) — the
-             selection is genuinely useful to a script telling one revision's
-             pods from another's mid-rollout. It is not useful on this card: the
-             text it expected was a Kubernetes label expression, which is a thing
-             to look up rather than a thing to know, and reading it here meant
-             knowing the label scheme before you could ask your first question. -->
-        <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
-      </div>
-
-      <!-- What a deploy applies, next to the copies those settings produce.
-           Branch and Port were rows in the State card, among facts that are read
-           rather than changed — and both are things someone comes here to set
-           when the instances are the problem: the wrong branch is the wrong code
-           running, and the wrong port is every copy unreachable.
-
-           Nothing here applies them; the deployer does, exactly as it applies
-           the image. `applab update` behaves the same way, which is what keeps
-           the three surfaces telling the same story. -->
-      <div class="state-actions">
-        <label class="field">
-          <span data-i18n="Branch">Branch</span>
-          <select id="app-branch"></select>
-          <button id="app-branch-use" data-i18n="Switch">Switch</button>
         </label>
         <label class="field">
           <span data-i18n="Port">Port</span>
           <input id="app-port" type="number" min="1" max="65535" size="5" style="width:88px">
           <button id="app-port-set" data-i18n="Set">Set</button>
         </label>
-        <!-- Switching replaces what is serving, so it is not a filter: the
-             button says Switch rather than anything that sounds like a view. -->
+        <label class="field">
+          <span data-i18n="Branch">Branch</span>
+          <select id="app-branch"></select>
+          <!-- Switching replaces what is serving, so it is not a filter: the
+               button says Switch rather than anything that sounds like a view. -->
+          <button id="app-branch-use" data-i18n="Switch">Switch</button>
+        </label>
+        <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
       </div>
 
       <table>
@@ -1009,14 +964,6 @@
       </table>
       <div id="pods-empty" class="empty hidden" data-i18n="Nothing is running.">Nothing is running.</div>
       <div id="pods-problem" class="error hidden" style="margin-top:8px"></div>
-    </div>
-
-    <div class="card" id="card-log">
-      <div class="card-head">
-        <h2 data-i18n="Log">Log</h2>
-        <button id="logs-open" data-i18n="View log">View log</button>
-      </div>
-      <p data-i18n="What this app's container is writing.">What this app's container is writing.</p>
     </div>
 
     <div class="card" id="card-env">
@@ -1170,6 +1117,10 @@
         <pre id="platform-logs" class="hidden" data-i18n="(not started)">(not started)</pre>
         <pre id="logs" class="hidden" data-i18n="(not started)">(not started)</pre>
         <pre id="build-logs" class="hidden"></pre>
+        <!-- One pod's events. A <pre> like the other three: it is a list of
+             lines read by scrolling, and the dialog writes text into whichever
+             panel is showing. -->
+        <pre id="events-output" class="hidden" data-i18n="(not started)">(not started)</pre>
       </div>
     </div>
 </main>
@@ -1228,8 +1179,12 @@ const state = {
   logPanel: "",
   logFollowing: false,
   // The build the dialog is showing, so its heading can name it. Empty when the
-  // dialog is on one of the two live logs.
+  // dialog is on one of the live logs.
   logBuild: "",
+  // The pod a log or an events list belongs to, when it was opened from a row
+  // rather than from a card. Empty for the app's own log read from the card,
+  // which is the newest pod's — see openPodLog for why the row names one.
+  logPod: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1368,7 +1323,6 @@ const ZH = {
   "Memory (GiB)": "内存（GiB）",
   "Could not read the app's resources: {error}": "无法读取应用资源：{error}",
   "Could not set resources: {error}": "无法设置资源：{error}",
-  "of {value}": "/ {value}",
   "Ready": "就绪",
   "Restarts": "重启",
   "Reason": "原因",
@@ -1431,6 +1385,10 @@ const ZH = {
   "Delete": "删除",
   "Nothing is running.": "没有正在运行的实例。",
   "Log": "日志",
+  "Events": "事件",
+  "No recent events for {pod}. Events expire after about an hour, so a pod that started cleanly and stayed up has none.":
+    "{pod} 暂无事件。事件约一小时后过期，因此正常启动并持续运行的 Pod 不会有事件。",
+  "Could not read events: {error}": "无法读取事件：{error}",
   "previous instance": "上一个实例",
   "Follow": "跟随",
   "(not started)": "（未开始）",
@@ -1452,7 +1410,6 @@ const ZH = {
   "Builds": "构建",
   "Build pod": "构建 Pod",
   "Build log": "构建日志",
-  "What this app's container is writing.": "该应用容器正在输出的内容。",
   "Deploy": "部署",
   "(loading)": "（加载中）",
   "Could not stop the build: {error}": "无法停止构建：{error}",
@@ -2735,7 +2692,6 @@ const APP_SECTIONS = [
   { id: "card-state", label: "State" },
   { id: "card-resources", label: "Resources" },
   { id: "card-instances", label: "Instances" },
-  { id: "card-log", label: "Log" },
   { id: "card-env", label: "Configuration" },
   { id: "card-builds", label: "Builds" },
   { id: "card-history", label: "History" },
@@ -3210,7 +3166,75 @@ async function loadPods() {
     reason.appendChild(reasonText);
     tr.appendChild(reason);
 
+    // Per instance, on the row it is about. A pod's log and its events are the
+    // two things a person comes to this table to look at when a copy is not
+    // ready, and both are about *that* pod — a card at the bottom of the page
+    // could only ever say "the app's", which is the newest pod's, which is not
+    // the one that is failing.
+    const actions = document.createElement("td");
+    actions.className = "actions";
+
+    const logs = document.createElement("button");
+    logs.textContent = t("Log");
+    logs.onclick = () => openPodLog(pod.name);
+    actions.appendChild(logs);
+
+    const events = document.createElement("button");
+    events.textContent = t("Events");
+    events.onclick = () => showPodEvents(pod.name);
+    actions.appendChild(events);
+
+    tr.appendChild(actions);
+
     body.appendChild(tr);
+  }
+}
+
+// openPodLog opens one pod's log in the shared dialog.
+//
+// The pod is named rather than defaulted, which is the whole point of the row
+// it was clicked from: without it the endpoint answers with the newest pod's
+// log, and a crash loop is usually not the newest pod.
+function openPodLog(podName) {
+  state.logPod = podName;
+  openLogDialog("app");
+  startLogs("app");
+}
+
+// showPodEvents reads one pod's events into the shared dialog.
+//
+// Filtered to the pod here rather than server-side: the endpoint answers per
+// app, because that is the scope it can match reliably — every app shares one
+// namespace, and a pod *name* is not a prefix of anything. One read serves
+// every row, so opening this twice is one request.
+async function showPodEvents(podName) {
+  state.logPod = podName;
+  openLogDialog("events");
+
+  const el = $("events-output");
+  el.textContent = t("(loading)");
+
+  try {
+    const result = await api("/api/v1/apps/" + state.app + "/events?limit=200");
+    const mine = (result.events || []).filter((e) => e.object === podName);
+
+    if (mine.length === 0) {
+      // Empty is the common and healthy answer: events expire after about an
+      // hour, so a pod that started cleanly and stayed up has none. Said as
+      // such rather than left blank, because a blank panel reads as a failure
+      // to load.
+      el.textContent = tf("No recent events for {pod}. Events expire after about an hour, so a pod that started cleanly and stayed up has none.", { pod: podName });
+      return;
+    }
+
+    const lines = mine.map((e) => {
+      const when = e.last_seen || e.first_seen || "";
+      const count = e.count > 1 ? " x" + e.count : "";
+      return when + "  " + e.type + "  " + e.reason + count + "\n    " + e.message;
+    });
+    el.textContent = lines.join("\n\n");
+  } catch (err) {
+    el.textContent = tf("Could not read events: {error}", { error: err.message });
   }
 }
 
@@ -3367,14 +3391,19 @@ async function setPort() {
   await loadAppState();
 }
 
-// loadResources renders what the app is using and what it may use.
+// loadResources fills the four bounds from the app's own settings.
 //
-// Two reads, because they are two different things: the app's own settings come
-// from its record, and the running containers' effective bounds and live usage
-// come from the cluster. The form is filled from the first, so a field nobody
-// has set stays empty and keeps meaning "this deployment's default"; the numbers
-// above it come from the second, so the limit shown is the one the container
-// actually runs under.
+// One read, and it is the app's record: these are settings, not readings. What
+// the container is actually using was fetched from the cluster's metrics API and
+// shown above the form, and it is gone — it was a live number on a card of
+// settings, stale the moment the page sat open, and unavailable on any cluster
+// without metrics-server, where it read as two em-dashes. `applab resources`
+// and GET /api/v1/apps/{app}/resources still report it, which is where a number
+// that has to be current belongs.
+//
+// An empty field means "this deployment's default", which is what the
+// placeholder shows, and the two are the same units so a typed value and a
+// default read alike rather than as two scales.
 async function loadResources() {
   let app = null;
   try {
@@ -3385,54 +3414,11 @@ async function loadResources() {
   }
   setResourcesProblem("");
 
-  // Converted into the units the form shows. The placeholders show the same two
-  // units, so an empty field (this deployment's default) and a typed one read
-  // alike rather than as two different scales.
   const r = (app && app.resources) || {};
   $("resources-cpu-request").value = toCores(r.cpu_request);
   $("resources-cpu-limit").value = toCores(r.cpu_limit);
   $("resources-memory-request").value = toGi(r.memory_request);
   $("resources-memory-limit").value = toGi(r.memory_limit);
-
-  // A separate read, and its failure is not the form's problem: a deployment
-  // with no cluster, or a cluster with no metrics-server, still has bounds to
-  // edit. A failed read leaves the readings alone and the inputs usable, which
-  // is what the try/catch below does by returning.
-  let usage;
-  try {
-    usage = await api("/api/v1/apps/" + state.app + "/resources");
-  } catch {
-    // Nothing to say and nothing to clear: a deployment with no cluster and one
-    // whose metrics are briefly unreadable leave the same empty readings, and a
-    // sentence about which would be longer than the two values it explains.
-    return;
-  }
-
-  const u = usage || {};
-  if (!u.available) {
-    // The cluster does not report usage, which is a way a cluster is meant to be
-    // run rather than a fault. The bounds below are the useful part and are known
-    // regardless, so this is not worth a line of its own.
-    return;
-  }
-
-  // Converted to the same units the form uses, so "of 2" beside "0.5" is a
-  // comparison rather than two numbers in different scales.
-  $("usage-cpu").textContent = toCores(u.cpu) || "0";
-  $("usage-memory").textContent = toGi(u.memory) || "0";
-  showBounds(u);
-}
-
-// showBounds fills the "of <limit>" half of each metric.
-//
-// Empty rather than "of 0" when there is no bound: an absent limit means the
-// container is unbounded, and printing zero would say it may use nothing.
-function showBounds(u) {
-  const limits = u.limited || {};
-  const cpuLimit = toCores(limits.cpu);
-  const memoryLimit = toGi(limits.memory);
-  $("usage-cpu-limit").textContent = cpuLimit ? tf("of {value}", { value: cpuLimit }) : "";
-  $("usage-memory-limit").textContent = memoryLimit ? tf("of {value}", { value: memoryLimit }) : "";
 }
 
 // saveResources writes the four bounds.
@@ -3677,12 +3663,20 @@ const LOG_PANELS = {
     title: "Build log",
     streams: false,
   },
+  events: {
+    // One pod's events. Fetched by showPodEvents rather than by startLogs, so
+    // there is no path here — the endpoint is per app and the filtering is by
+    // object name, which only the row knows.
+    output: "events-output",
+    title: "Events",
+    streams: false,
+  },
 };
 
 // openLogDialog shows the dialog on one panel, hiding the other outputs.
 //
-// The three <pre> elements are siblings in one dialog and exactly one is shown,
-// so what a stream writes into is what is on screen.
+// The <pre> elements are siblings in one dialog and exactly one is shown, so
+// what a reader writes into is what is on screen.
 function openLogDialog(name) {
   const panel = LOG_PANELS[name];
   if (!panel) return;
@@ -3691,9 +3685,8 @@ function openLogDialog(name) {
     show($(other.output), other.output === panel.output);
   }
 
-  // The title names which log this is: three surfaces share one dialog, so
-  // without it "Log" would be ambiguous from inside the app's page or the
-  // overview.
+  // The title names which surface this is: several share one dialog, so without
+  // it "Log" would be ambiguous from inside an app's page or the overview.
   $("log-modal-title").textContent = t(panel.title);
 
   // Controls that only apply to a streaming log. A build's output is fetched
@@ -3702,8 +3695,16 @@ function openLogDialog(name) {
   show($("log-modal-previous-wrap"), panel.streams);
   $("log-modal-follow").textContent = t("Follow");
 
-  // The build's short SHA labels the dialog; the other two have no such id.
-  $("build-logs-label").textContent = name === "build" ? shortSHA(state.logBuild) : "";
+  // What labels the dialog beside the title. The build's short SHA, or the pod
+  // a log or an events list belongs to — which is what the row that opened it
+  // named, and is otherwise lost the moment the dialog covers the table.
+  if (name === "build") {
+    $("build-logs-label").textContent = shortSHA(state.logBuild);
+  } else if (name === "app" || name === "events") {
+    $("build-logs-label").textContent = state.logPod || "";
+  } else {
+    $("build-logs-label").textContent = "";
+  }
 
   show($("log-modal"), true);
   $("log-modal-close").focus();
@@ -3756,6 +3757,10 @@ async function startLogs(name) {
 
   const params = new URLSearchParams({ follow: "false", tail: "500" });
   if ($("log-modal-previous").checked) params.set("previous", "true");
+  // Named when the dialog was opened from an instance row. Without it the
+  // endpoint answers with the newest pod's log, which is not the pod that is
+  // failing — a crash loop is usually an older one.
+  if (name === "app" && state.logPod) params.set("pod", state.logPod);
 
   try {
     const response = await fetch(
@@ -4040,10 +4045,8 @@ $("config-env-set").onclick = () => {
 // The two surfaces with a card of their own open the dialog on their log. The
 // third — a build — is opened from the build list below, which has the build id
 // to name.
-$("app-resources-refresh").onclick = loadResources;
 $("app-resources-save").onclick = saveResources;
 
-$("logs-open").onclick = () => openDialogOn("app");
 $("platform-logs-open").onclick = () => openDialogOn("platform");
 
 // openDialogOn shows the dialog and starts reading, for the two surfaces that

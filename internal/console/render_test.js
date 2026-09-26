@@ -65,6 +65,21 @@ function makeElement(id = "") {
       contains(c) { return this._set.has(c); },
     },
     appendChild(child) { this.children.push(child); return child; },
+    // A real element always reports one, and the instances table reads it back
+    // after appending: it builds a pill, copies it, appends the copy and then
+    // restyles the cell's first child.
+    get firstChild() { return this.children[0]; },
+    // The instances table builds a pill and copies its classes onto the row's
+    // own cell, so the stub has to answer. A shallow copy is enough: what the
+    // code under test reads back is the class and the text.
+    cloneNode() {
+      const copy = makeElement(this.id);
+      copy.tagName = this.tagName;
+      copy.className = this.className;
+      copy.textContent = this.textContent;
+      for (const c of this.classList._set) copy.classList.add(c);
+      return copy;
+    },
     replaceChildren(...kids) { this.children = kids; },
     focus() {},
     addEventListener() {},
@@ -794,7 +809,7 @@ async function render(apps) {
   // the wrong port leaves every copy unreachable.
   {
     const state = markup.match(/<h2 data-i18n="State"[\s\S]*?<h2 data-i18n="Instances"/);
-    const instances = markup.match(/<h2 data-i18n="Instances"[\s\S]*?<h2 data-i18n="Log"/);
+    const instances = markup.match(/<h2 data-i18n="Instances"[\s\S]*?<h2 data-i18n="Configuration"/);
     check("the State card exists", state !== null, true);
     check("and the Instances card", instances !== null, true);
 
@@ -817,6 +832,25 @@ async function render(apps) {
         "and auto-deploy is not under the next-deploy note",
         /app-auto-deploy[\s\S]{0,400}?takes effect on the next deploy/.test(state[0]),
         false
+      );
+    }
+
+    // Every card's Save is in the card's head, at the top right.
+    //
+    // A control that acts on a whole card belongs beside the card's name rather
+    // than under its content: below a table of inputs it is read last, after the
+    // reader has already scrolled past what they came to change, and on a long
+    // card it can be off screen while the fields it saves are not.
+    for (const [card, button] of [
+      ["Resources", "app-resources-save"],
+      ["State", "app-deploy"],
+      ["Configuration", "config-env-add"],
+    ]) {
+      const head = markup.match(new RegExp('<h2 data-i18n="' + card + '"[\\s\\S]{0,900}?</div>'));
+      check(
+        `the ${card} card's control is in its head`,
+        head !== null && head[0].includes(`id="${button}"`),
+        true
       );
     }
   }
@@ -1244,6 +1278,54 @@ async function render(apps) {
       elements.get("pods-empty").textContent,
       "Nothing is running."
     );
+  }
+
+  // Each instance row carries the two things a person comes to that table for.
+  //
+  // A pod's log and its events are about *that* pod, so they are on its row.
+  // The card at the bottom of the page could only ever say "the app's", which is
+  // the newest pod's — and a crash loop is usually an older one, which is
+  // exactly when someone is looking.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({
+          data: {
+            app_id: "shop",
+            count: 1,
+            pods: [
+              { name: "applab-shop-abc", ready: false, restarts: 5, reason: "CrashLoopBackOff" },
+            ],
+          },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.app = "shop";', ctx);
+    await vm.runInContext("loadPods", ctx)();
+
+    const row = elements.get("pods").children[0];
+    const actions = row && row.children[4];
+    const buttons = (actions && actions.children) || [];
+    const labels = buttons.map((b) => b.textContent).join(" | ");
+    check("an instance row offers its own log", labels.includes("Log"), true);
+    check("and its own events", labels.includes("Events"), true);
+
+    // Clicking Log names the pod. Without it the endpoint answers with the
+    // newest pod's log, so the button on a crashing row would show a different
+    // container's output while looking like it worked.
+    ctx.requests.length = 0;
+    buttons[0].onclick();
+    const asked = ctx.requests[0] || "";
+    check("and the log it asks for names that pod", asked.includes("pod=applab-shop-abc"), true);
   }
 
   // What creating an app asks for.
