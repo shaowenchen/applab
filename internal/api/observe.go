@@ -12,6 +12,39 @@ import (
 	"github.com/shaowenchen/applab/internal/observe"
 )
 
+// handleAppUsage reports what an app is using and what it may use.
+//
+// The two halves come from the cluster rather than from the app's record, and
+// that is the point of the endpoint: an app's settings say what it *asked* for,
+// which is not what a container is running under once the deployment's defaults
+// have been applied to the fields the app left empty. Reading the running
+// Deployment answers the second question, and it is the one a person looking at
+// a resource limit is asking.
+//
+// It is deliberately not folded into the app response or the pod list. Usage is
+// the only thing here the cluster samples, so it is the only one that changes
+// between two reads seconds apart — a page that wants live numbers asks for them
+// on their own, and a listing that carried them would fetch a sample per row.
+func (s *Server) handleAppUsage(w http.ResponseWriter, r *http.Request) {
+	app, apiErr := s.loadApp(r)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+	if s.observer == nil || !s.observer.Ready() {
+		fail(w, r, Errorf(http.StatusNotImplemented, "this deployment cannot observe: no cluster is configured"))
+		return
+	}
+
+	usage, err := s.observer.AppUsage(r.Context(), app.Namespace, app.ID)
+	if err != nil {
+		fail(w, r, Errorf(http.StatusInternalServerError, "read what app %q is using", app.ID).Wrap(err))
+		return
+	}
+
+	respond(w, http.StatusOK, usage)
+}
+
 // handleListPods reports an app's pods.
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	app, apiErr := s.loadApp(r)

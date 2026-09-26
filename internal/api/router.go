@@ -438,6 +438,10 @@ type Observer interface {
 	// Events returns recent Kubernetes events concerning one app.
 	Events(ctx context.Context, namespace, appID string, limit int) ([]observe.Event, error)
 
+	// AppUsage reports what an app's pods are using, and what its running
+	// containers are allowed to use.
+	AppUsage(ctx context.Context, namespace, appID string) (observe.Usage, error)
+
 	// SelfPods lists AppLab's own pods.
 	SelfPods(ctx context.Context, namespace string, limit int) ([]observe.Pod, error)
 
@@ -724,7 +728,7 @@ func (s *Server) routes() []route {
 			Pattern: "PATCH /api/v1/apps/{app}",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "Change an app's settings: `{name?, port?, replicas?, dockerfile?, domain?}`. Fields omitted are left alone.",
+			Doc:     "Change an app's settings: `{name?, port?, replicas?, dockerfile?, domain?, auto_deploy?, branch?, resources?}`. Fields omitted are left alone; a resource field set to an empty string returns it to this deployment's default from `deploy.appResources`. Changing resources does not redeploy — the app's next deploy applies them.",
 			Handler: s.handleUpdateApp,
 		},
 		{
@@ -956,6 +960,13 @@ func (s *Server) routes() []route {
 		},
 
 		// -- Observability ------------------------------------------------
+		{
+			Pattern: "GET /api/v1/apps/{app}/resources",
+			Auth:    true,
+			AppAuth: true,
+			Doc:     "What the app is using and what it may use: the CPU and memory summed across its pods, read from the cluster's metrics API, beside the requests and limits its running containers actually have. `available` is false on a cluster without metrics-server, which is not an error — the bounds are still reported. Change the bounds with `PATCH /api/v1/apps/{app}`.",
+			Handler: s.handleAppUsage,
+		},
 		{
 			Pattern: "GET /api/v1/apps/{app}/pods",
 			Auth:    true,

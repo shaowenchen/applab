@@ -333,6 +333,24 @@
   .field { display: flex; align-items: center; gap: 8px; }
   .field > span { color: var(--text-muted); font-size: 13px; }
 
+  /* Two columns of small fields, for the resource bounds. A grid rather than a
+     row, so CPU and memory line up as pairs and the four inputs read as two
+     decisions — request and limit — rather than as one list of four. */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px 16px;
+  }
+  .grid-2 .field { justify-content: space-between; }
+  .grid-2 .field input { width: 110px; font-variant-numeric: tabular-nums; }
+
+  /* A reading and its bound. The value is the larger of the two because it is
+     what changes; the bound sits beside it at muted weight, so the pair reads as
+     "12m of 2" rather than as two independent numbers. */
+  .metric-label { color: var(--text-muted); font-size: 12px; margin-bottom: 2px; }
+  .metric-value { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .metric-of { font-size: 13px; margin-left: 4px; }
+
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
   /* A page's title, above its cards and outside them. Nothing is gained by
@@ -838,6 +856,73 @@
       </div>
     </div>
 
+    <div class="card" id="card-resources">
+      <div class="card-head">
+        <h2 data-i18n="Resources">Resources</h2>
+        <!-- Refresh, because this is the one card on the page whose numbers are
+             sampled rather than read: usage is a reading of the last minute or
+             so, not a fact about the app, so it goes stale while the page sits
+             open. Everything else here is a setting that cannot change without
+             someone changing it. -->
+        <button id="app-resources-refresh" data-i18n="Refresh">Refresh</button>
+      </div>
+
+      <!-- What the running containers are actually using, against what they are
+           allowed. Both halves come from the cluster: usage from its metrics
+           API, the bound from the Deployment the deployer wrote — so the limit
+           shown is the *effective* one, with this deployment's defaults already
+           resolved onto the fields the app left empty. -->
+      <div class="grid-2" id="app-usage">
+        <div class="metric">
+          <div class="metric-label" data-i18n="CPU">CPU</div>
+          <div class="metric-value"><span id="usage-cpu">–</span><span class="muted metric-of" id="usage-cpu-limit"></span></div>
+        </div>
+        <div class="metric">
+          <div class="metric-label" data-i18n="Memory">Memory</div>
+          <div class="metric-value"><span id="usage-memory">–</span><span class="muted metric-of" id="usage-memory-limit"></span></div>
+        </div>
+      </div>
+      <p id="usage-note" class="muted" style="font-size:13px;margin-bottom:0"></p>
+
+      <!-- The bounds, as the app has set them rather than as they resolved. A
+           field left empty means "this deployment's default", which is what the
+           placeholder says — filling it with the resolved number would turn a
+           default into an explicit setting the first time anyone pressed save. -->
+      <div class="grid-2" style="margin-top:16px">
+        <label class="field">
+          <span data-i18n="CPU request">CPU request</span>
+          <input id="resources-cpu-request" placeholder="100m" size="10">
+        </label>
+        <label class="field">
+          <span data-i18n="CPU limit">CPU limit</span>
+          <input id="resources-cpu-limit" placeholder="2" size="10">
+        </label>
+        <label class="field">
+          <span data-i18n="Memory request">Memory request</span>
+          <input id="resources-memory-request" placeholder="128Mi" size="10">
+        </label>
+        <label class="field">
+          <span data-i18n="Memory limit">Memory limit</span>
+          <input id="resources-memory-limit" placeholder="2Gi" size="10">
+        </label>
+      </div>
+
+      <div class="state-actions">
+        <span class="muted" style="font-size:12px" data-i18n="empty means this deployment's default">empty means this deployment's default</span>
+        <span class="spacer"></span>
+        <button id="app-resources-save" data-i18n="Save">Save</button>
+      </div>
+
+      <!-- Said out loud, and it is the same caveat the settings above carry: a
+           bound is written into the Deployment, so it does not move until the
+           next deploy does. A card that looked live and was not would have
+           someone conclude their limit had no effect. -->
+      <p class="muted" style="font-size:13px;margin-bottom:0"
+         data-i18n="Applied by the next deploy, like the other settings.">Applied
+        by the next deploy, like the other settings.</p>
+      <div id="resources-problem" class="error hidden" style="margin-top:12px"></div>
+    </div>
+
     <div class="card" id="card-instances">
       <div class="card-head">
         <h2 data-i18n="Instances">Instances</h2>
@@ -1186,6 +1271,21 @@ const ZH = {
   "Where": "地址",
   "Instance": "实例",
   "Instances": "实例",
+  "Resources": "资源",
+  "CPU": "CPU",
+  "Memory": "内存",
+  "CPU request": "CPU 请求",
+  "CPU limit": "CPU 上限",
+  "Memory request": "内存请求",
+  "Memory limit": "内存上限",
+  "empty means this deployment's default": "留空表示使用本部署的默认值",
+  "Applied by the next deploy, like the other settings.": "与其他设置一样，下次部署时生效。",
+  "Could not read the app's resources: {error}": "无法读取应用资源：{error}",
+  "Could not set resources: {error}": "无法设置资源：{error}",
+  "no cluster is configured": "未配置集群",
+  "this cluster does not report usage": "该集群不提供用量数据",
+  "Usage is unavailable: {reason}": "用量不可用：{reason}",
+  "of {value}": "/ {value}",
   "Ready": "就绪",
   "Restarts": "重启",
   "Reason": "原因",
@@ -1263,6 +1363,7 @@ const ZH = {
     "这些值会被写入 Deployment 的环境变量，因此任何能读取该 Deployment 的人都能读到。这里的眼睛只是不把它们显示在屏幕上。",
   "Add an environment variable": "添加环境变量",
   "Set": "设置",
+  "Save": "保存",
   "Remove": "移除",
   "History": "历史",
   "Builds": "构建",
@@ -2418,6 +2519,7 @@ async function switchBranch() {
 // and a typo shows up as a link that does nothing — which appNavVisible checks.
 const APP_SECTIONS = [
   { id: "card-state", label: "State" },
+  { id: "card-resources", label: "Resources" },
   { id: "card-instances", label: "Instances" },
   { id: "card-log", label: "Log" },
   { id: "card-env", label: "Environment variables" },
@@ -2556,6 +2658,7 @@ async function openApp(id) {
   await Promise.allSettled([
     loadAppState(),
     loadPods(),
+    loadResources(),
     loadCommits(),
     loadAppConfig(),
     loadAppBuilds(),
@@ -3046,6 +3149,116 @@ async function setPort() {
     return;
   }
   await loadAppState();
+}
+
+// loadResources renders what the app is using and what it may use.
+//
+// Two reads, because they are two different things: the app's own settings come
+// from its record, and the running containers' effective bounds and live usage
+// come from the cluster. The form is filled from the first, so a field nobody
+// has set stays empty and keeps meaning "this deployment's default"; the numbers
+// above it come from the second, so the limit shown is the one the container
+// actually runs under.
+async function loadResources() {
+  let app = null;
+  try {
+    app = await api("/api/v1/apps/" + state.app);
+  } catch (err) {
+    setResourcesProblem(tf("Could not read the app's resources: {error}", { error: err.message }));
+    return;
+  }
+  setResourcesProblem("");
+
+  const r = (app && app.resources) || {};
+  $("resources-cpu-request").value = r.cpu_request || "";
+  $("resources-cpu-limit").value = r.cpu_limit || "";
+  $("resources-memory-request").value = r.memory_request || "";
+  $("resources-memory-limit").value = r.memory_limit || "";
+
+  // A separate read, and its failure is not the form's problem: a deployment
+  // with no cluster, or a cluster with no metrics-server, still has bounds to
+  // edit. The panel says usage is unavailable and the inputs stay usable.
+  let usage;
+  try {
+    usage = await api("/api/v1/apps/" + state.app + "/resources");
+  } catch (err) {
+    // 501 is this deployment having no cluster at all, which is a way AppLab is
+    // meant to run rather than a fault — the same reading the log panels give it.
+    showUsageUnavailable(err.status === 501 ? t("no cluster is configured") : err.message);
+    return;
+  }
+
+  const u = usage || {};
+  if (!u.available) {
+    // The bounds are still worth showing — they come from the Deployment and are
+    // known even where usage is not.
+    showUsageUnavailable(t("this cluster does not report usage"));
+    showBounds(u);
+    return;
+  }
+
+  $("usage-cpu").textContent = u.cpu || "0";
+  $("usage-memory").textContent = u.memory || "0";
+  showBounds(u);
+  $("usage-note").textContent = "";
+  show($("usage-note"), false);
+}
+
+// showBounds fills the "of <limit>" half of each metric.
+//
+// Empty rather than "of 0" when there is no bound: an absent limit means the
+// container is unbounded, and printing zero would say it may use nothing.
+function showBounds(u) {
+  const limits = u.limited || {};
+  $("usage-cpu-limit").textContent = limits.cpu ? tf("of {value}", { value: limits.cpu }) : "";
+  $("usage-memory-limit").textContent = limits.memory ? tf("of {value}", { value: limits.memory }) : "";
+}
+
+// showUsageUnavailable marks the metrics as unknown and says why.
+//
+// The dashes matter: a panel showing 0 would read as an idle app, which is a
+// different and much worse claim than "not known here".
+function showUsageUnavailable(reason) {
+  $("usage-cpu").textContent = "–";
+  $("usage-memory").textContent = "–";
+  $("usage-cpu-limit").textContent = "";
+  $("usage-memory-limit").textContent = "";
+  $("usage-note").textContent = tf("Usage is unavailable: {reason}", { reason });
+  show($("usage-note"), true);
+}
+
+// saveResources writes the four bounds.
+//
+// A PATCH of the whole resources block rather than one field at a time: the four
+// are one setting, saved by one button, and sending them together means a
+// half-filled form cannot land between the four. An empty field is sent as an
+// empty string, which is what clears it back to this deployment's default.
+async function saveResources() {
+  const body = {
+    cpu_request: $("resources-cpu-request").value.trim(),
+    cpu_limit: $("resources-cpu-limit").value.trim(),
+    memory_request: $("resources-memory-request").value.trim(),
+    memory_limit: $("resources-memory-limit").value.trim(),
+  };
+
+  setResourcesProblem("");
+  try {
+    await api("/api/v1/apps/" + state.app, {
+      method: "PATCH",
+      body: JSON.stringify({ resources: body }),
+    });
+  } catch (err) {
+    setResourcesProblem(tf("Could not set resources: {error}", { error: err.message }));
+    return;
+  }
+  await loadResources();
+}
+
+// setResourcesProblem shows or clears the resources card's error.
+function setResourcesProblem(message) {
+  const el = $("resources-problem");
+  el.textContent = message;
+  show(el, message !== "");
 }
 
 // setAutoDeploy turns building and deploying on a push on or off.
@@ -3605,6 +3818,9 @@ $("config-env-set").onclick = () => {
 // The two surfaces with a card of their own open the dialog on their log. The
 // third — a build — is opened from the build list below, which has the build id
 // to name.
+$("app-resources-refresh").onclick = loadResources;
+$("app-resources-save").onclick = saveResources;
+
 $("logs-open").onclick = () => openDialogOn("app");
 $("platform-logs-open").onclick = () => openDialogOn("platform");
 

@@ -20,6 +20,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -29,6 +31,15 @@ import (
 // Observer reads an app's runtime state.
 type Observer struct {
 	client kubernetes.Interface
+
+	// usage reads the resource metrics API, which is a separate group served by
+	// metrics-server rather than by the API server. It is the k8s client rather
+	// than a function because what it wraps is a resource address, not a
+	// dependency the caller can be handed.
+	//
+	// Nil on a Client built without a dynamic client — see k8s.NewWithClientset —
+	// in which case usage is reported as unavailable rather than as zero.
+	usage k8s.UsageReader
 
 	// maxLogBytes bounds a single log read. A container that logs in a loop can
 	// produce gigabytes, and an endpoint that reads all of it would exhaust
@@ -42,6 +53,17 @@ func New(client kubernetes.Interface) *Observer {
 		client:      client,
 		maxLogBytes: 4 << 20, // 4 MiB
 	}
+}
+
+// WithUsage attaches the resource metrics reader.
+//
+// Separate from New, and optional, because it depends on the dynamic client
+// rather than on the typed one — so a caller that built a client without one gets
+// an Observer that reports usage as unavailable rather than one that cannot be
+// constructed. The console's resource panel is the only thing that reads it.
+func (o *Observer) WithUsage(r k8s.UsageReader) *Observer {
+	o.usage = r
+	return o
 }
 
 // Ready reports whether the observer can reach the cluster.
@@ -98,6 +120,134 @@ type ContainerState struct {
 	// while the reason is in the last termination.
 	LastTerminatedReason string `json:"last_terminated_reason,omitempty"`
 	LastExitCode         int32  `json:"last_exit_code,omitempty"`
+}
+
+// Usage is what an app is using and what it is allowed to use.
+//
+// The two halves come from different places and are deliberately together,
+// because neither answers the question on its own: usage with no bound says
+// nothing about whether the app is near its limit, and a bound with no usage is
+// just the setting, which the app's own record already carries.
+type Usage struct {
+	// Available is whether the cluster could report usage at all. False on a
+	// cluster with no metrics-server, which is a legitimate way to run one — the
+	// panel then shows the bounds and says usage is unavailable, rather than
+	// showing zeros that look like an idle app.
+	Available bool `json:"available"`
+
+	// CPU and Memory are the totals across the app's pods, in the units the
+	// metrics API reports. Summed rather than listed: what an app is using is the
+	// process's question, and which replica is using more is the pods endpoint's.
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+
+	// Requested and Limited are what the running pods may use, read from the
+	// container spec — so they are the *effective* values, with the deployment's
+	// defaults already resolved onto the app's own where it had none.
+	//
+	// That is why they are read from the cluster rather than from the app's
+	// record: the record holds only what was set for this app, and a panel
+	// showing an empty limit for an app that is in fact capped by the deployment's
+	// default would be describing a container that does not exist.
+	Requested ResourceBounds `json:"requested"`
+	Limited   ResourceBounds `json:"limited"`
+}
+
+// ResourceBounds is a CPU and memory pair.
+type ResourceBounds struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+// AppUsage reads what an app's pods are using, and what they are allowed to.
+//
+// The bounds come from the app's Deployment, which is where the deployer wrote
+// them — so what a caller sees is what the scheduler saw, not a second reading of
+// the app's settings that could disagree with it.
+func (o *Observer) AppUsage(ctx context.Context, namespace, appID string) (Usage, error) {
+	var out Usage
+
+	// The bounds first, from the Deployment. An app with none has no container
+	// spec to read a limit from, and reports zero values with available false —
+	// which is the honest answer for something that is not running.
+	deployment, err := o.client.AppsV1().Deployments(namespace).Get(ctx, "applab-"+appID, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return out, nil
+		}
+		return out, fmt.Errorf("read the deployment for %s: %w", appID, err)
+	}
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		c := deployment.Spec.Template.Spec.Containers[0]
+		out.Requested = ResourceBounds{
+			CPU:    quantityString(c.Resources.Requests, corev1.ResourceCPU),
+			Memory: quantityString(c.Resources.Requests, corev1.ResourceMemory),
+		}
+		out.Limited = ResourceBounds{
+			CPU:    quantityString(c.Resources.Limits, corev1.ResourceCPU),
+			Memory: quantityString(c.Resources.Limits, corev1.ResourceMemory),
+		}
+	}
+
+	if o.usage == nil {
+		return out, nil
+	}
+
+	// The app's pods, and not a build's — the same selector the pod list uses, for
+	// the same reason: a build Job's pod carries the app label too, and counting
+	// one would report a build's resource use as the app's.
+	pods, usageAvailable, err := o.usage.PodUsage(ctx, namespace, k8s.LabelApp+"="+appID+",!"+k8s.LabelBuild)
+	if err != nil {
+		return out, err
+	}
+	if !usageAvailable {
+		return out, nil
+	}
+
+	out.Available = true
+	out.CPU, out.Memory, err = sumUsage(pods)
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// sumUsage adds up the CPU and memory across pods.
+//
+// The quantities arrive as strings with suffixes — "12m", "48Mi" — so they are
+// parsed rather than concatenated. A pod with no sample yet contributes nothing
+// rather than failing the sum: a rollout in progress has some pods reporting and
+// some not, and the useful answer there is the total of what is known.
+func sumUsage(pods map[string]k8s.Usage) (cpu, memory string, err error) {
+	cpuTotal := resource.NewQuantity(0, resource.DecimalSI)
+	memTotal := resource.NewQuantity(0, resource.BinarySI)
+
+	for _, usage := range pods {
+		if usage.CPU != "" {
+			q, parseErr := resource.ParseQuantity(usage.CPU)
+			if parseErr != nil {
+				return "", "", fmt.Errorf("the metrics API reported cpu %q, which is not a quantity: %w", usage.CPU, parseErr)
+			}
+			cpuTotal.Add(q)
+		}
+		if usage.Memory != "" {
+			q, parseErr := resource.ParseQuantity(usage.Memory)
+			if parseErr != nil {
+				return "", "", fmt.Errorf("the metrics API reported memory %q, which is not a quantity: %w", usage.Memory, parseErr)
+			}
+			memTotal.Add(q)
+		}
+	}
+	return cpuTotal.String(), memTotal.String(), nil
+}
+
+// quantityString renders a resource list's entry, or an empty string when it is
+// not there.
+func quantityString(list corev1.ResourceList, name corev1.ResourceName) string {
+	if q, ok := list[name]; ok {
+		return q.String()
+	}
+	return ""
 }
 
 // Pods lists an app's pods, newest first.

@@ -284,7 +284,12 @@ func run() error {
 		}
 
 		// The observability half reads the same cluster, so it comes with it.
-		srv.WithObserver(observe.New(client.Clientset()))
+		// WithUsage, because live resource usage comes from the resource metrics
+		// API — a separate group on the API server that only the dynamic client
+		// reaches. It is optional by construction: a cluster without metrics-server
+		// answers 404 for the resource, and the panel then reports the bounds with
+		// usage marked unavailable rather than showing a busy app as idle.
+		srv.WithObserver(observe.New(client.Clientset()).WithUsage(client))
 
 		// The deploy half shares the cluster client. It is attached whenever the
 		// cluster is reachable — an app can be deployed from an image that was

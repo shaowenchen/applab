@@ -622,16 +622,16 @@ serve at.
 Nothing needs calling, so this step is only about seeing where it got to:
 
 ```bash
-applab status shop         # what AppLab recorded and what the cluster actually has
+applab status shop         # what is running, and where
 applab logs shop -f        # the running app's output
 applab builds shop --logs  # the build's output, if it did not get that far
 applab builds shop --stop <id>   # cancel one that has not finished
+applab resources shop      # what it is using, and the bounds it runs under
 ```
 
 `applab status` is the first thing to read when something is wrong: it reports
-AppLab's own record beside the cluster's, and the difference between the two is
-the information. `applab diagnose shop` walks the same checks in order and reports
-the first that fails.
+what the cluster has, and the commit it was built from. `applab diagnose shop`
+walks the same checks in order and reports the first that fails.
 
 If you would rather drive it by hand — to build a specific commit, or to rebuild
 something without pushing:

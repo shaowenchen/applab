@@ -453,6 +453,11 @@ type App struct {
 	// never a "not set" that a caller would have to interpret.
 	AutoDeploy bool `json:"auto_deploy"`
 
+	// Resources is what the app has set for itself. An empty field means the
+	// deployment's default — which is not the same as the bound the container
+	// actually runs under, and that one is on Resources() below.
+	Resources AppResources `json:"resources"`
+
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason"`
 
@@ -529,6 +534,54 @@ type UpdateAppRequest struct {
 	// AutoDeploy turns building and deploying on a push on or off. Omitted
 	// leaves it alone.
 	AutoDeploy *bool `json:"auto_deploy,omitempty"`
+
+	// Resources sets what the container may use. Omitted leaves all four alone;
+	// a field set to an empty string returns that one to the deployment's
+	// default.
+	Resources *ResourcesRequest `json:"resources,omitempty"`
+}
+
+// ResourcesRequest is the resources half of an update.
+type ResourcesRequest struct {
+	CPURequest    *string `json:"cpu_request,omitempty"`
+	MemoryRequest *string `json:"memory_request,omitempty"`
+	CPULimit      *string `json:"cpu_limit,omitempty"`
+	MemoryLimit   *string `json:"memory_limit,omitempty"`
+}
+
+// AppResources is what an app has set for itself, as the API reports it.
+//
+// Empty means the deployment's default. Use AppUsage for the bound a running
+// container actually has, which is these values with the deployment's resolved
+// onto the fields left empty — a different question, answered by a different
+// call.
+type AppResources struct {
+	CPURequest    string `json:"cpu_request"`
+	MemoryRequest string `json:"memory_request"`
+	CPULimit      string `json:"cpu_limit"`
+	MemoryLimit   string `json:"memory_limit"`
+}
+
+// AppUsage is what an app is using and what its running containers may use.
+type AppUsage struct {
+	// Available is whether the cluster could report usage at all. False on one
+	// without metrics-server, where the bounds are still known.
+	Available bool `json:"available"`
+
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
+
+	Requested AppResources `json:"requested"`
+	Limited   AppResources `json:"limited"`
+}
+
+// AppUsage reads what an app is using, and the bounds its containers run under.
+func (c *Client) AppUsage(ctx context.Context, appID string) (*AppUsage, error) {
+	var out AppUsage
+	if err := c.do(ctx, http.MethodGet, "/api/v1/apps/"+appID+"/resources", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // UpdateApp changes an app's settings.

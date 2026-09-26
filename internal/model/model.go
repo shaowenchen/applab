@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // PortEnv is the environment variable the deployer sets from an app's Port, so
@@ -153,6 +155,20 @@ type App struct {
 	// It is why secrets are not in the app's *interface*: appResponse carries the
 	// names, not this map.
 	Secrets map[string]string
+
+	// Resources bounds what the app's container may use, per app.
+	//
+	// Empty fields fall back to the deployment's defaults (deploy.appResources in
+	// the chart), field by field — so an app that needs more memory does not have
+	// to restate its CPU request to get it, and an app that has never been given
+	// any gets the operator's settings rather than an unbounded container.
+	//
+	// They live in the bucket with the app's other settings and reach the
+	// container the way those do: written into the Deployment at deploy time. An
+	// app's *usage* is deliberately not here — that is a fact about the cluster
+	// which changes second to second, and a stored copy would be a number that
+	// was true once.
+	Resources Resources
 
 	// Nothing here records what is *running*. The commit deployed, the image it
 	// came from and whether the app is up are facts about the cluster, and the
@@ -360,6 +376,52 @@ const (
 	// that.
 	MaxReplicas = 50
 )
+
+// Resources is what an app's container may use: a request, which is what the
+// scheduler reserves, and a limit, which is where the container is stopped.
+//
+// Empty means "not set here", which falls back to the deployment's own default.
+// An empty field and a quantity of zero are different things: Kubernetes reads a
+// zero request as no reservation at all, which is a legitimate thing to ask for
+// and not what an absent field means.
+type Resources struct {
+	CPURequest    string
+	MemoryRequest string
+	CPULimit      string
+	MemoryLimit   string
+}
+
+// Empty reports whether nothing is set, which is the common case and the one
+// that falls back entirely to the deployment's defaults.
+func (r Resources) Empty() bool {
+	return r.CPURequest == "" && r.MemoryRequest == "" && r.CPULimit == "" && r.MemoryLimit == ""
+}
+
+// Validate reports whether every quantity set here is one Kubernetes can parse.
+//
+// It exists so a malformed value is refused at the API with a message naming the
+// field, rather than reaching the deployer — where resourceQty panics on a bad
+// quantity, because every value it parses there comes from AppLab's own checked
+// configuration. An app's own resources are the one path by which a caller's
+// string could get that far.
+func (r Resources) Validate() error {
+	for _, f := range []struct{ name, value string }{
+		{"cpu_request", r.CPURequest},
+		{"memory_request", r.MemoryRequest},
+		{"cpu_limit", r.CPULimit},
+		{"memory_limit", r.MemoryLimit},
+	} {
+		if f.value == "" {
+			continue
+		}
+		if _, err := resource.ParseQuantity(f.value); err != nil {
+			// Deliberately not wrapping err: its text is about the string, and what
+			// a caller needs is which field and what shape is expected.
+			return fmt.Errorf("%s %q is not a Kubernetes quantity; use a number with an optional unit, such as 500m for CPU or 256Mi for memory", f.name, f.value)
+		}
+	}
+	return nil
+}
 
 // ValidatePort reports whether port is one an app may listen on.
 func ValidatePort(port int32) error {

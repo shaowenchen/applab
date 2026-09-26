@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -349,6 +350,11 @@ func updateCommand(urlFlag, keyFlag *string) *cobra.Command {
 		dockerfile string
 		domain     string
 		autoDeploy bool
+
+		cpuRequest    string
+		cpuLimit      string
+		memoryRequest string
+		memoryLimit   string
 	)
 
 	cmd := &cobra.Command{
@@ -357,8 +363,11 @@ func updateCommand(urlFlag, keyFlag *string) *cobra.Command {
 		Long: `Change an app's settings.
 
 Only the flags you pass are changed; everything else is left as it is. Changing
-a port, an image or a dockerfile path takes effect on the next deploy, not
-immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
+a port, an image, a dockerfile path or a resource bound takes effect on the next
+deploy, not immediately — deploy the app again with ` + "`applab deploy <app>`" + `.
+
+Passing an empty value to a resource flag clears it, returning that field to this
+deployment's default: ` + "`--cpu-limit=`" + `.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := newClient(*urlFlag, *keyFlag)
@@ -406,8 +415,32 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 				changed = true
 			}
 
+			// The four resource bounds are one setting, so any one of them being
+			// set sends all four — the ones not named go as empty strings, which
+			// is what clears them. Sending only the named field would leave the
+			// other three alone, which is the right behaviour for a scripted
+			// "raise the memory limit" and the wrong one for this command, where
+			// the four flags are the whole of the app's bounds and a person
+			// reading `applab update --cpu-limit=1` expects the rest to be
+			// whatever they typed — which is nothing.
+			//
+			// A flag that was not passed at all is the common case, and it leaves
+			// the whole block alone.
+			for _, flag := range []string{"cpu-request", "cpu-limit", "memory-request", "memory-limit"} {
+				if cmd.Flags().Changed(flag) {
+					req.Resources = &client.ResourcesRequest{
+						CPURequest:    &cpuRequest,
+						CPULimit:      &cpuLimit,
+						MemoryRequest: &memoryRequest,
+						MemoryLimit:   &memoryLimit,
+					}
+					changed = true
+					break
+				}
+			}
+
 			if !changed {
-				return fmt.Errorf("nothing to change: pass at least one of --name, --port, --replicas, --dockerfile, --domain, --auto-deploy")
+				return fmt.Errorf("nothing to change: pass at least one of --name, --port, --replicas, --dockerfile, --domain, --auto-deploy, --cpu-request, --cpu-limit, --memory-request, --memory-limit")
 			}
 
 			app, err := c.UpdateApp(cmd.Context(), args[0], req)
@@ -419,6 +452,9 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 			fmt.Printf("port     %d\n", app.Port)
 			fmt.Printf("replicas %d\n", app.Replicas)
 			fmt.Printf("auto-deploy %t\n", app.AutoDeploy)
+			fmt.Printf("resources cpu %s/%s memory %s/%s (request/limit, empty means the deployment default)\n",
+				orDash(app.Resources.CPURequest), orDash(app.Resources.CPULimit),
+				orDash(app.Resources.MemoryRequest), orDash(app.Resources.MemoryLimit))
 			if app.URL != "" {
 				fmt.Printf("served   %s\n", app.URL)
 			}
@@ -433,7 +469,21 @@ immediately — deploy the app again with ` + "`applab deploy <app>`" + `.`,
 	cmd.Flags().StringVar(&domain, "domain", "", "hostname to serve the app at (empty to use the deployment default)")
 	cmd.Flags().BoolVar(&autoDeploy, "auto-deploy", true, "build and deploy on a push without being asked (default true)")
 
+	cmd.Flags().StringVar(&cpuRequest, "cpu-request", "", "CPU to reserve, e.g. 100m (empty for the deployment default)")
+	cmd.Flags().StringVar(&cpuLimit, "cpu-limit", "", "CPU ceiling, e.g. 2 (empty for the deployment default)")
+	cmd.Flags().StringVar(&memoryRequest, "memory-request", "", "memory to reserve, e.g. 128Mi (empty for the deployment default)")
+	cmd.Flags().StringVar(&memoryLimit, "memory-limit", "", "memory ceiling, e.g. 2Gi (empty for the deployment default)")
+
 	return cmd
+}
+
+// orDash renders an empty resource bound, which means "the deployment's
+// default" rather than "none".
+func orDash(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "-"
+	}
+	return v
 }
 
 // short abbreviates an id for a table cell.

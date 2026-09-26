@@ -334,6 +334,17 @@ deploy:
     # istio.io/foo: "bar"
 
   # Per-app resource defaults, applied to every app AppLab deploys.
+  #
+  # These are defaults rather than ceilings: an app may set its own request and
+  # limit, from its page in the console, `applab update --cpu-limit=...`, or
+  # PATCH /api/v1/apps/{app}, and each of the four fields resolves
+  # independently — an app that raises only its memory limit keeps these CPU
+  # values. An app that sets nothing gets all four from here, which is what
+  # keeps an app nobody has thought about from being unbounded.
+  #
+  # Changing these moves every app that has not set that field, on its next
+  # deploy. Nothing here is a limit on what an app's *settings* may say: an app
+  # that asks for more than these gets it.
   appResources:
     requests:
       cpu: 100m

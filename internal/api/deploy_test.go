@@ -156,6 +156,13 @@ func registerBuildJob(t *testing.T, srv *api.Server, st *store.Store, appID, com
 		t.Fatalf("read the app to register a build for: %v", err)
 	}
 
+	// Filled in here because it is derived rather than stored: the store
+	// deliberately blanks the namespace on every write, and the layer above
+	// derives it on every read. A test that skipped this would create its Job in
+	// the empty namespace — which Kubernetes reads as "default", so nothing
+	// errors and the Job simply lands somewhere the server never looks.
+	app.Namespace = "ops-system"
+
 	engine := testBuildEngine(srv)
 	id, err := model.NewID()
 	if err != nil {

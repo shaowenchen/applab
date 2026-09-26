@@ -76,6 +76,16 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
+
+  # What the running pods are using, for the resource panel. This is a separate
+  # API group served by metrics-server rather than by the kube-apiserver, so it
+  # needs its own rule — and it is the one rule here that may have nothing behind
+  # it: a cluster without metrics-server answers 404 for the whole group, and the
+  # panel then reports usage as unavailable while still showing the limits. Get
+  # and list only; applab never writes a metric.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

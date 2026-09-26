@@ -393,14 +393,25 @@ func (d *Deployer) applyDeployment(ctx context.Context, app *model.App, image, c
 						// secret's value is now in this spec, readable by anyone
 						// who can read the Deployment.
 						Env: appEnv(app, secrets),
+						// The app's own resource bounds where it has set them, and
+						// the deployment's where it has not — resolved field by
+						// field rather than per group, so an app that raises only
+						// its memory limit keeps the operator's CPU request.
+						//
+						// orDefault is doing double duty here: it treats an empty
+						// string as unset, which is what an app record written
+						// before this field existed holds. An app created since
+						// carries the same empty string for a field nobody has
+						// set, so the two are indistinguishable and deliberately
+						// so — both mean "the deployment's value".
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resourceQty(orDefault(d.cfg.AppCPURequest, "100m")),
-								corev1.ResourceMemory: resourceQty(orDefault(d.cfg.AppMemoryRequest, "128Mi")),
+								corev1.ResourceCPU:    resourceQty(orDefault(app.Resources.CPURequest, orDefault(d.cfg.AppCPURequest, "100m"))),
+								corev1.ResourceMemory: resourceQty(orDefault(app.Resources.MemoryRequest, orDefault(d.cfg.AppMemoryRequest, "128Mi"))),
 							},
 							Limits: corev1.ResourceList{
-								corev1.ResourceCPU:    resourceQty(orDefault(d.cfg.AppCPULimit, "2")),
-								corev1.ResourceMemory: resourceQty(orDefault(d.cfg.AppMemoryLimit, "2Gi")),
+								corev1.ResourceCPU:    resourceQty(orDefault(app.Resources.CPULimit, orDefault(d.cfg.AppCPULimit, "2"))),
+								corev1.ResourceMemory: resourceQty(orDefault(app.Resources.MemoryLimit, orDefault(d.cfg.AppMemoryLimit, "2Gi"))),
 							},
 						},
 						SecurityContext: &corev1.SecurityContext{

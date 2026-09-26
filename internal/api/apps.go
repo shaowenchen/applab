@@ -90,6 +90,20 @@ type appResponse struct {
 	// what the app actually does.
 	AutoDeploy bool `json:"auto_deploy"`
 
+	// Resources is what this app has set for itself — not the effective bounds.
+	//
+	// An empty field here means "the deployment's value", which is a different
+	// fact from the number the container actually runs under. That number is on
+	// the app's usage endpoint, read from the Deployment, and it is the one a
+	// caller should show as the effective limit. These are the settings, and an
+	// editor needs them: a form that showed the resolved value would turn a
+	// default into an explicit setting the first time anyone pressed save.
+	//
+	// It is here rather than on a route of its own because it is app state, like
+	// port and replicas, and a listing that carries it costs nothing — it is
+	// already in the record.
+	Resources model.Resources `json:"resources"`
+
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason,omitempty"`
 
@@ -126,6 +140,7 @@ func (s *Server) toAppResponse(a *model.App, r *http.Request, status model.AppSt
 		Domain:     a.Domain,
 		Branch:     a.ActiveBranch(),
 		AutoDeploy: a.AutoDeploys(),
+		Resources:  a.Resources,
 		Status:     string(status),
 		EnvCount:   len(a.Env),
 		CreatedAt:  a.CreatedAt,
@@ -445,6 +460,50 @@ type updateAppRequest struct {
 	// intentions — correcting which branch an app is on, versus moving it — and
 	// conflating them would mean a PATCH that silently redeploys.
 	Branch *string `json:"branch"`
+
+	// Resources sets what the container may use. A pointer per field for the
+	// usual reason, with one addition worth stating: an empty string *clears*
+	// the field, returning it to the deployment's default. That is the only way
+	// to unset a value once set, and it is why these are pointers to strings
+	// rather than strings — an absent field leaves the setting alone, and an
+	// empty one says "back to the default".
+	Resources *resourcesRequest `json:"resources"`
+}
+
+// resourcesRequest is the resources half of a PATCH.
+//
+// Grouped in one object rather than as four top-level fields because they are
+// always set together — a panel with four inputs submits four values, and a
+// caller reading the request body should see them as one setting.
+type resourcesRequest struct {
+	CPURequest    *string `json:"cpu_request"`
+	MemoryRequest *string `json:"memory_request"`
+	CPULimit      *string `json:"cpu_limit"`
+	MemoryLimit   *string `json:"memory_limit"`
+}
+
+// apply copies the fields that were mentioned onto the app's resources.
+//
+// Each field is trimmed, so an empty string means "clear it" rather than a value
+// of whitespace — which Validate would then have to reject, and would report as a
+// malformed quantity rather than as the clearing the caller intended.
+func (rr *resourcesRequest) apply(into *model.Resources) {
+	if rr == nil {
+		return
+	}
+	for _, f := range []struct {
+		from *string
+		to   *string
+	}{
+		{rr.CPURequest, &into.CPURequest},
+		{rr.MemoryRequest, &into.MemoryRequest},
+		{rr.CPULimit, &into.CPULimit},
+		{rr.MemoryLimit, &into.MemoryLimit},
+	} {
+		if f.from != nil {
+			*f.to = strings.TrimSpace(*f.from)
+		}
+	}
 }
 
 func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
@@ -500,6 +559,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		}
 		app.Branch = branch
 	}
+	req.Resources.apply(&app.Resources)
 
 	if err := validateAppSettings(app); err != nil {
 		fail(w, r, err)
@@ -676,6 +736,13 @@ func validateAppSettings(app *model.App) *apiError {
 		return BadRequest("%s", err.Error())
 	}
 	if err := model.ValidateReplicas(app.Replicas); err != nil {
+		return BadRequest("%s", err.Error())
+	}
+	// Refused here rather than in the deployer, where a bad quantity panics:
+	// every value the deployer parses comes from AppLab's own checked
+	// configuration, and an app's own resources are the one path by which a
+	// caller's string would reach it.
+	if err := app.Resources.Validate(); err != nil {
 		return BadRequest("%s", err.Error())
 	}
 	if strings.ContainsAny(app.Dockerfile, "\x00") {

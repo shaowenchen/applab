@@ -193,6 +193,9 @@ Looking
 
 Changing
   replicas [n]       how many copies to run (no argument: print the current one)
+  resources          what it is using, and the bounds it runs under
+  resources set K=V  set cpu/memory request and limit, e.g. memory_limit=512Mi
+                     (an empty value clears it back to the deployment default)
   env set K=V ...    set environment variables
   env unset K ...    remove environment variables
   secret set K=V ... set secret values
@@ -442,6 +445,46 @@ case "${1:-help}" in
     api PATCH "/api/v1/apps/$APP" "{\"replicas\":$1}" | json_field replicas
     echo
     echo "set; it takes effect on the next deploy" >&2
+    ;;
+  resources)
+    shift
+    case "${1:-}" in
+      '')
+        # No argument reads, and the reading is the point of the command: usage
+        # comes from the cluster's metrics API, and the bounds beside it are the
+        # effective ones — the app's settings with this deployment's defaults
+        # already resolved onto the fields the app left empty.
+        api GET "/api/v1/apps/$APP/resources"
+        ;;
+      set)
+        shift
+        [ "$#" -gt 0 ] || { echo "resources set takes at least one key=value" >&2; exit 2; }
+        body=""
+        for pair in "$@"; do
+          name="${pair%%=*}"
+          if [ "$name" = "$pair" ]; then
+            echo "expected KEY=VALUE, got: $pair" >&2
+            exit 2
+          fi
+          # The four names are the API's own field names rather than a shorter
+          # spelling of them: a mapping between two vocabularies is a place for
+          # them to drift, and underscores are as easy to type as anything else.
+          case "$name" in
+            cpu_request|cpu_limit|memory_request|memory_limit) ;;
+            *) echo "unknown resource: $name (cpu_request, cpu_limit, memory_request, memory_limit)" >&2; exit 2 ;;
+          esac
+          [ -n "$body" ] && body="$body,"
+          body="$body\"$name\":\"$(json_escape "${pair#*=}")\""
+        done
+        api PATCH "/api/v1/apps/$APP" "{\"resources\":{$body}}"
+        echo
+        echo "set; it takes effect on the next deploy" >&2
+        ;;
+      *)
+        echo "resources takes no argument to read, or: resources set K=V ..." >&2
+        exit 2
+        ;;
+    esac
     ;;
   env)
     shift
