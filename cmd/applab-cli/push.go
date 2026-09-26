@@ -73,7 +73,7 @@ output and version-control directories left out — see --skip.`,
 	cmd.Flags().StringVar(&opts.app, "app", "", "app id (or pass it as an argument)")
 	cmd.Flags().StringVarP(&opts.message, "message", "m", "", "commit message (default: a generated one)")
 	cmd.Flags().StringVarP(&opts.dir, "dir", "C", ".", "directory to upload")
-	cmd.Flags().Int32Var(&opts.port, "port", 0, "port the app listens on, 1-65535 (default 8080, or keep the existing value)")
+	cmd.Flags().Int32Var(&opts.port, "port", 0, "port the app listens on, 1-65535 (default 80, or keep the existing value)")
 	cmd.Flags().Int32Var(&opts.replicas, "replicas", 0, "how many replicas to run")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile path within the source (default: Dockerfile)")
 	cmd.Flags().StringVar(&opts.domain, "domain", "", "hostname to serve the app at (default: <app>.<base domain>)")

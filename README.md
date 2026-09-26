@@ -42,10 +42,23 @@ rather than writing to local disk, because that is a failure that looks like it
 worked until the filesystem it chose is gone. `APPLAB_DATA_DIR` still exists, but
 it is only scratch space for `git`, which needs a real filesystem.
 
+**Port 80 needs privilege.** AppLab listens on 80 by default — the same port it is
+reached at — and binding it as an unprivileged user is refused unless the host
+allows it (`net.ipv4.ip_unprivileged_port_start=0`, the default since Linux 5.7)
+or the process has `CAP_NET_BIND_SERVICE`, which the chart grants. On a machine
+that allows neither, a local run needs a different port:
+
+```bash
+APPLAB_LISTEN=:8080 ./bin/applab
+```
+
+The chart handles this for you: it grants the one capability a low port needs, so
+a deployment does not depend on the node's setting.
+
 Then, from the project you want to deploy:
 
 ```bash
-export APPLAB_URL=http://localhost:8080
+export APPLAB_URL=http://localhost:80
 export APPLAB_KEY=<the key above>
 
 applab push myshop        # uploads, builds and deploys this directory
@@ -103,7 +116,7 @@ If you would rather not install the CLI:
 curl -sS -X POST "$APPLAB_URL/api/v1/apps" \
   -H "Authorization: Bearer $APPLAB_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"id":"shop","port":8080}'
+  -d '{"id":"shop","port":80}'
 
 # Push the source.
 tar czf - . | curl -sS -X POST "$APPLAB_URL/api/v1/apps/shop/source?message=first" \

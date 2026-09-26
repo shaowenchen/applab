@@ -501,12 +501,12 @@ last part of this section shows that instead.
 ### 1. Create the app
 
 ```bash
-applab create shop --port 8080
+applab create shop --port 80
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--port` | the port the app listens on in its container; 8080 if omitted |
+| `--port` | the port the app listens on in its container; 80 if omitted |
 | `--dockerfile` | path to the Dockerfile within the source; `Dockerfile` if omitted |
 | `--replicas` | how many copies to run |
 | `--domain` | an explicit hostname, overriding the one derived from `ingress.host` |
@@ -620,7 +620,7 @@ No CLI required. Each numbered step above is one request:
 curl -sS -X POST "$APPLAB_URL/api/v1/apps" \
   -H "Authorization: Bearer $APPLAB_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"id":"shop","port":8080}'
+  -d '{"id":"shop","port":80}'
 
 # 2. The app's own key, to use from here on.
 curl -sS "$APPLAB_URL/api/v1/apps/shop/key" \

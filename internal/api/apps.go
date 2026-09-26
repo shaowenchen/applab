@@ -21,7 +21,14 @@ import (
 // say. It is a guess, and a wrong one is visible immediately as a Deployment
 // whose Service points at nothing — so it is reported back in the app's details
 // rather than kept implicit.
-const defaultAppPort int32 = 8080
+//
+// 80 rather than 8080 because that is the port a container image's own
+// Dockerfile is most likely to EXPOSE: an image built for a platform that serves
+// HTTP conventionally listens there, and a default that matches it is one fewer
+// thing to correct. Nothing here binds it as a privileged port — the app runs as
+// its image says, and the cluster's securityContext decides what it may do —
+// so this is a default and not a constraint.
+const defaultAppPort int32 = 80
 
 // appResponse is an app as the API presents it.
 //

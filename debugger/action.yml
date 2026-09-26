@@ -47,6 +47,27 @@ inputs:
     # cloudflare_token unset stops and says so rather than quietly publishing
     # somewhere else. Set it empty to go back to a quick tunnel's own hostname.
     default: 'applab.chenshaowen.com'
+  registry_username:
+    description: >-
+      Username for the registry the built images are pushed to and pulled from.
+      The environment installs a registry credential from this and
+      registry_password, and both halves of the pipeline read it: the build
+      mounts it to push, and every app's Deployment references it to pull.
+    required: true
+  registry_password:
+    description: >-
+      Password or token for that registry. It needs write access, since the
+      build pushes. Pass it as a secret rather than an input — an input is plain
+      text any reader of the run can see.
+    required: true
+  registry:
+    description: >-
+      Where built images go, as one string applab reads the shape of: an account
+      ("owner"), a repository ("owner/repo"), or a repository with a tag
+      ("owner/repo:prefix"). The last gives images tagged
+      "<prefix>-<app>-<commit>".
+    required: false
+    default: 'shaowenchen/applab:demo'
   ngrok_token:
     description: 'ngrok authtoken. Required when tunnel is ngrok.'
     required: false
@@ -61,6 +82,8 @@ runs:
         APPLAB_TUNNEL: ${{ inputs.tunnel }}
         NGROK_TOKEN: ${{ inputs.ngrok_token }}
         CLOUDFLARE_TOKEN: ${{ inputs.cloudflare_token }}
+        REGISTRY_USERNAME: ${{ inputs.registry_username }}
+        REGISTRY_PASSWORD: ${{ inputs.registry_password }}
         DOMAIN: ${{ inputs.domain }}
       run: |
         set -euo pipefail
@@ -72,6 +95,13 @@ runs:
         # credential and only discovers it minutes later, from a missing link.
         if [ "$APPLAB_TUNNEL" = "ngrok" ] && [ -z "$NGROK_TOKEN" ]; then
           echo "::error::tunnel is 'ngrok' but ngrok_token is empty; ngrok needs an authtoken"
+          exit 1
+        fi
+        # Checked here rather than left to the push that would fail minutes
+        # later: the build pushes with this credential, and a run without one
+        # installs an environment that looks healthy and cannot build anything.
+        if [ -z "$REGISTRY_USERNAME" ] || [ -z "$REGISTRY_PASSWORD" ]; then
+          echo "::error::registry_username and registry_password are required: the built images are pushed to a real registry"
           exit 1
         fi
         # A domain can only be named for a tunnel whose ingress was arranged in

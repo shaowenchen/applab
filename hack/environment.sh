@@ -3,19 +3,23 @@
 # Start a complete AppLab test environment on this machine and publish it.
 #
 # This is what the debugger/ action runs. It builds a throwaway Kubernetes
-# cluster, a registry, an Istio gateway and an AppLab installation — everything
-# a single app needs before `applab push` can build, deploy and serve it. The
-# point is that none of it has to be assembled by hand first.
+# cluster, an object store, an Istio gateway and an AppLab installation —
+# everything a single app needs before `applab push` can build, deploy and serve
+# it. The point is that none of it has to be assembled by hand first.
 #
 # What comes up:
 #
 #   kind cluster (ns ops-system)
 #     AppLab         the published image, installed with this repository's chart
 #     istio-ingress  the gateway everything is published through (NodePort 30080)
-#     registry:2     where built images are pushed (kind-registry:5000)
 #
 #   on the runner
+#     minio          the object store AppLab keeps everything in
 #     cloudflared    a tunnel, so the environment is reachable from anywhere
+#
+# Built images do not come up here: they are pushed to a real registry, which is
+# the point — the push and the pull are both exercised, credential and all. See
+# APPLAB_REGISTRY.
 #
 # One gateway serves both halves, and that is the whole of the routing: the
 # console and the API at "/" (a VirtualService the chart installs), each app
@@ -68,12 +72,30 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 # slow. Raise it on a host that is slower than that; the failure names this
 # variable, so there is nothing to guess.
 : "${APPLAB_INSTALL_TIMEOUT_SECONDS:=300}"
-# The registry runs as a container on the same docker network as the kind nodes,
-# so both the nodes' containerd and the build Jobs' pods can resolve this name
-# and reach it without any TLS or credential.
-: "${APPLAB_REGISTRY_NAME:=kind-registry}"
-: "${APPLAB_REGISTRY_PORT:=5000}"
-: "${APPLAB_REGISTRY:=${APPLAB_REGISTRY_NAME}:${APPLAB_REGISTRY_PORT}}"
+# Where the apps this environment builds have their images pushed.
+#
+# A real registry rather than the cluster-local one this used to start. A local
+# registry is faster and needs no credential, but it is also the one arrangement
+# that exercises none of what a deployment actually does: an image that only ever
+# travels inside one machine cannot fail to pull, and the pull half of the
+# pipeline is exactly what a private registry and its credential are for.
+#
+# The three shapes build.registry can take are all one string, and applab reads
+# which is meant from it — see imageRef. This is the third: a repository that
+# already carries a tag, so apps are pushed under "<repo>:demo-<app>-<commit>".
+# The demo- prefix is what keeps this environment's apps from colliding with the
+# image tags the release workflow publishes to the same repository.
+#
+# Requires DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in the environment. The token
+# needs write access, because the build pushes; the same credential is what the
+# nodes pull with, which is why it is created as a Secret below rather than only
+# being handed to the build.
+: "${APPLAB_REGISTRY:=shaowenchen/applab:demo}"
+: "${APPLAB_REGISTRY_USERNAME:=${DOCKERHUB_USERNAME:-}}"
+: "${APPLAB_REGISTRY_PASSWORD:=${DOCKERHUB_TOKEN:-}}"
+# The Secret both halves read: the build Job mounts it to push, and every app's
+# Deployment names it to pull. One registry, one credential, one name.
+: "${APPLAB_REGISTRY_SECRET:=applab-registry}"
 
 # The object store, in the same shape and for the same reason as the registry:
 # a container on this host that the cluster reaches by name.
@@ -396,25 +418,11 @@ nodes:
       - containerPort: ${APPLAB_GATEWAY_NODEPORT}
         hostPort: ${APPLAB_GATEWAY_NODEPORT}
         protocol: TCP
-containerdConfigPatches:
-  - |-
-    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."${APPLAB_REGISTRY}"]
-      endpoint = ["http://${APPLAB_REGISTRY}"]
 EOF
 
 kind create cluster --config "$RUNTIME_DIR/kind.yaml" --wait 120s
 
 show "the cluster" kubectl get nodes -o wide
-
-# The registry lives on the kind docker network with a stable alias, so it is
-# reachable by the name the images carry from both the nodes' containerd and any
-# pod in the cluster.
-log "starting the registry at ${APPLAB_REGISTRY}"
-if [ "$(docker inspect -f '{{.State.Running}}' "$APPLAB_REGISTRY_NAME" 2>/dev/null || echo false)" != "true" ]; then
-  docker run -d --restart=always -p "127.0.0.1:${APPLAB_REGISTRY_PORT}:5000" \
-    --name "$APPLAB_REGISTRY_NAME" registry:2 >/dev/null
-fi
-docker network connect "kind" "$APPLAB_REGISTRY_NAME" 2>/dev/null || true
 
 # An object store, for the same reason and in the same shape as the registry: a
 # container on this host, joined to the kind network, so AppLab reaches it by
@@ -491,29 +499,6 @@ done
 
 show "the object store (a container on this host)" \
   docker inspect --format '{{.State.Status}} {{.Config.Image}}' "$APPLAB_OBJECT_STORE_NAME"
-
-# The registry is a container on this host, not an object in the cluster, so
-# there is nothing to ask Kubernetes about it — its state is docker's.
-show "the registry (a container on this host)" \
-  docker inspect --format '{{.State.Status}} {{.Config.Image}} {{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$APPLAB_REGISTRY_NAME"
-
-# An image built here goes straight into the nodes, so the cluster never has to
-# reach a registry for it. `kind load` copies the layers into each node's
-# containerd, which is why no pull secret and no network path are needed.
-
-# Advertise the registry to the cluster so a discovery-aware runtime (and
-# anything reading the convention) finds the same answer the mirror gives.
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: local-registry-hosting
-  namespace: kube-public
-data:
-  localRegistryHosting.v1: |
-    host: "${APPLAB_REGISTRY}"
-    help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
-EOF
 
 log "installing Istio (this is the slow step)"
 # The community default profile, into the community default namespace, producing
@@ -647,6 +632,33 @@ log "installing AppLab in namespace ${APPLAB_NAMESPACE}"
 
 kubectl create namespace "$APPLAB_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
+# The registry credential, which both halves of the build pipeline read: the
+# build Job mounts it to push, and every app's Deployment names it to pull. One
+# registry, one credential, one name — see build.secret in the chart.
+#
+# Created here rather than by the chart because the chart carries no registry
+# credential: it would have to be a value, and a value is plain text in the
+# release's history and in this repository. The environment supplies it.
+#
+# The server is the registry's host, which is what a docker-registry Secret
+# stores: Docker Hub's own address, or whatever the value names. A tag on the
+# registry is part of the image path and not part of its address, so it is not
+# what goes here.
+# The first segment is the host only if it reads like one — the same rule
+# applab applies to the value itself (see pathSegments): a dot, a colon, or
+# "localhost". A bare account name is Docker Hub, whose Secret server is
+# Docker's own fixed address rather than the account.
+registry_host="$(printf '%s' "$APPLAB_REGISTRY" | cut -d/ -f1)"
+case "$registry_host" in
+  *.*|*:*|localhost) ;;
+  *) registry_host="https://index.docker.io/v1/" ;;
+esac
+kubectl -n "$APPLAB_NAMESPACE" create secret docker-registry "$APPLAB_REGISTRY_SECRET" \
+  --docker-server="$registry_host" \
+  --docker-username="$APPLAB_REGISTRY_USERNAME" \
+  --docker-password="$APPLAB_REGISTRY_PASSWORD" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
 # The key goes in through a Secret rather than --set auth.key=..., which
 # would write it into the release's stored values where anyone with read on the
 # namespace can recover it.
@@ -670,11 +682,14 @@ kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
 # the same host the apps are already served on, so the whole environment is
 # reachable through the one address the tunnel publishes.
 #
-# build.secret is blanked because the registry here takes no credentials: it
-# is a plain registry:2 on the docker network. The chart's default name is a real
-# Secret in a real installation, and left in place it would be a name nothing
-# created — which the build now refuses before starting, so the environment would
-# come up and every build would fail.
+# build.secret names the Secret created above, which is what makes the build
+# mount it to push and every app's Deployment reference it to pull. One
+# credential for both halves, which is what the registry expects: the same token
+# authenticates a push and a pull.
+#
+# insecureRegistry is left at its default of false. Docker Hub is reached over
+# TLS, and a credential sent in clear text is the one thing that flag turns on —
+# it is for a cluster-local registry serving plain HTTP, which this no longer is.
 if ! helm install applab "$REPO_ROOT/charts/applab" \
   --namespace "$APPLAB_NAMESPACE" \
   --set auth.existingSecret=applab-keys \
@@ -682,8 +697,7 @@ if ! helm install applab "$REPO_ROOT/charts/applab" \
   --set "apps.pathPrefix=${APPLAB_PATH_PREFIX}" \
   --set deploy.gateway=istio-system/istio-ingressgateway \
   --set "build.registry=${APPLAB_REGISTRY}" \
-  --set build.insecureRegistry=true \
-  --set build.secret= \
+  --set "build.secret=${APPLAB_REGISTRY_SECRET}" \
   --set ingress.enabled=false \
   --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \
   --set "image.tag=${APPLAB_VERSION}" \
@@ -905,20 +919,14 @@ check_endpoint "/api/v1/describe (key)" /api/v1/describe -H "Authorization: Bear
 
 # The chart's settings have to reach the *server*, not only the render.
 #
-# This is the check whose absence let a whole class of failure through. The
-# environment installs with build.secret blanked, because the registry here takes
-# no credentials — and the server treated an empty variable as "not set", so the
-# chart's default name survived and every build was refused for a Secret nothing
-# had created. Every chart check passed, every endpoint above answered 200, and
-# the failure only appeared when someone pushed an app.
+# This is the check whose absence let a whole class of failure through once
+# already: the chart passed one thing, the server kept a default, every chart
+# check passed, and the failure appeared only when someone pushed an app.
 #
 # Only what the API reports can be asserted from here, so these are the settings
-# it does report: the address convention, which is the one that decides whether
-# the console and the apps are reachable at all. The registry credential and the
-# build pipeline are not in this response and cannot be seen from outside —
-# /api/v1/config's capabilities reports whether a build is possible, not what it
-# would use. That gap is why config has a unit test asserting the blanking
-# directly; this is the end-to-end half of the same question.
+# it does report: the address convention, which decides whether the console and
+# the apps are reachable at all, and the build capability, which is what this
+# environment now depends on a real registry for.
 log "confirming the settings the chart passed actually arrived"
 config_json=$(curl -s --max-time 5 -H "Host: ${TUNNEL_HOST}" \
   "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}/api/v1/config" 2>/dev/null || true)
@@ -943,6 +951,26 @@ expect_config "the-namespace" "${APPLAB_NAMESPACE}"
 # class of failure this check exists to move forward.
 printf '%s' "$config_json" | grep -q '"build":true' \
   || config_problems="${config_problems} the-build-pipeline-is-not-enabled"
+
+# The credential has to be one the registry accepts, and that is a question only
+# the registry can answer. Checked here rather than left to the first push,
+# because a push is minutes of build before it fails, and the failure it would
+# report — a denied push — names neither the Secret nor which of its fields is
+# wrong. This is one request and it says so directly.
+#
+# It authenticates rather than pushing: a token with read access would pass this
+# and fail the push, so it is not the whole answer, but it catches the failure
+# that is actually likely — a token that is mistyped, expired, or for another
+# account entirely.
+log "confirming the registry credential is accepted"
+if [ -n "$APPLAB_REGISTRY_USERNAME" ] && [ -n "$APPLAB_REGISTRY_PASSWORD" ]; then
+  if ! printf '%s' "$APPLAB_REGISTRY_PASSWORD" \
+    | docker login "$registry_host" --username "$APPLAB_REGISTRY_USERNAME" --password-stdin >/dev/null 2>&1; then
+    config_problems="${config_problems} the-registry-credential-was-refused"
+  fi
+else
+  config_problems="${config_problems} no-registry-credential-was-supplied"
+fi
 
 [ -z "$config_problems" ] || {
   printf '%s\n' "$config_json" | head -40 | sed 's/^/    /' >&2

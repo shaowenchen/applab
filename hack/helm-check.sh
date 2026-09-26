@@ -232,6 +232,27 @@ if render --set build.enabled=false 2>/dev/null | grep -q 'builds run as root'; 
   fail "the build-runs-as-root note appears with build.enabled=false"
 fi
 
+# The server's low port has to be one the container may bind.
+#
+# AppLab listens on 80 by default, which is the port it is reached at — so the
+# Service, the container port and APPLAB_LISTEN all agree. Binding it as an
+# unprivileged user needs CAP_NET_BIND_SERVICE: the container drops everything
+# and adds that one back. Without it the bind is refused at startup, and the
+# failure is a CrashLoopBackOff whose reason is "permission denied" rather than
+# anything naming this value.
+#
+# Asserted as a pair, because either half alone looks fine: dropping ALL without
+# adding the capability leaves a container that cannot bind, and adding the
+# capability without dropping the rest is a broader grant than the port needs.
+listen_port="$(render --set auth.key=x | grep -m1 'APPLAB_LISTEN' | sed 's/.*:\([0-9]*\)".*/\1/')"
+if [ "$listen_port" = "80" ]; then
+  caps="$(render --set auth.key=x | grep -A4 'capabilities:')"
+  grep -q 'NET_BIND_SERVICE' <<<"$caps" \
+    || fail "AppLab listens on 80 but the container is not granted NET_BIND_SERVICE, so the bind is refused unless the node allows unprivileged low ports"
+  grep -q 'drop:' <<<"$caps" \
+    || fail "the container grants NET_BIND_SERVICE without dropping the rest; a low port needs exactly that one capability"
+fi
+
 # The uninstall cleanup has to be there, and has to be a pre-delete hook.
 #
 # `helm uninstall` removes what the chart created; every app and every build Job

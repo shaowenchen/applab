@@ -59,7 +59,7 @@ echo "smoke test: $image"
 # fsGroup produces: the process writes inside it and is not its owner. The image's
 # own USER applies, so this is uid 1000, not root.
 #
-# The port is published to a random host port rather than 8080, so a run cannot
+# The port is published to a random host port rather than the fixed one, so a run cannot
 # collide with anything already listening on the host.
 volume="applab-smoke-data-$$"
 name="applab-smoke-$$"
@@ -164,10 +164,10 @@ docker volume create "$volume" >/dev/null
 docker run -d --name "$name" \
   --network "$smoke_net" \
   -v "$volume:/data" \
-  -p 0:8080 \
+  -p 0:80 \
   -e APPLAB_KEY=smoke-test-key \
   -e APPLAB_BASE_PATH=/applab \
-  -e APPLAB_URL=http://127.0.0.1:8080/applab \
+  -e APPLAB_URL=http://127.0.0.1:80/applab \
   -e APPLAB_OBJECT_STORE_ENDPOINT="http://${store_name}:9000" \
   -e APPLAB_OBJECT_STORE_BUCKET=applab \
   -e APPLAB_OBJECT_STORE_ACCESS_KEY="$access_key" \
@@ -219,8 +219,8 @@ echo "  ok: it boots against a root-owned /data and authenticates over HTTP"
 # /metrics answers 501 on a deployment with no cluster — a legitimate answer, and
 # not the one under test. The failure this catches is 404, which is the prefix
 # refusing a path the cluster uses.
-host_port="$(docker port "$name" 8080/tcp | head -1 | sed 's/.*://')"
-[ -n "$host_port" ] || { logs; fail "the container published no port for 8080"; }
+host_port="$(docker port "$name" 80/tcp | head -1 | sed 's/.*://')"
+[ -n "$host_port" ] || { logs; fail "the container published no port for 80"; }
 
 for probe in /health /metrics; do
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${host_port}${probe}" || true)"
@@ -265,7 +265,7 @@ echo "  ok: it reports the git capability"
 #
 # Cloning is used rather than a push because it needs no credentials beyond the
 # key already in play, and no local commit.
-docker exec "$name" /usr/local/bin/applab-cli create smoke --port 8080 >/dev/null || {
+docker exec "$name" /usr/local/bin/applab-cli create smoke --port 80 >/dev/null || {
   # The server's log is printed here, not just the CLI's error. The API hides a
   # 5xx cause on purpose — its text can name a bucket, a path or another caller's
   # data — and the log is where that cause goes. Without it this failure reads as
@@ -276,7 +276,7 @@ docker exec "$name" /usr/local/bin/applab-cli create smoke --port 8080 >/dev/nul
 
 if ! docker exec -w /tmp "$name" git \
       -c http.extraHeader="Authorization: Bearer smoke-test-key" \
-      clone http://127.0.0.1:8080/applab/git/smoke.git cloned 2>&1; then
+      clone http://127.0.0.1:80/applab/git/smoke.git cloned 2>&1; then
   logs
   fail "cloning an app's repository over HTTP failed; this is the path git-http-backend serves"
 fi

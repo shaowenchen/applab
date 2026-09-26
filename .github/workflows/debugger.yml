@@ -85,6 +85,10 @@ jobs:
           # run can see, and these are credentials.
           cloudflare_token: ${{ secrets.CLOUDFLARE_TOKEN }}
           ngrok_token: ${{ secrets.NGROK_TOKEN }}
+          # The registry the built apps are pushed to and pulled from. The same
+          # token authenticates both, which is why there is one and not two.
+          registry_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          registry_password: ${{ secrets.DOCKERHUB_TOKEN }}
           # An input, not a secret: a domain is not sensitive, and it is the
           # thing a person has to look up before running a named tunnel.
           domain: ${{ inputs.domain }}

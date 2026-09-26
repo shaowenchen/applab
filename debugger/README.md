@@ -1,13 +1,18 @@
 # AppLab debugger environment
 
-Start a complete AppLab platform on a GitHub runner — a Kubernetes cluster, a
-registry, an Istio gateway and AppLab itself — hand yourself a link, and push an
-app. It is built, deployed and served before you open the console.
+Start a complete AppLab platform on a GitHub runner — a Kubernetes cluster, an
+object store, an Istio gateway and AppLab itself — hand yourself a link, and push
+an app. It is built, deployed and served before you open the console.
 
 The point is that AppLab needs real infrastructure before it can do anything: a
 cluster to deploy into, a registry to push to, and a gateway to publish through.
 This action assembles all of it on a throwaway kind cluster, so the first thing
 you have to do is not "install a cluster" but "push an app".
+
+The registry is a real one you supply credentials for, not a container on the
+runner. An image that only ever travels inside one machine cannot fail to pull —
+and the pull half, with a credential behind it, is exactly what a real deployment
+has to get right.
 
 ## Using it from another repository
 
@@ -26,6 +31,8 @@ jobs:
       - uses: shaowenchen/applab/debugger@master
         with:
           session_hours: '4'
+          registry_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          registry_password: ${{ secrets.DOCKERHUB_TOKEN }}
 ```
 
 That is the whole workflow. Open the run's **Summary** for the console link and
@@ -51,7 +58,7 @@ see [the overview](../README.md) for how to install it, or drive the API directl
 | **kind cluster** | A throwaway Kubernetes cluster, created for this run and deleted with it. |
 | **AppLab** | The published image, installed with this repository's [Helm chart](../charts/applab/README.md). |
 | **Istio** | The ingress gateway apps are published through. Install it yourself in a real deployment; here it is part of the environment. |
-| **registry:2** | Where built images are pushed, as `kind-registry:5000` — a cluster-local registry with no TLS and no credentials. |
+| **your registry** | Where built images are pushed and pulled from, set by `registry` — `shaowenchen/applab:demo` by default, so images land as `shaowenchen/applab:demo-<app>-<commit>`. The credential is installed as a Secret both halves read: the build pushes with it, each app's Deployment pulls with it. |
 | **MinIO** | The object store, as `applab-object-store:9000` — a container on the host the cluster reaches by name. The image `bitnami/minio` 17.0.21 declares, so what runs here is what a real install of that chart would run. |
 | **cloudflared** | A named tunnel, published at `domain`. Set `domain` to empty for a quick tunnel instead, or `tunnel: ngrok` to use ngrok. |
 

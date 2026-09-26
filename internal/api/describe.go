@@ -276,7 +276,7 @@ func (s *Server) describeHowTo(base string, identity auth.Identity) describeHowT
 		Logs:  "applab logs <app> -f",
 		Clone: "git clone " + gitURLWithPassword(base, "<app>", ""),
 		HTTP: map[string]string{
-			"create_app": "POST " + base + "/api/v1/apps  {\"id\":\"<app>\",\"port\":8080}",
+			"create_app": "POST " + base + "/api/v1/apps  {\"id\":\"<app>\",\"port\":80}",
 			"upload":     "POST " + base + "/api/v1/apps/<app>/source?message=<msg>  (application/gzip)",
 			"build":      "POST " + base + "/api/v1/apps/<app>/builds",
 			"deploy":     "POST " + base + "/api/v1/apps/<app>/deploy",

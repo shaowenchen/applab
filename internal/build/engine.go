@@ -154,22 +154,24 @@ func (e *Engine) ImageFor(appID, commitSHA string) string {
 // imageRef works out where an app's image lives under a registry, as a
 // repository and a prefix the tag must carry.
 //
-// A registry is a host plus a path, and the length of that path decides how an
-// app is named — because a repository path can only be extended so far before
-// the registry rejects it:
+// A registry is a host, a path, and optionally a tag — and each of the three
+// places an app's name can go is used in turn, because a path can only be
+// extended so far before the registry rejects it and a tag can only carry so
+// much before it stops being readable:
 //
-//	registry                     image for app "demo"
-//	registry.example.com/apps    registry.example.com/apps/demo:abc123
-//	kind-registry:5000           kind-registry:5000/demo:abc123
-//	shaowenchen                  shaowenchen/demo:abc123
-//	shaowenchen/applab           shaowenchen/applab:demo-abc123
+//	build.registry              image for app "shop", commit abc123
+//	shaowenchen                 shaowenchen/shop:abc123
+//	shaowenchen/applab          shaowenchen/applab:shop-abc123
+//	shaowenchen/applab:demo     shaowenchen/applab:demo-shop-abc123
+//	registry.example.com/apps   registry.example.com/apps/shop:abc123
+//	kind-registry:5000          kind-registry:5000/shop:abc123
 //
 // With nothing or one segment after the host, the app becomes the next segment
-// and gets a repository of its own. That is what a cluster-local registry wants,
-// and it is what every deployment actually running AppLab uses, so it is
-// preserved exactly. With two or more segments the path is already as deep as a
-// Docker Hub repository may be, so the app moves into the tag instead — the only
-// remaining place to put it.
+// and gets a repository of its own. With two or more the path is already as deep
+// as a Docker Hub repository may be, so the app moves into the tag instead. A
+// tag on the registry is a further prefix on that tag, which is how one
+// repository holds several environments' worth of the same app without their
+// commits colliding.
 //
 // The app id is used as-is. It is already constrained to lowercase letters,
 // digits and dashes by model.ValidateAppID, which is the character set a
@@ -180,10 +182,23 @@ func imageRef(registry, appID string) (repo, tagPrefix string) {
 	if registry == "" {
 		return appID, ""
 	}
-	if pathSegments(registry) <= 1 {
-		return registry + "/" + appID, ""
+
+	// A tag on the registry is read here, and telling it from a host's port is
+	// the part that needs care: "kind-registry:5000" is a host and a port, while
+	// "shaowenchen/applab:demo" is a repository and a tag. The rule is Docker's
+	// own — a colon is a tag only once there has been a slash — so the split is
+	// made only when one exists, which leaves every host:port a host.
+	repo = registry
+	if slash := strings.LastIndex(registry, "/"); slash >= 0 {
+		if colon := strings.LastIndex(registry, ":"); colon > slash {
+			repo, tagPrefix = registry[:colon], registry[colon+1:]+"-"
+		}
 	}
-	return registry, appID + "-"
+
+	if pathSegments(repo) <= 1 {
+		return repo + "/" + appID, tagPrefix
+	}
+	return repo, tagPrefix + appID + "-"
 }
 
 // pathSegments counts the path segments after a registry's host.

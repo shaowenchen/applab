@@ -100,6 +100,12 @@ func TestCreateAppDefaults(t *testing.T) {
 	if app["dockerfile"] != "Dockerfile" {
 		t.Errorf("dockerfile = %v, want Dockerfile", app["dockerfile"])
 	}
+	// The port a caller did not name. 80 is the port an image built for a
+	// platform that serves HTTP conventionally listens on, so it is the default
+	// most likely to be right — and the one the console's create form offers.
+	if app["port"] != float64(80) {
+		t.Errorf("port = %v, want 80 — the default an app is created with", app["port"])
+	}
 	if app["status"] != string(model.AppStatusCreated) {
 		t.Errorf("status = %v, want %v", app["status"], model.AppStatusCreated)
 	}

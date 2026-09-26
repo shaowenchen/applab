@@ -98,12 +98,12 @@ COPY --from=builder /out/applab /usr/local/bin/applab
 COPY --from=builder /out/applab-cli /usr/local/bin/applab-cli
 
 ENV APPLAB_DATA_DIR=/data \
-    APPLAB_LISTEN=:8080 \
+    APPLAB_LISTEN=:80 \
     APPLAB_LOG_LEVEL=info
 
 USER applab
 
-EXPOSE 8080
+EXPOSE 80
 
 # tini reaps zombies and forwards signals. Without it the AppLab process is PID 1,
 # and the kernel ignores a signal like SIGTERM when no handler is installed — so a

@@ -261,6 +261,20 @@ func TestImageRef(t *testing.T) {
 		{"host with a two-segment path", "registry.example.com/team/apps", "shop", "registry.example.com/team/apps", "shop-"},
 		{"ghcr", "ghcr.io/owner/repo", "shop", "ghcr.io/owner/repo", "shop-"},
 
+		// A tag on the registry is a prefix on the tag the app already carries,
+		// which is how one repository holds several environments without their
+		// commits colliding.
+		{"docker hub repo with a tag", "shaowenchen/applab:demo", "demo", "shaowenchen/applab", "demo-demo-"},
+		{"a deep path with a tag", "registry.example.com/team/apps:staging", "shop", "registry.example.com/team/apps", "staging-shop-"},
+
+		// A colon is a tag only once there has been a slash. Read the other way
+		// round, every host:port would become a repository with a tag prefix —
+		// "kind-registry:5000" would push to "kind-registry" tagged "5000-demo",
+		// which is where this whole split would break a cluster-local registry.
+		{"a port is not a tag", "kind-registry:5000", "demo", "kind-registry:5000/demo", ""},
+		{"and not with a path either", "registry.example.com:5000/apps", "shop", "registry.example.com:5000/apps/shop", ""},
+		{"nor a dotted host and a port", "localhost:5000", "shop", "localhost:5000/shop", ""},
+
 		// A trailing slash is a typo, not a deeper path.
 		{"trailing slash", "shaowenchen/applab/", "demo", "shaowenchen/applab", "demo-"},
 	}
@@ -284,7 +298,7 @@ func TestImageRef(t *testing.T) {
 // the app in the tag, every app under a two-segment registry would push to one
 // tag and overwrite each other.
 func TestImageRefKeepsAppsApart(t *testing.T) {
-	for _, registry := range []string{"registry.example.com/apps", "shaowenchen", "shaowenchen/applab"} {
+	for _, registry := range []string{"registry.example.com/apps", "shaowenchen", "shaowenchen/applab", "shaowenchen/applab:demo"} {
 		t.Run(registry, func(t *testing.T) {
 			engine, _ := newTestEngine(t, func(c *Config) { c.Registry = registry })
 

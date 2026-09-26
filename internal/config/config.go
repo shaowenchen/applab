@@ -22,7 +22,7 @@ import (
 
 // Config is the whole of AppLab's runtime configuration.
 type Config struct {
-	// Listen is the address the HTTP server binds, e.g. ":8080".
+	// Listen is the address the HTTP server binds, e.g. ":80".
 	Listen string `yaml:"listen"`
 
 	// BaseURL is the address callers reach this service at, used wherever a URL
@@ -281,7 +281,7 @@ func (b Build) Enabled() bool {
 // Load.
 func Default() Config {
 	return Config{
-		Listen:    ":8080",
+		Listen:    ":80",
 		DataDir:   "./data",
 		LogLevel:  "info",
 		Namespace: "ops-system",
