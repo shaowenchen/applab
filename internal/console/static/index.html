@@ -1137,8 +1137,6 @@ const ZH = {
   "status": "状态",
   "commit": "提交",
   "cluster": "集群",
-  "next": "下一步",
-  "deploy it with: {cmd}": "用以下命令部署：{cmd}",
   "nothing deployed": "未部署任何内容",
   "running image": "运行中的镜像",
   "{ready}/{desired} ready": "{ready}/{desired} 就绪",
@@ -2521,12 +2519,15 @@ async function loadAppState() {
 
   // Everything else here is the cluster's answer, and it is the only answer
   // there is: AppLab records nothing about what is running. An app with no
-  // Deployment has no live block at all, and saying so — with the command that
-  // fixes it — is the whole point for a platform that has just been pointed at
-  // an existing bucket, where every app starts in exactly this state.
+  // Deployment has no live block at all.
+  //
+  // It used to name the command that fixes that. It is not here because this
+  // row is the record of what the app is, and a command is an instruction to the
+  // reader rather than a fact about the app — on a page whose other rows are all
+  // facts. "Not deployed" is what the row says, and the Deploy button above is
+  // what acts on it.
   if (!status.live) {
     add(t("cluster"), t("nothing deployed"));
-    add(t("next"), tf("deploy it with: {cmd}", { cmd: "applab deploy " + status.app_id + " --build" }));
   } else {
     if (status.live.commit_sha) add(t("commit"), status.live.commit_sha);
     if (status.live.current_image) add(t("running image"), status.live.current_image);
