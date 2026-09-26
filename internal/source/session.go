@@ -50,6 +50,7 @@ func (s *Store) withRepo(ctx context.Context, appID, branch string, fn func(repo
 		prefix: s.branchPrefix(appID, branch),
 		dir:    repoPath,
 		before: map[string]fileState{},
+		pack:   s.packRepo,
 	}
 	// A scratch copy left by an interrupted run is not the repository; the
 	// bucket is. Starting from a clean directory is what makes that true.
@@ -93,6 +94,7 @@ func (s *Store) uploadRepo(ctx context.Context, appID, branch, repoPath string) 
 		prefix: s.branchPrefix(appID, branch),
 		dir:    repoPath,
 		before: map[string]fileState{},
+		pack:   s.packRepo,
 	}
 	return repo.upload(ctx)
 }
@@ -163,6 +165,7 @@ func (s *Store) Open(ctx context.Context, appID, branch string) (repoPath string
 		prefix: s.branchPrefix(appID, branch),
 		dir:    repoPath,
 		before: map[string]fileState{},
+		pack:   s.packRepo,
 	}
 	if err := os.RemoveAll(repoPath); err != nil {
 		unlock()

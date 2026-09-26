@@ -527,10 +527,8 @@ func (s *Store) Prepare(ctx context.Context, repoPath string) error {
 // "stat objects/maintenance.lock: no such file or directory" in the log, which
 // names neither the race nor the consequence.
 //
-// Disabling it costs nothing here. Packing is a size optimisation, and each
-// repository is small, downloaded per request and uploaded again — there is no
-// long-lived repository for a repack to benefit, and no reader that would
-// notice if one happened.
+// Disabling it costs nothing here, because packing is done deliberately instead —
+// see packRepo, which packs from the upload path where it is safe.
 //
 // **repositoryformatversion=0 and filemode=false — the format must not depend
 // on the writer's git.** `git init` records the writing git's default object

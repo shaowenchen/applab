@@ -9,11 +9,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/objectstore"
 	"github.com/shaowenchen/applab/internal/store"
 )
+
+// downloadConcurrency bounds how many object reads are in flight at once.
+//
+// It is a bound rather than a target: the point is to stop waiting on one
+// round trip at a time, and past a few dozen the bottleneck moves to the
+// service's own limits, the connection pool and the network. A number in that
+// range gets nearly all of the available speedup without turning a clone into a
+// burst a rate limiter will answer with throttling.
+const downloadConcurrency = 32
 
 // workingRepo is an app's repository, materialised on local disk for as long as
 // a git command needs it.
@@ -52,6 +62,15 @@ type workingRepo struct {
 	// before is each file's state as it was downloaded, keyed by its path
 	// relative to the repository root.
 	before map[string]fileState
+
+	// pack collapses loose objects into a packfile before the upload walk, when
+	// there are enough of them to be worth it. See Store.packRepo.
+	//
+	// Nil means no packing, which is what a caller that is not a source Store —
+	// a test — gets. It is a field rather than a Store method on workingRepo so
+	// that this file, which is about moving bytes to and from a bucket, does not
+	// have to know how to run git.
+	pack func(ctx context.Context, repoPath string) error
 
 	// uploads counts the objects written back, for the log line that says what
 	// an operation cost.
@@ -97,6 +116,7 @@ func (s *Store) openWorkingRepo(ctx context.Context, appID, branch string) (*wor
 		prefix: s.branchPrefix(appID, branch),
 		dir:    dir,
 		before: map[string]fileState{},
+		pack:   s.packRepo,
 	}
 
 	if err := repo.download(ctx); err != nil {
@@ -133,58 +153,227 @@ func (s *Store) repoPrefixForRemove(appID string) string {
 }
 
 // download copies the repository out of the bucket.
+//
+// The reads run concurrently, and that is the difference between a clone taking
+// seconds and taking minutes. A repository is many small objects — a hundred
+// commits of a modest project is thousands — and one read per object over a
+// bucket's per-request latency is minutes of waiting for 700 KB of data. The
+// work is entirely round-trip bound: nothing here is CPU or bandwidth limited at
+// this size, so the only lever that matters is how many requests are in flight.
+//
+// The concurrency is bounded. An unbounded fan-out over a large repository would
+// open thousands of connections to a service that is rate limiting and connection
+// limiting on its side, and the result would be throttling rather than speed.
 func (w *workingRepo) download(ctx context.Context) error {
 	objects, err := w.store.List(ctx, w.prefix)
 	if err != nil {
 		return fmt.Errorf("list the repository: %w", err)
 	}
 
-	for _, object := range objects {
-		rel := strings.TrimPrefix(object.Key, w.prefix+"/")
-		if rel == "" || rel == object.Key {
+	// A failure stops the work rather than merely being reported. Returning from
+	// the loop below while fetches are still running would leave them blocked on
+	// a channel nobody is reading and holding the semaphore, so the collector
+	// cancels first and keeps draining until the senders are done.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Each object is written by one goroutine; nothing is shared but the map
+	// below, which only the collector touches.
+	type fetched struct {
+		name  string
+		state fileState
+		err   error
+	}
+	results := make(chan fetched)
+	sem := make(chan struct{}, downloadConcurrency)
+
+	go func() {
+		defer close(results)
+		var wg sync.WaitGroup
+		for _, object := range objects {
+			rel := strings.TrimPrefix(object.Key, w.prefix+"/")
+			if rel == "" || rel == object.Key {
+				continue
+			}
+
+			// Checked before blocking on the semaphore, so a cancelled download
+			// stops starting work instead of queueing all of it.
+			if ctx.Err() != nil {
+				break
+			}
+
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(key, rel string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				name, state, err := w.fetch(ctx, key, rel)
+				results <- fetched{name: name, state: state, err: err}
+			}(object.Key, rel)
+		}
+		wg.Wait()
+	}()
+
+	var firstErr error
+	for result := range results {
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+				cancel()
+			}
 			continue
 		}
+		w.before[result.name] = result.state
+	}
+	return firstErr
+}
 
-		target := filepath.Join(w.dir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return fmt.Errorf("create %s: %w", filepath.Dir(target), err)
-		}
+// fetch writes one object into the working directory and reports what it wrote,
+// under the name git will see it by.
+//
+// The name it returns is not always the key it was given: the marker that records
+// the executable bit is part of the key and not part of the filename, so the two
+// differ for a hook. Returning the filename is what keeps the download and the
+// upload walk keyed the same way — keying the download by the object key made
+// every hook look like a file that had been deleted the moment it was written,
+// so each operation removed and re-uploaded all of them.
+func (w *workingRepo) fetch(ctx context.Context, key, rel string) (string, fileState, error) {
+	target := filepath.Join(w.dir, filepath.FromSlash(rel))
 
-		body, err := w.store.GetBytes(ctx, object.Key)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", object.Key, err)
-		}
+	// Git writes some of its files with the executable bit and reads it back —
+	// hooks are the case that matters, and a repository with a hook that lost its
+	// bit would silently stop running it. Everything else in a bare repository is
+	// data, so the bit is restored from a marker in the name rather than being
+	// stored, which keeps this as one object per file.
+	mode := os.FileMode(0o600)
+	name := rel
+	if strings.HasSuffix(name, ".exec") {
+		mode = 0o700
+		name = strings.TrimSuffix(name, ".exec")
+		target = filepath.Join(w.dir, filepath.FromSlash(name))
+	}
 
-		// Git writes some of its files with the executable bit and reads it back
-		// — hooks are the case that matters, and a repository with a hook that
-		// lost its bit would silently stop running it. Everything else in a bare
-		// repository is data, so the bit is restored from a marker in the name
-		// rather than being stored, which keeps this as one object per file.
-		mode := os.FileMode(0o600)
-		if strings.HasSuffix(rel, ".exec") {
-			mode = 0o700
-			rel = strings.TrimSuffix(rel, ".exec")
-			target = filepath.Join(w.dir, filepath.FromSlash(rel))
-		}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return "", fileState{}, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
+	}
 
-		if err := os.WriteFile(target, body, mode); err != nil {
-			return fmt.Errorf("write %s: %w", target, err)
-		}
-		if err := os.Chmod(target, mode); err != nil {
-			return fmt.Errorf("set the mode on %s: %w", target, err)
-		}
+	body, err := w.store.GetBytes(ctx, key)
+	if err != nil {
+		return "", fileState{}, fmt.Errorf("read %s: %w", key, err)
+	}
+	if err := os.WriteFile(target, body, mode); err != nil {
+		return "", fileState{}, fmt.Errorf("write %s: %w", target, err)
+	}
+	if err := os.Chmod(target, mode); err != nil {
+		return "", fileState{}, fmt.Errorf("set the mode on %s: %w", target, err)
+	}
 
-		info, err := os.Stat(target)
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", target, err)
-		}
-		w.before[rel] = fileState{size: info.Size(), modTime: info.ModTime().UnixNano()}
+	info, err := os.Stat(target)
+	if err != nil {
+		return "", fileState{}, fmt.Errorf("stat %s: %w", target, err)
+	}
+	return name, fileState{size: info.Size(), modTime: info.ModTime().UnixNano()}, nil
+}
+
+// repackThreshold is how many loose objects a repository may hold before it is
+// packed.
+//
+// Packing is what makes a clone fast, and the threshold is what keeps a push
+// cheap, because the two pull in opposite directions:
+//
+//   - A repository of loose objects costs one read per object to download. A
+//     hundred commits of a modest project is thousands of loose objects, which
+//     over a bucket's per-request latency is minutes of waiting for a few
+//     hundred kilobytes. One packfile is a handful of reads instead.
+//   - Packing rewrites the pack, so the pack's bytes change and the upload sends
+//     all of it. Doing that on every push would make each push upload the whole
+//     repository, where leaving the new objects loose uploads only what the push
+//     actually added.
+//
+// So objects accumulate loose — pushes stay incremental — until there are enough
+// of them to be worth collapsing, and then one pack replaces them. It is git's
+// own arrangement; the threshold is far below git's default because the cost it
+// trades against is a round trip rather than a disk seek.
+const repackThreshold = 256
+
+// packRepo collapses loose objects into a packfile, if there are enough to be
+// worth it.
+//
+// It runs after a write and before the upload walk, so the files it rewrites are
+// the files the walk records and uploads. That ordering is the whole reason this
+// is safe: the reason gc.auto is disabled (see applyDeterministicConfig) is that
+// a repack landing *during* the walk moves files out from under it. Run here, it
+// has finished before the walk starts.
+//
+// It also means a clone repacks a repository that is still full of loose objects
+// — which is every repository written before this existed. That is deliberate:
+// the pack it produces is uploaded on the same request, so one clone pays for
+// the whole repository and every clone after it is fast. A read path that writes
+// is unusual, and it is the only way an existing repository ever gets packed,
+// because nothing else visits it.
+func (s *Store) packRepo(ctx context.Context, repoPath string) error {
+	loose, err := countLooseObjects(repoPath)
+	if err != nil {
+		return err
+	}
+	if loose < repackThreshold {
+		return nil
+	}
+
+	// -a and -d together: every reachable object goes into one pack, and the
+	// loose objects it replaced are removed. Without -a git would add a second
+	// pack and keep the first, so the file count would grow with every push
+	// rather than staying flat; without -d the loose files would stay behind and
+	// still be downloaded.
+	if _, err := s.run(ctx, repoPath, "repack", "-a", "-d", "-q"); err != nil {
+		return fmt.Errorf("pack the repository: %w", err)
 	}
 	return nil
 }
 
+// countLooseObjects counts the objects git has not packed yet.
+//
+// Loose objects live two hex digits deep — objects/ab/cdef... — so the count is
+// the number of files under those directories. objects/pack and objects/info are
+// skipped: the first holds the packs, which are what this is deciding whether to
+// make, and the second holds no objects.
+func countLooseObjects(repoPath string) (int, error) {
+	objectsDir := filepath.Join(repoPath, "objects")
+	entries, err := os.ReadDir(objectsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// A repository that has never had an object written to it. Nothing to
+			// pack, and nothing wrong.
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read %s: %w", objectsDir, err)
+	}
+
+	loose := 0
+	for _, entry := range entries {
+		// A loose object's directory is exactly two hex digits. Anything else is
+		// pack, info, or a file git keeps at the top level.
+		if !entry.IsDir() || len(entry.Name()) != 2 {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(objectsDir, entry.Name()))
+		if err != nil {
+			return 0, fmt.Errorf("read %s: %w", entry.Name(), err)
+		}
+		loose += len(files)
+	}
+	return loose, nil
+}
+
 // upload writes back everything git changed and removes what it deleted.
 func (w *workingRepo) upload(ctx context.Context) error {
+	// Before the walk, so what the walk sees is what is uploaded.
+	if w.pack != nil {
+		if err := w.pack(ctx, w.dir); err != nil {
+			return err
+		}
+	}
+
 	now := map[string]fileState{}
 	err := filepath.WalkDir(w.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
