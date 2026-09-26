@@ -384,6 +384,15 @@ setting to get wrong. An app is served over HTTPS when the gateway has an HTTPS
 listener whose certificate covers the host. For a subdomain-per-app install that
 certificate must be a wildcard (<code>*.applab.example.com</code>); for a <code>pathPrefix</code>
 install a single-host certificate is enough, which is the reason to prefer it.</p>
+<p><strong>What an app's URL is reported as</strong> follows the same listener. The chart passes
+the console's own address to the server as <code>APPLAB_PUBLIC_URL</code>, and only its
+scheme is used: <code>https</code> when <code>ingress.tls</code> is set, <code>http</code> otherwise. That is why
+an app's address in the console reads <code>https://shop.applab.example.com</code> on a
+TLS-terminating install rather than the plain-http address the in-cluster Service
+would imply — the two are different addresses and only one of them is about how
+a browser arrives. The console also re-schemes the link it renders to match the
+page it is on, so a proxied install whose headers are rewritten still links
+correctly.</p>
 <h4 id="when-the-console-has-its-own-ingress">When the console has its own Ingress</h4>
 <p>The console and API are reached through a plain Kubernetes Ingress by default
 (<code>ingress.path</code>, <code>/applab</code>), on whatever ingress controller the cluster runs.
