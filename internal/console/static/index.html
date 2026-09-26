@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AppLab · deploy an application by uploading its source</title>
+<title>AppLab - an application platform better suited to VibeCoding</title>
 <!-- What this deployment is, for anything that reads the console page without
      rendering it: a link preview, a crawler, an agent handed the address. The
      chart sets the meta tag too, but a deployment reached directly at the pod
@@ -204,6 +204,58 @@
     padding: 20px;
   }
 
+  /* An app's page is long — its state, the instances, a log, its variables, its
+     builds and its history — so the sections are listed down the side and the
+     content sits beside them. The list is the page's table of contents and its
+     navigation at once.
+
+     Sticky rather than fixed: it has to stay in the column it is laid out in,
+     and a fixed one would have to be told the header's height twice. The offset
+     is the header (about 48px) plus the space below it. */
+  .app-layout { display: flex; gap: 24px; align-items: flex-start; }
+  .app-nav {
+    position: sticky;
+    top: 68px;
+    flex: none;
+    width: 150px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 13px;
+  }
+  .app-nav a {
+    padding: 5px 10px;
+    border-radius: 6px;
+    color: var(--text-muted);
+    text-decoration: none;
+    /* The rule that marks the current section. Transparent rather than absent,
+       so the label does not shift sideways as it is highlighted. */
+    border-left: 2px solid transparent;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+  .app-nav a:hover { color: var(--text); background: var(--bg-sunken); }
+  .app-nav a.current {
+    color: var(--text);
+    font-weight: 600;
+    border-left-color: var(--accent);
+    background: var(--bg-sunken);
+  }
+  .app-body { flex: 1; min-width: 0; }
+
+  /* A section the nav jumps to must not land under the sticky header. This is
+     the one thing that makes an in-page link to a card work rather than put its
+     heading a few pixels off the top of the window. */
+  .app-body .card, .app-body [id] { scroll-margin-top: 72px; }
+
+  /* Smooth scrolling for the nav's jumps, and the reduced-motion preference
+     honoured: for someone who has asked the system not to animate, a page that
+     slides under them is the thing they turned that setting off for. */
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+
   button {
     font: inherit;
     padding: 6px 12px;
@@ -217,6 +269,13 @@
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
   button:disabled { opacity: 0.5; cursor: default; }
   button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  /* A button whose label is a glyph. Square, and a size up from the text, since
+     a "+" drawn at body size reads as small print rather than as a control. */
+  button.icon {
+    padding: 2px 9px;
+    font-size: 17px;
+    line-height: 1.1;
+  }
 
   input {
     font: inherit;
@@ -667,7 +726,20 @@
       </p>
     </div>
 
-    <div class="card">
+    <!-- The sections of this page, listed down the side. It is the page's table
+         of contents and its navigation at once: an app's page has six cards and
+         they are well past a screenful, so "where is the build log" is a
+         question you scroll to answer.
+
+         Plain anchors rather than buttons with a scroll handler: the browser's
+         own jump is what makes a link to a section copyable, and it works before
+         any script has run. The current one is marked as the page scrolls, which
+         is the only part that needs script. -->
+    <div class="app-layout">
+      <nav class="app-nav" id="app-nav" aria-label="Sections"></nav>
+      <div class="app-body">
+
+    <div class="card" id="card-state">
       <h2 data-i18n="State">State</h2>
       <dl id="app-state">
         <!-- The app's own repository, as the last row of the same table: it is a
@@ -707,49 +779,10 @@
         <button id="app-deploy" data-i18n="Deploy latest">Deploy latest</button>
       </div>
 
-      <!-- Which branch runs. A control rather than a row in the table above,
-           because it is something you change rather than something you read:
-           the two are told apart by where they sit throughout this page, and the
-           branch is the only setting here that changes what is *deployed*.
-
-           Switching deploys, so it replaces what is serving — said out loud
-           beside the button, because an app that quietly swapped its code on a
-           control that reads like a filter would be a surprise. The select is
-           disabled until there is more than one branch: with one branch there is
-           nothing to choose, and an enabled control that cannot change anything
-           invites a click that does nothing. -->
-      <div class="state-actions">
-        <label class="field">
-          <span data-i18n="Branch">Branch</span>
-          <select id="app-branch"></select>
-          <button id="app-branch-use" data-i18n="Switch">Switch</button>
-        </label>
-        <span class="muted" style="font-size:12px" data-i18n="switching replaces what is running">switching replaces what is running</span>
-      </div>
-
-      <!-- The port the container listens on. It belongs with the app's other
-           settings rather than with the instances: it is not a fact about how
-           many copies run, it is what the Service targets — so getting it wrong
-           makes every copy unreachable, which is a property of the app.
-
-           Said out loud that it takes effect on the next deploy, because
-           nothing here applies it: the deployer does, exactly as it applies
-           replicas and the image. `applab update --port` and PATCH
-           /api/v1/apps/{app} behave the same way, which is what keeps the three
-           surfaces telling the same story. -->
-      <div class="state-actions">
-        <label class="field">
-          <span data-i18n="Port">Port</span>
-          <input id="app-port" type="number" min="1" max="65535" size="5" style="width:88px">
-          <button id="app-port-set" data-i18n="Set">Set</button>
-        </label>
-        <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
-      </div>
-
-      <!-- Whether a push ships on its own. Unlike the settings above this one
-           takes effect immediately, because it is read when a push arrives
-           rather than applied by the deployer — which is why it is not sitting
-           under the "takes effect on the next deploy" note.
+      <!-- Whether a push ships on its own. Unlike the settings in the Instances
+           card this one takes effect immediately, because it is read when a push
+           arrives rather than applied by the deployer — which is why it is not
+           sitting under the "takes effect on the next deploy" note.
 
            On by default, and the box shows the app's real setting rather than a
            stored preference: the API reports the resolved value, so an app that
@@ -763,7 +796,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="card-instances">
       <div class="card-head">
         <h2 data-i18n="Instances">Instances</h2>
         <!-- How many copies run, beside the copies themselves. It belongs with
@@ -776,13 +809,6 @@
           <input id="app-replicas" type="number" min="1" max="50" size="3" style="width:72px">
           <button id="app-replicas-set" data-i18n="Set">Set</button>
         </label>
-        <!-- Said out loud because the alternative is someone setting three
-             replicas, seeing nothing change, and concluding it is broken. The
-             setting is the app's; the deployer is what applies it, exactly as it
-             applies the app's port and image. `applab update --replicas` behaves
-             the same way, so this also keeps the console and the CLI honest with
-             each other. -->
-        <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
         <!-- Filtering the instances by label, which is how one revision is told
              from another during a rollout: every pod an app runs carries the
              commit it was built from. Applied by the server, so the same
@@ -793,6 +819,36 @@
         </label>
         <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
       </div>
+
+      <!-- What a deploy applies, next to the copies those settings produce.
+           Branch and Port were rows in the State card, among facts that are read
+           rather than changed — and both are things someone comes here to set
+           when the instances are the problem: the wrong branch is the wrong code
+           running, and the wrong port is every copy unreachable.
+
+           All three take effect on the next deploy, said once beside the group
+           rather than repeated under each. Nothing here applies them; the
+           deployer does, exactly as it applies the image. `applab update` behaves
+           the same way, which is what keeps the three surfaces telling the same
+           story. -->
+      <div class="state-actions">
+        <label class="field">
+          <span data-i18n="Branch">Branch</span>
+          <select id="app-branch"></select>
+          <button id="app-branch-use" data-i18n="Switch">Switch</button>
+        </label>
+        <label class="field">
+          <span data-i18n="Port">Port</span>
+          <input id="app-port" type="number" min="1" max="65535" size="5" style="width:88px">
+          <button id="app-port-set" data-i18n="Set">Set</button>
+        </label>
+        <span class="muted" style="font-size:12px" data-i18n="takes effect on the next deploy">takes effect on the next deploy</span>
+        <!-- Switching replaces what is serving, said out loud beside the button:
+             an app that quietly swapped its code on a control that reads like a
+             filter would be a surprise. -->
+        <span class="muted" style="font-size:12px" data-i18n="switching replaces what is running">switching replaces what is running</span>
+      </div>
+
       <table>
         <thead><tr><th data-i18n="Instance">Instance</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="Reason">Reason</th></tr></thead>
         <tbody id="pods"></tbody>
@@ -801,7 +857,7 @@
       <div id="pods-problem" class="error hidden" style="margin-top:8px"></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="card-log">
       <div class="card-head">
         <h2 data-i18n="Log">Log</h2>
         <label class="muted" style="font-size:13px">
@@ -812,30 +868,39 @@
       <pre id="logs" style="margin:0" data-i18n="(not started)">(not started)</pre>
     </div>
 
-    <div class="card">
-      <h2 data-i18n="Environment variables">Environment variables</h2>
-      <p class="muted" style="margin-top:0"
-         data-i18n="Changes take effect on the next deploy, not immediately — configuration travels the same path as code.">Changes
-        take effect on the next deploy, not immediately — configuration travels
-        the same path as code.</p>
+    <div class="card" id="card-env">
+      <div class="card-head">
+        <h2 data-i18n="Environment variables">Environment variables</h2>
+        <!-- Adding is a "+" rather than a form that is always open, and rather
+             than a labelled button: the form is three fields wide and empty on
+             every app that has no variables, which is most of them, and a card
+             showing an input row before you have decided to add anything reads
+             as something to fill in. The label is on the title attribute and the
+             aria-label, so the glyph is not the only thing naming it. -->
+        <button id="config-env-add" class="icon" data-i18n-title="Add an environment variable" aria-label="Add an environment variable">+</button>
+      </div>
 
-      <table>
+      <!-- The "takes effect on the next deploy" note that used to sit here, and
+           the row of inputs under the table, are both gone: the note repeated
+           what every other setting on this page says, and the inputs are behind
+           the button above. -->
+      <table id="config-env-table" class="hidden">
         <thead><tr><th data-i18n="Name">Name</th><th data-i18n="Value">Value</th><th></th><th></th></tr></thead>
         <tbody id="config-env"></tbody>
       </table>
-      <div id="config-env-empty" class="empty hidden" data-i18n="No environment variables.">No environment variables.</div>
 
-      <div class="row" style="margin-top:8px">
+      <div class="row hidden" id="config-env-form" style="margin-top:8px">
         <input id="config-env-name" placeholder="NAME" size="16">
         <input id="config-env-value" placeholder="value" type="password" size="24"
                style="flex:1">
         <button id="config-env-set" data-i18n="Set">Set</button>
+        <button id="config-env-cancel" data-i18n="Cancel">Cancel</button>
       </div>
 
       <!-- Said out loud because the value is in the clear in the Deployment, and
            a page that worded this as a promise would be claiming more than the
            platform delivers. The eye only keeps a value off the screen. -->
-      <p class="muted" style="font-size:13px;margin-bottom:0"
+      <p id="config-env-note" class="muted hidden" style="font-size:13px;margin-bottom:0"
          data-i18n="Values are written into the Deployment's environment, so anyone who can read that Deployment can read them. The eye here only keeps them off the screen.">Values
         are written into the Deployment's environment, so anyone who can read
         that Deployment can read them. The eye here only keeps them off the
@@ -849,7 +914,7 @@
 
          Before History, because a build is what produces the image a commit can
          be deployed with, so this is the table that explains the next one. -->
-    <div class="card flush">
+    <div class="card flush" id="card-builds">
       <div class="card-head">
         <h2 data-i18n="Builds">Builds</h2>
         <button id="app-builds-refresh" data-i18n="Refresh">Refresh</button>
@@ -881,12 +946,15 @@
       <pre id="build-logs" style="margin:0"></pre>
     </div>
 
-    <div class="card">
+    <div class="card" id="card-history">
       <h2 data-i18n="History">History</h2>
       <table>
         <thead><tr><th data-i18n="Commit">Commit</th><th data-i18n="When">When</th><th data-i18n="Rollback">Rollback</th><th data-i18n="Message">Message</th></tr></thead>
         <tbody id="commits"></tbody>
       </table>
+    </div>
+
+      </div>
     </div>
   </section>
 </main>
@@ -1005,6 +1073,13 @@ function addressURL(host, path, url) {
 const STORE_LANG = "applab.lang";
 
 const ZH = {
+  // -- The document ---------------------------------------------------------
+  // The tab's title, which setLang applies on boot and on every switch. It
+  // carries no "deploy an application by uploading its source" tagline: the
+  // console is the whole platform, and what it does is now the second half of
+  // the sentence rather than the first.
+  "AppLab - an application platform better suited to VibeCoding": "AppLab - 更适合 VibeCoding 的应用开发平台",
+
   // -- Header and navigation ------------------------------------------------
   "Overview": "概览",
   "Apps": "应用",
@@ -1072,7 +1147,6 @@ const ZH = {
   "No apps yet. Push one with": "还没有应用。用这个命令推送一个，或者在这里创建一个：",
   "or create one here.": "",
   "Could not list apps: {error}": "无法获取应用列表：{error}",
-  "(not deployed)": "（未部署）",
 
   // -- App detail -----------------------------------------------------------
   "State": "状态",
@@ -1116,12 +1190,14 @@ const ZH = {
   "Follow": "跟随",
   "(not started)": "（未开始）",
   "(no output)": "（无输出）",
-  "Changes take effect on the next deploy, not immediately — configuration travels the same path as code.":
-    "改动在下次部署时生效，不会立即生效 —— 配置和代码走同一条路径。",
+  // The "changes take effect on the next deploy" note that stood here, and the
+  // "no environment variables" line under it, are both gone with the markup
+  // they labelled: the note repeated what the card's other settings already say,
+  // and an empty app now shows only its heading and the Add button.
   "Environment variables": "环境变量",
   "Values are written into the Deployment's environment, so anyone who can read that Deployment can read them. The eye here only keeps them off the screen.":
     "这些值会被写入 Deployment 的环境变量，因此任何能读取该 Deployment 的人都能读到。这里的眼睛只是不把它们显示在屏幕上。",
-  "No environment variables.": "没有环境变量。",
+  "Add an environment variable": "添加环境变量",
   "Set": "设置",
   "Remove": "移除",
   "History": "历史",
@@ -1480,6 +1556,12 @@ function setLang(value) {
   document.documentElement.setAttribute("lang", lang === "zh" ? "zh-CN" : "en");
   translateStaticText();
   applyTheme();
+
+  // The tab's title, in the language the page is now in. Set here rather than in
+  // the markup because boot calls this with the resolved language, so the first
+  // paint and every switch go through the same line — a title written into the
+  // HTML would be in whatever language the file happened to be edited in.
+  document.title = t("AppLab - an application platform better suited to VibeCoding");
 
   // The eyes are labelled from the one place that draws them rather than from
   // data-i18n attributes: the sign-in form's exists before any value does, so
@@ -2078,14 +2160,10 @@ async function loadApps() {
       link.rel = "noopener noreferrer";
       link.textContent = address;
       where.appendChild(link);
-      // Only the status distinguishes the two, so the note qualifies the link
-      // rather than replacing it.
-      if (!app.url) {
-        const note = document.createElement("span");
-        note.className = "muted";
-        note.textContent = " " + t("(not deployed)");
-        where.appendChild(note);
-      }
+      // The address is not annotated with whether the app is serving. It was,
+      // with "(not deployed)", and the note was the one thing in this column
+      // that was not the address — on a list whose other columns already say
+      // what state each app is in.
     }
     tr.appendChild(where);
 
@@ -2268,6 +2346,100 @@ async function switchBranch() {
   await Promise.all([loadAppState(), loadPods(), loadBranches(), loadCommits()]);
 }
 
+// The sections of the app page, in the order they appear, as the nav lists them.
+//
+// Declared here rather than derived from the markup: the order of the list is a
+// reading order someone chose, and a "first card wins" rule would tie it to
+// whichever card happened to be moved. The ids are what the anchors point at,
+// and a typo shows up as a link that does nothing — which appNavVisible checks.
+const APP_SECTIONS = [
+  { id: "card-state", label: "State" },
+  { id: "card-instances", label: "Instances" },
+  { id: "card-log", label: "Log" },
+  { id: "card-env", label: "Environment variables" },
+  { id: "card-builds", label: "Builds" },
+  { id: "card-history", label: "History" },
+];
+
+// renderAppNav builds the side list for the app page.
+//
+// Rebuilt on every open rather than once at boot: the labels are translated, and
+// the language can be switched while the page is up. Cheap enough that keeping it
+// true is simpler than deciding when it needs to be.
+function renderAppNav() {
+  const nav = $("app-nav");
+  nav.replaceChildren();
+
+  for (const section of APP_SECTIONS) {
+    // A section that is not on the page is not offered. A card can be absent —
+    // the build log is hidden until a build is opened — and a link to it would
+    // do nothing, which reads as a broken page rather than as a missing one.
+    if (!$(section.id)) continue;
+
+    const link = document.createElement("a");
+    link.href = "#" + section.id;
+    link.textContent = t(section.label);
+    link.dataset.section = section.id;
+    nav.appendChild(link);
+  }
+}
+
+// watchAppNav marks the section the reader is looking at.
+//
+// The alternative — highlighting whatever was last clicked — goes wrong the
+// moment someone scrolls instead of clicking, which is most of the time on a
+// page this long. The line is drawn at a fixed offset below the sticky header,
+// and the section whose top has passed it is the one being read.
+//
+// Only one observer exists at a time: opening another app replaces it, since the
+// sections are the same but the elements they point at are not.
+let appNavObserver = null;
+
+function watchAppNav() {
+  if (appNavObserver) {
+    appNavObserver.disconnect();
+    appNavObserver = null;
+  }
+
+  const links = [...$("app-nav").querySelectorAll("a")];
+  if (links.length === 0 || typeof IntersectionObserver === "undefined") return;
+
+  const mark = (id) => {
+    for (const link of links) {
+      if (link.dataset.section === id) link.classList.add("current");
+      else link.classList.remove("current");
+    }
+  };
+
+  // The first section is marked before any scrolling happens, so the list never
+  // shows nothing current on a page that is open at the top.
+  mark(links[0].dataset.section);
+
+  const seen = new Map();
+  appNavObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) seen.set(entry.target.id, entry.isIntersecting);
+
+    // The topmost visible section, in the order the nav lists them rather than
+    // in the order the entries arrived — the entries carry no order of their own.
+    for (const section of APP_SECTIONS) {
+      if (seen.get(section.id)) {
+        mark(section.id);
+        return;
+      }
+    }
+  }, {
+    // A section counts as current once its top comes within 80px of the top of
+    // the window, which is where the sticky header ends.
+    rootMargin: "-80px 0px 0px 0px",
+    threshold: 0,
+  });
+
+  for (const section of APP_SECTIONS) {
+    const element = $(section.id);
+    if (element) appNavObserver.observe(element);
+  }
+}
+
 async function openApp(id) {
   // Where the app was opened from, so "← Back" returns there. An app is
   // reachable from the apps list and from a build row, and sending someone to
@@ -2283,6 +2455,11 @@ async function openApp(id) {
   $("back").textContent = "← " + t(label || "Apps");
   show($("back"), state.scope !== "app");
   $("app-title").textContent = id;
+
+  // The side list: what this page has, and where in it the reader is. Rebuilt
+  // before the loads below, so the labels are up while the cards fill in.
+  renderAppNav();
+  watchAppNav();
   // Delete is an admin operation — the API refuses it for an app key — so the
   // button is not offered rather than shown as something that always fails.
   show($("app-delete"), state.scope !== "app");
@@ -2391,7 +2568,11 @@ function renderEnv(env) {
     body.appendChild(tr);
   }
 
-  show($("config-env-empty"), names.length === 0);
+  // The table and its note appear only when there is something in them. An app
+  // with no variables shows the heading and the Add button, which is the whole
+  // of what there is to do.
+  show($("config-env-table"), names.length > 0);
+  show($("config-env-note"), names.length > 0);
 }
 
 // configAction runs a configuration change and reports the outcome.
@@ -2510,9 +2691,12 @@ async function loadAppState() {
   // The address as text. The link that opens it lives in the title row, where
   // the reason someone opens this page is; repeating it here as a second link
   // would be a second thing to keep true, and this row is the record.
+  //
+  // It carries no note about whether the app is serving. It did — "(not
+  // deployed)" — and the row below it is the status, which says exactly that.
   const appAddress = addressURL(status.host, status.path, status.url);
   if (appAddress) {
-    add(t("url"), appAddress + (status.url ? "" : " " + t("(not deployed)")));
+    add(t("url"), appAddress);
   }
 
   add(t("status"), t(status.status));
@@ -3227,6 +3411,21 @@ $("pods-label").onblur = loadPods;
 
 // Configuration. The name and value fields are read at click time rather than
 // tracked as state, so there is nothing to keep in sync.
+//
+// The form is opened by Add and closed by Set or Cancel. Cancel clears what was
+// typed: leaving it would put a value the person decided against back on screen
+// the next time the form opened, which is a credential shown for no reason.
+$("config-env-add").onclick = () => {
+  show($("config-env-form"), true);
+  show($("config-problem"), false);
+  $("config-env-name").focus();
+};
+$("config-env-cancel").onclick = () => {
+  show($("config-env-form"), false);
+  show($("config-problem"), false);
+  $("config-env-name").value = "";
+  $("config-env-value").value = "";
+};
 $("config-env-set").onclick = () => {
   const name = $("config-env-name").value.trim();
   const value = $("config-env-value").value;
@@ -3237,6 +3436,7 @@ $("config-env-set").onclick = () => {
     return;
   }
   setEnv(name, value);
+  show($("config-env-form"), false);
   $("config-env-name").value = "";
   $("config-env-value").value = "";
 };

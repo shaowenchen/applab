@@ -294,7 +294,10 @@ async function render(apps) {
     ]);
     const text = body.allText();
     check("an undeployed app shows its address", text.includes("www.example.com/applab/apps/shop"), true);
-    check("marked as not deployed", text.includes("not deployed"), true);
+    // And nothing else in the cell. "(not deployed)" used to qualify the link,
+    // and it is gone: the column is the address, and the row's own status
+    // column is what says whether the app is serving.
+    check("with nothing appended to it", text.includes("not deployed"), false);
 
     const link = body.children[0].children[3].children.find((c) => c.tagName === "A");
     check("and the address is a link even before it is serving", link !== undefined, true);
@@ -532,6 +535,31 @@ async function render(apps) {
       null
     );
     check("and the document language is set", root.getAttribute("lang"), "en");
+
+    // The tab's title follows the language, which is why it is set in setLang
+    // rather than written into the markup: the file has one language and the
+    // reader may want the other.
+    check(
+      "and the tab's title is set",
+      sandbox.document.title,
+      "AppLab - an application platform better suited to VibeCoding"
+    );
+    {
+      const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+      ctx.globalThis = ctx;
+      vm.runInContext(source, ctx, { filename: "console.js" });
+      vm.runInContext('setLang("zh")', ctx);
+      check(
+        "and it is translated when the language is",
+        vm.runInContext("document.title", ctx),
+        "AppLab - 更适合 VibeCoding 的应用开发平台"
+      );
+      // Put it back. setLang remembers the choice in localStorage, and the store
+      // is shared with every later check in this file — one that reads the
+      // language at boot would otherwise come up in Chinese and fail on its
+      // English strings, which is a confusing way to learn about a leak.
+      vm.runInContext('setLang("en")', ctx);
+    }
   }
 
   // Every control the header carries has to label itself: two are text buttons
@@ -728,27 +756,37 @@ async function render(apps) {
   }
 
   // What can be changed about a running app, on the page that reports it. The
-  // controls belong next to the state they change, so this asserts they are in
-  // that card rather than only that they exist somewhere.
+  // controls belong next to the thing they act on, so this asserts they are in
+  // the right card rather than only that they exist somewhere.
+  //
+  // Branch and Port moved from State to Instances. They were rows among facts
+  // that are only read, and both are what someone comes to set when the
+  // instances are the problem: the wrong branch is the wrong code running, and
+  // the wrong port leaves every copy unreachable.
   {
-    const card = markup.match(/<h2 data-i18n="State"[\s\S]*?<\/div>\s*<\/div>/);
-    check("the State card exists", card !== null, true);
-    if (card) {
-      for (const id of ["app-build", "app-deploy", "app-branch", "app-branch-use", "app-port", "app-port-set", "app-auto-deploy"]) {
-        check(`the State card carries ${id}`, card[0].includes(`id="${id}"`), true);
-      }
-      // Replicas is deliberately not here: it belongs with the instances it
-      // counts, in the card below, not with the app's other settings. The port
-      // is the opposite case — it is not a fact about how many copies run, it is
-      // what the Service targets, so it belongs with the app.
-      check("and does not carry app-replicas", card[0].includes('id="app-replicas"'), false);
+    const state = markup.match(/<h2 data-i18n="State"[\s\S]*?<h2 data-i18n="Instances"/);
+    const instances = markup.match(/<h2 data-i18n="Instances"[\s\S]*?<h2 data-i18n="Log"/);
+    check("the State card exists", state !== null, true);
+    check("and the Instances card", instances !== null, true);
 
-      // Auto-deploy is here rather than a card of its own because it is a
-      // setting like the others — and unlike them it applies immediately, which
-      // is why it must not sit under the "takes effect on the next deploy" note.
+    if (state && instances) {
+      for (const id of ["app-build", "app-deploy", "app-auto-deploy"]) {
+        check(`the State card carries ${id}`, state[0].includes(`id="${id}"`), true);
+      }
+      for (const id of ["app-replicas", "app-branch", "app-branch-use", "app-port", "app-port-set"]) {
+        check(`the Instances card carries ${id}`, instances[0].includes(`id="${id}"`), true);
+      }
+      // And they are not in both, which is how a move becomes a copy.
+      for (const id of ["app-branch", "app-port"]) {
+        check(`and the State card no longer carries ${id}`, state[0].includes(`id="${id}"`), false);
+      }
+
+      // Auto-deploy is a setting like the others — and unlike them it applies
+      // immediately, which is why it must not sit under the note about the next
+      // deploy.
       check(
         "and auto-deploy is not under the next-deploy note",
-        /app-auto-deploy[\s\S]{0,400}?takes effect on the next deploy/.test(card[0]),
+        /app-auto-deploy[\s\S]{0,400}?takes effect on the next deploy/.test(state[0]),
         false
       );
     }
@@ -1108,6 +1146,46 @@ async function render(apps) {
 
     const posted = ctx.bodies.find((b) => b.url.endsWith("/api/v1/apps"));
     check("and the request carries the port the form showed", posted && JSON.parse(posted.body).port, 80);
+  }
+
+  // The app page's side navigation.
+  //
+  // Every link points at a section of the page, so the thing worth asserting is
+  // that the ids exist — a typo is a link that does nothing, which looks like a
+  // broken console rather than a missing section. Read from APP_SECTIONS, the
+  // list the nav is built from, so a section added there without its markup is
+  // caught too.
+  {
+    const sections = vm.runInContext("APP_SECTIONS", context);
+    check("the app page declares its sections", Array.isArray(sections) && sections.length > 0, true);
+
+    const body = markup.slice(markup.indexOf('id="app-view"'));
+    const missing = (sections || []).filter((s) => !body.includes(`id="${s.id}"`));
+    check(
+      "and every section it lists is on the page",
+      missing.map((s) => s.id).join(" | "),
+      ""
+    );
+
+    // The nav sits in the page rather than being generated into it, and the list
+    // is built from the declaration above.
+    check("the nav is in the markup", markup.includes('id="app-nav"'), true);
+    check(
+      "and the renderer builds it from that declaration",
+      /renderAppNav[\s\S]{0,400}?APP_SECTIONS/.test(source),
+      true
+    );
+
+    // Every label has to be translatable: the nav is rebuilt on a language
+    // switch, so an untranslated label would sit in English on a Chinese page.
+    const labels = (sections || []).map((s) => s.label);
+    const untranslated = labels.filter((l) => !(/\bt\(/.test(source) && source.includes(`"${l}":`)));
+    check("and every section's label is a translated string", untranslated.join(" | "), "");
+
+    // The sticky offset and the anchor's scroll margin have to agree, or a jump
+    // puts the heading under the header.
+    check("the nav sticks", /\.app-nav\s*\{[^}]*position:\s*sticky/.test(markup), true);
+    check("and an anchored card clears the header", /scroll-margin-top/.test(markup), true);
   }
 
   if (failures > 0) {
