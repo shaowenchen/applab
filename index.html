@@ -641,7 +641,7 @@ export APPLAB_KEY=&lt;the admin key from the release's Secret&gt;
 (<code>make build</code> puts it in <code>bin/</code>), or drive the same endpoints with <code>curl</code> — the
 last part of this section shows that instead.</p>
 <h3 id="1-create-the-app">1. Create the app</h3>
-<pre><code class="language-bash">applab create shop --port 8080
+<pre><code class="language-bash">applab create shop --port 80
 </code></pre>
 <table>
 <thead>
@@ -653,7 +653,7 @@ last part of this section shows that instead.</p>
 <tbody>
 <tr>
 <td><code>--port</code></td>
-<td>the port the app listens on in its container; 8080 if omitted</td>
+<td>the port the app listens on in its container; 80 if omitted</td>
 </tr>
 <tr>
 <td><code>--dockerfile</code></td>
@@ -746,7 +746,7 @@ applab deploy shop         # run that image
 curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps&quot; \
   -H &quot;Authorization: Bearer $APPLAB_KEY&quot; \
   -H &quot;Content-Type: application/json&quot; \
-  -d '{&quot;id&quot;:&quot;shop&quot;,&quot;port&quot;:8080}'
+  -d '{&quot;id&quot;:&quot;shop&quot;,&quot;port&quot;:80}'
 
 # 2. The app's own key, to use from here on.
 curl -sS &quot;$APPLAB_URL/api/v1/apps/shop/key&quot; \
