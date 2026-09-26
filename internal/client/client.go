@@ -705,6 +705,19 @@ func (c *Client) GetBuild(ctx context.Context, appID, buildID string) (*Build, e
 	return &out, nil
 }
 
+// CancelBuild stops a build that has not finished.
+//
+// The build is marked cancelled rather than deleted: the history is a record of
+// what was attempted, and a build that was stopped is part of it. A build that
+// has already finished is refused — relabelling a completed build would make the
+// record say something that did not happen.
+//
+// It is what the console's Stop button does, and it is the same whether a person
+// changed their mind or a newer upload superseded this build.
+func (c *Client) CancelBuild(ctx context.Context, appID, buildID string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/apps/"+appID+"/builds/"+buildID, nil, "", nil)
+}
+
 // ListBuilds returns an app's builds.
 func (c *Client) ListBuilds(ctx context.Context, appID string, limit int) ([]Build, error) {
 	path := "/api/v1/apps/" + appID + "/builds"

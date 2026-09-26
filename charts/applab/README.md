@@ -595,6 +595,7 @@ Nothing needs calling, so this step is only about seeing where it got to:
 applab status shop         # what AppLab recorded and what the cluster actually has
 applab logs shop -f        # the running app's output
 applab builds shop --logs  # the build's output, if it did not get that far
+applab builds shop --stop <id>   # cancel one that has not finished
 ```
 
 `applab status` is the first thing to read when something is wrong: it reports

@@ -468,20 +468,45 @@ container's last instance, which is where a crash loop's reason is written.`,
 	return cmd
 }
 
-// buildsCommand lists an app's builds, or streams one's log.
+// buildsCommand lists an app's builds, streams one's log, or stops one.
 func buildsCommand(urlFlag, keyFlag *string) *cobra.Command {
-	var showLogs bool
+	var (
+		showLogs  bool
+		watch     bool
+		stopBuild string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "builds <app>",
 		Short: "List an app's builds",
-		Args:  cobra.ExactArgs(1),
+		Long: `List an app's builds, newest first.
+
+With --stop a build is cancelled instead: the build is recorded as cancelled
+rather than removed, because the history is a record of what was attempted. A
+build that has already finished is refused, which is why the id comes from the
+listing above rather than from memory.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := newClient(*urlFlag, *keyFlag)
 			if err != nil {
 				return err
 			}
 			appID := args[0]
+
+			if stopBuild != "" {
+				// A prefix is accepted because that is what the listing shows,
+				// and expanded here against the history rather than sent as a
+				// partial id the server cannot match.
+				id, err := resolveBuildID(cmd.Context(), c, appID, stopBuild)
+				if err != nil {
+					return err
+				}
+				if err := c.CancelBuild(cmd.Context(), appID, id); err != nil {
+					return err
+				}
+				fmt.Printf("build %s cancelled\n", short(id))
+				return nil
+			}
 
 			builds, err := c.ListBuilds(cmd.Context(), appID, 20)
 			if err != nil {
@@ -492,7 +517,7 @@ func buildsCommand(urlFlag, keyFlag *string) *cobra.Command {
 				return nil
 			}
 
-			if showLogs {
+			if watch || showLogs {
 				// The newest build is the one someone asking for logs means.
 				return watchBuild(cmd.Context(), c, appID, builds[0].ID)
 			}
@@ -512,7 +537,37 @@ func buildsCommand(urlFlag, keyFlag *string) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&showLogs, "logs", false, "follow the newest build's log instead")
+	cmd.Flags().BoolVar(&watch, "watch", false, "wait for the newest build to finish")
+	cmd.Flags().StringVar(&stopBuild, "stop", "", "cancel a build by id (a prefix of the id is enough)")
 	return cmd
+}
+
+// resolveBuildID expands an abbreviated build id against an app's history.
+//
+// The listing prints eight characters, so that is what someone has in front of
+// them — and sending those to the server would be a 404 for an id that exists.
+// An ambiguous prefix is refused rather than guessed at: cancelling the wrong
+// build is not recoverable by looking it up again.
+func resolveBuildID(ctx context.Context, c *client.Client, appID, prefix string) (string, error) {
+	builds, err := c.ListBuilds(ctx, appID, 0)
+	if err != nil {
+		return "", err
+	}
+
+	var matches []string
+	for _, b := range builds {
+		if strings.HasPrefix(b.ID, prefix) {
+			matches = append(matches, b.ID)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("no build of %s has an id starting with %q", appID, prefix)
+	default:
+		return "", fmt.Errorf("%q matches %d builds; give more of the id", prefix, len(matches))
+	}
 }
 
 // commitsCommand lists an app's commit history.
