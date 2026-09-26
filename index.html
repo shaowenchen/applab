@@ -753,15 +753,15 @@ before it has ever been deployed, so the URL the console shows is the one it wil
 serve at.</p>
 <h3 id="5-watch-it-come-up">5. Watch it come up</h3>
 <p>Nothing needs calling, so this step is only about seeing where it got to:</p>
-<pre><code class="language-bash">applab status shop         # what AppLab recorded and what the cluster actually has
+<pre><code class="language-bash">applab status shop         # what is running, and where
 applab logs shop -f        # the running app's output
 applab builds shop --logs  # the build's output, if it did not get that far
 applab builds shop --stop &lt;id&gt;   # cancel one that has not finished
+applab resources shop      # what it is using, and the bounds it runs under
 </code></pre>
 <p><code>applab status</code> is the first thing to read when something is wrong: it reports
-AppLab's own record beside the cluster's, and the difference between the two is
-the information. <code>applab diagnose shop</code> walks the same checks in order and reports
-the first that fails.</p>
+what the cluster has, and the commit it was built from. <code>applab diagnose shop</code>
+walks the same checks in order and reports the first that fails.</p>
 <p>If you would rather drive it by hand — to build a specific commit, or to rebuild
 something without pushing:</p>
 <pre><code class="language-bash">applab build shop          # build the newest commit into an image
