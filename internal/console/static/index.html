@@ -746,7 +746,12 @@
     <div class="card flush">
       <table>
         <thead>
-          <tr><th data-i18n="App">App</th><th data-i18n="Status">Status</th><th data-i18n="Commit">Commit</th><th data-i18n="Where">Where</th></tr>
+          <!-- Two status columns rather than one, because they answer two
+               questions and fail independently: a build can fail while the
+               previous revision keeps serving, and a build can succeed while
+               nothing new is deployed. One column that showed only one of them
+               was wrong about the other half the time. -->
+          <tr><th data-i18n="App">App</th><th data-i18n="Running">Running</th><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Where">Where</th></tr>
         </thead>
         <tbody id="apps"></tbody>
       </table>
@@ -994,14 +999,14 @@
 
     <div class="card" id="card-env">
       <div class="card-head">
-        <h2 data-i18n="Environment variables">Environment variables</h2>
+        <h2 data-i18n="Configuration">Configuration</h2>
         <!-- Adding is a "+" rather than a form that is always open, and rather
              than a labelled button: the form is three fields wide and empty on
              every app that has no variables, which is most of them, and a card
              showing an input row before you have decided to add anything reads
              as something to fill in. The label is on the title attribute and the
              aria-label, so the glyph is not the only thing naming it. -->
-        <button id="config-env-add" class="icon" data-i18n-title="Add an environment variable" aria-label="Add an environment variable">+</button>
+        <button id="config-env-add" class="icon" data-i18n-title="Add a variable" aria-label="Add a variable">+</button>
       </div>
 
       <!-- The row of inputs that used to sit under the table is gone: the
@@ -1023,10 +1028,10 @@
            a page that worded this as a promise would be claiming more than the
            platform delivers. The eye only keeps a value off the screen. -->
       <p id="config-env-note" class="muted hidden" style="font-size:13px;margin-bottom:0"
-         data-i18n="Values are written into the Deployment's environment, so anyone who can read that Deployment can read them. The eye here only keeps them off the screen.">Values
-        are written into the Deployment's environment, so anyone who can read
-        that Deployment can read them. The eye here only keeps them off the
-        screen.</p>
+         data-i18n="These reach the container as environment variables on the next deploy, and are visible to anyone who can read the Deployment. The eye here only keeps them off this screen.">These
+        reach the container as environment variables on the next deploy, and are
+        visible to anyone who can read the Deployment. The eye here only keeps
+        them off this screen.</p>
       <div id="config-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
 
@@ -1073,6 +1078,8 @@
         <tbody id="commits"></tbody>
       </table>
     </div>
+
+  </section>
 
     <!-- The dialog that creates an app.
 
@@ -1143,7 +1150,6 @@
         <pre id="build-logs" class="hidden"></pre>
       </div>
     </div>
-  </section>
 </main>
 
 <script>
@@ -1411,10 +1417,12 @@ const ZH = {
   // "no environment variables" line under it, are both gone with the markup
   // they labelled: the note repeated what the card's other settings already say,
   // and an empty app now shows only its heading and the Add button.
-  "Environment variables": "环境变量",
-  "Values are written into the Deployment's environment, so anyone who can read that Deployment can read them. The eye here only keeps them off the screen.":
-    "这些值会被写入 Deployment 的环境变量，因此任何能读取该 Deployment 的人都能读到。这里的眼睛只是不把它们显示在屏幕上。",
-  "Add an environment variable": "添加环境变量",
+  "Configuration": "配置",
+  "Running": "运行状态",
+  "Build": "构建状态",
+  "Add a variable": "添加变量",
+  "These reach the container as environment variables on the next deploy, and are visible to anyone who can read the Deployment. The eye here only keeps them off this screen.":
+    "这些会在下次部署时作为环境变量注入容器，任何能读取该 Deployment 的人都能看到。这里的眼睛只是不把它们显示在屏幕上。",
   "Set": "设置",
   "Save": "保存",
   "Remove": "移除",
@@ -2453,9 +2461,25 @@ async function loadApps() {
     id.onclick = () => openApp(app.id);
     tr.appendChild(id);
 
-    const status = document.createElement("td");
-    status.appendChild(pill(app.status));
-    tr.appendChild(status);
+    // Running: what the cluster has. Built: what the newest build did. The
+    // commit column beside them is the *deployed* commit, so a build that
+    // succeeded and has not been deployed shows as a build with the older
+    // commit still serving — which is the truth, and the reason the two
+    // columns are not one.
+    const running = document.createElement("td");
+    running.appendChild(pill(app.run_status));
+    tr.appendChild(running);
+
+    const built = document.createElement("td");
+    if (app.build_status) {
+      built.appendChild(buildPill(app.build_status));
+    } else {
+      // Never built is not the same as a failed build: an app whose source has
+      // not been pushed yet has no problem, and a red pill would invent one.
+      built.className = "muted";
+      built.textContent = "—";
+    }
+    tr.appendChild(built);
 
     const commit = document.createElement("td");
     commit.className = "mono";
@@ -2684,7 +2708,7 @@ const APP_SECTIONS = [
   { id: "card-resources", label: "Resources" },
   { id: "card-instances", label: "Instances" },
   { id: "card-log", label: "Log" },
-  { id: "card-env", label: "Environment variables" },
+  { id: "card-env", label: "Configuration" },
   { id: "card-builds", label: "Builds" },
   { id: "card-history", label: "History" },
 ];

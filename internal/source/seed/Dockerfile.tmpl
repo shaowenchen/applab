@@ -30,9 +30,12 @@ FROM nginx:1.27-alpine
 # is what the Service targets and what the gateway routes to, and an app
 # listening somewhere else is an app nothing can reach.
 #
-# The app's port is set when it is created — `applab create <app> --port 80`, or
-# the port field in the console — and reaches the container as $PORT. 80 is the
-# default there, which is why this matches out of the box.
+# The app's port reaches the container as $PORT, and AppLab puts the Service and
+# the gateway route on whatever it is set to. It is 80 unless someone changes it
+# — `applab update <app> --port 3000`, or the port field on the app's page — so
+# this file matching 80 is what makes an app created with nothing but an id work
+# without being touched. An app that listens somewhere else sets the port to
+# match, rather than the other way round.
 EXPOSE 80
 
 # No CMD: the base image's own entrypoint starts nginx in the foreground, which

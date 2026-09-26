@@ -309,7 +309,7 @@ async function render(apps) {
     // column is what says whether the app is serving.
     check("with nothing appended to it", text.includes("not deployed"), false);
 
-    const link = body.children[0].children[3].children.find((c) => c.tagName === "A");
+    const link = body.children[0].children[4].children.find((c) => c.tagName === "A");
     check("and the address is a link even before it is serving", link !== undefined, true);
     check(
       "pointing at where the app will be",
@@ -1419,3 +1419,56 @@ async function render(apps) {
   }
   console.log("\nall console rendering checks passed");
 })();
+
+  // The dialogs are outside every view section.
+  //
+  // This is the bug that made all three log views unusable. Both dialogs used to
+  // sit inside #app-view — contradicting the comment above them, which says they
+  // are placed outside the scrolling column — and #app-view is hidden by navTo
+  // whenever another view is showing. So the platform log's button, which lives
+  // on the overview, opened a dialog inside a section with `display: none`, and
+  // nothing appeared at all.
+  //
+  // Asserted structurally, because that is the whole of the failure: the markup
+  // and the handlers were all present and correct, and the element was simply not
+  // reachable from where the button was.
+  {
+    const idx = (needle) => markup.indexOf(needle);
+    const mainOpen = idx("<main>");
+    const mainClose = idx("</main>");
+    // The three view sections, and where each ends. The last one runs to the
+    // final </section> before </main>, not to </main> itself — the dialogs sit
+    // between the two, which is exactly the distinction being asserted.
+    const bounds = [
+      ["overview-view", idx('id="apps-view"')],
+      ["apps-view", idx('id="app-view"')],
+      ["app-view", markup.lastIndexOf("</section>")],
+    ]
+      .map(([id, end]) => [idx('id="' + id + '"'), end])
+      .filter(([a]) => a >= 0);
+
+    for (const dialog of ["log-modal", "apps-new-modal"]) {
+      const at = idx('id="' + dialog + '"');
+      check(
+        `the ${dialog} dialog exists in the markup`,
+        at > mainOpen && at < mainClose,
+        true
+      );
+      if (!(at > mainOpen && at < mainClose)) continue;
+
+      const inside = bounds.find(([a, b]) => at > a && at < b);
+      check(
+        `and the ${dialog} dialog is not inside a view section`,
+        inside ? "inside the section containing offset " + inside[0] : "",
+        ""
+      );
+    }
+
+    // The platform log's button is on the overview, so its dialog in particular
+    // has to be reachable from there.
+    check(
+      "the platform log button is on the overview, where its dialog is not",
+      idx('id="platform-logs-open"') > bounds[0][0] && idx('id="platform-logs-open"') < bounds[0][1],
+      true
+    );
+  }

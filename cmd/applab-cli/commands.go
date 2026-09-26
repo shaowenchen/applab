@@ -159,15 +159,25 @@ func listCommand(urlFlag, keyFlag *string) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "APP\tSTATUS\tCOMMIT\tURL")
+			// Two status columns, matching the console's table. They answer
+			// different questions — is it serving, and did the last build work —
+			// and they fail independently, so one column had to be wrong about
+			// one of them whenever they disagreed.
+			fmt.Fprintln(w, "APP\tRUNNING\tBUILD\tCOMMIT\tURL")
 			undeployed := 0
 			for _, app := range apps {
 				url := app.URL
 				if url == "" {
 					url = "-"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", app.ID, app.Status, shortSHA(app.CommitSHA), url)
-				if app.Status == "created" {
+				// Never built reads as a dash rather than as a blank or as
+				// "failed": an app nobody has pushed to has no problem.
+				built := app.BuildStatus
+				if built == "" {
+					built = "-"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", app.ID, app.RunStatus, built, shortSHA(app.CommitSHA), url)
+				if app.RunStatus == "created" {
 					undeployed++
 				}
 			}

@@ -159,7 +159,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]appResponse, 0, len(apps))
 	live := s.liveStatus(r.Context())
-	statuses := s.appStatuses(r.Context(), apps, live)
+	runtimes := s.appRuntimes(r.Context(), apps, live)
 	for _, a := range apps {
 		if !identity.Authenticated() {
 			break
@@ -167,7 +167,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		if !identity.Admin() && a.ID != identity.App {
 			continue
 		}
-		out = append(out, s.toAppResponse(a, r, statuses[a.ID], live[a.ID]))
+		out = append(out, s.toAppResponse(a, r, runtimes[a.ID]))
 	}
 
 	cfg := s.configResponse(r)

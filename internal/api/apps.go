@@ -104,11 +104,52 @@ type appResponse struct {
 	// already in the record.
 	Resources model.Resources `json:"resources"`
 
+	// Status is the one-word summary shown on the app's own page and by
+	// `applab status`: the running state, or "building" while a build is in
+	// flight, because there is room for one answer there and "something is
+	// happening to this app" is what someone wants from it.
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason,omitempty"`
 
+	// RunStatus and BuildStatus are the two halves that summary folds together,
+	// reported separately because a listing has room for both and they fail
+	// independently: a failed build leaves the previous revision running, and a
+	// successful build changes nothing until a deploy applies it. A single
+	// column that had to choose one of them was wrong about the other half the
+	// time.
+	//
+	// RunStatus is where the app is running — created, deploying, running or
+	// failed — and is the same value Status carries when nothing is building.
+	RunStatus string `json:"run_status"`
+	// BuildStatus is the *latest* build's outcome: pending, running, succeeded,
+	// failed or cancelled. Empty when the app has never been built, which is
+	// different from a build that failed — an app whose source has never been
+	// built is not an app with a problem.
+	BuildStatus string `json:"build_status,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// appRuntime is what the cluster says about one app, gathered so a response can
+// be built from one value rather than from a growing argument list.
+//
+// It is assembled once per listing — see appRuntimes — because each of its parts
+// is a read the whole page shares: one Deployment list, one build Job list.
+type appRuntime struct {
+	// Status is the folded summary; RunStatus is the half of it that is about the
+	// Deployment. Both are carried because the two routes present differently: an
+	// app's own page shows one, a listing shows the other beside the build.
+	Status    model.AppStatus
+	RunStatus model.AppStatus
+
+	// BuildStatus is the latest build's outcome, empty when nothing has been
+	// built.
+	BuildStatus model.BuildStatus
+
+	// Live is the Deployment's own state, for the commit, the image and the
+	// rollout message.
+	Live deploy.Status
 }
 
 // addressFor resolves where an app is served under this deployment's
@@ -121,39 +162,41 @@ func (s *Server) addressFor(a *model.App) model.Address {
 
 // toAppResponse renders an app as the API presents it.
 //
-// status and live are passed in rather than read from the app, because the app
-// no longer carries them: what is running is a fact about the cluster, and it is
-// read once for a whole listing rather than once per row. A caller that has no
-// cluster passes the zero Status, which reports the app as not deployed — which
-// is what a deployment without a cluster can honestly say.
+// runtime is passed in rather than read from the app, because the app does not
+// carry any of it: what is running is a fact about the cluster, and it is read
+// once for a whole listing rather than once per row. A caller with no cluster
+// passes the zero appRuntime, which reports the app as not deployed — which is
+// what a deployment without a cluster can honestly say.
 //
 // It is a method rather than a function taking the convention as arguments: the
 // base domain, the base path and the path prefix are only meaningful together,
 // and three positional strings is a pair waiting to be swapped.
-func (s *Server) toAppResponse(a *model.App, r *http.Request, status model.AppStatus, live deploy.Status) appResponse {
+func (s *Server) toAppResponse(a *model.App, r *http.Request, runtime appRuntime) appResponse {
 	resp := appResponse{
-		ID:         a.ID,
-		Name:       a.Name,
-		Port:       a.Port,
-		Replicas:   a.Replicas,
-		Dockerfile: a.Dockerfile,
-		Domain:     a.Domain,
-		Branch:     a.ActiveBranch(),
-		AutoDeploy: a.AutoDeploys(),
-		Resources:  a.Resources,
-		Status:     string(status),
-		EnvCount:   len(a.Env),
-		CreatedAt:  a.CreatedAt,
-		UpdatedAt:  a.UpdatedAt,
+		ID:          a.ID,
+		Name:        a.Name,
+		Port:        a.Port,
+		Replicas:    a.Replicas,
+		Dockerfile:  a.Dockerfile,
+		Domain:      a.Domain,
+		Branch:      a.ActiveBranch(),
+		AutoDeploy:  a.AutoDeploys(),
+		Resources:   a.Resources,
+		Status:      string(runtime.Status),
+		RunStatus:   string(runtime.RunStatus),
+		BuildStatus: string(runtime.BuildStatus),
+		EnvCount:    len(a.Env),
+		CreatedAt:   a.CreatedAt,
+		UpdatedAt:   a.UpdatedAt,
 	}
 
 	// What is deployed, from the cluster. Both are empty for an app with no
 	// Deployment, which is what the console reads to decide whether to show a
 	// commit at all.
-	if live.Found {
-		resp.CommitSHA = live.CommitSHA
-		resp.Image = live.CurrentImage
-		resp.StatusReason = live.Message
+	if runtime.Live.Found {
+		resp.CommitSHA = runtime.Live.CommitSHA
+		resp.Image = runtime.Live.CurrentImage
+		resp.StatusReason = runtime.Live.Message
 	}
 
 	addr := s.addressFor(a)
@@ -167,13 +210,12 @@ func (s *Server) toAppResponse(a *model.App, r *http.Request, status model.AppSt
 //
 // It is what every single-app route uses, so that a route cannot report a status
 // that disagrees with its neighbours: there is one place that decides, and this
-// is the convenience wrapper over it. The list route does not use it — it
-// resolves every app's status in one pass instead, which is the whole point of
-// appStatuses.
+// is the convenience wrapper over it. The list route resolves every app in one
+// pass instead, which is the whole point of appRuntimes.
 func (s *Server) appResponseFor(ctx context.Context, r *http.Request, app *model.App) appResponse {
 	live := s.liveStatusesFor(ctx, app)
-	status := appStatus(map[string]deploy.Status{app.ID: live}, app.ID, s.buildInFlight(ctx, app))
-	return s.toAppResponse(app, r, status, live)
+	runtimes := s.appRuntimes(ctx, []*model.App{app}, map[string]deploy.Status{app.ID: live})
+	return s.toAppResponse(app, r, runtimes[app.ID])
 }
 
 // createAppRequest is the body of POST /api/v1/apps.
@@ -421,12 +463,12 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 	// for reuse, and the flag selected on a value that could not occur.
 	out := make([]appResponse, 0, len(apps))
 	live := s.liveStatus(r.Context())
-	statuses := s.appStatuses(r.Context(), apps, live)
+	runtimes := s.appRuntimes(r.Context(), apps, live)
 	for _, a := range apps {
 		if !identity.Admin() && a.ID != identity.App {
 			continue
 		}
-		out = append(out, s.toAppResponse(a, r, statuses[a.ID], live[a.ID]))
+		out = append(out, s.toAppResponse(a, r, runtimes[a.ID]))
 	}
 	respond(w, http.StatusOK, out)
 }

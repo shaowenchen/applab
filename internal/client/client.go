@@ -458,8 +458,20 @@ type App struct {
 	// actually runs under, and that one is on Resources() below.
 	Resources AppResources `json:"resources"`
 
+	// Status is the one-word summary: what is running, or "building" while a
+	// build is in flight. RunStatus and BuildStatus are the two halves it folds
+	// together, and they fail independently — a failed build leaves the previous
+	// revision serving, and a successful build changes nothing until a deploy
+	// applies it. A caller rendering a table wants the pair; a caller that has
+	// room for one word wants Status.
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason"`
+
+	// RunStatus is where the app is running: created, deploying, running or
+	// failed. BuildStatus is the *latest* build's outcome, empty when the app
+	// has never been built — which is not the same as a build that failed.
+	RunStatus   string `json:"run_status"`
+	BuildStatus string `json:"build_status"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

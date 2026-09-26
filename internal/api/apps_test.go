@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
@@ -15,6 +16,10 @@ import (
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/objectstore"
 	"github.com/shaowenchen/applab/internal/store"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // doRequest issues a request through the real handler with a valid key, and
@@ -587,4 +592,152 @@ func TestAPortOutsideTheRangeIsRefusedOnAPatchToo(t *testing.T) {
 	if app["port"] != float64(80) {
 		t.Errorf("port = %v after refused patches, want it left at 80", app["port"])
 	}
+}
+
+// TestTheTwoStatusColumnsSayDifferentThings asserts the split the apps list is
+// built on: what is running and what the last build did are separate answers.
+//
+// They have to be, because they fail independently. A build that failed leaves
+// the previous revision serving, and a build that succeeded changes nothing
+// until a deploy applies it — so one column carrying a single status was wrong
+// about one of the two whenever they disagreed, which is exactly when someone is
+// reading the list.
+func TestTheTwoStatusColumnsSayDifferentThings(t *testing.T) {
+	srv, client, st := newDeployServer(t)
+	h := srv.Handler()
+
+	commit := setupAppWithCommit(t, srv, h, "shop")
+	registerBuildJob(t, srv, st, "shop", commit)
+
+	// A Deployment that is available, which is the cluster's answer the list
+	// reports as running.
+	createDeployment(t, client, "shop", true)
+
+	check := func(name string, row map[string]any, key, want string) {
+		t.Helper()
+		if row[key] != want {
+			t.Errorf("%s: %s = %v, want %q", name, key, row[key], want)
+		}
+	}
+
+	row := getAppField(t, h, "shop")
+	check("a built and deployed app", row, "run_status", "running")
+	check("a built and deployed app", row, "build_status", "succeeded")
+
+	// The case the split exists for: the *newest* build fails while the revision
+	// already serving stays up. Nothing deploys here, which is the point — a
+	// failed build is a fact about the source, and the app is still serving the
+	// commit that worked.
+	failTheNewestBuild(t, srv, client, st, "shop", commit)
+
+	row = getAppField(t, h, "shop")
+	check("after the newest build failed", row, "run_status", "running")
+	check("after the newest build failed", row, "build_status", "failed")
+
+	// And the folded summary keeps its old behaviour, because an app's own page
+	// and `applab status` show one word: a failed build does not make the app
+	// "failed" while it is still serving.
+	check("after the newest build failed", row, "status", "running")
+}
+
+// TestAnAppThatHasNeverBeenBuiltHasNoBuildStatus asserts the empty case, which
+// is not a failure.
+//
+// "Never built" and "the build failed" are different facts and only one of them
+// is a problem. A column that showed both as red would put a fault on screen for
+// every app someone has created and not yet pushed to.
+func TestAnAppThatHasNeverBeenBuiltHasNoBuildStatus(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	row := getAppField(t, h, "shop")
+	if status, present := row["build_status"]; present {
+		t.Errorf("build_status = %v on an app that has never been built; the field is omitted rather than empty so a client can tell it apart from a build that failed", status)
+	}
+	if row["run_status"] != "created" {
+		t.Errorf("run_status = %v, want created — nothing is deployed", row["run_status"])
+	}
+}
+
+// failTheNewestBuild starts a build for an app's current tip and marks its Job
+// as failed, which is how a build failure reaches the list.
+//
+// A fresh build rather than failing the one already there is deliberate: it is
+// the newer build that must win the "latest" comparison. A test that failed the
+// older Job would pass against an implementation that reported whichever build
+// it happened to see first.
+func failTheNewestBuild(t *testing.T, srv *api.Server, client *fake.Clientset, st *store.Store, appID, commit string) {
+	t.Helper()
+
+	ctx := context.Background()
+	app, err := st.GetApp(ctx, appID)
+	if err != nil {
+		t.Fatalf("read the app to build: %v", err)
+	}
+	app.Namespace = "ops-system"
+
+	buildID, err := model.NewID()
+	if err != nil {
+		t.Fatalf("generate a build id: %v", err)
+	}
+	if _, err := testBuildEngine(srv).Start(ctx, app, app.ActiveBranch(), buildID, commit, "test-key"); err != nil {
+		t.Fatalf("start the second build: %v", err)
+	}
+
+	jobs, err := client.BatchV1().Jobs("ops-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list the build jobs: %v", err)
+	}
+	var job *batchv1.Job
+	for i := range jobs.Items {
+		if jobs.Items[i].Labels["applab.io/build"] == buildID {
+			job = &jobs.Items[i]
+		}
+	}
+	if job == nil {
+		t.Fatalf("the Job for build %s was not created", buildID)
+	}
+
+	job.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+	}}
+
+	// Stamped here because the fake clientset does not stamp it and a real API
+	// server always does. "Latest" is a comparison of creation times, so without
+	// this both Jobs tie at the zero time and the test would be asserting about
+	// the order the list happened to come back in rather than about the newest
+	// build.
+	job.CreationTimestamp = metav1.NewTime(time.Now().Add(time.Minute))
+	if _, err := client.BatchV1().Jobs("ops-system").Update(ctx, job, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("stamp the build job: %v", err)
+	}
+
+	if _, err := client.BatchV1().Jobs("ops-system").UpdateStatus(ctx, job, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("fail the build job: %v", err)
+	}
+}
+
+// getAppField reads one app from the list endpoint, which is the route the
+// console's table renders from — so what a test asserts here is what the page
+// has to work with.
+func getAppField(t *testing.T, h http.Handler, appID string) map[string]any {
+	t.Helper()
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list apps: %d (%s)", rec.Code, rec.Body.String())
+	}
+	var apps []map[string]any
+	decodeData(t, rec, &apps)
+	for _, app := range apps {
+		if app["id"] == appID {
+			return app
+		}
+	}
+	t.Fatalf("app %q is not in the listing", appID)
+	return nil
 }

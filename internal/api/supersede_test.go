@@ -106,6 +106,23 @@ func (f *fakeBuildEngine) ListAll(ctx context.Context, namespace string, limit i
 	return f.list(func(build.Result) bool { return true }, limit), nil
 }
 
+// LatestPerApp picks each app's newest build out of the same map, which is what
+// the real engine does with one listing of the Jobs.
+func (f *fakeBuildEngine) LatestPerApp(ctx context.Context, namespace string) (map[string]build.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// f.list orders newest first, so the first entry seen for an app is its
+	// latest — the same rule the real implementation applies per app.
+	out := map[string]build.Result{}
+	for _, b := range f.list(func(build.Result) bool { return true }, 0) {
+		if _, seen := out[b.AppID]; !seen {
+			out[b.AppID] = b
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeBuildEngine) Get(ctx context.Context, namespace, appID, buildID string) (*build.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

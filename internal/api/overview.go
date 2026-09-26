@@ -89,11 +89,15 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, Errorf(http.StatusInternalServerError, "could not list apps").Wrap(err))
 		return
 	}
-	appStatuses := s.appStatuses(r.Context(), allApps, s.liveStatus(r.Context()))
+	// The folded status, which is what these counts are of: an app with a build
+	// in flight counts as building rather than as whatever it is currently
+	// serving, because the question this panel answers is "what is happening",
+	// not "what did the last deploy leave behind".
+	runtimes := s.appRuntimes(r.Context(), allApps, s.liveStatus(r.Context()))
 
 	appCounts := map[model.AppStatus]int{}
-	for _, status := range appStatuses {
-		appCounts[status]++
+	for _, runtime := range runtimes {
+		appCounts[runtime.Status]++
 	}
 
 	// Build history comes from the Jobs, and one listing supplies both the counts

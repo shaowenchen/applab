@@ -172,6 +172,13 @@ type BuildEngine interface {
 	// oldest first.
 	Unfinished(ctx context.Context, namespace, appID string) ([]build.Result, error)
 
+	// LatestPerApp returns each app's most recent build, keyed by app id. One
+	// listing answers for a whole page of apps, which is what a listing needs and
+	// what ListAll cannot do: a limit there applies across apps, so an app whose
+	// last build was a while ago would fall out of the page and read as never
+	// built.
+	LatestPerApp(ctx context.Context, namespace string) (map[string]build.Result, error)
+
 	// InFlight returns the ids of every app in the namespace that has a build
 	// that has not finished, in one read.
 	InFlight(ctx context.Context, namespace string) (map[string]bool, error)

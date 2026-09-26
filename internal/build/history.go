@@ -198,6 +198,56 @@ func (e *Engine) InFlight(ctx context.Context, namespace string) (map[string]boo
 	return out, nil
 }
 
+// LatestPerApp returns each app's most recent build, keyed by app id.
+//
+// It is what a listing of apps needs, and it is deliberately not ListAll with a
+// limit: a limit applies across all apps, so an app whose last build was a while
+// ago would fall out of the page and read as never built — the opposite of what
+// the column says. One listing, grouped here, answers for every app and costs
+// the same read whatever the app count.
+//
+// Only the phase is read, never a failure's reason. The reason costs a pod read,
+// and a list of apps would pay it once per failed build — while the column it
+// feeds reports "failed", which is the whole of what it says. The app's own page
+// and its build table are where the reason is worth that read.
+func (e *Engine) LatestPerApp(ctx context.Context, namespace string) (map[string]Result, error) {
+	jobs, err := e.client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: k8s.LabelBuild,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list build jobs in %s: %w", namespace, err)
+	}
+
+	out := make(map[string]Result, len(jobs.Items))
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		appID := job.Labels[k8s.LabelApp]
+		if appID == "" || job.Labels[k8s.LabelBuild] == "" {
+			continue
+		}
+
+		// The newest per app, which is a comparison of creation times rather
+		// than of position: a Job list comes back in name order, so the last one
+		// seen for an app is not the latest build of it.
+		prev, seen := out[appID]
+		if seen && !job.CreationTimestamp.After(prev.CreatedAt) {
+			continue
+		}
+
+		status, _ := jobPhase(job)
+		out[appID] = Result{
+			ID:        job.Labels[k8s.LabelBuild],
+			AppID:     appID,
+			CommitSHA: job.Annotations[AnnotationCommit],
+			Branch:    job.Annotations[AnnotationBranch],
+			JobName:   job.Name,
+			Status:    status,
+			CreatedAt: job.CreationTimestamp.Time,
+		}
+	}
+	return out, nil
+}
+
 // results renders a set of Jobs, newest first.
 func (e *Engine) results(ctx context.Context, namespace string, jobs []batchv1.Job) []Result {
 	out := make([]Result, 0, len(jobs))
