@@ -2,8 +2,8 @@
 
 This file is written by AppLab every time source is uploaded to the app
 `{{APP}}`. Editing it here changes nothing: the next push overwrites it. It
-describes how to drive this app's whole lifecycle, and it is the same file in
-every app — what differs is the app's id and its key.
+describes how to drive this app's whole lifecycle; what differs between apps is
+the app's id, and the address and key written into `applab.sh`.
 
 ## What this app is
 
@@ -17,8 +17,11 @@ The app is served at a URL the deployment knows. Ask for it:
 
 ## The two things you need
 
-    export APPLAB_URL="<the deployment, e.g. https://applab.example.com>"
-    export APPLAB_KEY="<the app's key>"
+Both are filled in at the top of `applab.sh`, so a fresh clone runs with nothing
+exported:
+
+    APPLAB_URL   the deployment, e.g. https://applab.example.com
+    APPLAB_KEY   this app's key
 
 `APPLAB_URL` is the base address of the AppLab that manages this app — the same
 address its console is served at. `GET $APPLAB_URL/api/v1/describe` needs no key
@@ -26,11 +29,22 @@ and reports it, along with every endpoint that exists.
 
 `APPLAB_KEY` is the credential for **this app**. It reaches this app and nothing
 else: upload, build, deploy, roll back, read logs, change configuration. It
-cannot delete the app and cannot see any other app on the platform. It is
-deliberately not written into this repository — this source is cloned, uploaded,
-built into an image and mirrored, so a key committed here would travel with it.
-Get it from whoever runs the deployment: an admin key can fetch it with
-`GET $APPLAB_URL/api/v1/apps/{{APP}}/key`.
+cannot delete the app and cannot see any other app on the platform.
+
+Both are written in as *defaults*, not as values: each is read as
+`${APPLAB_URL:-...}`, so exporting either one wins. That is what working against
+a second deployment, or with a key you rotated, takes.
+
+**The repository carries the key, and the repository is not private.** It is
+cloned, uploaded, built into an image and mirrored, so the key goes with every
+copy — into an image layer too, if this directory is what gets built. That is a
+deliberate trade: it is what makes a fresh clone work with no setup. It is
+recoverable, because an admin can replace the key with `applab keys rotate
+{{APP}}` and the next upload writes the new one in. Treat a copy of this
+repository as a copy of the credential. A value the app needs *at runtime*
+belongs in its environment or secret configuration instead — `./applab.sh env
+set` and `./applab.sh secret set` — which is applied on the next deploy and never
+enters the source.
 
 ## `./applab.sh`
 
@@ -86,8 +100,8 @@ them from the running server:
     ./applab.sh self-update
 
 That fetches the current `applab.sh` and `AGENT.md`, which is exactly what the
-next upload would write. It needs `APPLAB_URL` and `APPLAB_KEY` set, like
-everything else.
+next upload would write — including the two defaults above, so a working
+checkout keeps working.
 
 ## The API, if you would rather not use the script
 

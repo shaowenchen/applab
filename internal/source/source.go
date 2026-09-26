@@ -75,6 +75,18 @@ type Store struct {
 	// it is per app, and for what it does not protect against.
 	locksMu sync.Mutex
 	locks   map[string]*repoLock
+
+	// publicURL is the address people reach this deployment at, written into
+	// every app's seeded files as the default APPLAB_URL. Empty when this
+	// deployment does not know its own public address, in which case the seeded
+	// script leaves the variable to the caller — see SeedValues.URL.
+	publicURL string
+
+	// seedKey reads an app's API key, for the same reason and with the same
+	// empty case. It is a function rather than an interface because it is one
+	// call and the key store belongs to another package; a nil one means this
+	// deployment mints no keys.
+	seedKey func(ctx context.Context, appID string) (string, error)
 }
 
 // repoLock is one app's lock. It is a struct rather than a bare mutex so the map
@@ -92,6 +104,23 @@ type Options struct {
 
 	AuthorName  string
 	AuthorEmail string
+
+	// PublicURL is the address people reach this deployment at, with no trailing
+	// slash. It is written into every app's seeded files as the default
+	// APPLAB_URL, so a checkout works with nothing exported. Empty leaves the
+	// variable for the caller to set, which is what a deployment with no known
+	// public address wants.
+	PublicURL string
+
+	// SeedKey reads an app's API key, for the seeded files to carry as the
+	// default APPLAB_KEY.
+	//
+	// It is a function rather than an interface because it is one call: the key
+	// store lives in another package that this one has no other business with.
+	// Nil, or an error, means the seeded script is written without a key and
+	// says where to get one — which is what every deployment got before this and
+	// what a deployment that mints no keys still gets.
+	SeedKey func(ctx context.Context, appID string) (string, error)
 
 	// GitPath overrides the git executable. Empty means find it in PATH, which
 	// is what a deployment wants; a test may set it to pin one.
@@ -129,6 +158,8 @@ func New(opts Options) (*Store, error) {
 		gitBin:      gitBin,
 		authorName:  opts.AuthorName,
 		authorEmail: opts.AuthorEmail,
+		publicURL:   strings.TrimSuffix(strings.TrimSpace(opts.PublicURL), "/"),
+		seedKey:     opts.SeedKey,
 	}
 
 	// The scratch layout is created up front so the first upload does not pay for

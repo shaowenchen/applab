@@ -895,7 +895,6 @@
           <div class="metric-value"><span id="usage-memory">–</span><span class="muted metric-of" id="usage-memory-limit"></span></div>
         </div>
       </div>
-      <p id="usage-note" class="muted" style="font-size:13px;margin-bottom:0"></p>
 
       <!-- The bounds, arranged the way they are thought about: a row per
            resource, request and limit in fixed columns beside it.
@@ -934,19 +933,13 @@
         </tbody>
       </table>
 
+      <!-- A bound is written into the Deployment, so it does not move until the
+           next deploy does. The Save button says when it is saved; the settings
+           card above already carries the same caveat for the same reason. -->
       <div class="state-actions">
-        <span class="muted" style="font-size:12px" data-i18n="empty means this deployment's default">empty means this deployment's default</span>
         <span class="spacer"></span>
         <button id="app-resources-save" data-i18n="Save">Save</button>
       </div>
-
-      <!-- Said out loud, and it is the same caveat the settings above carry: a
-           bound is written into the Deployment, so it does not move until the
-           next deploy does. A card that looked live and was not would have
-           someone conclude their limit had no effect. -->
-      <p class="muted" style="font-size:13px;margin-bottom:0"
-         data-i18n="Applied by the next deploy, like the other settings.">Applied
-        by the next deploy, like the other settings.</p>
       <div id="resources-problem" class="error hidden" style="margin-top:12px"></div>
     </div>
 
@@ -1036,7 +1029,7 @@
         <input id="config-env-name" placeholder="NAME" size="16">
         <input id="config-env-value" placeholder="value" type="password" size="24"
                style="flex:1">
-        <button id="config-env-set" data-i18n="Set">Set</button>
+        <button id="config-env-set" data-i18n="Save">Save</button>
         <button id="config-env-cancel" data-i18n="Cancel">Cancel</button>
       </div>
 
@@ -1322,13 +1315,8 @@ const ZH = {
   "Limit": "上限",
   "CPU (cores)": "CPU（核心）",
   "Memory (GiB)": "内存（GiB）",
-  "empty means this deployment's default": "留空表示使用本部署的默认值",
-  "Applied by the next deploy, like the other settings.": "与其他设置一样，下次部署时生效。",
   "Could not read the app's resources: {error}": "无法读取应用资源：{error}",
   "Could not set resources: {error}": "无法设置资源：{error}",
-  "no cluster is configured": "未配置集群",
-  "this cluster does not report usage": "该集群不提供用量数据",
-  "Usage is unavailable: {reason}": "用量不可用：{reason}",
   "of {value}": "/ {value}",
   "Ready": "就绪",
   "Restarts": "重启",
@@ -3321,33 +3309,31 @@ async function loadResources() {
 
   // A separate read, and its failure is not the form's problem: a deployment
   // with no cluster, or a cluster with no metrics-server, still has bounds to
-  // edit. The panel says usage is unavailable and the inputs stay usable.
+  // edit. A failed read leaves the readings alone and the inputs usable, which
+  // is what the try/catch below does by returning.
   let usage;
   try {
     usage = await api("/api/v1/apps/" + state.app + "/resources");
-  } catch (err) {
-    // 501 is this deployment having no cluster at all, which is a way AppLab is
-    // meant to run rather than a fault — the same reading the log panels give it.
-    showUsageUnavailable(err.status === 501 ? t("no cluster is configured") : err.message);
+  } catch {
+    // Nothing to say and nothing to clear: a deployment with no cluster and one
+    // whose metrics are briefly unreadable leave the same empty readings, and a
+    // sentence about which would be longer than the two values it explains.
     return;
   }
 
   const u = usage || {};
   if (!u.available) {
-    // The bounds are still worth showing — they come from the Deployment and are
-    // known even where usage is not.
-    showUsageUnavailable(t("this cluster does not report usage"));
-    showBounds(u);
+    // The cluster does not report usage, which is a way a cluster is meant to be
+    // run rather than a fault. The bounds below are the useful part and are known
+    // regardless, so this is not worth a line of its own.
     return;
   }
 
-  // The readings are converted to the same units the form uses, so "of 2" beside
-  // "0.5" is a comparison rather than two numbers in different scales.
+  // Converted to the same units the form uses, so "of 2" beside "0.5" is a
+  // comparison rather than two numbers in different scales.
   $("usage-cpu").textContent = toCores(u.cpu) || "0";
   $("usage-memory").textContent = toGi(u.memory) || "0";
   showBounds(u);
-  $("usage-note").textContent = "";
-  show($("usage-note"), false);
 }
 
 // showBounds fills the "of <limit>" half of each metric.
@@ -3360,19 +3346,6 @@ function showBounds(u) {
   const memoryLimit = toGi(limits.memory);
   $("usage-cpu-limit").textContent = cpuLimit ? tf("of {value}", { value: cpuLimit }) : "";
   $("usage-memory-limit").textContent = memoryLimit ? tf("of {value}", { value: memoryLimit }) : "";
-}
-
-// showUsageUnavailable marks the metrics as unknown and says why.
-//
-// The dashes matter: a panel showing 0 would read as an idle app, which is a
-// different and much worse claim than "not known here".
-function showUsageUnavailable(reason) {
-  $("usage-cpu").textContent = "–";
-  $("usage-memory").textContent = "–";
-  $("usage-cpu-limit").textContent = "";
-  $("usage-memory-limit").textContent = "";
-  $("usage-note").textContent = tf("Usage is unavailable: {reason}", { reason });
-  show($("usage-note"), true);
 }
 
 // saveResources writes the four bounds.
@@ -3935,9 +3908,13 @@ $("pods-refresh").onclick = loadPods;
 // Configuration. The name and value fields are read at click time rather than
 // tracked as state, so there is nothing to keep in sync.
 //
-// The form is opened by Add and closed by Set or Cancel. Cancel clears what was
+// The form is opened by Add and closed by Save or Cancel. Cancel clears what was
 // typed: leaving it would put a value the person decided against back on screen
 // the next time the form opened, which is a credential shown for no reason.
+//
+// The button says Save rather than Set: it stores the variable, and the value
+// reaches the container on the next deploy. "Set" read as though it applied the
+// value there and then.
 $("config-env-add").onclick = () => {
   show($("config-env-form"), true);
   show($("config-problem"), false);

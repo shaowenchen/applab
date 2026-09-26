@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/shaowenchen/applab/internal/api"
+	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/source"
@@ -30,6 +31,31 @@ const adminKey = "test-key"
 // deciding scope — against a real store.
 func newTieredServer(t *testing.T) (*api.Server, *store.Store) {
 	t.Helper()
+	return newTieredServerWith(t, nil)
+}
+
+// newTieredServerWith is newTieredServer with a last word on the configuration.
+//
+// It exists for the tests whose subject is the configuration itself — the base
+// path, the path prefix, the public address — which all have to be asserted
+// through the files the server writes rather than in isolation.
+func newTieredServerWith(t *testing.T, tweak func(*config.Config)) (*api.Server, *store.Store) {
+	t.Helper()
+
+	srv, st, _ := newTieredServerWithSource(t, tweak)
+	return srv, st
+}
+
+// newTieredServerWithSource is newTieredServerWith, and also hands back the
+// source store.
+//
+// It exists for the assertions that are about what was *committed* rather than
+// what is served: the files an app's tree carries are written when the
+// repository is created and again on every upload, and the served copy is
+// rendered fresh from the templates either way — so a server that seeded the
+// opening commit without the app's key still serves a file that has it.
+func newTieredServerWithSource(t *testing.T, tweak func(*config.Config)) (*api.Server, *store.Store, *source.Store) {
+	t.Helper()
 
 	dataDir := t.TempDir()
 	st, err := store.OpenLocal(context.Background(), filepath.Join(dataDir, "test.db"))
@@ -37,7 +63,17 @@ func newTieredServer(t *testing.T) (*api.Server, *store.Store) {
 		t.Fatalf("open store: %v", err)
 	}
 
-	src, err := source.New(source.Options{Objects: newObjects(t), DataDir: dataDir})
+	// PublicURL and SeedKey are attached exactly as the binary attaches them, so
+	// the files this suite fetches are the files a deployment would write. The
+	// key lookup is the same store the server mints keys from — a test that
+	// wired a different one would pass while the real seeding wrote the wrong
+	// credential into every app's script.
+	src, err := source.New(source.Options{
+		Objects:   newObjects(t),
+		DataDir:   dataDir,
+		PublicURL: "https://applab.example.com",
+		SeedKey:   appkey.New(st).Get,
+	})
 	if err != nil {
 		t.Fatalf("source.New: %v", err)
 	}
@@ -46,8 +82,11 @@ func newTieredServer(t *testing.T) (*api.Server, *store.Store) {
 	cfg.Keys = []string{adminKey}
 	cfg.BaseDomain = "apps.example.com"
 	cfg.DataDir = dataDir
+	if tweak != nil {
+		tweak(&cfg)
+	}
 
-	return api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src), st
+	return api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src), st, src
 }
 
 // withKey issues a request carrying an arbitrary key.

@@ -124,7 +124,7 @@ func (s *Store) Ingest(
 	// created: a commit is built from the uploaded tree alone, so whatever an
 	// earlier commit contained is replaced wholesale. Seeding at creation would
 	// produce files that vanish with the first push.
-	if err := writeSeed(workTree, appID); err != nil {
+	if err := writeSeed(workTree, s.seedValues(ctx, appID)); err != nil {
 		return nil, err
 	}
 

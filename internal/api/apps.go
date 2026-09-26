@@ -239,6 +239,39 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An app key is minted before the repository, not after it, so the opening
+	// commit can carry it.
+	//
+	// The seeded files are written into the repository as it is created, and one
+	// of them — applab.sh — holds the app's key as its default credential. Minting
+	// the key afterwards would produce exactly one tree without it, the very first
+	// one, so a caller who clones an app they just created would get the one
+	// checkout that does not run. Everything else follows from the order.
+	//
+	// The key is minted with the app for the same reason the repository is: an app
+	// without one is a half-created app, and the failure belongs to the caller
+	// that caused it rather than surfacing later from a deploy that cannot
+	// authenticate.
+	//
+	// It is deliberately NOT returned on the ordinary response shape. It is
+	// returned by the create response, which is a wrapper — see
+	// createdAppResponse — because appResponse is shared by list, get and patch,
+	// and a field that must be filled in only on one path is one that eventually
+	// gets filled in on another.
+	if s.appKeys != nil {
+		if _, err := s.appKeys.Create(r.Context(), app.ID); err != nil {
+			// The app row exists but has no key. Rolling back is the honest
+			// outcome, for the same reason as a repository failure: the caller has
+			// no way to tell an app with no key from a key they typed wrong.
+			if delErr := s.store.DeleteApp(r.Context(), app.ID); delErr != nil {
+				slog.ErrorContext(r.Context(), "failed to roll back app after key failure",
+					"app", app.ID, "error", delErr)
+			}
+			fail(w, r, Errorf(http.StatusInternalServerError, "create an API key for app %q", app.ID).Wrap(err))
+			return
+		}
+	}
+
 	// A repository is created eagerly rather than on first upload so that a
 	// failure here is reported to the caller that caused it, instead of
 	// surfacing later as a confusing error from an unrelated upload.
@@ -251,38 +284,13 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 				slog.ErrorContext(r.Context(), "failed to roll back app after repository failure",
 					"app", app.ID, "error", delErr)
 			}
-			fail(w, r, err)
-			return
-		}
-	}
-
-	// An app key is minted with the app, for the same reason the repository is:
-	// an app without one is a half-created app, and the failure belongs to the
-	// caller that caused it rather than surfacing later from a deploy that
-	// cannot authenticate.
-	//
-	// The key is deliberately NOT returned here. It would mean putting a
-	// credential on the app response shape, which every list, get and patch
-	// shares — and a field that must be filled in only on one path is one that
-	// eventually gets filled in on another. A caller that wants the new key
-	// reads it from GET /apps/{app}/key, which is one call and cannot leak into
-	// a response that was not meant to carry it.
-	if s.appKeys != nil {
-		if _, err := s.appKeys.Create(r.Context(), app.ID); err != nil {
-			// Rolled back like the repository above: an app whose key could not
-			// be created would authenticate with nothing, and the caller has no
-			// way to tell that from a key they typed wrong.
-			if delErr := s.store.DeleteApp(r.Context(), app.ID); delErr != nil {
-				slog.ErrorContext(r.Context(), "failed to roll back app after key failure",
-					"app", app.ID, "error", delErr)
-			}
-			if s.sourceRemover != nil {
-				if rmErr := s.sourceRemover(r.Context(), app.ID); rmErr != nil {
-					slog.ErrorContext(r.Context(), "failed to remove source repository after key failure",
-						"app", app.ID, "error", rmErr)
+			if s.appKeys != nil {
+				if keyErr := s.appKeys.Remove(r.Context(), app.ID); keyErr != nil {
+					slog.ErrorContext(r.Context(), "failed to remove app key after repository failure",
+						"app", app.ID, "error", keyErr)
 				}
 			}
-			fail(w, r, Errorf(http.StatusInternalServerError, "create an API key for app %q", app.ID).Wrap(err))
+			fail(w, r, err)
 			return
 		}
 	}
@@ -814,6 +822,40 @@ func (s *Server) scheme(r *http.Request) string {
 		return "https"
 	}
 	return "http"
+}
+
+// publicURL is the address this deployment is reached at as a whole — the
+// console's address, with no app in it and no trailing slash.
+//
+// It is what a client is handed as the base to build its own requests from, and
+// what the seeded applab.sh carries as its default APPLAB_URL. When the operator
+// has configured the public address, that is the answer; otherwise it is derived
+// from the request, which is right when AppLab is reached directly and an
+// assumption behind a proxy that rewrites nothing.
+//
+// It falls back to the host this deployment would give an app, then to the bare
+// request host, so a deployment with no domain configured — one reachable only
+// inside the cluster — still produces an address a client can use.
+func (s *Server) publicURL(r *http.Request) string {
+	if s.cfg.PublicURL != "" {
+		return strings.TrimSuffix(strings.TrimSpace(s.cfg.PublicURL), "/")
+	}
+	scheme := s.scheme(r)
+
+	// With a base domain the installation's address is the domain and its base
+	// path, plus the path prefix when the apps share one host — the console and
+	// the API live under the prefix too, so it belongs in the address even though
+	// nothing here is an app.
+	basePath := strings.TrimSuffix(s.cfg.BasePath, "/")
+	if s.cfg.BaseDomain != "" {
+		if s.cfg.PathPrefix != "" {
+			return scheme + "://" + s.cfg.BaseDomain + basePath + s.cfg.PathPrefix
+		}
+		return scheme + "://" + s.cfg.BaseDomain + basePath
+	}
+	// No domain: there is no app address to derive anything from, so the request
+	// is the only thing that knows where this deployment lives.
+	return scheme + "://" + r.Host + basePath
 }
 
 // intQuery reads an optional non-negative integer query parameter.

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shaowenchen/applab/internal/api"
+	"github.com/shaowenchen/applab/internal/appkey"
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/buildinfo"
@@ -182,18 +183,26 @@ func run() error {
 	// initialise it is fatal: a deployment that accepts an app create but cannot
 	// store its source is worse than one that refuses to start, because the
 	// caller only finds out at the end of an upload.
+	//
+	// PublicURL and SeedKey are what the seeded files carry: the address this
+	// deployment is reached at, and the key of the app they are written for. Both
+	// are defaults in the rendered script rather than values — see SeedValues —
+	// and both are optional here, since a deployment without a known public
+	// address or without app keys still seeds a usable tree.
+	appKeys := appkey.New(st)
 	src, err := source.New(source.Options{
 		Objects:     objects,
 		DataDir:     cfg.DataDir,
 		AuthorName:  "applab",
 		AuthorEmail: "applab@localhost",
+		PublicURL:   cfg.PublicURL,
+		SeedKey:     appKeys.Get,
 	})
 	if err != nil {
 		return err
 	}
 
 	srv := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src)
-
 	// The git transport serves repositories over git's smart HTTP protocol. It
 	// is mounted rather than absent only when git's own backend could be found,
 	// which source.New has already verified.

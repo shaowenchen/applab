@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shaowenchen/applab/internal/objectstore"
 )
 
 // seeded names the files every app's tree carries.
@@ -206,7 +208,7 @@ func TestTheSeededScriptIsValidShell(t *testing.T) {
 		t.Skip("sh is not on PATH")
 	}
 
-	for _, f := range seedFor("shop") {
+	for _, f := range seedFor(SeedValues{App: "shop"}) {
 		if !strings.HasSuffix(f.Name, ".sh") {
 			continue
 		}
@@ -221,22 +223,91 @@ func TestTheSeededScriptIsValidShell(t *testing.T) {
 	}
 }
 
-// TestTheSeededScriptNeverCarriesAKey asserts the one thing the seed must not do.
+// TestTheSeededScriptCarriesTheKeyAsADefault asserts the two variables are
+// filled in, and filled in in the one shape that is safe.
 //
-// The script drives the app's whole lifecycle, so the easy version of it would
-// have the key written in. That key is appended to the app's own clone URL, and
-// this source is cloned, uploaded, built into an image and mirrored — so a key
-// baked in here travels with all of it. It takes the key from the environment
-// instead, and this is what keeps it that way.
-func TestTheSeededScriptNeverCarriesAKey(t *testing.T) {
-	for _, f := range seedFor("shop") {
+// The decision was to write the deployment's address and the app's key into the
+// script so a fresh clone runs with nothing exported. The risk is stated where
+// the reader will meet it — the script's header — and it is bounded: the key
+// reaches this app only, and an admin can rotate it.
+//
+// What must not happen is an assignment that *overrides* the environment. The
+// script is written as `${APPLAB_KEY:-value}`, so an exported key wins; a plain
+// `APPLAB_KEY=value` would silently ignore one, which is exactly how someone
+// working against a second deployment, or with a rotated key, would get
+// confusing 401s from a credential they never chose.
+func TestTheSeededScriptCarriesTheKeyAsADefault(t *testing.T) {
+	values := SeedValues{
+		App: "shop",
+		URL: "https://applab.example.com/applab",
+		Key: "s3cret-key-value",
+	}
+
+	for _, f := range seedFor(values) {
+		if f.Name != "applab.sh" {
+			continue
+		}
+		if !strings.Contains(f.Body, `APPLAB_URL="${APPLAB_URL:-https://applab.example.com/applab}"`) {
+			t.Error("applab.sh does not default APPLAB_URL to the deployment's address")
+		}
+		if !strings.Contains(f.Body, `APPLAB_KEY="${APPLAB_KEY:-s3cret-key-value}"`) {
+			t.Error("applab.sh does not default APPLAB_KEY to this app's key")
+		}
 		for _, line := range strings.Split(f.Body, "\n") {
 			trimmed := strings.TrimSpace(line)
-			// An assignment to either variable with a literal value would be the
-			// mistake; the reads are `${APPLAB_KEY...}` and `$APPLAB_KEY`.
-			if strings.HasPrefix(trimmed, "APPLAB_KEY=") || strings.HasPrefix(trimmed, "APPLAB_URL=") {
-				t.Errorf("%s assigns %s directly: %q", f.Name, strings.SplitN(trimmed, "=", 2)[0], trimmed)
+			if strings.HasPrefix(trimmed, "#") {
+				continue
 			}
+			// A bare assignment is the mistake: it would override the caller's
+			// environment rather than yielding to it. The defaulting form starts
+			// the same way and is told apart by the expansion it must contain.
+			for _, name := range []string{"APPLAB_KEY=", "APPLAB_URL="} {
+				if strings.HasPrefix(trimmed, name) && !strings.Contains(trimmed, "${") {
+					t.Errorf("applab.sh assigns %s directly instead of defaulting it: %q", strings.TrimSuffix(name, "="), trimmed)
+				}
+			}
+		}
+	}
+}
+
+// TestSeedingWithoutAKeyLeavesTheLineForTheCaller asserts the empty cases.
+//
+// A deployment that mints no app keys, and one that does not know its own public
+// address, are both real configurations. The script has to render anyway — it is
+// still the documentation and the driver — and it has to fail with a sentence
+// that names the missing variable rather than calling an empty URL.
+func TestSeedingWithoutAKeyLeavesTheLineForTheCaller(t *testing.T) {
+	for _, f := range seedFor(SeedValues{App: "shop"}) {
+		if f.Name != "applab.sh" {
+			continue
+		}
+		if !strings.Contains(f.Body, `APPLAB_KEY="${APPLAB_KEY:-}"`) {
+			t.Error("with no key to seed, applab.sh should leave APPLAB_KEY empty for the caller to export")
+		}
+		if !strings.Contains(f.Body, "set APPLAB_KEY") {
+			t.Error("the script should say the key is missing rather than calling an empty one")
+		}
+		// The guards are what turn an empty value into a sentence; without them
+		// the script would issue requests against a relative URL.
+		if !strings.Contains(f.Body, ":?set APPLAB_URL") {
+			t.Error("applab.sh does not guard against an empty APPLAB_URL")
+		}
+	}
+}
+
+// TestEveryPlaceholderIsSubstituted asserts the renderer left nothing behind.
+//
+// The substitution is a plain string replacement over a fixed vocabulary, so the
+// failure mode is a token that was added to a template and never to the
+// renderer. That ships as literal braces in someone's shell script — where
+// `{{KEY}}` is a command substitution that fails at runtime, not at parse time,
+// and only on the machine that has a key to lose.
+func TestEveryPlaceholderIsSubstituted(t *testing.T) {
+	values := SeedValues{App: "shop", URL: "https://applab.example.com", Key: "s3cret"}
+	for _, f := range append(seedForFirstCommit(values), seedFor(values)...) {
+		if i := strings.Index(f.Body, "{{"); i >= 0 {
+			end := min(i+40, len(f.Body))
+			t.Errorf("%s still carries an unsubstituted placeholder: %q", f.Name, f.Body[i:end])
 		}
 	}
 }
@@ -257,7 +328,7 @@ func TestTheSeededScriptsBranchReaderWorks(t *testing.T) {
 	}
 
 	script := ""
-	for _, f := range seedFor("shop") {
+	for _, f := range seedFor(SeedValues{App: "shop"}) {
 		if strings.HasSuffix(f.Name, ".sh") {
 			script = f.Body
 		}
@@ -425,7 +496,7 @@ func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
 		t.Fatalf("read the console: %v", err)
 	}
 	script := ""
-	for _, f := range seedFor("shop") {
+	for _, f := range seedFor(SeedValues{App: "shop"}) {
 		if strings.HasSuffix(f.Name, ".sh") {
 			script = f.Body
 		}
@@ -505,7 +576,7 @@ func TestTheScriptsRequestsCarryTheSameFields(t *testing.T) {
 		t.Fatalf("read the console: %v", err)
 	}
 	script := ""
-	for _, f := range seedFor("shop") {
+	for _, f := range seedFor(SeedValues{App: "shop"}) {
 		if strings.HasSuffix(f.Name, ".sh") {
 			script = f.Body
 		}
@@ -562,4 +633,90 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestTheSeededTreeCarriesTheDeploymentsAddressAndTheAppsKey asserts the two
+// values reach the repository, on both paths that write it.
+//
+// There are two, and they differ in a way that is easy to get wrong: the opening
+// commit is written when the store created the repository, and every upload
+// rewrites the kept-current files afterwards. A key wired into only one of them
+// produces an app whose first checkout works and whose every later one does not,
+// or the reverse — and both look like a bug in the script rather than in the
+// seeding.
+func TestTheSeededTreeCarriesTheDeploymentsAddressAndTheAppsKey(t *testing.T) {
+	objs, err := objectstore.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	// A key lookup that answers for any app, the way the key store does once
+	// handleCreateApp has minted one before the repository is created.
+	const key = "the-apps-key"
+	s, err := New(Options{
+		Objects:   objs,
+		DataDir:   t.TempDir(),
+		PublicURL: "https://applab.example.com/applab/",
+		SeedKey: func(context.Context, string) (string, error) {
+			return key, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	opening := fileAtTip(t, s, "shop", "applab.sh")
+	if !strings.Contains(opening, `APPLAB_URL="${APPLAB_URL:-https://applab.example.com/applab}"`) {
+		t.Error("the opening commit does not carry the deployment's address, with the trailing slash trimmed")
+	}
+	if !strings.Contains(opening, `APPLAB_KEY="${APPLAB_KEY:-`+key+`}"`) {
+		t.Error("the opening commit does not carry the app's key")
+	}
+
+	// The upload path writes the same files, and the key has to survive it —
+	// this is the rewrite that replaces whatever was in the tree.
+	body := buildTar(t, []tarEntry{{name: "main.go", body: "package main\n"}})
+	if _, err := s.Ingest(ctx, "shop", main, strings.NewReader(string(body)), "for a later commit", "", DefaultIngestLimits); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	uploaded := fileAtTip(t, s, "shop", "applab.sh")
+	if !strings.Contains(uploaded, key) {
+		t.Error("an upload rewrote applab.sh without the app's key")
+	}
+	if strings.Contains(uploaded, "{{KEY}}") || strings.Contains(uploaded, "{{URL}}") {
+		t.Error("an upload left a placeholder unsubstituted")
+	}
+}
+
+// TestASeedWithNoKeyOrAddressStillRenders asserts the two optional inputs are
+// genuinely optional.
+//
+// A deployment that mints no app keys and one that does not know its own public
+// address are both real: the second is an installation reachable only inside the
+// cluster. Uploading source must not fail for either — the seeded files are
+// documentation and a convenience — and the script has to leave the caller a
+// sentence rather than an empty variable.
+func TestASeedWithNoKeyOrAddressStillRenders(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := fileAtTip(t, s, "shop", "applab.sh")
+	if strings.Contains(got, "{{") {
+		t.Error("applab.sh has an unsubstituted placeholder with neither value set")
+	}
+	if !strings.Contains(got, `APPLAB_KEY="${APPLAB_KEY:-}"`) {
+		t.Error("with no key, the script should leave APPLAB_KEY to the environment")
+	}
+	if !strings.Contains(got, ":?set APPLAB_KEY") {
+		t.Error("with no key, the script should say so rather than call with an empty credential")
+	}
 }

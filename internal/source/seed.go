@@ -73,28 +73,58 @@ type seedFile struct {
 	Body string
 }
 
+// SeedValues are what an app's seeded files are rendered against.
+//
+// It is a struct rather than the app id alone because the script now carries the
+// two things a caller would otherwise have to be told: where the deployment is
+// and the credential that reaches this app. Both are written in as defaults, and
+// both yield to the environment — see the header of applab.sh — so a checkout
+// works with nothing exported and still works against a different deployment
+// when someone exports these.
+type SeedValues struct {
+	// App is the app's id.
+	App string
+
+	// URL is the address this deployment is reached at by people, with no
+	// trailing slash. Empty on a deployment that does not know its own public
+	// address, in which case the placeholder is left empty and the environment
+	// is the only source.
+	URL string
+
+	// Key is the app's own API key. Empty when this deployment mints no app
+	// keys, or when the key could not be read.
+	//
+	// It is a credential, and writing it here is a deliberate decision with a
+	// stated cost: the repository is cloned, uploaded, built into an image and
+	// mirrored, so the key travels with all of it. See the header of applab.sh,
+	// which says so where the person who finds it will read it.
+	Key string
+}
+
 // seedFor renders the files to inject for one app.
 //
-// appToken is substituted wherever the app's id has to appear. It is written as
-// a literal in the templates rather than text/template because the content
-// contains shell — `$`, `${}`, backticks — that a template engine would try to
-// interpret, and a shell script silently mangled at render time is a worse
-// failure than a placeholder that never got replaced (a test covers that it is).
-//
 // The substitution is a plain string replacement of a token that cannot occur in
-// the surrounding text by accident.
-func seedFor(appID string) []seedFile {
-	return renderSeed(appID, seedPaths)
+// the surrounding text by accident, rather than text/template: the content is
+// shell, and a template engine would interpret its `$`, `${}` and backticks. A
+// shell script silently mangled at render time is a worse failure than a
+// placeholder that never got replaced, which a test covers.
+func seedFor(v SeedValues) []seedFile {
+	return renderSeed(v, seedPaths)
 }
 
 // seedForFirstCommit renders everything a brand-new repository starts with: the
 // files AppLab keeps current, plus the ones it only ever hands over.
-func seedForFirstCommit(appID string) []seedFile {
-	return renderSeed(appID, append(append([]string{}, seedPaths...), seedOncePaths...))
+func seedForFirstCommit(v SeedValues) []seedFile {
+	return renderSeed(v, append(append([]string{}, seedPaths...), seedOncePaths...))
 }
 
 // renderSeed renders the named templates, in the order given.
-func renderSeed(appID string, names []string) []seedFile {
+func renderSeed(v SeedValues, names []string) []seedFile {
+	replacements := map[string]string{
+		"{{APP}}": v.App,
+		"{{URL}}": v.URL,
+		"{{KEY}}": v.Key,
+	}
 	out := make([]seedFile, 0, len(names))
 	for _, name := range names {
 		raw, err := seedFS.ReadFile("seed/" + name + ".tmpl")
@@ -108,11 +138,11 @@ func renderSeed(appID string, names []string) []seedFile {
 		if strings.HasSuffix(name, ".sh") {
 			mode = 0o755
 		}
-		out = append(out, seedFile{
-			Name: name,
-			Mode: mode,
-			Body: strings.ReplaceAll(string(raw), "{{APP}}", appID),
-		})
+		body := string(raw)
+		for token, value := range replacements {
+			body = strings.ReplaceAll(body, token, value)
+		}
+		out = append(out, seedFile{Name: name, Mode: mode, Body: body})
 	}
 	return out
 }
@@ -128,8 +158,8 @@ func renderSeed(appID string, names []string) []seedFile {
 //
 // The seed-once files are deliberately not here. An upload is where an app's own
 // Dockerfile arrives, and rewriting it would delete the thing being built.
-func writeSeed(workTree, appID string) error {
-	for _, f := range seedFor(appID) {
+func writeSeed(workTree string, v SeedValues) error {
+	for _, f := range seedFor(v) {
 		if err := replaceWithFile(filepath.Join(workTree, f.Name), []byte(f.Body), os.FileMode(f.Mode)); err != nil {
 			return err
 		}
@@ -143,8 +173,8 @@ func writeSeed(workTree, appID string) error {
 // A caller asks for one by name — the API serves them individually — so the
 // lookup has to answer both questions at once rather than returning a list the
 // caller then searches.
-func AgentFile(appID, name string) (seedFile, bool) {
-	for _, f := range seedFor(appID) {
+func AgentFile(v SeedValues, name string) (seedFile, bool) {
+	for _, f := range seedFor(v) {
 		if f.Name == name {
 			return f, true
 		}
@@ -158,6 +188,32 @@ func AgentFileNames() []string {
 	out := make([]string, len(seedPaths))
 	copy(out, seedPaths)
 	return out
+}
+
+// seedValues assembles what an app's seeded files are rendered against: its id,
+// the address people reach this deployment at, and the app's own key.
+//
+// The address comes from the Store because it is a deployment-wide setting that
+// every app's tree carries a copy of. The key is fetched through the injected
+// lookup rather than read from the object store directly, because the key store
+// is not this package's — see Options.SeedKey.
+//
+// A key that cannot be read is not an error. The seeded script is documentation
+// and a convenience: a deployment that mints no keys, or an app whose key was
+// never created, produces a tree whose APPLAB_KEY line is left blank to fill in,
+// which is what every app got before this. Failing the upload instead would make
+// an optional convenience into a hard dependency.
+func (s *Store) seedValues(ctx context.Context, appID string) SeedValues {
+	v := SeedValues{App: appID, URL: strings.TrimSuffix(strings.TrimSpace(s.publicURL), "/")}
+	if s.seedKey == nil {
+		return v
+	}
+	key, err := s.seedKey(ctx, appID)
+	if err != nil {
+		return v
+	}
+	v.Key = key
+	return v
 }
 
 // seedCommit builds the opening commit of a new repository, containing only the
@@ -177,7 +233,7 @@ func (s *Store) seedCommit(ctx context.Context, appID, branch, repoPath string) 
 	if err := os.MkdirAll(workTree, 0o700); err != nil {
 		return fmt.Errorf("create working tree: %w", err)
 	}
-	for _, f := range seedForFirstCommit(appID) {
+	for _, f := range seedForFirstCommit(s.seedValues(ctx, appID)) {
 		if err := replaceWithFile(filepath.Join(workTree, f.Name), []byte(f.Body), os.FileMode(f.Mode)); err != nil {
 			return err
 		}

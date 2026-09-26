@@ -3,13 +3,16 @@
 #
 # This file is written by AppLab on every upload — edit it and your changes are
 # gone with the next push. It is the same on every app; what changes is the
-# APP below.
+# APP below, and the two variables under it.
 #
-# It needs curl and a key, and nothing else:
+# It needs curl and nothing else:
 #
-#     export APPLAB_URL="https://applab.example.com"
-#     export APPLAB_KEY="<the app's key>"
 #     ./applab.sh status
+#
+# APPLAB_URL and APPLAB_KEY are filled in below, so a fresh clone runs with
+# nothing exported. Both are defaults: export either one and it wins, which is
+# what someone working against a second deployment, or with a key they rotated,
+# wants.
 #
 # "Nothing else" is meant exactly, and it is worth listing because this script is
 # copied into every repository and run from wherever it was checked out: whatever
@@ -30,19 +33,32 @@
 # script reads are few and fixed, so they go through sed instead — see json_field
 # for what that does and does not handle.
 #
-# The key is deliberately not built into this script. This repository is cloned,
-# uploaded, built into an image and mirrored like any other source, so a key
-# written here would travel everywhere the source goes — and it is a credential
-# that can deploy this app. Get it from whoever runs the deployment:
-# `GET /api/v1/apps/APP/key` with an admin key returns it, and `applab keys APP`
-# prints it. Put it in the environment, where it is not committed, not built and
-# not cloned.
+# THE KEY BELOW IS A CREDENTIAL, AND THIS REPOSITORY IS NOT PRIVATE. It is
+# cloned, uploaded, built into an image and mirrored like any other source, so
+# the key travels with every copy of it — including into an image layer, if this
+# directory is what gets built. It reaches this app and nothing else: upload,
+# build, deploy, read logs, change this app's configuration. It cannot delete the
+# app and cannot see any other app on the platform.
+#
+# It is recoverable rather than fatal, which is why it is here at all. Whoever
+# runs the deployment can replace it with `applab keys rotate APP`, and the old
+# value stops working at once; the next upload then writes the new one in. Until
+# that happens, treat a copy of this repository as a copy of the credential.
+#
+# Nothing else should be written here. A value this app actually needs at runtime
+# belongs in its environment or its secret configuration — `./applab.sh env set`
+# and `./applab.sh secret set` — which is applied to the container on the next
+# deploy and is not part of the source at all.
 #
 # Run `./applab.sh help` for the commands.
 
 set -eu
 
 APP="{{APP}}"
+
+# The deployment, and this app's key. Both are defaults — see the header.
+APPLAB_URL="${APPLAB_URL:-{{URL}}}"
+APPLAB_KEY="${APPLAB_KEY:-{{KEY}}}"
 
 : "${APPLAB_URL:?set APPLAB_URL to the deployment, e.g. https://applab.example.com}"
 : "${APPLAB_KEY:?set APPLAB_KEY to the key for this app; see the notes at the top of this file}"
@@ -223,8 +239,12 @@ Keys and upkeep
   help               this
 
 Environment:
-  APPLAB_URL   the deployment, e.g. https://applab.example.com   (required)
-  APPLAB_KEY   the key for this app                              (required)
+  APPLAB_URL   the deployment              (default: built into this script)
+  APPLAB_KEY   the key for this app        (default: built into this script)
+
+  Both are defaults — the values below the APP assignment. Export either to
+  override it, which is what working against another deployment, or with a key
+  you rotated, takes.
 EOF
 }
 

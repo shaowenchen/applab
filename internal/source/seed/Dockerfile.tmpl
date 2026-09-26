@@ -13,6 +13,13 @@
 #     FROM nginx:alpine
 #     COPY . /usr/share/nginx/html
 #
+# If you do write a COPY like that, add a .dockerignore beside this file listing
+# `applab.sh`. AppLab writes it into every app's tree and it carries this app's
+# key as a convenience, so `COPY .` puts that key in an image layer — where it
+# stays, in every registry the image reaches, readable by anyone who can pull it.
+# The key is rotatable (`applab keys rotate <app>`), so this is recoverable, but
+# a layer is not something you can take back.
+#
 # See AGENT.md for what AppLab does with this file, and ./applab.sh for the
 # commands that build and deploy it.
 FROM nginx:1.27-alpine

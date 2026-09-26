@@ -809,7 +809,7 @@ func (s *Server) routes() []route {
 			Pattern: "GET /api/v1/apps/{app}/agent/files/{file}",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "One of the files applab keeps in this app's source tree (`applab.sh`, `AGENT.md`), as `text/plain`. This is the current version the deployment would write on the next upload — a copy in a repository can fetch it to bring itself up to date, since applab's API changes between releases. The same content is committed into every app's tree; see `?list` on the app's source for what is there.",
+			Doc:     "One of the files applab keeps in this app's source tree (`applab.sh`, `AGENT.md`), as `text/plain`. This is the current version the deployment would write on the next upload — a copy in a repository can fetch it to bring itself up to date, since applab's API changes between releases. It carries this app's own key as the default `APPLAB_KEY` and this deployment's address as the default `APPLAB_URL`, so **treat the response as a credential**; see `?list` on the app's source for what else is in the tree.",
 			Handler: s.handleAgentFile,
 		},
 		{
