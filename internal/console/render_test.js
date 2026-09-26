@@ -1053,6 +1053,58 @@ async function render(apps) {
     );
   }
 
+  // The port a new app is created with.
+  //
+  // 80 is the point: it is the port an image built for a platform that serves
+  // HTTP conventionally EXPOSEs, so an app created without a port listens
+  // somewhere its own Dockerfile agrees with. The form ships the value and sends
+  // what it reads back, so the default living only in the markup would be a
+  // default that a reader of this test could not see was used.
+  //
+  // Driven through createApp rather than asserted from the markup, because the
+  // field's value is only half of it: what matters is the number that reaches
+  // the request, and the two would part company if the handler stopped reading
+  // the field.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.bodies = [];
+    ctx.fetch = async (url, options) => {
+      ctx.bodies.push({ url: String(url), body: options && options.body });
+      return {
+        ok: true,
+        status: 201,
+        statusText: "Created",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { id: "shop", port: 80 } }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = "k";', ctx);
+
+    // The shipped default, read from the markup the browser would have parsed.
+    const shipped = /id="apps-new-port"[^>]*\bvalue="([^"]*)"/.exec(markup);
+    check("the create form ships a port", shipped !== null, true);
+    check("and it is 80, the port an image conventionally exposes", shipped && shipped[1], "80");
+
+    // And with nothing typed, that is the port the request carries.
+    //
+    // Only the request is asserted. createApp goes on to re-render the app list
+    // and open the new app, which needs a working API the stub does not have;
+    // what this check is about is the number that was sent, and that is captured
+    // before any of that runs.
+    elements.get("apps-new-port").value = shipped ? shipped[1] : "";
+    elements.get("apps-new-id").value = "shop";
+    try {
+      await vm.runInContext("createApp", ctx)();
+    } catch {
+      /* the re-render after the create is not what this checks */
+    }
+
+    const posted = ctx.bodies.find((b) => b.url.endsWith("/api/v1/apps"));
+    check("and the request carries the port the form showed", posted && JSON.parse(posted.body).port, 80);
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed`);
     process.exit(1);

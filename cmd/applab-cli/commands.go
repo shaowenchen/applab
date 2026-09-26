@@ -112,7 +112,12 @@ directory name.`,
 		},
 	}
 
-	cmd.Flags().Int32Var(&port, "port", 0, "port the app listens on (1-65535)")
+	// The default is the server's, not the flag's: an omitted --port sends no
+	// port at all, and the app is created on 80 — the port an image built for a
+	// platform that serves HTTP conventionally EXPOSEs. Named in the help because
+	// the flag's own zero value would otherwise read as the default, and
+	// "listens on 0" is not a thing.
+	cmd.Flags().Int32Var(&port, "port", 0, "port the app listens on (1-65535; default 80)")
 	cmd.Flags().Int32Var(&replicas, "replicas", 0, "how many replicas to run")
 	cmd.Flags().StringVar(&dockerfile, "dockerfile", "", "Dockerfile path within the source")
 	cmd.Flags().StringVar(&domain, "domain", "", "hostname to serve the app at")

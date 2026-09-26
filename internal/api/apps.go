@@ -25,9 +25,14 @@ import (
 // 80 rather than 8080 because that is the port a container image's own
 // Dockerfile is most likely to EXPOSE: an image built for a platform that serves
 // HTTP conventionally listens there, and a default that matches it is one fewer
-// thing to correct. Nothing here binds it as a privileged port — the app runs as
-// its image says, and the cluster's securityContext decides what it may do —
-// so this is a default and not a constraint.
+// thing to correct.
+//
+// It *is* a low port, and that does constrain what the deployer can write: a bind
+// below 1024 is refused for an unprivileged process unless the pod's own network
+// namespace lowers ip_unprivileged_port_start, which is why every app pod does.
+// A capability would not do it — see the deployer for why — and an app image
+// that runs as its own non-root user would otherwise exit on start-up against a
+// Deployment that looked healthy.
 const defaultAppPort int32 = 80
 
 // appResponse is an app as the API presents it.
