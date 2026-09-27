@@ -893,8 +893,10 @@ async function render(apps) {
     // than under its content: below a table of inputs it is read last, after the
     // reader has already scrolled past what they came to change, and on a long
     // card it can be off screen while the fields it saves are not.
+    // The Resources card is not in this list any more: it is gone, and its
+    // bounds are set through the API and the CLI. See the check below for what
+    // replaced it.
     for (const [card, button] of [
-      ["Resources", "app-resources-save"],
       ["State", "app-deploy"],
       ["Configuration", "config-env-add"],
     ]) {
@@ -905,6 +907,19 @@ async function render(apps) {
         true
       );
     }
+  }
+
+  // The Resources card is gone.
+  //
+  // Its four inputs were the only place in the console the bounds could be set,
+  // and they were removed deliberately: they are set through the API and the
+  // CLI, and the metrics dialog shows what they resolve to beside what the pod
+  // is using — which is the pairing that makes a bound legible. Asserted so the
+  // card cannot come back as a second, drifting answer to the same question.
+  {
+    check("the Resources card is gone", markup.includes('id="card-resources"'), false);
+    check("and its inputs with it", markup.includes("resources-cpu-request"), false);
+    check("and it is not in the app page's sections", markup.includes('{ id: "card-resources"'), false);
   }
 
   // The overview does not carry a Deployment card.
@@ -1217,18 +1232,13 @@ async function render(apps) {
     );
   }
 
-  // The resource units, both directions.
+  // The resource units.
   //
-  // The form and the readings carry fixed units — CPU in cores, memory in GiB —
-  // while the API takes Kubernetes quantities. So every value crosses the
-  // boundary twice: once to be displayed and once to be sent back. A mistake in
-  // either direction is silent and expensive: memory written as a bare number
-  // means *bytes*, so a slip here would set a 0.5 GiB limit as "0.5" and have
-  // the container OOM-killed on start with nothing on the page to explain it.
-  //
-  // Round-tripping is the assertion rather than the individual conversions: what
-  // matters is that opening an app and saving it unchanged sends back the same
-  // quantity.
+  // A reading is shown in cores and GiB while the API reports Kubernetes
+  // quantities, so every figure crosses that boundary once. A mistake is silent
+  // and expensive: memory written as a bare number means *bytes*, so 128Mi shown
+  // as "134217728" beside a limit of "2" is not a comparison anyone can make —
+  // and one shown as "0.13" beside a limit of "0.125" is a wrong one.
   {
     const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
     ctx.globalThis = ctx;
@@ -1236,32 +1246,35 @@ async function render(apps) {
 
     const conv = (name, arg) => vm.runInContext(name, ctx)(arg);
 
+    // Read only, now that the form is gone: an app's bounds are set through the
+    // API and the CLI, and the console's job is to show a reading in a unit a
+    // person can compare against them. The round trip is still worth checking
+    // here, because the two ends of it are still both in this file — a reading
+    // is shown beside a bound, and a wrong conversion makes the pair look wrong
+    // rather than making anything fail.
     for (const c of [
-      { q: "500m", cores: "0.5", sent: "500m" },
-      { q: "1500m", cores: "1.5", sent: "1500m" },
-      { q: "2", cores: "2", sent: "2000m" },
-      { q: "100m", cores: "0.1", sent: "100m" },
+      { q: "500m", cores: "0.5" },
+      { q: "1500m", cores: "1.5" },
+      { q: "2", cores: "2" },
+      { q: "100m", cores: "0.1" },
     ]) {
       check(`cpu ${c.q} reads as ${c.cores} cores`, conv("toCores", c.q), c.cores);
-      check(`and ${c.cores} cores is sent back as ${c.sent}`, conv("fromCores", c.cores), c.sent);
     }
 
     for (const m of [
-      { q: "134217728", gi: "0.125", sent: "134217728" },
-      { q: "512Mi", gi: "0.5", sent: "536870912" },
-      { q: "1Gi", gi: "1", sent: "1073741824" },
-      { q: "2Gi", gi: "2", sent: "2147483648" },
+      { q: "134217728", gi: "0.125" },
+      { q: "512Mi", gi: "0.5" },
+      { q: "1Gi", gi: "1" },
+      { q: "2Gi", gi: "2" },
     ]) {
       check(`memory ${m.q} reads as ${m.gi} GiB`, conv("toGi", m.q), m.gi);
-      check(`and ${m.gi} GiB is sent back as ${m.sent} bytes`, conv("fromGi", m.gi), m.sent);
     }
 
-    // Empty stays empty, which is what clears a field back to the deployment's
-    // default. A conversion that turned it into "0m" or "0" would silently
-    // replace the operator's setting with an explicit nothing.
-    check("an unset cpu bound stays unset", conv("fromCores", ""), "");
-    check("an unset memory bound stays unset", conv("fromGi", ""), "");
+    // An absent quantity reads as nothing rather than zero. This is the one
+    // that matters most: the metrics API sends no field for a pod it has not
+    // sampled, and rendering that as "0 cores" would show a busy pod as idle.
     check("and an absent quantity reads as nothing rather than zero", conv("toGi", ""), "");
+    check("and an absent cpu quantity likewise", conv("toCores", ""), "");
 
     // Six decimals, checked because the precision is load-bearing rather than
     // cosmetic: 128Mi is 0.125 GiB and is also this deployment's own default, so
@@ -1782,10 +1795,11 @@ async function render(apps) {
     // the newest replica's output, which is not the row that was clicked.
     const actions = second.children[6];
     check("every row offers its own log", actions.children[0].textContent, "Log");
+    check("and its own metrics", actions.children[1].textContent, "Metrics");
     check(
-      "and only a log — there is no platform events endpoint to offer",
+      "and nothing else — there is no platform events endpoint to offer",
       actions.children.length,
-      1
+      2
     );
 
     ctx.requests.length = 0;
@@ -2118,6 +2132,135 @@ async function render(apps) {
     show({ available: true, cpu: "", memory: "", pods: null }, "");
     check("an unsampled cluster shows unknown rather than zero", body.children[0].children[3].textContent, "–");
     check("and does not claim metrics are missing", note.classList.contains("hidden"), true);
+  }
+
+  // The metrics dialog: a reading per pod, sampled while it is open.
+  //
+  // Opened from a row, so it names that pod rather than the newest — which is the
+  // same reason the log button does, and the same mistake if it did not: a crash
+  // loop is usually not the newest replica.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      return {
+        ok: true, status: 200, statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({
+          data: {
+            available: true,
+            limited: { cpu: "1", memory: "512Mi" },
+            pods: { "applab-shop-abc": { cpu: "250m", memory: "256Mi" } },
+          },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.app = "shop";', ctx);
+
+    await vm.runInContext("openPodMetrics", ctx)("applab-shop-abc");
+
+    // It names the pod, and reads that app's endpoint.
+    check("the dialog names the pod it was opened on", elements.get("metrics-pod").textContent, "applab-shop-abc");
+    check("and it is shown", elements.get("metrics-modal").classList.contains("hidden"), false);
+    check(
+      "reading the app's usage",
+      ctx.requests.some((u) => u.includes("/api/v1/apps/shop/resources")),
+      true
+    );
+
+    // The newest reading is the headline, in the units the rest of the page
+    // uses — 250m is a quarter of a core.
+    check("with the cpu reading", elements.get("metrics-cpu-value").textContent, "0.25 cores");
+    check("and the memory reading", elements.get("metrics-memory-value").textContent, "0.25 GiB");
+
+    // And the line is drawn from it: a path, not an empty box.
+    check("and a line is drawn", elements.get("metrics-cpu-plot").innerHTML.includes("<path"), true);
+    // Scaled to the limit by default, which is what makes the line's height mean
+    // "how much of the allowance is in use".
+    check("scaled against the limit", elements.get("metrics-cpu-range").textContent, "limit 1 cores");
+
+    // A pod the response does not mention is said so, not charted from another
+    // pod's numbers. A pod is replaced by a deploy or a crash loop, and the
+    // dialog stays on the name it was opened with — showing the new pod's
+    // reading under the old pod's name is the one answer that is worse than
+    // saying nothing.
+    const beforeReopen = intervals.length;
+    elements.get("metrics-modal").classList.add("hidden");
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      return {
+        ok: true, status: 200, statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({
+          data: {
+            available: true,
+            limited: {},
+            pods: { "applab-shop-OTHER": { cpu: "900m", memory: "900Mi" } },
+          },
+        }),
+      };
+    };
+    await vm.runInContext("openPodMetrics", ctx)("applab-shop-abc");
+    check(
+      "a pod that stopped reporting is said so rather than charted from another",
+      elements.get("metrics-note").textContent.includes("no longer reporting"),
+      true
+    );
+    check(
+      "and its reading is not another pod's",
+      elements.get("metrics-cpu-value").textContent,
+      "–"
+    );
+    vm.runInContext("closePodMetrics", ctx)();
+
+    // Sampling is a timer, and it stops when the dialog closes.
+    check("and it samples on a timer", intervals.length, beforeReopen + 1);
+    vm.runInContext("closePodMetrics", ctx)();
+    check("closing stops it", vm.runInContext("state.metricsTimer", ctx), null);
+    check("and hides the dialog", elements.get("metrics-modal").classList.contains("hidden"), true);
+    // The history goes with it: one pod's samples under another's name would be
+    // a line that is wrong for as long as the next reading takes.
+    check("and forgets the samples", vm.runInContext("state.metricsSamples.cpu.length", ctx), 0);
+  }
+
+  // What the chart does with the awkward answers.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    const draw = vm.runInContext("drawChart", ctx);
+    const plot = elements.get("metrics-cpu-plot");
+    const valueEl = elements.get("metrics-cpu-value");
+    const rangeEl = elements.get("metrics-cpu-range");
+
+    // Nothing sampled yet: an em dash, not a zero. A pod that has just started
+    // and a cluster that cannot measure look identical at zero.
+    draw({ plot, valueEl, rangeEl, samples: [], ceiling: 1, unit: "cores", format: vm.runInContext("formatCores", ctx), limitLabel: "1" });
+    check("with no samples the reading is unknown rather than zero", valueEl.textContent, "–");
+
+    // Automatic scale: the axis follows the data and says so, because there is
+    // no limit to be a fraction of.
+    const formatCores = vm.runInContext("formatCores", ctx);
+    draw({
+      plot, valueEl, rangeEl,
+      samples: [{ at: 1, value: 0.1 }, { at: 2, value: 0.2 }],
+      ceiling: null, unit: "cores", format: formatCores, limitLabel: "",
+    });
+    check("without a limit the axis says it is the peak", rangeEl.textContent, "peak 0.22 cores");
+
+    // A reading above its own limit is drawn past the ceiling rather than
+    // clamped to it — the crossing is the message.
+    draw({
+      plot, valueEl, rangeEl,
+      samples: [{ at: 1, value: 0.5 }, { at: 2, value: 2 }],
+      ceiling: 1, unit: "cores", format: formatCores, limitLabel: "1",
+    });
+    const ys = [...plot.innerHTML.matchAll(/L?([\d.]+) ([\d.]+)/g)].map((m) => Number(m[2]));
+    check("a reading over its limit is drawn above the ceiling line", Math.min(...ys) < 50, true);
   }
 
   // The clone command's mask is the width of the app's address above it.

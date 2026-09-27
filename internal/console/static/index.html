@@ -341,22 +341,6 @@
   .field { display: flex; align-items: center; gap: 8px; }
   .field > span { color: var(--text-muted); font-size: 13px; }
 
-  /* The bounds, as a table: a row per resource, request and limit as columns.
-     Auto width rather than full, so the inputs sit together rather than being
-     flung to the far edges of a wide card — the alignment is what makes the two
-     columns readable, and stretching them breaks it. */
-  .resources-table { width: auto; }
-  .resources-table th[scope="row"] {
-    /* The row's own name, so it is not shouted like a column header. It keeps
-       the muted small-caps treatment, which is what marks it as a label rather
-       than a value. */
-    padding-right: 24px;
-    white-space: nowrap;
-  }
-  .resources-table td { padding: 6px 10px 6px 0; border-bottom: none; }
-  .resources-table tbody tr:hover { background: transparent; }
-  .resources-table input { width: 110px; font-variant-numeric: tabular-nums; }
-
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
   /* A page's title, above its cards and outside them. Nothing is gained by
@@ -539,6 +523,35 @@
     margin-bottom: 12px;
   }
   .log-modal-head h2 { margin: 0; flex: 1; font-size: 14px; font-weight: 600; }
+
+  /* A reading over time, as a line.
+     Two series at most and one axis each, so there is no legend to speak of —
+     the title names the series, which is the one case where that is enough. */
+  .chart { margin-top: 16px; }
+  .chart-head { display: flex; align-items: baseline; gap: 10px; }
+  .chart-title { color: var(--text-muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; }
+  /* The latest reading, at full size: it is the number someone opened this for,
+     and the line is the context that says whether it is usual. */
+  .chart-value { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .chart-plot {
+    display: block;
+    width: 100%;
+    height: 120px;
+    margin-top: 6px;
+    /* preserveAspectRatio="none" on the element lets the drawing stretch to this
+       box, which is what makes the chart fill a panel of any width without the
+       stroke scaling with it. */
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .chart-foot { display: flex; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 12px; }
+  /* The limit, drawn as a line rather than described in words: "122m of 1" is a
+     ratio to compute, and the whole point of showing it is to skip that. */
+  .chart-limit { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+  .chart-line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+  .chart-area { stroke: none; opacity: 0.14; }
+  .chart-empty { fill: var(--text-muted); font-size: 12px; }
   /* The output takes the remaining height and scrolls itself, so the head stays
      put while the log moves under it. */
   .log-modal-panel pre { flex: 1; min-height: 0; margin: 0; }
@@ -908,58 +921,15 @@
       </div>
     </div>
 
-    <div class="card" id="card-resources">
-      <div class="card-head">
-        <h2 data-i18n="Resources">Resources</h2>
-        <button id="app-resources-save" class="primary" data-i18n="Save">Save</button>
-      </div>
+    <!-- The bounds the app runs under are not editable here any more.
 
-      <!-- The bounds, arranged the way they are thought about: a row per
-           resource, request and limit in fixed columns beside it.
-
-           A row per resource rather than a label per input, because "CPU
-           request" and "CPU limit" are not two settings — they are one resource
-           seen two ways, and a reader checking a memory limit should be able to
-           run down a single column rather than pick the right pair out of four
-           equally-weighted boxes.
-
-           The column headers carry request and limit, so the inputs do not have
-           to: with them, every column is a case of the same decision, and the
-           two columns line up down the card. A field left empty means "this
-           deployment's default", which is what the placeholder shows — filling
-           it with the resolved number would turn a default into an explicit
-           setting the first time anyone pressed save. -->
-      <!-- What the app is using is not here. It used to be, as a live reading
-           above these four inputs, and it moved to the Instances card where the
-           pods it describes already are: a figure about a pod belongs on the
-           row of that pod, so which copy is at its limit is legible without
-           picking one out of a dropdown first. What is left here is settings,
-           which are the app's rather than any pod's. -->
-      <table class="resources-table">
-        <thead>
-          <tr>
-            <th></th>
-            <th data-i18n="Request">Request</th>
-            <th data-i18n="Limit">Limit</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <th scope="row" data-i18n="CPU (cores)">CPU (cores)</th>
-            <td><input id="resources-cpu-request" type="number" step="any" min="0" placeholder="0.1" size="8" aria-label="CPU request, in cores"></td>
-            <td><input id="resources-cpu-limit" type="number" step="any" min="0" placeholder="2" size="8" aria-label="CPU limit, in cores"></td>
-          </tr>
-          <tr>
-            <th scope="row" data-i18n="Memory (GiB)">Memory (GiB)</th>
-            <td><input id="resources-memory-request" type="number" step="any" min="0" placeholder="0.125" size="8" aria-label="Memory request, in GiB"></td>
-            <td><input id="resources-memory-limit" type="number" step="any" min="0" placeholder="2" size="8" aria-label="Memory limit, in GiB"></td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div id="resources-problem" class="error hidden" style="margin-top:12px"></div>
-    </div>
-
+         They were four inputs in a card of their own, which put the two
+         settings a container cannot start without behind a card a reader had to
+         scroll to and know about. They are set through the API and the CLI —
+         `applab update <app> --cpu-limit 1`, PATCH /api/v1/apps/{app} — and the
+         metrics dialog shows what they currently resolve to, beside what the pod
+         is actually using. A bound with no reading next to it was a number
+         nobody could judge; this way the number and its context are together. -->
     <div class="card" id="card-instances">
       <div class="card-head">
         <h2 data-i18n="Instances">Instances</h2>
@@ -1163,6 +1133,66 @@
          It sits outside .app-body so it is not part of the scrolling column —
          position: fixed takes it out of the flow either way, but a dialog nested
          in the layout would still be found by the nav's IntersectionObserver. -->
+    <!-- Live metrics for one pod.
+
+         A dialog rather than a card, for the same reason the log is: a reading
+         is asked for and then watched, and a card on the page would be a box
+         that is empty almost always and that nobody asked to open.
+
+         Opened from an instance row, which names the pod — every reading here is
+         about that pod and not about the newest one.
+
+         CPU and memory only, because only those two exist: the Kubernetes
+         metrics API carries usage.cpu and usage.memory and nothing else. The API
+         is polled rather than streamed — nothing streams it — so this is a
+         sample every few seconds, drawn as a line, which is the shape of a
+         reading that moves.
+
+         The scale switch is the one control that changes what the picture says.
+         "Of the limit" answers "is this about to hit its ceiling", which is the
+         question a limit exists to make answerable; "auto" follows the data,
+         which is what shows the shape of a workload that is nowhere near its
+         limit and would otherwise be a flat line at the bottom. Neither is right
+         for both, so the reader picks. -->
+    <div id="metrics-modal" class="log-modal hidden" role="dialog" aria-modal="true" aria-labelledby="metrics-title">
+      <div class="log-modal-scrim" id="metrics-scrim"></div>
+      <div class="log-modal-panel">
+        <div class="log-modal-head">
+          <h2 id="metrics-title" data-i18n="Metrics">Metrics</h2>
+          <span class="mono muted" id="metrics-pod"></span>
+          <label class="field">
+            <span data-i18n="Scale">Scale</span>
+            <select id="metrics-scale">
+              <option value="limit" data-i18n="of the limit">of the limit</option>
+              <option value="auto" data-i18n="auto">auto</option>
+            </select>
+          </label>
+          <button id="metrics-close" data-i18n="Close">Close</button>
+        </div>
+        <p id="metrics-note" class="muted hidden"></p>
+        <div class="chart" id="metrics-cpu">
+          <div class="chart-head">
+            <span class="chart-title" data-i18n="CPU">CPU</span>
+            <span class="chart-value" id="metrics-cpu-value">–</span>
+          </div>
+          <svg class="chart-plot" id="metrics-cpu-plot" preserveAspectRatio="none"></svg>
+          <div class="chart-foot">
+            <span id="metrics-cpu-range"></span>
+          </div>
+        </div>
+        <div class="chart" id="metrics-memory">
+          <div class="chart-head">
+            <span class="chart-title" data-i18n="Memory">Memory</span>
+            <span class="chart-value" id="metrics-memory-value">–</span>
+          </div>
+          <svg class="chart-plot" id="metrics-memory-plot" preserveAspectRatio="none"></svg>
+          <div class="chart-foot">
+            <span id="metrics-memory-range"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="log-modal" class="log-modal hidden" role="dialog" aria-modal="true" aria-labelledby="log-modal-title">
       <div class="log-modal-scrim" id="log-modal-scrim"></div>
       <div class="log-modal-panel">
@@ -1257,6 +1287,17 @@ const state = {
   // The open events panel's refresh timer, or null. There is one events panel
   // and one dialog, so one slot describes it.
   eventsTimer: null,
+  // The metrics dialog: the pod it is about, its sample timer, and the readings
+  // collected so far, newest last.
+  //
+  // The samples live here rather than on the DOM because nothing else keeps
+  // them: the metrics API reports the current instant only, so a chart of the
+  // last few minutes is a series this page has to build as it watches.
+  metricsPod: "",
+  metricsTimer: null,
+  metricsSamples: { cpu: [], memory: [] },
+  // What the pod may use, from the same response. Null until the first read.
+  metricsLimit: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1385,13 +1426,6 @@ const ZH = {
   "Where": "地址",
   "Instance": "实例",
   "Instances": "实例",
-  "Resources": "资源",
-  "Request": "请求",
-  "Limit": "上限",
-  "CPU (cores)": "CPU（核心）",
-  "Memory (GiB)": "内存（GiB）",
-  "Could not read the app's resources: {error}": "无法读取应用资源：{error}",
-  "Could not set resources: {error}": "无法设置资源：{error}",
   "Ready": "就绪",
   "Restarts": "重启",
   "Reason": "原因",
@@ -1401,6 +1435,14 @@ const ZH = {
   "GiB": "GiB",
   "Resource usage is not available: this cluster reports no metrics.": "无法获取资源用量：该集群未上报指标。",
   "Could not read resource usage: {error}": "无法读取资源用量：{error}",
+  "Metrics": "指标",
+  "Scale": "比例",
+  "of the limit": "按上限",
+  "auto": "自动",
+  "peak {peak}": "峰值 {peak}",
+  "limit {limit}": "上限 {limit}",
+  "Could not read metrics: {error}": "无法读取指标：{error}",
+  "This pod is no longer reporting. It may have been replaced by a newer one.": "该实例已不再上报数据，可能已被新实例替换。",
   "Name": "名称",
   "Value": "值",
   "When": "时间",
@@ -1731,25 +1773,6 @@ function toGi(quantity) {
     return trimNumber(Number(binary[1]) * perGi);
   }
   return trimNumber(Number(q) / (MIB_PER_GI * MIB_PER_GI * MIB_PER_GI));
-}
-
-// fromCores and fromGi are the other direction, for the form.
-//
-// A value that is not a number is passed through as empty rather than becoming
-// NaN: the reader may be mid-keystroke, and replacing what they typed with "NaN"
-// would be the form arguing with the keyboard.
-function fromCores(cores) {
-  const raw = String(cores || "").trim();
-  const n = Number(raw);
-  if (!raw || !isFinite(n)) return "";
-  return Math.round(n * CPU_MILLI_PER_CORE) + "m";
-}
-
-function fromGi(gi) {
-  const raw = String(gi || "").trim();
-  const n = Number(raw);
-  if (!raw || !isFinite(n)) return "";
-  return String(n * MIB_PER_GI * MIB_PER_GI * MIB_PER_GI);
 }
 
 // trimNumber renders a number without a trailing ".0" or float noise.
@@ -2256,7 +2279,7 @@ async function refreshCurrent() {
   // A dialog is a deliberate interruption — a log being followed, an app being
   // created — and re-rendering the page under it would move what the reader is
   // looking at. The dialog has its own refresh, if it wants one.
-  if (isShown($("log-modal")) || isShown($("apps-new-modal"))) return;
+  if (isShown($("log-modal")) || isShown($("apps-new-modal")) || isShown($("metrics-modal"))) return;
   // Nobody is mid-edit. This is the one that would actually lose work: the
   // loaders write form fields from the server — the four resource bounds, the
   // port, the replicas, the environment table — so a tick landing between two
@@ -2426,6 +2449,7 @@ function buildRows(builds) {
 //   usage      the matching usage response, or null when its read failed
 //   failure    the usage read's error message, or "" — see below
 //   onLog      called with a pod name to open that pod's log
+//   onMetrics  called with a pod name to open its live readings
 //   onEvents   called with a pod name to open its events, or omitted where
 //              there is no endpoint behind it — see below
 //
@@ -2434,7 +2458,7 @@ function buildRows(builds) {
 // documented) and a read that failed (a 401, a 500, a proxy with no route).
 // Blaming the cluster for the second sent whoever was debugging to check
 // metrics-server when the answer was in the response body.
-function renderInstances({ body, empty, note, pods, usage, failure, onLog, onEvents }) {
+function renderInstances({ body, empty, note, pods, usage, failure, onLog, onMetrics, onEvents }) {
   body.replaceChildren();
   show(empty, pods.length === 0);
   show(note, false);
@@ -2454,12 +2478,12 @@ function renderInstances({ body, empty, note, pods, usage, failure, onLog, onEve
   const byPod = (usage && usage.pods) || {};
 
   for (const pod of pods) {
-    body.appendChild(instanceRow(pod, byPod[pod.name], onLog, onEvents));
+    body.appendChild(instanceRow(pod, byPod[pod.name], onLog, onMetrics, onEvents));
   }
 }
 
 // instanceRow builds one row of an instances table.
-function instanceRow(pod, reading, onLog, onEvents) {
+function instanceRow(pod, reading, onLog, onMetrics, onEvents) {
   const tr = document.createElement("tr");
 
   const name = document.createElement("td");
@@ -2529,6 +2553,17 @@ function instanceRow(pod, reading, onLog, onEvents) {
   logs.onclick = () => onLog(pod.name);
   actions.appendChild(logs);
 
+  // And the readings, on the row it is about. A reading is per pod — which copy
+  // is the odd one out is exactly what a single figure for the app cannot say —
+  // so this opens on the pod of the row rather than on the newest.
+  //
+  // Both tables offer it. The platform's pods are measured the same way and are
+  // the ones nobody can otherwise look inside.
+  const metrics = document.createElement("button");
+  metrics.textContent = t("Metrics");
+  metrics.onclick = () => onMetrics(pod.name);
+  actions.appendChild(metrics);
+
   // Events are offered only where there is an endpoint to read them. The events
   // route is scoped to an app — it matches on the app's label, because every
   // app's pods share one namespace and a pod name is not a prefix of anything —
@@ -2584,6 +2619,7 @@ async function loadOverview() {
     usage: platformUsageResult.status === "fulfilled" ? platformUsageResult.value : null,
     failure: platformUsageResult.status === "rejected" ? platformUsageResult.reason.message : "",
     onLog: openPlatformPodLog,
+    onMetrics: openPodMetrics,
   });
 
   const apps = data.apps || {};
@@ -3041,7 +3077,6 @@ async function switchBranch() {
 // and a typo shows up as a link that does nothing — which appNavVisible checks.
 const APP_SECTIONS = [
   { id: "card-state", label: "State" },
-  { id: "card-resources", label: "Resources" },
   { id: "card-instances", label: "Instances" },
   { id: "card-env", label: "Configuration" },
   { id: "card-builds", label: "Builds" },
@@ -3205,7 +3240,6 @@ async function loadAppView() {
   await Promise.allSettled([
     loadAppState(),
     loadPods(),
-    loadResources(),
     loadCommits(),
     loadAppConfig(),
     loadAppBuilds(),
@@ -3523,6 +3557,7 @@ async function loadPods() {
     usage: usageResult.status === "fulfilled" ? usageResult.value : null,
     failure: usageResult.status === "rejected" ? usageResult.reason.message : "",
     onLog: openPodLog,
+    onMetrics: openPodMetrics,
     onEvents: showPodEvents,
   });
 }
@@ -3536,6 +3571,271 @@ function openPodLog(podName) {
   state.logPod = podName;
   openLogDialog("app");
   startLogs("app");
+}
+
+// METRICS_INTERVAL_MS is how often the open metrics dialog samples.
+//
+// The Kubernetes metrics API has a resolution of its own — metrics-server scrapes
+// the kubelet about every fifteen seconds — so sampling faster than this reads
+// the same number twice. Five is the compromise: it keeps the newest reading
+// fresh to within a scrape, and a chart of the last two minutes is sixty points
+// rather than twelve.
+const METRICS_INTERVAL_MS = 5000;
+
+// METRICS_WINDOW is how much history the chart shows.
+//
+// Kept in the browser, because nothing keeps it anywhere else: the metrics API
+// reports the current instant only, so there is no query for "this pod over the
+// last hour" and building one would mean storing samples nobody asked to keep.
+// The consequence is that the chart starts empty and fills as the dialog stays
+// open — which is honest, and is why the first thing it draws says so.
+const METRICS_WINDOW = 60;
+
+// METRICS_CEILING is where the browser stops drawing.
+//
+// A sample outside the window is forgotten, so the arrays cannot grow without
+// bound, and a dialog left open overnight is not a memory leak. Sixty samples is
+// five minutes, which is more history than the two below want.
+const METRICS_CEILING = 120;
+
+// METRICS_FALLBACK_LIMIT is what a CPU chart is scaled against when the app has
+// no limit of its own — the deployment's default, as this console last read it.
+//
+// A guess, and labelled as one: the alternative is a chart with no ceiling at
+// all, which cannot say how close anything is to being a problem.
+const METRICS_FALLBACK_LIMIT = { cpu: "2", memory: "2Gi" };
+
+// openPodMetrics opens the metrics dialog on one pod, live.
+//
+// The pod is named by the row it was clicked from, and every reading in the
+// dialog is that pod's. Sampling rather than streaming, because the metrics API
+// is a poll: there is no watch on it, so a "live" chart is a timer and a series
+// kept here.
+async function openPodMetrics(podName) {
+  state.metricsPod = podName;
+  state.metricsSamples = { cpu: [], memory: [] };
+  state.metricsLimit = null;
+
+  $("metrics-pod").textContent = podName;
+  $("metrics-note").textContent = "";
+  show($("metrics-note"), false);
+  show($("metrics-modal"), true);
+
+  // A first read before the dialog is drawn, so it opens with a number rather
+  // than an em dash and a chart that fills in a second later.
+  await samplePodMetrics();
+
+  stopMetrics();
+  state.metricsTimer = setInterval(samplePodMetrics, METRICS_INTERVAL_MS);
+}
+
+// closePodMetrics stops sampling and closes the dialog.
+function closePodMetrics() {
+  stopMetrics();
+  show($("metrics-modal"), false);
+}
+
+// stopMetrics clears the sample timer and the pod it was about.
+//
+// The samples go with it: they are one pod's history, and leaving them would put
+// the previous pod's line under the next pod's name for as long as it took the
+// first sample to arrive.
+function stopMetrics() {
+  if (state.metricsTimer !== null) {
+    clearInterval(state.metricsTimer);
+    state.metricsTimer = null;
+  }
+  state.metricsPod = "";
+  state.metricsSamples = { cpu: [], memory: [] };
+  state.metricsLimit = null;
+}
+
+// samplePodMetrics reads the app's usage and appends this pod's reading.
+//
+// One request for both resources, because the endpoint answers both at once —
+// and because it also carries the bounds, which is what the chart is scaled
+// against without a second call.
+async function samplePodMetrics() {
+  const podName = state.metricsPod;
+  if (!podName) return;
+
+  let usage;
+  try {
+    usage = await api("/api/v1/apps/" + state.app + "/resources");
+  } catch (err) {
+    // Said once and then shown as stale rather than spamming: a poll that fails
+    // every five seconds would otherwise overwrite the same message forever, and
+    // the line already drawn is still the last thing that was true.
+    showMetricsNote(tf("Could not read metrics: {error}", { error: err.message }));
+    return;
+  }
+
+  // The pod could have been replaced between two samples — a deploy, a crash
+  // loop. The dialog stays on the name it was opened with, so it says so rather
+  // than silently charting a different pod.
+  const reading = (usage.pods || {})[podName];
+  if (!usage.available) {
+    showMetricsNote(t("Resource usage is not available: this cluster reports no metrics."));
+    renderMetrics();
+    return;
+  }
+  if (!reading) {
+    showMetricsNote(tf("This pod is no longer reporting. It may have been replaced by a newer one.", {}));
+    renderMetrics();
+    return;
+  }
+
+  showMetricsNote("");
+  state.metricsLimit = usage.limited || null;
+
+  const now = Date.now();
+  for (const [key, quantity] of [["cpu", reading.cpu], ["memory", reading.memory]]) {
+    const value = quantityToNumber(quantity, key);
+    if (value === null) continue;
+    const series = state.metricsSamples[key];
+    series.push({ at: now, value });
+    if (series.length > METRICS_CEILING) series.shift();
+  }
+
+  renderMetrics();
+}
+
+// showMetricsNote sets the dialog's one line of explanation.
+function showMetricsNote(message) {
+  const note = $("metrics-note");
+  note.textContent = message;
+  show(note, message !== "");
+}
+
+// quantityToNumber parses a Kubernetes quantity into the unit the chart draws in
+// — cores for CPU, bytes for memory — or null when there is nothing to parse.
+//
+// Parsed here rather than server-side because the API reports the quantity as
+// the metrics API gave it, and the console is the only thing that needs a
+// number. A quantity written without a suffix means cores for CPU and *bytes*
+// for memory, which is the Kubernetes rule and the reason this is not one
+// function for both.
+function quantityToNumber(quantity, resource) {
+  const raw = String(quantity || "").trim();
+  if (!raw) return null;
+
+  const scaled = /^(-?[\d.]+)(n|u|m|k|M|G|T|Ki|Mi|Gi|Ti)?$/.exec(raw);
+  if (!scaled) return null;
+  const value = Number(scaled[1]);
+  if (!isFinite(value)) return null;
+
+  const factor = {
+    n: 1e-9, u: 1e-6, m: 1e-3,
+    k: 1e3, M: 1e6, G: 1e9, T: 1e12,
+    Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4,
+  }[scaled[2] || ""] || 1;
+
+  const n = value * factor;
+  // CPU is a ratio of cores and memory is a count of bytes; the API's units for
+  // each are its own, and the chart draws in the smaller one.
+  return resource === "cpu" ? n : n;
+}
+
+// renderMetrics draws both charts from the samples in hand.
+function renderMetrics() {
+  const limit = state.metricsLimit || METRICS_FALLBACK_LIMIT;
+
+  for (const [key, plotID, valueID, rangeID, unit, format, limitQuantity] of [
+    ["cpu", "metrics-cpu-plot", "metrics-cpu-value", "metrics-cpu-range", "cores", formatCores, limit.cpu],
+    ["memory", "metrics-memory-plot", "metrics-memory-value", "metrics-memory-range", "GiB", formatGiB, limit.memory],
+  ]) {
+    const samples = state.metricsSamples[key] || [];
+    const ceil = quantityToNumber(limitQuantity, key);
+    drawChart({
+      plot: $(plotID),
+      valueEl: $(valueID),
+      rangeEl: $(rangeID),
+      samples,
+      // "auto" is the only way to ask for the data-driven scale; anything else,
+      // including the empty string a select reports before it has settled, means
+      // the limit. The limit is the more informative of the two, so it is the
+      // one an unread value falls back to.
+      ceiling: $("metrics-scale").value === "auto" ? null : ceil,
+      unit,
+      format,
+      limitLabel: limitQuantity,
+    });
+  }
+}
+
+// formatCores renders a count of cores the way the resource form did.
+function formatCores(cores) {
+  if (cores === null || cores === undefined) return "–";
+  return trimNumber(cores) + " " + t("cores");
+}
+
+// formatGiB renders a count of bytes in GiB, which is the unit the rest of the
+// page uses for memory.
+function formatGiB(bytes) {
+  if (bytes === null || bytes === undefined) return "–";
+  return trimNumber(bytes / (MIB_PER_GI * MIB_PER_GI * MIB_PER_GI)) + " " + t("GiB");
+}
+
+// drawChart renders one line into an SVG, with an optional ceiling.
+//
+// Geometry by hand rather than a charting library: this is one polyline and one
+// label, and a library would be a dependency, a bundle and a second set of
+// rendering rules to keep in step with the rest of the page for that.
+//
+// The scale is the honest part of it. With a ceiling the axis is fixed at the
+// limit, so the line's height is "how much of my allowance am I using" and two
+// pods are comparable. Without one it follows the data, and the floor is the
+// smallest sensible value so a quiet pod does not draw a line at the very top.
+function drawChart({ plot, valueEl, rangeEl, samples, ceiling, unit, format, limitLabel }) {
+  // The newest reading is the number; the line is its context.
+  const latest = samples.length ? samples[samples.length - 1].value : null;
+  valueEl.textContent = format(latest);
+
+  if (samples.length === 0) {
+    plot.replaceChildren();
+    rangeEl.textContent = "";
+    return;
+  }
+
+  // Ten units of headroom on an automatic scale, so a flat line sits below the
+  // top rather than against it, and a spike is visible as one.
+  const observed = Math.max(...samples.map((s) => s.value));
+  const top = ceiling && ceiling > 0 ? ceiling : (observed > 0 ? observed * 1.1 : 0);
+
+  // A reading above its own limit is the interesting case, so the ceiling is not
+  // a clamp: the line is allowed to cross it, and the crossing is the message.
+  const scaleMax = Math.max(top, observed);
+  const width = 100;
+  const height = 100;
+
+  const points = samples.map((s, i) => {
+    const x = samples.length === 1 ? width : (i / (samples.length - 1)) * width;
+    const y = scaleMax > 0 ? height - (s.value / scaleMax) * height : height;
+    return { x, y: Math.min(Math.max(y, 0), height) };
+  });
+
+  const line = points.map((p, i) => (i === 0 ? "M" : "L") + p.x.toFixed(2) + " " + p.y.toFixed(2)).join(" ");
+  // Closed down to the baseline for the fill, which is what makes the line read
+  // as a quantity rather than as a path.
+  const area = line + " L" + points[points.length - 1].x.toFixed(2) + " " + height + " L" + points[0].x.toFixed(2) + " " + height + " Z";
+
+  const parts = [];
+  if (ceiling && ceiling > 0 && scaleMax > 0) {
+    const y = (height - (ceiling / scaleMax) * height).toFixed(2);
+    parts.push('<line class="chart-limit" x1="0" y1="' + y + '" x2="' + width + '" y2="' + y + '"/>');
+  }
+  parts.push('<path class="chart-area" d="' + area + '" fill="var(--accent)"/>');
+  parts.push('<path class="chart-line" d="' + line + '" stroke="var(--accent)" stroke-linejoin="round" stroke-linecap="round"/>');
+
+  plot.setAttribute("viewBox", "0 0 " + width + " " + height);
+  plot.innerHTML = parts.join("");
+
+  // The range, in words: what the top of the axis is, and whether that is a
+  // limit or the pod's own peak.
+  const scaleLabel = format(scaleMax);
+  rangeEl.textContent = ceiling && ceiling > 0
+    ? tf("limit {limit}", { limit: format(ceiling) })
+    : tf("peak {peak}", { peak: scaleLabel });
 }
 
 // EVENTS_INTERVAL_MS is how often the open events panel re-reads.
@@ -3809,73 +4109,6 @@ async function setPort() {
     return;
   }
   await loadAppState();
-}
-
-// loadResources fills the four bounds from the app's own settings.
-//
-// One read, and it is the app's record: these are settings, not readings. What
-// the container is actually using was fetched from the cluster's metrics API and
-// shown above the form, and it is gone — it was a live number on a card of
-// settings, stale the moment the page sat open, and unavailable on any cluster
-// without metrics-server, where it read as two em-dashes. `applab resources`
-// and GET /api/v1/apps/{app}/resources still report it, which is where a number
-// that has to be current belongs.
-//
-// An empty field means "this deployment's default", which is what the
-// placeholder shows, and the two are the same units so a typed value and a
-// default read alike rather than as two scales.
-async function loadResources() {
-  let app = null;
-  try {
-    app = await api("/api/v1/apps/" + state.app);
-  } catch (err) {
-    setResourcesProblem(tf("Could not read the app's resources: {error}", { error: err.message }));
-    return;
-  }
-  setResourcesProblem("");
-
-  const r = (app && app.resources) || {};
-  $("resources-cpu-request").value = toCores(r.cpu_request);
-  $("resources-cpu-limit").value = toCores(r.cpu_limit);
-  $("resources-memory-request").value = toGi(r.memory_request);
-  $("resources-memory-limit").value = toGi(r.memory_limit);
-}
-
-// saveResources writes the four bounds.
-//
-// A PATCH of the whole resources block rather than one field at a time: the four
-// are one setting, saved by one button, and sending them together means a
-// half-filled form cannot land between the four. An empty field is sent as an
-// empty string, which is what clears it back to this deployment's default.
-async function saveResources() {
-  // Converted back to Kubernetes quantities on the way out, and an empty field
-  // stays an empty string — which is what clears it to the deployment's default
-  // rather than writing a zero.
-  const body = {
-    cpu_request: fromCores($("resources-cpu-request").value),
-    cpu_limit: fromCores($("resources-cpu-limit").value),
-    memory_request: fromGi($("resources-memory-request").value),
-    memory_limit: fromGi($("resources-memory-limit").value),
-  };
-
-  setResourcesProblem("");
-  try {
-    await api("/api/v1/apps/" + state.app, {
-      method: "PATCH",
-      body: JSON.stringify({ resources: body }),
-    });
-  } catch (err) {
-    setResourcesProblem(tf("Could not set resources: {error}", { error: err.message }));
-    return;
-  }
-  await loadResources();
-}
-
-// setResourcesProblem shows or clears the resources card's error.
-function setResourcesProblem(message) {
-  const el = $("resources-problem");
-  el.textContent = message;
-  show(el, message !== "");
 }
 
 // setAutoDeploy turns building and deploying on a push on or off.
@@ -4165,6 +4398,10 @@ function stopLogs() {
   stopLogStream();
   stopEvents();
   show($("log-modal"), false);
+  // The metrics dialog goes with it, and its timer with that: a sampler left
+  // running behind a closed dialog is a request every five seconds for readings
+  // nobody will draw.
+  closePodMetrics();
 }
 
 async function startLogs(name) {
@@ -4428,6 +4665,9 @@ $("app-builds-build").onclick = buildLatest;
 $("app-deploy").onclick = deployLatest;
 $("app-branch-use").onclick = switchBranch;
 $("app-stop").onclick = stop;
+$("metrics-close").onclick = closePodMetrics;
+$("metrics-scrim").onclick = closePodMetrics;
+$("metrics-scale").onchange = renderMetrics;
 $("app-delete").onclick = remove;
 
 // Reloading as the selector is typed would fire a request per keystroke; on
@@ -4473,7 +4713,6 @@ $("config-env-set").onclick = () => {
 // The two surfaces with a card of their own open the dialog on their log. The
 // third — a build — is opened from the build list below, which has the build id
 // to name.
-$("app-resources-save").onclick = saveResources;
 
 // The dialog's own controls. Follow toggles the stream that is open, and the
 // previous-instance box re-reads rather than opening a second stream.
