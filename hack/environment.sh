@@ -525,45 +525,67 @@ log "installing metrics-server, so the console can show resource usage"
 # cannot be seen at all, so it is installed here rather than left to whoever
 # notices two em dashes in the console.
 #
-# The upstream components.yaml, unmodified except for the kubelet TLS flag below.
-metrics-server_version="v0.7.2"
-kubectl apply -f "https://github.com/kubernetes-sigs/metrics-server/releases/download/${metrics-server_version}/components.yaml"
-
-# kind's kubelet serves its own self-signed certificate, and metrics-server
-# verifies it by default — so without this every scrape fails with an x509
-# error and the Deployment sits unavailable with nothing in the console
-# explaining why. This is the flag the project's own kind documentation gives;
-# it is safe here because the kubelet is reached over the cluster's own network.
-kubectl -n kube-system patch deployment metrics-server --type=json \
-  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
-
-# Not fatal, unlike the Istio wait above: AppLab installs and serves fine without
-# a metrics API, it just cannot show usage. Ending the whole environment because
-# an optional component did not come up would be the wrong trade, so this warns
-# and carries on.
-if ! kubectl -n kube-system wait --for=condition=available --timeout=300s deployment/metrics-server; then
-  warn "metrics-server did not become available; the console will report usage as unavailable"
-fi
-show "metrics-server" kubectl -n kube-system get deployment metrics-server
-
-# Waited for a reading rather than for the Deployment, because those are not the
-# same moment: metrics-server becomes available when it starts and answers only
-# after its first scrape of the kubelet — up to a minute later. A check that
-# stopped at "available" would let the AppLab install proceed against an API that
-# still 404s, which is exactly the failure this block exists to rule out.
+# Every step below is non-fatal, and deliberately so: this is an optional
+# component, and ending the whole environment because it did not come up would
+# trade a missing readout for a missing everything. Each failure warns with what
+# it costs and the script carries on. The alternative is also how this block
+# first shipped — a typo in it killed the run before AppLab was ever installed,
+# which is exactly the trade being avoided.
 #
-# `top nodes` needs one row, and until one arrives the CLI reports "no metrics
-# known". Sixty tries at two seconds is two minutes, which is about the interval
-# metrics-server takes to serve its first sample.
-for i in $(seq 1 60); do
-  if kubectl top nodes >/dev/null 2>&1; then
-    break
+# The whole block is guarded on the apply, so a cluster that cannot reach GitHub
+# skips the rest rather than warning four times about the same cause.
+#
+# The upstream components.yaml, unmodified except for the kubelet TLS flag below.
+# The version is pinned, like kind and istio above: a moving tag would install
+# something different tomorrow than it did today.
+metrics_server_version="v0.7.2"
+
+if kubectl apply -f "https://github.com/kubernetes-sigs/metrics-server/releases/download/${metrics_server_version}/components.yaml"; then
+  # kind's kubelet serves its own self-signed certificate, and metrics-server
+  # verifies it by default — so without this every scrape fails with an x509
+  # error and the Deployment sits unavailable with nothing in the console
+  # explaining why. This is the flag the project's own kind documentation gives;
+  # it is safe here because the kubelet is reached over the cluster's own network.
+  #
+  # Tested before it is added rather than appended outright: `--type=json` with
+  # an `add` on `args/-` appends unconditionally, so a second run of this script
+  # against a cluster that already has the flag would add a second copy of it.
+  # Harmless for a boolean, and still not something to leave lying around.
+  if kubectl -n kube-system get deployment metrics-server \
+       -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null \
+       | grep -q -- '--kubelet-insecure-tls'; then
+    log "metrics-server already trusts the kubelet's certificate"
+  elif ! kubectl -n kube-system patch deployment metrics-server --type=json \
+         -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'; then
+    warn "could not tell metrics-server to trust kind's kubelet certificate; its scrapes will fail with an x509 error and the console will show no usage"
   fi
-  if [ "$i" = 60 ]; then
-    warn "metrics-server is up but reports no readings; usage will be unavailable in the console"
+
+  if ! kubectl -n kube-system wait --for=condition=available --timeout=300s deployment/metrics-server; then
+    warn "metrics-server did not become available; the console will report usage as unavailable"
   fi
-  sleep 2
-done
+  show "metrics-server" kubectl -n kube-system get deployment metrics-server
+
+  # Waited for a reading rather than for the Deployment, because those are not
+  # the same moment: metrics-server becomes available when it starts and answers
+  # only after its first scrape of the kubelet — up to a minute later. A check
+  # that stopped at "available" would let the AppLab install proceed against an
+  # API that still 404s, which is the failure this wait exists to rule out.
+  #
+  # `top nodes` needs one row, and until one arrives the CLI reports "no metrics
+  # known". Sixty tries at two seconds is two minutes, about the interval
+  # metrics-server takes to serve its first sample.
+  for i in $(seq 1 60); do
+    if kubectl top nodes >/dev/null 2>&1; then
+      break
+    fi
+    if [ "$i" = 60 ]; then
+      warn "metrics-server is up but reports no readings; usage will be unavailable in the console"
+    fi
+    sleep 2
+  done
+else
+  warn "metrics-server could not be installed; the console will report usage as unavailable and the rest of the environment is unaffected"
+fi
 
 log "installing Istio (this is the slow step)"
 # The community default profile, into the community default namespace, producing
