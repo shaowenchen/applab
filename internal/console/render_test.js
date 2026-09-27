@@ -1627,15 +1627,16 @@ async function render(apps) {
     const missing = described.filter((id) => !markup.includes(`id="${id}"`));
     check("every log panel points at an element that is in the page", missing.join(", "), "");
 
-    const opened = vm.runInContext("openDialogOn", ctx);
-    opened("platform");
+    // A row's Log button is what reads one, and it names the pod it was pressed
+    // on — the platform log route answers with the newest replica's output when
+    // no pod is given, which is not the row that was clicked.
+    const opened = vm.runInContext("openPlatformPodLog", ctx);
+    opened("applab-6b9f7-abc");
     await new Promise((r) => setTimeout(r, 0));
 
-    check(
-      "and the dialog's open control is what reads one",
-      ctx.requests.some((u) => u.includes("/api/v1/platform/logs")),
-      true
-    );
+    const asked = ctx.requests.find((u) => u.includes("/api/v1/platform/logs")) || "";
+    check("and a row's log button is what reads one", asked.length > 0, true);
+    check("naming the pod the row was about", asked.includes("pod=applab-6b9f7-abc"), true);
   }
 
   // The dialogs are outside every view section.
@@ -1682,121 +1683,148 @@ async function render(apps) {
       );
     }
 
-    // The platform log's button is on the overview, so its dialog in particular
-    // has to be reachable from there.
-    check(
-      "the platform log button is on the overview, where its dialog is not",
-      idx('id="platform-logs-open"') > bounds[0][0] && idx('id="platform-logs-open"') < bounds[0][1],
-      true
-    );
   }
 
-  // The overview's monitoring card.
+  // The platform instances card, which replaced the monitoring panel and the
+  // platform log card.
   //
-  // Above the platform log card rather than below it, because the two answer
-  // different questions and this one is the smaller: the log says what AppLab
-  // did, and the readings say whether it has the room to keep doing it. Asserted
-  // as an order rather than a presence, since "put it somewhere on the page"
-  // would pass with the card at the bottom, which is not what was asked for.
+  // Two cards answering half a question each became one list: the monitoring
+  // panel showed a single pod's CPU and memory behind a picker, and the log card
+  // was a button opening the newest pod's log. Neither said which pod was the odd
+  // one out, and the picker existed only because a total cannot show an outlier —
+  // a list shows every pod at once, so there is nothing left to pick between.
+  //
+  // Asserted on the markup because the stub creates an element for any id the
+  // script mentions, so a check that only looked one up would pass with the card
+  // deleted from the page.
   {
     const idx = (needle) => markup.indexOf(needle);
-    const monitor = idx('id="card-monitor"');
-    const platformLog = idx('id="platform-logs-open"');
-    check("the overview carries a monitoring card", monitor > 0, true);
-    check("above the platform log", monitor < platformLog, true);
 
-    // The card's own picker and readings, and not some other card's.
-    check("with a pod picker", markup.includes('id="monitor-pod"'), true);
-    check("and a place for the readings", markup.includes('id="monitor-readings"'), true);
+    check("the overview carries a platform instances card", markup.includes('id="card-platform"'), true);
+    check("with a table to fill", markup.includes('id="platform-instances"'), true);
+    check("and a placeholder for an empty cluster", markup.includes('id="platform-instances-empty"'), true);
 
     // It is the overview's, so it is inside that section and not the app view's.
-    const overviewStart = idx('id="overview-view"');
-    const overviewEnd = idx('id="apps-view"');
-    check("inside the overview view", monitor > overviewStart && monitor < overviewEnd, true);
+    const card = idx('id="card-platform"');
+    check(
+      "inside the overview view",
+      card > idx('id="overview-view"') && card < idx('id="apps-view"'),
+      true
+    );
 
-    // And the app page's side nav lists cards of the *app* view. The monitoring
-    // card is the overview's, so an entry for it there would be a link to a card
-    // this page never renders.
-    check("and it is not one of the app page's sections", markup.includes('{ id: "card-monitor"'), false);
+    // And the app page's side nav lists cards of the *app* view, so an entry for
+    // this one would be a link to a card that page never renders.
+    check("and it is not one of the app page's sections", markup.includes('{ id: "card-platform"'), false);
+
+    // The two cards it replaced are gone. A leftover heading would be a second
+    // answer to the same question, which is how the two drifted apart to begin
+    // with.
+    check("the monitoring panel is gone", markup.includes('id="card-monitor"'), false);
+    check("and the platform log card with it", markup.includes('id="platform-logs-open"'), false);
   }
 
-  // The picker's options, and what changes when one is chosen.
-  //
-  // The sum is first and each pod after it, because the interesting figure with
-  // more than one replica is the outlier and a panel offering only the total is
-  // the one thing that cannot show it.
+  // What the platform instances table renders: one row per pod, with its own
+  // reading, and a Log button that names that pod.
   {
     const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
     ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        // A stream of one chunk, so startLogs finishes rather than waiting.
+        body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
+        text: async () => "",
+      };
+    };
     vm.runInContext(source, ctx, { filename: "console.js" });
 
-    const render = vm.runInContext("renderMonitoring", ctx);
-    render(
-      {
+    const render = vm.runInContext("renderInstances", ctx);
+    const body = elements.get("platform-instances");
+    render({
+      body,
+      empty: elements.get("platform-instances-empty"),
+      note: elements.get("platform-usage-note"),
+      pods: [
+        { name: "applab-6b9f7-abc", ready: true, restarts: 0 },
+        { name: "applab-6b9f7-def", ready: false, restarts: 3, reason: "CrashLoopBackOff" },
+      ],
+      usage: {
         available: true,
-        cpu: "150m",
-        memory: "96Mi",
-        limited: { cpu: "1", memory: "512Mi" },
         pods: {
-          "applab-shop-abc": { cpu: "100m", memory: "64Mi" },
-          "applab-shop-def": { cpu: "50m", memory: "32Mi" },
+          "applab-6b9f7-abc": { cpu: "12m", memory: "80Mi" },
+          "applab-6b9f7-def": { cpu: "4m", memory: "20Mi" },
         },
       },
-      [
-        { name: "applab-shop-abc" },
-        { name: "applab-shop-def" },
-      ]
-    );
+      failure: "",
+      onLog: vm.runInContext("openPlatformPodLog", ctx),
+    });
 
-    const picker = elements.get("monitor-pod");
+    check("one row per pod", body.children.length, 2);
+    check("and an empty cluster is not reported", elements.get("platform-instances-empty").classList.contains("hidden"), true);
+
+    const first = body.children[0];
+    check("the pod is named", first.children[0].textContent, "applab-6b9f7-abc");
+    check("with its readiness", first.children[1].allText(), "ready");
+    // Its own reading, on its own row — the case a single total cannot show.
+    check("and its own cpu", first.children[3].textContent, "0.012 cores");
+    check("and its own memory", first.children[4].textContent, "0.078125 GiB");
+
+    // A not-ready pod's reason is the column that explains it.
+    const second = body.children[1];
+    check("a failing pod shows why", second.children[5].allText(), "CrashLoopBackOff");
+
+    // And its Log button names *that* pod. Without it the endpoint answers with
+    // the newest replica's output, which is not the row that was clicked.
+    const actions = second.children[6];
+    check("every row offers its own log", actions.children[0].textContent, "Log");
     check(
-      "the picker offers every pod and the sum",
-      picker.children.map((o) => o.value).join(","),
-      ",applab-shop-abc,applab-shop-def"
+      "and only a log — there is no platform events endpoint to offer",
+      actions.children.length,
+      1
     );
-    check("with the sum first", picker.children[0].value, "");
-    check("and it is not disabled", picker.disabled, false);
 
-    // The first entry is the whole app, so the readings are the totals.
-    picker.value = "";
-    picker.onchange();
-    let text = elements.get("monitor-readings").allText();
-    check("the sum renders the total cpu", text.includes("0.15 cores"), true);
-    check("and the total memory", text.includes("0.09375 GiB"), true);
-
-    // Choosing a pod swaps them for that pod's own, which is the point of the
-    // picker: one replica's figure, not the app's.
-    picker.value = "applab-shop-def";
-    picker.onchange();
-    text = elements.get("monitor-readings").allText();
-    check("a pod renders its own cpu", text.includes("0.05 cores"), true);
-    check("not the sum's", text.includes("0.15 cores"), false);
-
-    // Switching back has to restore the totals rather than leaving the last
-    // pod's numbers under the "all pods" entry.
-    picker.value = "";
-    picker.onchange();
-    text = elements.get("monitor-readings").allText();
-    check("and the sum is restored when it is chosen again", text.includes("0.15 cores"), true);
+    ctx.requests.length = 0;
+    actions.children[0].onclick();
+    await new Promise((r) => setTimeout(r, 0));
+    const asked = ctx.requests.find((u) => u.includes("/platform/logs")) || "";
+    check("and the log it reads names that pod", asked.includes("pod=applab-6b9f7-def"), true);
   }
 
   // A cluster with no metrics API.
   //
-  // The card says so rather than showing zeros. A control plane being starved of
-  // CPU and an idle one look identical at zero, and only one of them is a
-  // problem — so the distinction is the whole reason the available flag exists.
+  // The table says so rather than showing zeros. A control plane being starved of
+  // CPU and an idle one look identical at zero, and only one of them is a problem
+  // — so the distinction is the whole reason the available flag exists.
   {
     const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
     ctx.globalThis = ctx;
     vm.runInContext(source, ctx, { filename: "console.js" });
 
-    vm.runInContext("renderMonitoring", ctx)({ available: false }, []);
+    const render = vm.runInContext("renderInstances", ctx);
+    render({
+      body: elements.get("platform-instances"),
+      empty: elements.get("platform-instances-empty"),
+      note: elements.get("platform-usage-note"),
+      pods: [{ name: "applab-6b9f7-abc", ready: true, restarts: 0 }],
+      usage: { available: false },
+      failure: "",
+      onLog: () => {},
+    });
 
-    const note = elements.get("monitor-note");
-    check("with no metrics the card says so", note.textContent.length > 0, true);
-    check("and the note is shown", note.classList.contains("hidden"), false);
-    check("and the readings are empty rather than zero", elements.get("monitor-readings").allText(), "");
-    check("and the picker is disabled rather than offering nothing", elements.get("monitor-pod").disabled, true);
+    const note = elements.get("platform-usage-note");
+    check("with no metrics the table says so", note.classList.contains("hidden"), false);
+
+    // The rows are still there. Usage is one column of this table, and losing
+    // every pod because a column is missing would be the wrong trade — the pods
+    // and their restarts are as useful without a reading.
+    const row = elements.get("platform-instances").children[0];
+    check("and the pod is still listed", row.children[0].textContent, "applab-6b9f7-abc");
+    check("with its reading unknown rather than zero", row.children[3].textContent, "–");
   }
 
   // Building is triggered from where the builds are.
@@ -2042,7 +2070,7 @@ async function render(apps) {
     check("and clears the panel's timer handle", intervals.length - before, 1);
   }
 
-  // The monitoring card distinguishes "no metrics here" from "the read failed".
+  // The instances table distinguishes "no metrics here" from "the read failed".
   //
   // They are different problems with different remedies, and conflating them
   // sends whoever is debugging to the wrong place: a 401 from a stale key, a 500,
@@ -2054,24 +2082,41 @@ async function render(apps) {
     ctx.globalThis = ctx;
     vm.runInContext(source, ctx, { filename: "console.js" });
 
-    const renderMonitoring = vm.runInContext("renderMonitoring", ctx);
-    const note = elements.get("monitor-note");
+    const render = vm.runInContext("renderInstances", ctx);
+    const note = elements.get("platform-usage-note");
+    const body = elements.get("platform-instances");
+
+    const show = (usage, failure) => render({
+      body,
+      empty: elements.get("platform-instances-empty"),
+      note,
+      pods: [{ name: "applab-6b9f7-abc", ready: true, restarts: 0 }],
+      usage,
+      failure,
+      onLog: () => {},
+    });
 
     // No metrics-server: a fact about the installation, and the message says so.
-    renderMonitoring({ available: false }, [], "");
-    check("with no metrics API the card names that", note.textContent, "Resource usage is not available: this cluster reports no metrics.");
+    show({ available: false }, "");
+    check(
+      "with no metrics API the table names that",
+      note.textContent,
+      "Resource usage is not available: this cluster reports no metrics."
+    );
 
     // A request that failed: the message names what the server said instead.
-    renderMonitoring(null, [], "401 Unauthorized");
-    check("and a failed read reports the failure rather than blaming the cluster", note.textContent, "Could not read resource usage: 401 Unauthorized");
+    show(null, "401 Unauthorized");
+    check(
+      "and a failed read reports the failure rather than blaming the cluster",
+      note.textContent,
+      "Could not read resource usage: 401 Unauthorized"
+    );
 
     // A cluster that answers but has sampled nothing yet is a third case, and it
     // is not an error: the readings are unknown, which the empty strings the
     // server sends render as em dashes.
-    renderMonitoring({ available: true, cpu: "", memory: "", pods: null, limited: {} }, [], "");
-    const text = elements.get("monitor-readings").allText();
-    check("an unsampled cluster shows unknown rather than zero", text.includes("0 "), false);
-    check("as an em dash", text.includes("–"), true);
+    show({ available: true, cpu: "", memory: "", pods: null }, "");
+    check("an unsampled cluster shows unknown rather than zero", body.children[0].children[3].textContent, "–");
     check("and does not claim metrics are missing", note.classList.contains("hidden"), true);
   }
 

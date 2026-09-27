@@ -349,23 +349,6 @@
   .resources-table tbody tr:hover { background: transparent; }
   .resources-table input { width: 110px; font-variant-numeric: tabular-nums; }
 
-  /* A live reading, above the settings it belongs to.
-
-     Laid out as one row that wraps rather than a grid: two readings and a
-     picker, and on a narrow console the picker drops to its own line instead of
-     squeezing the numbers. The numbers are tabular so a reading that changes
-     from 9m to 12m does not shift the label beside it.
-
-     The value is the loud half and the bound the quiet one — the reading is the
-     live fact and the limit is the context for it, so they are set at different
-     weights rather than as two equal figures. */
-  .monitor { display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; margin-top: 16px; }
-  .monitor-readings { display: flex; gap: 28px; flex-wrap: wrap; }
-  .monitor-reading { display: flex; flex-direction: column; gap: 2px; }
-  .monitor-reading .label { color: var(--text-muted); font-size: 13px; }
-  .monitor-reading .value { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.2; }
-  .monitor-reading .of { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
   /* A page's title, above its cards and outside them. Nothing is gained by
@@ -744,46 +727,46 @@
          a dashboard whose job is to be read at a glance, and a 480px box pushed
          the build list off the first screen. The lines scroll inside it, so
          nothing is lost — only the amount visible without scrolling. -->
-    <!-- What the control plane itself is using.
+    <!-- The control plane's own pods: what they are using and how to read each
+         one's log.
 
-         Above the platform log and for a different question: the log says what
-         AppLab *did*, and this says whether it has the room to keep doing it. A
-         control plane being starved of CPU shows up nowhere else — apps keep
-         serving, builds just get slow, and the log stays silent about it.
+         One card where there were two. Monitoring showed a single pod's CPU and
+         memory behind a picker, and the log card was a button that opened the
+         newest pod's log — two views of the same set of pods, each answering
+         half a question, and neither saying which pod was the odd one out. A row
+         per pod with its reading beside its Log button is the same information
+         with the join already made.
 
-         The picker offers each of AppLab's own pods and, first, all of them
-         together. Which pod is the one to look at is not something this page can
-         guess: with more than one replica the interesting one is the outlier, and
-         the sum is what hides it, so both are offered rather than one chosen.
+         The picker is gone with it. It existed because a single total cannot
+         show an outlier; a list shows every pod at once, so there is nothing to
+         pick between.
 
-         Only these two readings, because only these two exist: the Kubernetes
-         metrics API carries usage.cpu and usage.memory and nothing else. Network
-         and disk I/O would need a Prometheus or a shell into the pod, and a panel
-         that showed them as zeros would be inventing them. -->
-    <div class="card" id="card-monitor">
+         The same columns as an app's Instances table, and deliberately so: these
+         are the same objects read the same way, and a reader who has looked at an
+         app's instances already knows how to read this. AppLab's pods are in the
+         same namespace as every app's, which is why that table cannot be reused
+         directly — the two list different sets.
+
+         The log itself is in the shared dialog. A row's Log button names its pod,
+         so the reader gets that container's output rather than the newest
+         replica's.
+
+         CPU and memory only, because only those two exist: the Kubernetes metrics
+         API carries usage.cpu and usage.memory and nothing else. Network and disk
+         I/O would need a Prometheus or a shell into the pod, and a panel that
+         showed them as zeros would be inventing them. -->
+    <div class="card flush" id="card-platform">
       <div class="card-head">
-        <h2 data-i18n="Monitoring">Monitoring</h2>
-        <label class="field">
-          <span data-i18n="Pod">Pod</span>
-          <select id="monitor-pod"></select>
-        </label>
+        <h2 data-i18n="Platform instances">Platform instances</h2>
       </div>
-      <div class="monitor">
-        <div class="monitor-readings" id="monitor-readings"></div>
-      </div>
-      <p id="monitor-note" class="muted hidden"></p>
-    </div>
-
-    <!-- Opening the log is what this card offers; the log itself is in the
-         dialog at the end of the page, which is shared with the other two
-         surfaces that stream. The card keeps a line of the description so it
-         still says what it is for rather than being a bare button. -->
-    <div class="card">
-      <div class="card-head">
-        <h2 data-i18n="Platform log">Platform log</h2>
-        <button id="platform-logs-open" data-i18n="View log">View log</button>
-      </div>
-      <p data-i18n="AppLab's own log: the deployment serving this page.">AppLab's own log: the deployment serving this page.</p>
+      <table>
+        <thead>
+          <tr><th data-i18n="Instance">Instance</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="CPU">CPU</th><th data-i18n="Memory">Memory</th><th data-i18n="Reason">Reason</th><th></th></tr>
+        </thead>
+        <tbody id="platform-instances"></tbody>
+      </table>
+      <p id="platform-usage-note" class="muted hidden"></p>
+      <div id="platform-instances-empty" class="empty hidden" data-i18n="Nothing is running.">Nothing is running.</div>
     </div>
   </section>
 
@@ -1367,10 +1350,8 @@ const ZH = {
 
   // -- Overview -------------------------------------------------------------
   "Recent builds": "最近构建",
-  "Platform log": "平台日志",
-  "View log": "查看日志",
+  "Platform instances": "平台实例",
   "Close": "关闭",
-  "AppLab's own log: the deployment serving this page.": "AppLab 自身的日志：提供本页面的这套部署。",
   "This deployment cannot read logs: no cluster client is configured.": "这个部署无法读取日志：没有配置集群客户端。",
   "No builds yet. Push an app with": "还没有构建。用这个命令推送一个应用：",
   "Needs attention": "需要处理",
@@ -1410,10 +1391,6 @@ const ZH = {
   "Memory": "内存",
   "cores": "核心",
   "GiB": "GiB",
-  "Monitoring": "监控",
-  "Pod": "实例",
-  "all pods": "全部实例",
-  "of {limit} {unit}": "上限 {limit} {unit}",
   "Resource usage is not available: this cluster reports no metrics.": "无法获取资源用量：该集群未上报指标。",
   "Could not read resource usage: {error}": "无法读取资源用量：{error}",
   "Name": "名称",
@@ -2425,144 +2402,140 @@ function buildRows(builds) {
 // cluster state and the recent-builds table all come from the same
 // /api/v1/overview response, so asking twice would be the same answer at twice
 // the cost.
-// renderMonitoring fills the overview's monitoring card.
+// renderInstances fills an instances table: one row per pod, with what it is
+// using and how to read its log.
 //
-// Reads nothing: both halves are handed in, because they were fetched with the
-// rest of the view and a panel that fetched its own would be a second round trip
-// on a page whose point is to be one glance.
+// One function for both tables — the overview's platform instances and an app's
+// instances — because they are the same thing seen through two endpoints. The
+// columns are the ones a pod can be judged by: whether it is ready, how often it
+// has restarted, what it is using against what it may use, and why it is not
+// running when it is not.
 //
-// The picker is the whole feature rather than decoration. With more than one
-// replica the interesting figure is the outlier — a pod at its limit while the
-// others idle — and that is precisely what a single total hides, so the sum is
-// offered first and each pod after it.
+//   body       the <tbody> to fill
+//   empty      the placeholder shown when there are no pods
+//   note       where a usage problem is reported
+//   pods       the pod list, as its endpoint returned it
+//   usage      the matching usage response, or null when its read failed
+//   failure    the usage read's error message, or "" — see below
+//   onLog      called with a pod name to open that pod's log
+//   onEvents   called with a pod name to open its events, or omitted where
+//              there is no endpoint behind it — see below
 //
-// Changing the picker re-renders from what is already in hand. The readings do
-// change, but not between two clicks a second apart, and refetching would put a
-// spinner under the cursor of someone comparing two pods.
-function renderMonitoring(usage, pods, failure) {
-  const picker = $("monitor-pod");
-  const readings = $("monitor-readings");
-  const note = $("monitor-note");
+// The usage note distinguishes two things that used to be one message: a cluster
+// that reports no metrics (a fact about the installation, and the remedy is
+// documented) and a read that failed (a 401, a 500, a proxy with no route).
+// Blaming the cluster for the second sent whoever was debugging to check
+// metrics-server when the answer was in the response body.
+function renderInstances({ body, empty, note, pods, usage, failure, onLog, onEvents }) {
+  body.replaceChildren();
+  show(empty, pods.length === 0);
+  show(note, false);
 
-  // The mapping from the picker's value to what it should show, rebuilt here and
-  // read back by the change handler. Kept in the closure rather than on the
-  // element: what a pod is measuring is this render's answer, and a stale one
-  // left on the DOM is how a picker ends up showing one pod's numbers under
-  // another's name.
-  const readingsByChoice = {};
-  picker.replaceChildren();
-
-  const option = (value, label) => {
-    const o = document.createElement("option");
-    o.value = value;
-    o.textContent = label;
-    picker.appendChild(o);
-  };
-
-  // The label for a pod, preferring the name the pod list gave it. A pod that
-  // appears in the usage map but not the list still gets an option — it is being
-  // measured and hiding it would make the sum unexplainable — so the fallback is
-  // its own key.
-  const labelFor = (name) => name;
+  if (pods.length === 0) {
+    empty.textContent = t("Nothing is running.");
+    return;
+  }
 
   if (!usage || !usage.available) {
-    // Nothing to pick. The picker keeps one disabled entry rather than being
-    // emptied, so the control does not vanish and reflow the card between
-    // refreshes on a cluster that never had metrics.
-    option("", t("all pods"));
-    picker.disabled = true;
-    readings.replaceChildren();
-
-    // Which of the two it is, because they are not the same problem and the
-    // reader is the one who has to act on it.
-    //
-    // "This cluster reports no metrics" is a fact about the installation —
-    // metrics-server is not installed, and the remedy is to install it, which is
-    // documented. A *failed request* is something else entirely: a 401 from a
-    // stale key, a 500, a proxy with no route. Blaming the cluster for those
-    // sent whoever was debugging this to check metrics-server when the answer
-    // was in the response body, which is the whole cost of a wrong diagnosis.
     note.textContent = failure
       ? tf("Could not read resource usage: {error}", { error: failure })
       : t("Resource usage is not available: this cluster reports no metrics.");
     show(note, true);
-    return;
   }
 
-  picker.disabled = false;
+  const byPod = (usage && usage.pods) || {};
 
-  // The totals as the first choice, then each pod. The totals come from the
-  // response rather than being re-added here, so the number under "all pods" is
-  // the server's sum and not a browser's second opinion about it.
-  readingsByChoice[""] = { cpu: usage.cpu, memory: usage.memory, of: usage.limited };
-  option("", t("all pods"));
-
-  const names = Object.keys(usage.pods || {}).sort();
-  for (const name of names) {
-    readingsByChoice[name] = { cpu: usage.pods[name].cpu, memory: usage.pods[name].memory };
-    option(name, labelFor(name));
-  }
-
-  // A pod in the list with no sample yet — one that has just started — is still
-  // offered, so the row is there to be looked at rather than silently missing
-  // from a table the reader is counting. Its reading is the em dash the render
-  // below produces for an empty value.
   for (const pod of pods) {
-    if (!(pod.name in readingsByChoice)) {
-      readingsByChoice[pod.name] = {};
-      option(pod.name, labelFor(pod.name));
-    }
+    body.appendChild(instanceRow(pod, byPod[pod.name], onLog, onEvents));
   }
-
-  show(note, false);
-
-  const render = () => {
-    const choice = readingsByChoice[picker.value] || {};
-    const cards = [
-      reading(t("CPU"), choice.cpu, choice.of && choice.of.cpu, "cores", toCores),
-      reading(t("Memory"), choice.memory, choice.of && choice.of.memory, "GiB", toGi),
-    ];
-    readings.replaceChildren(...cards);
-  };
-
-  picker.onchange = render;
-  render();
 }
 
-// reading builds one figure of the monitoring panel: the value, in the unit the
-// page uses for that resource, with the limit beneath it where there is one.
-//
-// The bound is shown only when it applies. AppLab's own pods have no app-shaped
-// limits to report — the control plane's Deployment belongs to the chart — so on
-// the overview this is the reading alone, and on an app it is the same shape with
-// the limit beside it. One function for both is what keeps the two panels from
-// drifting apart.
-//
-// An absent reading is an em dash rather than a zero, and that distinction is the
-// point of the whole card: a pod with no sample yet and a pod using nothing look
-// identical at zero, and only one of them is a problem.
-function reading(label, quantity, limit, unit, convert) {
-  const box = document.createElement("div");
-  box.className = "monitor-reading";
+// instanceRow builds one row of an instances table.
+function instanceRow(pod, reading, onLog, onEvents) {
+  const tr = document.createElement("tr");
 
-  const name = document.createElement("span");
-  name.className = "label";
-  name.textContent = label;
-  box.appendChild(name);
+  const name = document.createElement("td");
+  name.className = "mono";
+  name.textContent = pod.name;
+  // The commit the pod was built from, when it carries one. It is a title rather
+  // than a column because it is the same value for every pod of a revision — a
+  // column repeating one string down the table costs a reader more than it tells
+  // them. An app's pods carry it; AppLab's own do not, which is why this is
+  // conditional rather than assumed.
+  if (pod.labels && pod.labels["applab.io/commit"]) {
+    name.title = "applab.io/commit=" + pod.labels["applab.io/commit"];
+  }
+  tr.appendChild(name);
 
-  const value = document.createElement("span");
-  value.className = "value";
-  value.textContent = quantity ? convert(quantity) + " " + t(unit) : "–";
-  box.appendChild(value);
+  const ready = document.createElement("td");
+  ready.appendChild(pill(pod.ready ? "ready" : "not ready").cloneNode(true));
+  ready.firstChild.className = "pill " + (pod.ready ? "ok" : "bad");
+  tr.appendChild(ready);
 
-  if (limit) {
-    const of = document.createElement("span");
-    of.className = "of";
-    of.textContent = tf("of {limit} {unit}", { limit: convert(limit), unit: t(unit) });
-    box.appendChild(of);
+  const restarts = document.createElement("td");
+  restarts.textContent = pod.restarts;
+  tr.appendChild(restarts);
+
+  // What this copy is using, on its own row — the case a single total cannot
+  // show. A pod with no sample yet is absent from the map rather than zero, so
+  // it reads as an em dash like a cluster that cannot measure at all.
+  //
+  // In the units the rest of the page uses — cores and GiB, through the same
+  // helpers the resource form does — rather than the raw quantity the metrics
+  // API returns: "128849018880" beside a limit of "1" is not a comparison anyone
+  // can make by eye.
+  for (const value of [
+    reading && reading.cpu ? toCores(reading.cpu) + " " + t("cores") : "",
+    reading && reading.memory ? toGi(reading.memory) + " " + t("GiB") : "",
+  ]) {
+    const td = document.createElement("td");
+    td.className = "mono muted";
+    td.textContent = value || "–";
+    tr.appendChild(td);
   }
 
-  return box;
+  // A crash loop's reason is on the previous container instance, so the server
+  // promotes it here — this is the column that explains a failure. Capped like
+  // the build table's, and for the same reason: a reason is short
+  // ("CrashLoopBackOff") but a message is not, and one long one would stretch the
+  // column and squeeze the rest of the row.
+  const reason = document.createElement("td");
+  reason.className = "muted";
+  const reasonText = document.createElement("span");
+  reasonText.className = "report-cell";
+  reasonText.textContent = pod.reason || pod.message || "—";
+  const full = pod.reason || pod.message;
+  if (full) reasonText.title = full;
+  reason.appendChild(reasonText);
+  tr.appendChild(reason);
+
+  // The log, on the row it is about. A pod's log is what someone comes to this
+  // table to read when a copy is not ready, and it is about *that* pod — the
+  // card-level button this replaced could only ever open the newest pod's, which
+  // is not the one that is failing.
+  const actions = document.createElement("td");
+  actions.className = "actions";
+
+  const logs = document.createElement("button");
+  logs.textContent = t("Log");
+  logs.onclick = () => onLog(pod.name);
+  actions.appendChild(logs);
+
+  // Events are offered only where there is an endpoint to read them. The events
+  // route is scoped to an app — it matches on the app's label, because every
+  // app's pods share one namespace and a pod name is not a prefix of anything —
+  // so there is no way to ask it about AppLab's own pods. A button that opened
+  // nothing would be worse than its absence.
+  if (onEvents) {
+    const events = document.createElement("button");
+    events.textContent = t("Events");
+    events.onclick = () => onEvents(pod.name);
+    actions.appendChild(events);
+  }
+
+  tr.appendChild(actions);
+
+  return tr;
 }
 
 async function loadOverview() {
@@ -2590,13 +2563,20 @@ async function loadOverview() {
 
   const data = overviewResult.value;
 
-  // The failure's message, when the read failed at all, so the card can say
-  // which problem it is — see renderMonitoring.
-  renderMonitoring(
-    platformUsageResult.status === "fulfilled" ? platformUsageResult.value : null,
-    platformPodsResult.status === "fulfilled" ? (platformPodsResult.value.pods || []) : [],
-    platformUsageResult.status === "rejected" ? platformUsageResult.reason.message : ""
-  );
+  // The platform's own pods, read through the same renderer an app's instances
+  // use. A failed pod list is not reported here: the card says "nothing is
+  // running" through its empty placeholder, which is what a card that could not
+  // be filled looks like when the rest of the page loaded — the overview's own
+  // error line is the place for the page's failures, and it is already used.
+  renderInstances({
+    body: $("platform-instances"),
+    empty: $("platform-instances-empty"),
+    note: $("platform-usage-note"),
+    pods: platformPodsResult.status === "fulfilled" ? (platformPodsResult.value.pods || []) : [],
+    usage: platformUsageResult.status === "fulfilled" ? platformUsageResult.value : null,
+    failure: platformUsageResult.status === "rejected" ? platformUsageResult.reason.message : "",
+    onLog: openPlatformPodLog,
+  });
 
   const apps = data.apps || {};
   const builds = data.builds || {};
@@ -3516,7 +3496,9 @@ async function loadPods() {
 
   if (podsResult.status !== "fulfilled") {
     // Observability is an optional capability; a deployment without a cluster
-    // reports 501 here, which is not a failure of the console.
+    // reports 501 here, which is not a failure of the console. Said in the same
+    // placeholder the empty case uses, because from the reader's side both are
+    // "there is nothing here to show".
     show($("pods-usage-note"), false);
     show($("pods-empty"), true);
     $("pods-empty").textContent = tf("Instances are not available: {error}", {
@@ -3525,117 +3507,16 @@ async function loadPods() {
     return;
   }
 
-  const result = podsResult.value;
-  const usage = usageResult.status === "fulfilled" ? usageResult.value : null;
-  const byPod = (usage && usage.pods) || {};
-
-  // Said rather than shown as two empty columns. A cluster that cannot report
-  // metrics is a way to run one, and a `–` in a column with no explanation reads
-  // as a bug in the console rather than as a fact about the cluster.
-  //
-  // Three cases collapse into it, and the sentence is true of all three: no
-  // metrics-server, a deployment with no cluster, and a cluster that answered the
-  // pod list but not the reading.
-  const noUsage = !usage || !usage.available;
-  const note = $("pods-usage-note");
-  if (noUsage) {
-    note.textContent = t("Resource usage is not available: this cluster reports no metrics.");
-    show(note, true);
-  } else {
-    show(note, false);
-  }
-
-  const body = $("pods");
-  body.replaceChildren();
-  show($("pods-empty"), result.pods.length === 0);
-  if (result.pods.length === 0) {
-    $("pods-empty").textContent = t("Nothing is running.");
-    return;
-  }
-
-  for (const pod of result.pods) {
-    const tr = document.createElement("tr");
-
-    const name = document.createElement("td");
-    name.className = "mono";
-    name.textContent = pod.name;
-    // The commit the pod was built from, when it carries one. It is a title
-    // rather than a column because it is the same value for every pod of a
-    // revision — a column repeating one string down the table costs a reader
-    // more than it tells them.
-    if (pod.labels && pod.labels["applab.io/commit"]) {
-      name.title = "applab.io/commit=" + pod.labels["applab.io/commit"];
-    }
-    tr.appendChild(name);
-
-    const ready = document.createElement("td");
-    ready.appendChild(pill(pod.ready ? "ready" : "not ready").cloneNode(true));
-    ready.firstChild.className = "pill " + (pod.ready ? "ok" : "bad");
-    tr.appendChild(ready);
-
-    const restarts = document.createElement("td");
-    restarts.textContent = pod.restarts;
-    tr.appendChild(restarts);
-
-    // What this copy is using, on its own row — the case the app-level total
-    // cannot show. A pod that has just started has no sample yet and is absent
-    // from the map rather than zero, so it reads as an em dash like a cluster
-    // that cannot measure at all.
-    //
-    // Rendered in the units the rest of the page uses — cores and GiB, through
-    // the same helpers the resource form does — rather than as the raw quantity
-    // the metrics API returns: "128849018880" beside a limit of "1" is not a
-    // comparison anyone can make by eye.
-    const reading = byPod[pod.name];
-    const cells = [
-      reading && reading.cpu ? toCores(reading.cpu) + " " + t("cores") : "",
-      reading && reading.memory ? toGi(reading.memory) + " " + t("GiB") : "",
-    ];
-    for (const value of cells) {
-      const td = document.createElement("td");
-      td.className = "mono muted";
-      td.textContent = value || "–";
-      tr.appendChild(td);
-    }
-
-    // A crash loop's reason is on the previous container instance, so the
-    // server promotes it here — this is the column that explains a failure.
-    //
-    // Capped like the build table's, and for the same reason: a reason is short
-    // ("CrashLoopBackOff") but a message is not, and one long one would stretch
-    // the column and squeeze the rest of the row.
-    const reason = document.createElement("td");
-    reason.className = "muted";
-    const reasonText = document.createElement("span");
-    reasonText.className = "report-cell";
-    reasonText.textContent = pod.reason || pod.message || "—";
-    const full = pod.reason || pod.message;
-    if (full) reasonText.title = full;
-    reason.appendChild(reasonText);
-    tr.appendChild(reason);
-
-    // Per instance, on the row it is about. A pod's log and its events are the
-    // two things a person comes to this table to look at when a copy is not
-    // ready, and both are about *that* pod — a card at the bottom of the page
-    // could only ever say "the app's", which is the newest pod's, which is not
-    // the one that is failing.
-    const actions = document.createElement("td");
-    actions.className = "actions";
-
-    const logs = document.createElement("button");
-    logs.textContent = t("Log");
-    logs.onclick = () => openPodLog(pod.name);
-    actions.appendChild(logs);
-
-    const events = document.createElement("button");
-    events.textContent = t("Events");
-    events.onclick = () => showPodEvents(pod.name);
-    actions.appendChild(events);
-
-    tr.appendChild(actions);
-
-    body.appendChild(tr);
-  }
+  renderInstances({
+    body: $("pods"),
+    empty: $("pods-empty"),
+    note: $("pods-usage-note"),
+    pods: podsResult.value.pods,
+    usage: usageResult.status === "fulfilled" ? usageResult.value : null,
+    failure: usageResult.status === "rejected" ? usageResult.reason.message : "",
+    onLog: openPodLog,
+    onEvents: showPodEvents,
+  });
 }
 
 // openPodLog opens one pod's log in the shared dialog.
@@ -3658,6 +3539,22 @@ function openPodLog(podName) {
 // ContainerCreating to Running without hammering the API for a list that usually
 // changes once.
 const EVENTS_INTERVAL_MS = 5000;
+
+// openPlatformPodLog opens one of AppLab's own pods' logs.
+//
+// The platform twin of openPodLog, and separate for one reason: which endpoint
+// to read. An app's log is scoped to the app, AppLab's is scoped to the
+// deployment, and the pod name alone does not say which — a platform pod listed
+// through the app route would be refused, and an app pod through the platform
+// route would be too.
+//
+// Worth its own function rather than a flag, because the two are reached from
+// different tables that are never on screen together.
+function openPlatformPodLog(podName) {
+  state.logPod = podName;
+  openLogDialog("platform");
+  startLogs("platform");
+}
 
 // showPodEvents opens one pod's events in the shared dialog, live.
 //
@@ -4160,9 +4057,13 @@ const LOG_PANELS = {
   platform: {
     // AppLab's own log: the deployment serving this page. No app in the path,
     // because it is not about one.
+    //
+    // Opened from a row of the platform instances table, which names its pod —
+    // see openPlatformPodLog. Without that it would answer with the newest
+    // replica's output, which is not the one a reader clicked.
     path: () => "/api/v1/platform/logs",
     output: "platform-logs",
-    title: "Platform log",
+    title: "Log",
     streams: true,
   },
   build: {
@@ -4217,7 +4118,7 @@ function openLogDialog(name) {
   // named, and is otherwise lost the moment the dialog covers the table.
   if (name === "build") {
     $("build-logs-label").textContent = shortSHA(state.logBuild);
-  } else if (name === "app" || name === "events") {
+  } else if (name === "app" || name === "events" || name === "platform") {
     $("build-logs-label").textContent = state.logPod || "";
   } else {
     $("build-logs-label").textContent = "";
@@ -4278,7 +4179,11 @@ async function startLogs(name) {
   // Named when the dialog was opened from an instance row. Without it the
   // endpoint answers with the newest pod's log, which is not the pod that is
   // failing — a crash loop is usually an older one.
-  if (name === "app" && state.logPod) params.set("pod", state.logPod);
+  //
+  // Both panels with an instance table, not just an app's: the platform's rows
+  // carry a Log button too, and it would silently read the newest replicas's
+  // output if only "app" were named here.
+  if ((name === "app" || name === "platform") && state.logPod) params.set("pod", state.logPod);
 
   try {
     const response = await fetch(
@@ -4561,15 +4466,6 @@ $("config-env-set").onclick = () => {
 // third — a build — is opened from the build list below, which has the build id
 // to name.
 $("app-resources-save").onclick = saveResources;
-
-$("platform-logs-open").onclick = () => openDialogOn("platform");
-
-// openDialogOn shows the dialog and starts reading, for the two surfaces that
-// stream. Kept as one function because they differ only in which panel it is.
-function openDialogOn(name) {
-  openLogDialog(name);
-  startLogs(name);
-}
 
 // The dialog's own controls. Follow toggles the stream that is open, and the
 // previous-instance box re-reads rather than opening a second stream.
