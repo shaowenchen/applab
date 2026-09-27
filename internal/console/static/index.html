@@ -264,6 +264,14 @@
     background: var(--bg-raised);
     color: var(--text);
     cursor: pointer;
+    /* A label that wraps is a control whose name is split across two lines,
+       which reads as two words rather than one button — and in a table it also
+       makes one row taller than its neighbours. "Roll back", "Deploy latest" and
+       "Build latest" all came close to breaking, and a narrower window or a
+       longer translation is all it takes.
+       The data beside it wraps instead: a pod name or a commit is long and the
+       column is narrow, so letting those break is the shape that costs least. */
+    white-space: nowrap;
   }
   button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }

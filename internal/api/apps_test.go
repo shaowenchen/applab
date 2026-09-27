@@ -26,6 +26,47 @@ import (
 // returns the recorder. Going through the handler rather than calling methods
 // directly is deliberate: routing, authentication and response encoding are
 // exactly where the bugs are.
+// The push-build watcher's timing, for every test server.
+//
+// A real watcher polls every five seconds for forty-five minutes, which is right
+// against a cluster and wrong against a fake one: creating an app publishes it,
+// so every test that creates one starts a watcher, and a watcher that outlives
+// its test holds the test's temporary directory open past the teardown. These
+// make it notice immediately and give up immediately — the assertions in this
+// package are about what a push *starts*, not about a build completing, because
+// a fake clientset never advances a Job.
+var (
+	testWatchInterval = 5 * time.Millisecond
+	testWatchWait     = 100 * time.Millisecond
+)
+
+// drainBackgroundWork waits for every build-and-deploy this server started in
+// the background, and is registered as a cleanup by the test-server helpers.
+//
+// Creating an app publishes it, and an upload publishes itself, so a test that
+// creates an app has started a job that reads and writes the object store and
+// the repository. The test's own temp directory is removed when it ends, so
+// without this the teardown races a job nobody is waiting for — which shows up
+// as "directory not empty" from a test that has nothing to do with publishing,
+// and as a background job failing against a store that is being deleted.
+//
+// A deadline rather than a bare wait: a job that is genuinely stuck should fail
+// the test that started it, not hang the suite.
+func drainBackgroundWork(t *testing.T, srv *api.Server) {
+	t.Helper()
+	t.Cleanup(func() {
+		// A short deadline on purpose. The work being drained is a build and
+		// deploy, and the fake cluster these tests run against never advances a
+		// Job — so a test that merely creates an app has started a watcher that
+		// would poll for its full 45-minute deadline. What the drain has to
+		// guarantee is that nothing is still touching the store when the test's
+		// temporary directory goes, and cancelling achieves that in a moment.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		srv.WaitForBackgroundWork(ctx)
+	})
+}
+
 func doRequest(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 

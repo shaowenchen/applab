@@ -354,6 +354,30 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.InfoContext(r.Context(), "app created", "app", app.ID)
 
+	// A new app is published, because creating one writes a repository: the
+	// seeded files are the opening commit, and a commit is what publishing acts
+	// on. Without this a created app is a repository, an address and nothing
+	// running — the caller has to know to build before the address they were
+	// handed answers anything.
+	//
+	// It is the same policy a push follows, through the same door, so the app's
+	// own switch and the deployment's capabilities are checked in one place.
+	// auto_deploy defaults to true, so an app created with nothing but an id
+	// comes up by itself; `{"auto_deploy": false}` creates one that waits.
+	//
+	// In the background rather than inline: publishing starts a Kubernetes Job,
+	// and the caller should not wait on that to be told their app was created.
+	// The context is detached because the job outlives the request — the same
+	// reason a push detaches — and it goes through goRun so the drain covers it.
+	//
+	// goRun and not a bare `go`: the difference is what makes WaitForBackgroundWork
+	// a promise. A plain goroutine here is invisible to it, so a caller that
+	// drained and then deleted the store would be deleting it out from under work
+	// this function started — which is exactly what happened, and how it was
+	// found: every test that created an app failed its temporary-directory
+	// teardown.
+	s.goRun(func() { s.StartAutoPublish(s.jobsContext(r.Context()), app.ID, app.ActiveBranch()) })
+
 	// The create response carries the app's key, which no other response does.
 	//
 	// Creating an app is the one moment the caller is entitled to it: they just

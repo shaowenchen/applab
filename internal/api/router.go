@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/shaowenchen/applab/internal/appconfig"
 	"github.com/shaowenchen/applab/internal/appkey"
@@ -120,6 +121,12 @@ type Server struct {
 	// the push, so something has to know they are still running when the process
 	// is asked to stop — see WaitForPushBuilds.
 	pushJobs *pushJobs
+
+	// pushBuildInterval and pushBuildWait override how long the watcher a push
+	// starts polls for. Both zero in a real deployment, which uses the constants
+	// in push.go; see WithBuildWatchPolicy for why a test shortens them.
+	pushBuildInterval time.Duration
+	pushBuildWait     time.Duration
 }
 
 // BuildEngine is the build half of the pipeline.
@@ -233,8 +240,9 @@ func New(cfg config.Config, st *store.Store, a *auth.Authenticator) *Server {
 
 		// Attached here rather than by a With call because every deployment that
 		// can receive a push wants it, and a deployment that cannot never starts
-		// a job to track.
-		pushJobs:  &pushJobs{},
+		// a job to track. The done channel is what lets a shutdown stop the work
+		// rather than wait it out — see WaitForBackgroundWork.
+		pushJobs:  newPushJobs(),
 		appConfig: appconfig.New(st),
 	}
 }

@@ -83,6 +83,16 @@ func (s *Server) handleUploadSource(w http.ResponseWriter, r *http.Request) {
 	// store anything.
 	s.supersedeBuilds(r.Context(), app)
 
+	// And the upload publishes itself, so that changing an app's source over the
+	// API means the same thing it means over git. `applab push` ships the commit
+	// itself and asks for this to be left alone; see StartAutoPublish.
+	//
+	// After the supersede, so the build this starts is not the one the stop just
+	// cancelled.
+	if autoPublish(r) {
+		s.StartAutoPublish(s.jobsContext(r.Context()), app.ID, branch)
+	}
+
 	if s.metrics != nil {
 		s.metrics.ObserveUpload(result.Bytes)
 	}
@@ -547,6 +557,12 @@ func (s *Server) handleChunkedUploadComplete(w http.ResponseWriter, r *http.Requ
 	// commit, so a build is never stopped for an upload that then failed to
 	// store anything.
 	s.supersedeBuilds(r.Context(), app)
+
+	// And it publishes itself, for the same reason and by the same switch as the
+	// upload above — this is the chunked path to the same commit.
+	if autoPublish(r) {
+		s.StartAutoPublish(s.jobsContext(r.Context()), app.ID, branch)
+	}
 
 	respond(w, http.StatusOK, uploadResponse{
 		CommitSHA:    result.SHA,

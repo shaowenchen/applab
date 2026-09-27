@@ -244,7 +244,19 @@ func uploadDirectory(ctx context.Context, c *client.Client, opts *pushOptions, c
 
 	fmt.Fprintf(os.Stderr, "AppLab: uploading %s\n", dir)
 
-	result, err := c.UploadSource(ctx, opts.app, pr, true, opts.message)
+	// Publish: false because the command ships the commit itself, by name, a few
+	// lines below — see shipCommit. An upload that also published would be built
+	// twice, and the second build supersedes the first, so the caller would end
+	// up watching a build they did not start.
+	//
+	// The server's default is to publish, so this is the one caller that has to
+	// say otherwise; a curl or the console uploading a tarball gets the
+	// behaviour it expects without asking.
+	result, err := c.UploadSource(ctx, opts.app, pr, client.UploadOptions{
+		Compressed: true,
+		Message:    opts.message,
+		Publish:    false,
+	})
 	if err != nil {
 		// Drain the pipe so the archiving goroutine is not left blocked on a
 		// write nobody will read.

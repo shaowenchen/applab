@@ -69,6 +69,8 @@ func newObserveServer(t *testing.T) (*api.Server, *fake.Clientset, *store.Store)
 		WithObserver(observe.New(client)).
 		WithDeployer(deployer).
 		WithMetrics(api.NewMetrics())
+	drainBackgroundWork(t, srv)
+	_ = srv.WithBuildWatchPolicy(testWatchInterval, testWatchWait)
 
 	return srv, client, st
 }
@@ -78,7 +80,10 @@ func newObserveServer(t *testing.T) (*api.Server, *fake.Clientset, *store.Store)
 func createAppForObserve(t *testing.T, h http.Handler, appID string) {
 	t.Helper()
 
-	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": appID}); rec.Code != http.StatusCreated {
+	// auto_deploy off: creating an app publishes it now, and this helper exists
+	// to give the observability endpoints an app to address — a build started
+	// behind it would be work none of these tests are about.
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": appID, "auto_deploy": false}); rec.Code != http.StatusCreated {
 		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
 	}
 }

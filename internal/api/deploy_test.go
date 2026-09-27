@@ -106,6 +106,8 @@ func newDeployServerWithDynamic(t *testing.T) (*api.Server, *fake.Clientset, *st
 	// the server created, which is a mistake that presents as a passing test
 	// asserting nothing.
 	testWiring.Store(srv, wiring{client: client, engine: buildEngine})
+	drainBackgroundWork(t, srv)
+	_ = srv.WithBuildWatchPolicy(testWatchInterval, testWatchWait)
 
 	return srv, client, st, dyn
 }
@@ -212,7 +214,11 @@ func fakeDynamic(t *testing.T) dynamic.Interface {
 func setupAppWithCommit(t *testing.T, srv *api.Server, h http.Handler, appID string) string {
 	t.Helper()
 
-	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": appID}); rec.Code != http.StatusCreated {
+	// auto_deploy off: this helper is the starting point for tests that upload
+	// and then build or deploy by hand, and creating an app now publishes the
+	// seeded commit — which would start a build those tests did not ask for and
+	// are not asserting about.
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": appID, "auto_deploy": false}); rec.Code != http.StatusCreated {
 		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -22,8 +23,32 @@ import (
 //
 // The values are kept because the store reads them for logging and tracing;
 // without them the job logs against an empty context.
+// detachedContext is detachedContextWith for the request path, where there is no
+// cancellation to hand out.
 func detachedContext(ctx context.Context) context.Context {
-	return detachedValues{ctx}
+	return detachedContextWith(ctx, nil)
+}
+
+// detachedContextWith carries the values of a request context without its
+// cancellation, and optionally answers to a cancellation of its own.
+//
+// The request's cancellation cannot apply: a job started from a push outlives
+// the push. But "no cancellation at all" is not the same as "cancels with the
+// process", and the difference matters at shutdown. A pushed build's watcher
+// polls for up to 45 minutes; a shutdown that has to wait for it to finish on
+// its own is a shutdown that runs to the termination grace period and is killed
+// — which is the thing WaitForPushBuilds exists to avoid.
+//
+// So the server hands out its own done channel, cancelled by
+// WaitForBackgroundWork when it is about to give up. The watcher then stops
+// where it is, promptly, and the wait returns. Nothing is lost: the Job is in
+// the cluster and its TTL applies, which is the same state a build already in
+// flight was in before any of this.
+func detachedContextWith(ctx context.Context, done <-chan struct{}) context.Context {
+	if done == nil {
+		return detachedValues{ctx}
+	}
+	return cancellingValues{detachedValues{ctx}, done}
 }
 
 type detachedValues struct{ context.Context }
@@ -32,13 +57,64 @@ func (detachedValues) Deadline() (time.Time, bool) { return time.Time{}, false }
 func (detachedValues) Done() <-chan struct{}       { return nil }
 func (detachedValues) Err() error                  { return nil }
 
+// cancellingValues is a detached context that still answers Done.
+type cancellingValues struct {
+	detachedValues
+	done <-chan struct{}
+}
+
+func (c cancellingValues) Done() <-chan struct{} { return c.done }
+func (c cancellingValues) Err() error {
+	select {
+	case <-c.done:
+		return context.Canceled
+	default:
+		return nil
+	}
+}
+
 // pushJobs tracks the background jobs a push starts.
 //
 // It is a WaitGroup rather than a queue because the jobs are independent: two
 // pushes to two apps have nothing to say to each other, and running them at once
 // is what a push expects. What it is for is shutdown — see WaitForPushBuilds.
+//
+// The cancel func is what makes waiting possible at all: without it a job that
+// polls for 45 minutes has to be waited out rather than stopped, and "wait for
+// the background work" becomes "wait for the longest thing anyone ever starts".
 type pushJobs struct {
-	wg sync.WaitGroup
+	wg     sync.WaitGroup
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// newPushJobs builds the tracker and the channel its jobs watch.
+func newPushJobs() *pushJobs {
+	done := make(chan struct{})
+	cancelled := false
+	var mu sync.Mutex
+
+	return &pushJobs{
+		done: done,
+		cancel: func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if cancelled {
+				return
+			}
+			cancelled = true
+			close(done)
+		},
+	}
+}
+
+// jobsContext is the context a background job should run under: detached from
+// the request, but cancelled when the server stops waiting.
+func (s *Server) jobsContext(ctx context.Context) context.Context {
+	if s.pushJobs == nil {
+		return detachedContext(ctx)
+	}
+	return detachedContextWith(ctx, s.pushJobs.done)
 }
 
 // goRun starts fn in the background, tracked so shutdown can wait for it.
@@ -67,6 +143,19 @@ func (s *Server) goRun(fn func()) {
 // failure: a build can run for minutes, and a shutdown that waited indefinitely
 // for one would never complete.
 func (s *Server) WaitForPushBuilds(ctx context.Context) {
+	s.WaitForBackgroundWork(ctx)
+}
+
+// WaitForBackgroundWork blocks until every build-and-deploy this server started
+// in the background has finished, or the context expires.
+//
+// WaitForPushBuilds is the same thing under the name main uses, where the reason
+// is a clean shutdown. The general name is the one tests want: creating an app
+// now publishes it, and an upload publishes itself, so a test that creates an
+// app has started a job that reads and writes the store — against a temporary
+// directory the test is about to delete. Draining it is what keeps the teardown
+// from racing work nobody is waiting for.
+func (s *Server) WaitForBackgroundWork(ctx context.Context) {
 	if s.pushJobs == nil {
 		return
 	}
@@ -80,7 +169,53 @@ func (s *Server) WaitForPushBuilds(ctx context.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		slog.Warn("shutting down with a pushed build still running; it will finish in the cluster but will not be deployed")
+		// The deadline is being conceded to, so the work stops where it is. A
+		// pushed build's watcher polls for up to 45 minutes; leaving it running
+		// would mean returning from here while it still reads and writes the
+		// store, which is exactly what a caller draining this wants to prevent —
+		// a test's temporary directory being deleted underneath it, or a
+		// terminating pod's storage going away.
+		//
+		// Nothing is lost that was not already lost: the build's Job is in the
+		// cluster with a deadline and a TTL of its own, so it either finishes
+		// with nothing to deploy it or is collected. Neither is a state the
+		// cluster cannot already reach, and both are better than a process that
+		// claims to be shutting down while a goroutine it started keeps working.
+		s.cancelBackgroundWork()
+		slog.Warn("stopped waiting for a pushed build still running; it will finish in the cluster but will not be deployed")
+
+		// Cancellation is cooperative, so the jobs have not necessarily stopped
+		// the instant it is signalled — one may be part-way through a store read
+		// or a registry call. Waiting for the group to drain again is what makes
+		// the promise this function's name makes actually true: that when it
+		// returns, nothing this server started is still running.
+		//
+		// The second wait is bounded by the grace here rather than by the
+		// caller's context, because that context has already expired and would
+		// make this return at once — which is the thing being avoided.
+		select {
+		case <-done:
+		case <-time.After(cancelGrace):
+		}
+	}
+}
+
+// cancelGrace is how long a cancelled background job is given to notice and
+// return before the caller stops waiting for it.
+//
+// Every job checks its context between steps, so this is the length of one step
+// — a store read, a listing — and not the length of a build. Anything still
+// running after it is stuck rather than slow, and waiting longer would only
+// delay a shutdown that has already conceded.
+const cancelGrace = 5 * time.Second
+
+// cancelBackgroundWork stops every background job this server started.
+//
+// Idempotent, because it is reached from both the drain above and a caller that
+// simply wants the work to stop.
+func (s *Server) cancelBackgroundWork() {
+	if s.pushJobs != nil && s.pushJobs.cancel != nil {
+		s.pushJobs.cancel()
 	}
 }
 
@@ -93,6 +228,41 @@ func (s *Server) WaitForPushBuilds(ctx context.Context) {
 // response.
 func (s *Server) AfterGitPush(ctx context.Context, appID, branch string) {
 	s.StartPushBuild(ctx, appID, branch)
+}
+
+// StartAutoPublish is what a repository change that arrived over the API starts,
+// as opposed to one that arrived over git.
+//
+// The two are the same policy with one difference: the API's callers ship their
+// own commit. `applab push` uploads and then calls the build and deploy endpoints
+// itself, and the console's upload is an upload — so an HTTP commit that also
+// published itself here would be built twice, and the second build would
+// supersede the first, which means the caller watches a build they did not start.
+//
+// So this is opt-in per request, by the caller's own flag. It is not inferred
+// from the caller, because the API cannot tell `applab push` from a curl that
+// uploaded a tarball — the two send the same request and want different things
+// from it. `?publish=false` is what the CLI sends; everyone else gets the
+// behaviour the platform promises, which is that changing the repository
+// publishes it.
+//
+// The app's own switch is honoured inside StartPushBuild, along with the build
+// and deploy capability guards, so a deployment that cannot build is not asked
+// twice.
+func (s *Server) StartAutoPublish(ctx context.Context, appID, branch string) {
+	s.StartPushBuild(ctx, appID, branch)
+}
+
+// autoPublish reports whether a change to an app's repository should build and
+// deploy on its own.
+//
+// Default true, so a caller that says nothing gets the platform's behaviour.
+// Only the literal "false" turns it off, which is the shape `follow` uses: a
+// value that is absent and a value that is misspelled then mean the same thing,
+// and the thing they mean is the one that does something rather than the one
+// that silently does not.
+func autoPublish(r *http.Request) bool {
+	return r.URL.Query().Get("publish") != "false"
 }
 
 // StartPushBuild builds and deploys what was just pushed.
@@ -123,7 +293,7 @@ func (s *Server) StartPushBuild(ctx context.Context, appID, branch string) {
 		return
 	}
 
-	ctx = detachedContext(ctx)
+	ctx = s.jobsContext(ctx)
 
 	app, err := s.loadAppByID(ctx, appID)
 	if err != nil {
@@ -215,8 +385,9 @@ func (s *Server) awaitBuildThenDeploy(ctx context.Context, appID, branch, commit
 		return
 	}
 
-	deadline := time.Now().Add(pushBuildWait)
-	ticker := time.NewTicker(pushBuildPollInterval)
+	interval, wait := s.buildWatchPolicy()
+	deadline := time.Now().Add(wait)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -307,6 +478,35 @@ func (s *Server) deployBuiltCommit(ctx context.Context, appID, branch, commitSHA
 
 	slog.InfoContext(ctx, "a pushed commit is deployed",
 		"app", appID, "branch", branch, "commit", shortSHA(commitSHA), "image", image)
+}
+
+// buildWatchPolicy is how often a pushed build is polled, and for how long.
+//
+// Settable, and set by the tests. A watcher that reads a real cluster for
+// forty-five minutes is correct; a watcher that does the same against a fake one
+// in a test is a goroutine holding a temporary directory open long after the
+// test has finished asserting — and since creating an app now publishes it, every
+// test that creates one starts a watcher.
+//
+// The alternative was to make the tests construct builds that reach a terminal
+// state, which is a lot of scaffolding in every test for the sake of one
+// uninteresting property. This is one field.
+func (s *Server) buildWatchPolicy() (interval, wait time.Duration) {
+	if s.pushBuildInterval > 0 {
+		return s.pushBuildInterval, s.pushBuildWait
+	}
+	return pushBuildPollInterval, pushBuildWait
+}
+
+// WithBuildWatchPolicy shortens the push-build watcher's polling, for tests.
+//
+// Not a production knob: the values below are chosen for a real cluster, and a
+// deployment that shortened them would be polling more and giving up sooner for
+// no reason it could state.
+func (s *Server) WithBuildWatchPolicy(interval, wait time.Duration) *Server {
+	s.pushBuildInterval = interval
+	s.pushBuildWait = wait
+	return s
 }
 
 const (

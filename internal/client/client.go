@@ -624,14 +624,22 @@ type UploadResult struct {
 // The body is streamed as the request body rather than buffered, so a large
 // archive does not have to fit in memory. Over the simple-upload limit the caller
 // is told to use the chunked path instead of being rejected with an opaque 413.
-func (c *Client) UploadSource(ctx context.Context, appID string, archive io.Reader, compressed bool, message string) (*UploadResult, error) {
+func (c *Client) UploadSource(ctx context.Context, appID string, archive io.Reader, opts UploadOptions) (*UploadResult, error) {
+	// publish=false is the only thing that ever travels; see UploadOptions.
+	query := url.Values{}
+	if opts.Message != "" {
+		query.Set("message", opts.Message)
+	}
+	if !opts.Publish {
+		query.Set("publish", "false")
+	}
 	path := "/api/v1/apps/" + appID + "/source"
-	if message != "" {
-		path += "?message=" + urlQueryEscape(message)
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
 	}
 
 	contentType := "application/x-tar"
-	if compressed {
+	if opts.Compressed {
 		contentType = "application/gzip"
 	}
 
@@ -642,6 +650,30 @@ func (c *Client) UploadSource(ctx context.Context, appID string, archive io.Read
 	return &out, nil
 }
 
+// UploadOptions are what a caller may say about an upload.
+//
+// A struct rather than three more positional parameters, because
+// `UploadSource(ctx, app, r, true, "msg", false)` is a line nobody can read at
+// the call site — and the last two are both unlabelled and both easy to swap.
+type UploadOptions struct {
+	// Compressed says whether the archive is gzipped.
+	Compressed bool
+
+	// Message is the commit message.
+	Message string
+
+	// Publish asks the server to build and deploy the commit it stores, which is
+	// what the server does when this is left at its zero value.
+	//
+	// Set it false only when the caller ships the commit itself — `applab push`
+	// uploads and then calls the build and deploy endpoints by name, so an upload
+	// that also published would be built twice and the caller would be watching a
+	// build they did not start. The console's upload leaves it alone, which is
+	// what makes changing an app's source over the API mean what it means over
+	// git.
+	Publish bool
+}
+
 // UploadSourceChunked sends an archive in parts.
 //
 // This is the fallback for an archive above the simple-upload limit. It is
@@ -649,7 +681,7 @@ func (c *Client) UploadSource(ctx context.Context, appID string, archive io.Read
 // request is faster and has fewer ways to go wrong, and the deployment reports
 // its own limit through Config so the choice can be made correctly rather than
 // by guessing.
-func (c *Client) UploadSourceChunked(ctx context.Context, appID string, archive io.Reader, message string, chunkSize int64) (*UploadResult, error) {
+func (c *Client) UploadSourceChunked(ctx context.Context, appID string, archive io.Reader, opts UploadOptions, chunkSize int64) (*UploadResult, error) {
 	if chunkSize <= 0 {
 		chunkSize = 8 << 20
 	}
@@ -685,7 +717,7 @@ func (c *Client) UploadSourceChunked(ctx context.Context, appID string, archive 
 	beginBody, _ := json.Marshal(map[string]any{
 		"total":      len(parts),
 		"chunk_size": chunkSize,
-		"message":    message,
+		"message":    opts.Message,
 	})
 
 	var begin struct {
@@ -708,6 +740,11 @@ func (c *Client) UploadSourceChunked(ctx context.Context, appID string, archive 
 
 	var out UploadResult
 	completePath := fmt.Sprintf("/api/v1/apps/%s/source/uploads/%s/complete", appID, begin.UploadID)
+	// The same switch the single-request upload carries, on the request that
+	// actually stores the commit — see UploadOptions.Publish.
+	if !opts.Publish {
+		completePath += "?publish=false"
+	}
 	if err := c.do(ctx, http.MethodPost, completePath, nil, "", &out); err != nil {
 		return nil, err
 	}

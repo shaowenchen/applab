@@ -240,7 +240,7 @@ func TestUploadSendsTheArchiveWithTheRightContentType(t *testing.T) {
 	})
 
 	c := newTestClient(t, srv.URL)
-	result, err := c.UploadSource(context.Background(), "shop", strings.NewReader("archive-bytes"), true, "a message")
+	result, err := c.UploadSource(context.Background(), "shop", strings.NewReader("archive-bytes"), UploadOptions{Compressed: true, Message: "a message"})
 	if err != nil {
 		t.Fatalf("UploadSource: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestUploadMessageIsEscapedInTheQuery(t *testing.T) {
 
 	c := newTestClient(t, srv.URL)
 	message := "fix: handle & escape = properly + unicode ✓"
-	if _, err := c.UploadSource(context.Background(), "shop", strings.NewReader("x"), true, message); err != nil {
+	if _, err := c.UploadSource(context.Background(), "shop", strings.NewReader("x"), UploadOptions{Compressed: true, Message: message}); err != nil {
 		t.Fatalf("UploadSource: %v", err)
 	}
 

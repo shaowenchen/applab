@@ -352,11 +352,50 @@ type errCancel string
 
 func (e errCancel) Error() string { return string(e) }
 
-// sortAppWithCommit is setupAppWithCommit with the app created first, so a test
-// can call it for two apps.
+// sortAppWithCommit creates an app with auto-deploy on and uploads a commit,
+// without publishing it — the state a push finds an app in.
+//
+// Deliberately not setupAppWithCommit: that one creates with auto-deploy off,
+// because most tests drive the build and deploy themselves, and it would swallow
+// the very path the push tests are about. Here the switch is on, which is what
+// AfterGitPush checks — and the upload is told not to publish, because these
+// tests then call StartPushBuild by hand and would otherwise have a build
+// running before they did.
 func sortAppWithCommit(t *testing.T, srv *api.Server, h http.Handler, appID string) string {
 	t.Helper()
-	return setupAppWithCommit(t, srv, h, appID)
+
+	// Created with auto-deploy off and switched on immediately after, so the
+	// app ends in the state a push finds it in without a build having run.
+	//
+	// Creating it with the switch on would publish the seeded commit — creating
+	// an app writes a repository, and a repository change publishes — so these
+	// tests would find a build already started and count it against the one
+	// their push is supposed to start. Off-then-on is the same end state with
+	// nothing in between.
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": appID, "auto_deploy": false}); rec.Code != http.StatusCreated {
+		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/"+appID, map[string]any{"auto_deploy": true}); rec.Code != http.StatusOK {
+		t.Fatalf("turn auto-deploy on: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// publish=false, so storing the commit does not also start a build — the
+	// caller decides when that happens.
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/apps/"+appID+"/source?message=deployable&publish=false",
+		strings.NewReader(string(tarFiles(t, map[string]string{"Dockerfile": "FROM scratch\n"}))))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload source: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		CommitSHA string `json:"commit_sha"`
+	}
+	decodeData(t, rec, &result)
+	return result.CommitSHA
 }
 
 // uploadSource uploads a source tree and fails the test if it is refused.

@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -311,7 +312,10 @@ func newSourceOnlyServer(t *testing.T) (*api.Server, *store.Store) {
 	cfg.Keys = []string{"test-key"}
 	cfg.DataDir = dataDir
 
-	return api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src), st
+	srv := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src)
+	drainBackgroundWork(t, srv)
+	_ = srv.WithBuildWatchPolicy(testWatchInterval, testWatchWait)
+	return srv, st
 }
 
 // waitFor polls until cond holds, so a test can wait on a background job without
@@ -327,4 +331,109 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("the condition was not met within 5s")
+}
+
+// TestCreatingAnAppPublishesIt asserts that a new app comes up by itself.
+//
+// Creating an app writes a repository — the seeded files are the opening commit
+// — and a repository change publishes, so an app created with nothing but an id
+// is built and deployed without anyone asking. Before this, the caller was
+// handed an address and had to know to build before it answered anything.
+func TestCreatingAnAppPublishesIt(t *testing.T) {
+	srv, engine, _, _ := pushServer(t)
+	h := srv.Handler()
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	waitFor(t, func() bool { return len(engine.startedJobs()) == 1 })
+
+	// A Job and not just a flag: the build half was asked to start one, which is
+	// what makes the app come up rather than merely be marked as building.
+	if started := engine.startedJobs(); len(started) != 1 || started[0] == "" {
+		t.Errorf("started jobs = %v, want one", started)
+	}
+}
+
+// TestCreatingAnAppWithAutoDeployOffDoesNotPublishIt is the other half, and the
+// reason the switch is checked in one place rather than at each trigger.
+//
+// An app created with `auto_deploy: false` is one somebody releases by hand. It
+// has to be genuinely quiet: a repository that publishes regardless would make
+// the switch mean "publishes on push but not on create", which is not a
+// distinction anyone could act on.
+func TestCreatingAnAppWithAutoDeployOffDoesNotPublishIt(t *testing.T) {
+	srv, engine, _, _ := pushServer(t)
+	h := srv.Handler()
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{
+		"id": "shop", "auto_deploy": false,
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// Given the same window the test above relies on, because "nothing happened"
+	// is only meaningful against a clock.
+	time.Sleep(200 * time.Millisecond)
+	if started := engine.startedJobs(); len(started) != 0 {
+		t.Errorf("auto-deploy off still started %v", started)
+	}
+}
+
+// TestUploadingSourcePublishesIt asserts the other repository change over the
+// API behaves the same as a create.
+//
+// The console and a curl upload a tarball; before this they stored it and
+// stopped, so the app's source had changed and nothing was running it. The CLI
+// is the one caller that says otherwise — see UploadOptions.Publish — because it
+// ships the commit itself.
+func TestUploadingSourcePublishesIt(t *testing.T) {
+	srv, engine, _, _ := pushServer(t)
+	h := srv.Handler()
+
+	// auto_deploy off so the create does not publish, then on: this test is about
+	// the upload, and a build from the create would be counted here.
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop", "auto_deploy": false}); rec.Code != http.StatusCreated {
+		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"auto_deploy": true}); rec.Code != http.StatusOK {
+		t.Fatalf("turn auto-deploy on: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	uploadSource(t, h, "shop", "a-change")
+	waitFor(t, func() bool { return len(engine.startedJobs()) == 1 })
+}
+
+// TestUploadingSourceSaysWhenNotToPublish asserts the switch the CLI uses.
+//
+// `applab push` uploads and then calls the build and deploy endpoints itself. An
+// upload that also published would be built twice, and the second build
+// supersedes the first — so the caller would be watching a build they did not
+// start, for a commit that is already on its way.
+func TestUploadingSourceSaysWhenNotToPublish(t *testing.T) {
+	srv, engine, _, _ := pushServer(t)
+	h := srv.Handler()
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop", "auto_deploy": false}); rec.Code != http.StatusCreated {
+		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"auto_deploy": true}); rec.Code != http.StatusOK {
+		t.Fatalf("turn auto-deploy on: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/apps/shop/source?message=a-change&publish=false",
+		strings.NewReader(string(tarFiles(t, map[string]string{"Dockerfile": "FROM scratch\n"}))))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload source: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if started := engine.startedJobs(); len(started) != 0 {
+		t.Errorf("publish=false still started %v", started)
+	}
 }

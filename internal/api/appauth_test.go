@@ -86,7 +86,10 @@ func newTieredServerWithSource(t *testing.T, tweak func(*config.Config)) (*api.S
 		tweak(&cfg)
 	}
 
-	return api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src), st, src
+	srv := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src)
+	drainBackgroundWork(t, srv)
+	_ = srv.WithBuildWatchPolicy(testWatchInterval, testWatchWait)
+	return srv, st, src
 }
 
 // withKey issues a request carrying an arbitrary key.
@@ -118,7 +121,7 @@ func withKey(t *testing.T, h http.Handler, method, path, key string, body any) *
 func createAppWithKey(t *testing.T, h http.Handler, appID string) string {
 	t.Helper()
 
-	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": appID}); rec.Code != http.StatusCreated {
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": appID, "auto_deploy": false}); rec.Code != http.StatusCreated {
 		t.Fatalf("create app %s: %d (%s)", appID, rec.Code, rec.Body.String())
 	}
 

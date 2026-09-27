@@ -262,7 +262,7 @@ func TestTheSeededAddressFollowsTheDeployment(t *testing.T) {
 func createAppWithKeyAt(t *testing.T, h http.Handler, base, appID string) string {
 	t.Helper()
 
-	if rec := doRequest(t, h, http.MethodPost, base+"/api/v1/apps", map[string]any{"id": appID}); rec.Code != http.StatusCreated {
+	if rec := doRequest(t, h, http.MethodPost, base+"/api/v1/apps", map[string]any{"id": appID, "auto_deploy": false}); rec.Code != http.StatusCreated {
 		t.Fatalf("create app %s: %d (%s)", appID, rec.Code, rec.Body.String())
 	}
 	rec := doRequest(t, h, http.MethodGet, base+"/api/v1/apps/"+appID+"/key", nil)
@@ -328,7 +328,9 @@ func TestTheKeyIsMintedBeforeTheRepositoryIsSeeded(t *testing.T) {
 	cfg.Keys = []string{adminKey}
 	cfg.BaseDomain = "apps.example.com"
 	cfg.DataDir = dataDir
-	h := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src).Handler()
+	srv := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src)
+	drainBackgroundWork(t, srv)
+	h := srv.Handler()
 
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
 		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())

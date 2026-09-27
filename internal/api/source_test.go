@@ -43,7 +43,10 @@ func newSourceServer(t *testing.T) (*api.Server, *store.Store, *source.Store) {
 	cfg.BaseDomain = "apps.example.com"
 	cfg.DataDir = dataDir
 
-	return api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src), st, src
+	srv := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src)
+	drainBackgroundWork(t, srv)
+	_ = srv.WithBuildWatchPolicy(testWatchInterval, testWatchWait)
+	return srv, st, src
 }
 
 // tarFiles builds a tar archive from a name-to-content map.
@@ -508,7 +511,7 @@ func TestUploadAcrossAppsIsIsolated(t *testing.T) {
 	h := srv.Handler()
 
 	for _, id := range []string{"one", "two"} {
-		if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": id}); rec.Code != http.StatusCreated {
+		if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": id, "auto_deploy": false}); rec.Code != http.StatusCreated {
 			t.Fatalf("create app %s: %d", id, rec.Code)
 		}
 	}

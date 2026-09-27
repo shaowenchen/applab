@@ -90,7 +90,11 @@ func TestOverviewCountsAppsByStatus(t *testing.T) {
 	h := srv.Handler()
 
 	for _, id := range []string{"shop", "blog", "broken", "fresh"} {
-		if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": id}); rec.Code != http.StatusCreated {
+		// auto_deploy off: this test asserts what the overview counts, and a
+		// build started behind each create would make every app "building" —
+		// which is a real consequence of creating an app now, and not what is
+		// under test here.
+		if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": id, "auto_deploy": false}); rec.Code != http.StatusCreated {
 			t.Fatalf("create %s: %d (%s)", id, rec.Code, rec.Body.String())
 		}
 	}
