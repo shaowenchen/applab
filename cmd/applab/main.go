@@ -156,9 +156,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// scratch_dir rather than data_dir, which is what the setting is called.
+	// Printed next to `backend` it read as a second place things are kept, and
+	// the two are not comparable: the backend holds every app, repository and
+	// key, and this holds a repository while git is running against it. Someone
+	// reading a log line is asking "where is my data", and the answer is the
+	// backend alone.
 	slog.Info("object storage",
 		"backend", objects.String(),
-		"data_dir", cfg.DataDir)
+		"scratch_dir", cfg.DataDir)
 
 	// Scratch space for the operations that need a real filesystem, of which
 	// git is the only one. Nothing durable goes here, so this is created rather

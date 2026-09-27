@@ -810,7 +810,7 @@
                and it is on that app's page — where the history it belongs to
                is — rather than repeated down a list whose job is to say which
                apps exist and what state they are in. -->
-          <tr><th data-i18n="App">App</th><th data-i18n="Running">Running</th><th data-i18n="Build">Build</th><th data-i18n="Where">Where</th></tr>
+          <tr><th data-i18n="App">App</th><th data-i18n="Run status">Run status</th><th data-i18n="Build status">Build status</th><th data-i18n="Where">Where</th></tr>
         </thead>
         <tbody id="apps"></tbody>
       </table>
@@ -1073,6 +1073,17 @@
     <div class="card flush" id="card-builds">
       <div class="card-head">
         <h2 data-i18n="Builds">Builds</h2>
+        <!-- The module's own trigger, at the top right like every other card's.
+             It was reachable only from the State card's "Build latest", which is
+             a button on a card about something else — someone looking at a build
+             history to start a build had to know that the control lived one card
+             up.
+
+             Building is what makes a commit deployable, and a commit with no
+             image is exactly what this table shows after a push that has not
+             been built. The button starts the newest commit; a specific one is
+             started from the History card below, where the commits are. -->
+        <button id="app-builds-build" data-i18n="Build latest">Build latest</button>
       </div>
       <table>
         <thead>
@@ -1404,6 +1415,7 @@ const ZH = {
   "all pods": "全部实例",
   "of {limit} {unit}": "上限 {limit} {unit}",
   "Resource usage is not available: this cluster reports no metrics.": "无法获取资源用量：该集群未上报指标。",
+  "Could not read resource usage: {error}": "无法读取资源用量：{error}",
   "Name": "名称",
   "Value": "值",
   "When": "时间",
@@ -1476,8 +1488,8 @@ const ZH = {
   // they labelled: the note repeated what the card's other settings already say,
   // and an empty app now shows only its heading and the Add button.
   "Configuration": "配置",
-  "Running": "运行状态",
-  "Build": "构建状态",
+  "Run status": "运行状态",
+  "Build status": "构建状态",
   "Add a variable": "添加变量",
   "These reach the container as environment variables on the next deploy, and are visible to anyone who can read the Deployment. The eye here only keeps them off this screen.":
     "这些会在下次部署时作为环境变量注入容器，任何能读取该 Deployment 的人都能看到。这里的眼睛只是不把它们显示在屏幕上。",
@@ -1515,7 +1527,6 @@ const ZH = {
   "ready": "就绪",
   "not ready": "未就绪",
   "deployed": "已部署",
-  "no image": "无镜像",
 
   // -- Time -----------------------------------------------------------------
   "just now": "刚刚",
@@ -2428,7 +2439,7 @@ function buildRows(builds) {
 // Changing the picker re-renders from what is already in hand. The readings do
 // change, but not between two clicks a second apart, and refetching would put a
 // spinner under the cursor of someone comparing two pods.
-function renderMonitoring(usage, pods) {
+function renderMonitoring(usage, pods, failure) {
   const picker = $("monitor-pod");
   const readings = $("monitor-readings");
   const note = $("monitor-note");
@@ -2461,7 +2472,19 @@ function renderMonitoring(usage, pods) {
     option("", t("all pods"));
     picker.disabled = true;
     readings.replaceChildren();
-    note.textContent = t("Resource usage is not available: this cluster reports no metrics.");
+
+    // Which of the two it is, because they are not the same problem and the
+    // reader is the one who has to act on it.
+    //
+    // "This cluster reports no metrics" is a fact about the installation —
+    // metrics-server is not installed, and the remedy is to install it, which is
+    // documented. A *failed request* is something else entirely: a 401 from a
+    // stale key, a 500, a proxy with no route. Blaming the cluster for those
+    // sent whoever was debugging this to check metrics-server when the answer
+    // was in the response body, which is the whole cost of a wrong diagnosis.
+    note.textContent = failure
+      ? tf("Could not read resource usage: {error}", { error: failure })
+      : t("Resource usage is not available: this cluster reports no metrics.");
     show(note, true);
     return;
   }
@@ -2567,9 +2590,12 @@ async function loadOverview() {
 
   const data = overviewResult.value;
 
+  // The failure's message, when the read failed at all, so the card can say
+  // which problem it is — see renderMonitoring.
   renderMonitoring(
     platformUsageResult.status === "fulfilled" ? platformUsageResult.value : null,
-    platformPodsResult.status === "fulfilled" ? (platformPodsResult.value.pods || []) : []
+    platformPodsResult.status === "fulfilled" ? (platformPodsResult.value.pods || []) : [],
+    platformUsageResult.status === "rejected" ? platformUsageResult.reason.message : ""
   );
 
   const apps = data.apps || {};
@@ -3778,8 +3804,17 @@ async function loadCommits() {
       button.onclick = () => rollback(commit.sha);
       action.appendChild(button);
     } else {
-      action.appendChild(pill("no image"));
-      action.firstChild.className = "pill neutral";
+      // A commit with no image, which is the one thing this card can say that
+      // needs acting on: it cannot be deployed until it is built, and "no image"
+      // on its own was a dead end — it named the problem and offered nothing.
+      //
+      // A Build button rather than a Roll back, because the two are not the same
+      // operation on the same commit: rolling back needs an image to have been
+      // made, and making it is what has not happened.
+      const button = document.createElement("button");
+      button.textContent = t("Build");
+      button.onclick = () => buildCommit(commit.sha);
+      action.appendChild(button);
     }
     tr.appendChild(action);
 
@@ -3968,20 +4003,37 @@ async function setAutoDeploy() {
 async function buildLatest() {
   const head = await headCommit();
   if (!head) return;
+  await buildCommit(head);
+}
 
+// buildCommit starts a build of one named commit.
+//
+// Named rather than derived from the tip, which is what the History card's Build
+// button needs: that button appears on a commit the tip has moved past, and
+// "build this one" is the whole of what it means.
+//
+// Starting a build that is already running is allowed and does the right thing:
+// the server stops the build in flight to make way for the new one, because the
+// second was asked for after the first and is therefore what someone wants. It
+// is not an error to press this twice.
+async function buildCommit(sha) {
   setError("");
   try {
     await api("/api/v1/apps/" + state.app + "/builds", {
       method: "POST",
-      body: JSON.stringify({ commit_sha: head }),
+      body: JSON.stringify({ commit_sha: sha }),
     });
   } catch (err) {
     setError(tf("Could not start a build: {error}", { error: err.message }));
     return;
   }
-  await loadCommits();
   // The build runs as a Job, so there is nothing to wait for here — the history
   // is reloaded so the new build appears, with its status updating as it runs.
+  //
+  // The commits are reloaded too, because the History card's action column is
+  // built from what has an image: a commit just built becomes one that can be
+  // rolled back to, and the button that was pressed is now the pill that says so.
+  await Promise.all([loadCommits(), loadAppBuilds(), loadAppState()]);
 }
 
 // deployLatest deploys the app's newest commit.
@@ -4459,6 +4511,7 @@ $("app-port").onkeydown = (e) => { if (e.key === "Enter") setPort(); };
 $("app-replicas-set").onclick = setReplicas;
 $("app-replicas").onkeydown = (e) => { if (e.key === "Enter") setReplicas(); };
 $("app-build").onclick = buildLatest;
+$("app-builds-build").onclick = buildLatest;
 $("app-deploy").onclick = deployLatest;
 $("app-branch-use").onclick = switchBranch;
 $("app-stop").onclick = stop;

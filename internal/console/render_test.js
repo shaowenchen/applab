@@ -772,6 +772,35 @@ async function render(apps) {
       ""
     );
 
+    // A key declared twice is silently the last one. Object literals allow it
+    // and JavaScript keeps only the final value, so the dictionary still parses,
+    // still covers every marker, and quietly translates the earlier uses with the
+    // wrong word.
+    //
+    // That is not hypothetical: "Build" was declared three times — once as the
+    // noun for a build, once for the table column, once as "build status" — so
+    // t("Build") returned "构建状态" and both the builds table's header and the
+    // button that starts one read as "build status". The runtime checks above
+    // could not see it, because reading ZH through the VM gives the collapsed
+    // object.
+    //
+    // Scanned from the source text rather than from the parsed object for exactly
+    // that reason. The ZH block is a simple run of `"key": value,` lines, so a
+    // line-level scan finds every declaration including the ones that lost.
+    const zhSource = source.slice(source.indexOf("const ZH = {"), source.indexOf("\n};", source.indexOf("const ZH = {")));
+    const declared = [...zhSource.matchAll(/^\s{2}"((?:[^"\\]|\\.)*)":/gm)].map((m) => m[1]);
+    const seen = new Set();
+    const repeated = new Set();
+    for (const k of declared) {
+      if (seen.has(k)) repeated.add(k);
+      seen.add(k);
+    }
+    check(
+      "no translation is declared twice, silently discarding one of them",
+      [...repeated].join(" | "),
+      ""
+    );
+
     const wanted = new Set([...fromMarkup, ...fromJS]);
     const missing = [...wanted].filter((k) => !(k in zh));
     check(
@@ -786,7 +815,7 @@ async function render(apps) {
     const viaVariable = new Set([
       "nothing broken", "failed or build-failed",
       "running", "failed", "build-failed", "building", "deploying", "created",
-      "succeeded", "pending", "ready", "not ready", "deployed", "no image",
+      "succeeded", "pending", "ready", "not ready", "deployed",
       // Reached as t(shown ? "Hide" : "Show") and t(copied ? "Copied" : "Copy"),
       // which the static scan cannot read — the argument is an expression.
       // Exercised by the eye checks above.
@@ -1770,6 +1799,112 @@ async function render(apps) {
     check("and the picker is disabled rather than offering nothing", elements.get("monitor-pod").disabled, true);
   }
 
+  // Building is triggered from where the builds are.
+  //
+  // It used to be reachable only from the State card's "Build latest" — a
+  // control on a card about something else, so someone looking at a build
+  // history to start a build had to know to look a card up. Both are wired now,
+  // and the History card's "no image" dead end became a Build button, since a
+  // commit with no image is precisely the one that needs building.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.bodies = [];
+    ctx.fetch = async (url, options) => {
+      ctx.requests.push(String(url));
+      if (options && options.body) ctx.bodies.push({ url: String(url), body: options.body });
+      const u = String(url);
+      // The History card reads three things: the commits, what has an image, and
+      // the app's own record for which commit is deployed.
+      let data = { commits: [] };
+      if (u.includes("/commits")) {
+        // `head` is what buildLatest reads, from the commits endpoint rather
+        // than from the app record — so a stub that only filled `commits` would
+        // leave the button with nothing to build and the check passing on an
+        // empty body.
+        data = {
+          head: "aaaa1111",
+          commits: [{ sha: "aaaa1111", created_at: "2026-01-01T00:00:00Z", message: "second" }],
+        };
+      } else if (u.includes("/builds")) {
+        data = [];
+      } else if (u.includes("/api/v1/apps/shop")) {
+        // Deliberately a *different* commit from the one listed: the app record
+        // is what says which commit is deployed, and if it named the same one
+        // the row would render the "deployed" pill and never reach the branch
+        // under test.
+        data = { id: "shop", commit_sha: "beef9999" };
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.app = "shop";', ctx);
+
+    // The Builds card's own trigger, which is the thing this change adds.
+    //
+    // Asserted on the markup rather than on the element: the stub creates one
+    // for any id the script mentions, so a check that only looked it up would
+    // pass with the button deleted from the page — which is exactly the mistake
+    // worth catching, since the whole change is that the control is *there*.
+    check("the build module has its own trigger", markup.includes('id="app-builds-build"'), true);
+
+    const buildsBuild = elements.get("app-builds-build");
+    check("and it is wired", !!buildsBuild.onclick, true);
+
+    // Pressing it builds the newest commit.
+    ctx.bodies.length = 0;
+    await buildsBuild.onclick();
+    const posted = ctx.bodies.find((b) => b.url.endsWith("/builds")) || {};
+    check("and it builds the newest commit", posted.body, JSON.stringify({ commit_sha: "aaaa1111" }));
+
+    // The History card's action column, for a commit with no image.
+    await vm.runInContext("loadCommits", ctx)();
+    const actionCell = elements.get("commits").children[0].children[2];
+    const actionButton = actionCell && actionCell.children[0];
+    check("a commit with no image offers to build it", actionButton && actionButton.textContent, "Build");
+
+    // And pressing that builds *that* commit rather than the tip — the whole
+    // point of it being on a row.
+    ctx.bodies.length = 0;
+    await actionButton.onclick();
+    const named = ctx.bodies.find((b) => b.url.endsWith("/builds")) || {};
+    check("and it builds the commit on its own row", named.body, JSON.stringify({ commit_sha: "aaaa1111" }));
+
+    // A commit that already has an image still offers the rollback instead. The
+    // build button is for the commit that cannot be deployed yet, and offering
+    // both would make the column mean two things.
+    ctx.fetch = async (url) => {
+      const u = String(url);
+      let data = { commits: [] };
+      if (u.includes("/commits")) {
+        data = { head: "bbbb2222", commits: [{ sha: "bbbb2222", created_at: "2026-01-01T00:00:00Z", message: "x" }] };
+      } else if (u.includes("/builds")) {
+        data = [{ commit_sha: "bbbb2222", status: "succeeded", image: "registry/shop:bbbb" }];
+      } else if (u.includes("/api/v1/apps/shop")) {
+        data = { id: "shop", commit_sha: "beef9999" };
+      }
+      return {
+        ok: true, status: 200, statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data }),
+      };
+    };
+    await vm.runInContext("loadCommits", ctx)();
+    const builtCell = elements.get("commits").children[0].children[2];
+    check(
+      "a commit that has an image offers a rollback, not a build",
+      builtCell && builtCell.children[0] && builtCell.children[0].textContent,
+      "Roll back"
+    );
+  }
+
   // The periodic refresh, which replaced the per-card Refresh buttons.
   //
   // What is asserted is the part that would be a bug: the timer exists, it is
@@ -1905,6 +2040,39 @@ async function render(apps) {
     vm.runInContext("stopEvents", ctx)();
     check("and switching away stops it", vm.runInContext("state.eventsTimer", ctx), null);
     check("and clears the panel's timer handle", intervals.length - before, 1);
+  }
+
+  // The monitoring card distinguishes "no metrics here" from "the read failed".
+  //
+  // They are different problems with different remedies, and conflating them
+  // sends whoever is debugging to the wrong place: a 401 from a stale key, a 500,
+  // or a proxy with no route all used to render as "this cluster reports no
+  // metrics", which points at metrics-server and away from the answer, which was
+  // in the response body.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    const renderMonitoring = vm.runInContext("renderMonitoring", ctx);
+    const note = elements.get("monitor-note");
+
+    // No metrics-server: a fact about the installation, and the message says so.
+    renderMonitoring({ available: false }, [], "");
+    check("with no metrics API the card names that", note.textContent, "Resource usage is not available: this cluster reports no metrics.");
+
+    // A request that failed: the message names what the server said instead.
+    renderMonitoring(null, [], "401 Unauthorized");
+    check("and a failed read reports the failure rather than blaming the cluster", note.textContent, "Could not read resource usage: 401 Unauthorized");
+
+    // A cluster that answers but has sampled nothing yet is a third case, and it
+    // is not an error: the readings are unknown, which the empty strings the
+    // server sends render as em dashes.
+    renderMonitoring({ available: true, cpu: "", memory: "", pods: null, limited: {} }, [], "");
+    const text = elements.get("monitor-readings").allText();
+    check("an unsampled cluster shows unknown rather than zero", text.includes("0 "), false);
+    check("as an em dash", text.includes("–"), true);
+    check("and does not claim metrics are missing", note.classList.contains("hidden"), true);
   }
 
   // The clone command's mask is the width of the app's address above it.

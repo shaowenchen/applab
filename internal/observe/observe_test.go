@@ -11,6 +11,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/shaowenchen/applab/internal/k8s"
 )
 
 func newTestObserver(t *testing.T, objects ...runtime.Object) (*Observer, *fake.Clientset) {
@@ -757,4 +759,54 @@ func (r *blockingReader) Read(p []byte) (int, error) {
 		return copy(p, "first line\n"), nil
 	}
 	select {}
+}
+
+// TestSumUsageReportsUnknownRatherThanZeroForNothingSampled guards the failure
+// the whole Available flag exists to prevent.
+//
+// Summing an empty set gives the zero Quantity, which stringifies to "0" — so a
+// cluster whose metrics API has come up but has not taken its first sample yet
+// would report "0 cores" for a busy workload. That is the same lie as a
+// unavailable cluster shown as idle, reached by a different route: the panel
+// would show a starving control plane as doing nothing, and the reader would
+// have no way to tell it from a genuinely quiet one.
+//
+// Empty rather than "0", because an empty quantity renders as an em dash, which
+// says "not known" — the honest answer.
+func TestSumUsageReportsUnknownRatherThanZeroForNothingSampled(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pods map[string]k8s.Usage
+	}{
+		{"no pods at all", map[string]k8s.Usage{}},
+		{"pods with no sample yet", map[string]k8s.Usage{
+			"applab-shop-1": {PodName: "applab-shop-1"},
+			"applab-shop-2": {PodName: "applab-shop-2"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu, memory, err := sumUsage(tc.pods)
+			if err != nil {
+				t.Fatalf("sumUsage: %v", err)
+			}
+			if cpu != "" {
+				t.Errorf("cpu = %q, want empty — nothing was sampled, so the total is unknown, not zero", cpu)
+			}
+			if memory != "" {
+				t.Errorf("memory = %q, want empty — nothing was sampled, so the total is unknown, not zero", memory)
+			}
+		})
+	}
+
+	// And a real sample still sums, so the guard above is not a blanket refusal.
+	cpu, memory, err := sumUsage(map[string]k8s.Usage{
+		"a": {CPU: "100m", Memory: "64Mi"},
+		"b": {CPU: "250m", Memory: "96Mi"},
+	})
+	if err != nil {
+		t.Fatalf("sumUsage: %v", err)
+	}
+	if cpu != "350m" || memory != "160Mi" {
+		t.Errorf("sum = %s/%s, want 350m/160Mi", cpu, memory)
+	}
 }

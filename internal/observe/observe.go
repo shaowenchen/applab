@@ -292,6 +292,7 @@ func (o *Observer) PlatformUsage(ctx context.Context, namespace string) (Usage, 
 func sumUsage(pods map[string]k8s.Usage) (cpu, memory string, err error) {
 	cpuTotal := resource.NewQuantity(0, resource.DecimalSI)
 	memTotal := resource.NewQuantity(0, resource.BinarySI)
+	cpuSeen, memSeen := false, false
 
 	for _, usage := range pods {
 		if usage.CPU != "" {
@@ -300,6 +301,7 @@ func sumUsage(pods map[string]k8s.Usage) (cpu, memory string, err error) {
 				return "", "", fmt.Errorf("the metrics API reported cpu %q, which is not a quantity: %w", usage.CPU, parseErr)
 			}
 			cpuTotal.Add(q)
+			cpuSeen = true
 		}
 		if usage.Memory != "" {
 			q, parseErr := resource.ParseQuantity(usage.Memory)
@@ -307,9 +309,30 @@ func sumUsage(pods map[string]k8s.Usage) (cpu, memory string, err error) {
 				return "", "", fmt.Errorf("the metrics API reported memory %q, which is not a quantity: %w", usage.Memory, parseErr)
 			}
 			memTotal.Add(q)
+			memSeen = true
 		}
 	}
-	return cpuTotal.String(), memTotal.String(), nil
+
+	// A resource nothing was reported for is *unknown*, not zero, and the
+	// difference is the whole reason Available exists one level up.
+	//
+	// Summing nothing gives the zero Quantity, which stringifies to "0" — so a
+	// cluster whose metrics API has come up but has not taken its first sample
+	// yet, or an app whose pods have all just been replaced, would report "0
+	// cores" for a busy workload. That is precisely the failure this package
+	// keeps saying it must not produce: an idle-looking app that is actually
+	// starving. An empty string renders as an em dash, which says "not known".
+	//
+	// Tracked per resource rather than once for both, because a sample can carry
+	// one and not the other in principle, and summing the pair together would
+	// report memory as unknown whenever cpu was.
+	if cpuSeen {
+		cpu = cpuTotal.String()
+	}
+	if memSeen {
+		memory = memTotal.String()
+	}
+	return cpu, memory, nil
 }
 
 // quantityString renders a resource list's entry, or an empty string when it is
