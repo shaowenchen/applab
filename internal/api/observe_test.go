@@ -566,6 +566,7 @@ func TestObservabilityRequiresAKey(t *testing.T) {
 		"/api/v1/apps/shop/logs",
 		"/api/v1/apps/shop/events",
 		"/api/v1/apps/shop/diagnose",
+		"/api/v1/platform/resources",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
@@ -593,6 +594,7 @@ func TestObservabilityWithoutClusterIs501(t *testing.T) {
 		// read, and that is a way to run AppLab rather than a fault.
 		"/api/v1/platform/pods",
 		"/api/v1/platform/logs",
+		"/api/v1/platform/resources",
 	} {
 		rec := doRequest(t, h, http.MethodGet, path, nil)
 		if rec.Code != http.StatusNotImplemented {

@@ -151,6 +151,20 @@ type Usage struct {
 	// default would be describing a container that does not exist.
 	Requested ResourceBounds `json:"requested"`
 	Limited   ResourceBounds `json:"limited"`
+
+	// PerPod is each of the app's pods' own reading, keyed by pod name, and it
+	// is the same sample the totals above were summed from.
+	//
+	// Carried on the struct rather than fetched separately because the two have
+	// to agree: a panel shows the total and each pod as entries of one picker,
+	// and a second read would let the total disagree with the parts it is
+	// displayed beside. Nil whenever Available is false, so there is no way to
+	// show a breakdown of a reading that was never taken.
+	//
+	// Not serialized here — the API layer converts it to its own shape, and the
+	// k8s.Usage type it is keyed by is the client's business rather than the
+	// wire's. See api.usageResponse.
+	PerPod map[string]k8s.Usage `json:"-"`
 }
 
 // ResourceBounds is a CPU and memory pair.
@@ -196,7 +210,7 @@ func (o *Observer) AppUsage(ctx context.Context, namespace, appID string) (Usage
 	// The app's pods, and not a build's — the same selector the pod list uses, for
 	// the same reason: a build Job's pod carries the app label too, and counting
 	// one would report a build's resource use as the app's.
-	pods, usageAvailable, err := o.usage.PodUsage(ctx, namespace, k8s.LabelApp+"="+appID+",!"+k8s.LabelBuild)
+	pods, usageAvailable, err := o.PodUsages(ctx, namespace, k8s.LabelApp+"="+appID+",!"+k8s.LabelBuild)
 	if err != nil {
 		return out, err
 	}
@@ -205,6 +219,63 @@ func (o *Observer) AppUsage(ctx context.Context, namespace, appID string) (Usage
 	}
 
 	out.Available = true
+	out.PerPod = pods
+	out.CPU, out.Memory, err = sumUsage(pods)
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// PodUsages reports CPU and memory for each pod matching a selector, keyed by
+// pod name.
+//
+// It is the same read AppUsage does without the sum, and it exists because the
+// two answer different questions. A total answers "is this app near its limit";
+// a per-pod reading answers "which copy is", which is what a monitoring panel
+// with a picker needs — during a rollout one replica can be at its limit while
+// the total looks fine, and the sum hides exactly the case someone opened the
+// panel for.
+//
+// The bool is whether the cluster reported metrics at all, unchanged from the
+// reader: a cluster without metrics-server is a way to run one rather than a
+// fault, and a caller has to be able to say so instead of showing zeros.
+func (o *Observer) PodUsages(ctx context.Context, namespace, selector string) (map[string]k8s.Usage, bool, error) {
+	if o.usage == nil {
+		return nil, false, nil
+	}
+	usage, available, err := o.usage.PodUsage(ctx, namespace, selector)
+	if err != nil {
+		return nil, false, err
+	}
+	return usage, available, nil
+}
+
+// PlatformUsage reads what AppLab's own pods are using.
+//
+// The counterpart of AppUsage for the control plane, and deliberately the same
+// return type: a caller that can render an app's usage can render AppLab's with
+// nothing new to learn, and the console's two monitoring panels are one piece of
+// code for exactly that reason.
+//
+// The bounds are left zero, and that is not an omission. AppUsage reads them from
+// the app's Deployment because that is where the deployer wrote them; the control
+// plane's Deployment belongs to the chart, its requests and limits are the
+// release's business, and reporting them here would be AppLab describing its own
+// installation's choices back to itself as though they were settings it owned.
+func (o *Observer) PlatformUsage(ctx context.Context, namespace string) (Usage, error) {
+	var out Usage
+
+	pods, available, err := o.PodUsages(ctx, namespace, selfSelector)
+	if err != nil {
+		return out, err
+	}
+	if !available {
+		return out, nil
+	}
+
+	out.Available = true
+	out.PerPod = pods
 	out.CPU, out.Memory, err = sumUsage(pods)
 	if err != nil {
 		return out, err
@@ -753,6 +824,10 @@ func belongsToApp(pod *corev1.Pod, appID string) bool {
 
 // selfSelector matches the pods the chart installs: AppLab and its
 // ServiceMonitor, but no app.
+//
+// Unexported because only this package reads it. The chart's own side of the
+// agreement is checked in hack/helm-check.sh, which greps this line — so a rename
+// here fails that check rather than silently listing no pods.
 const selfSelector = "app.kubernetes.io/part-of=applab"
 
 // SelfPods lists AppLab's own pods, newest first.

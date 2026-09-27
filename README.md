@@ -366,6 +366,28 @@ applab deploy shop --build     # or the Deploy latest button on the app's page
 A push does the same thing: pushing to an app with no Deployment builds the
 commit and creates the Deployment, Service and VirtualService it needs.
 
+### Resource usage needs one component AppLab does not install
+
+The console's monitoring panels — the platform's own pods, and each of an app's —
+read the Kubernetes **resource metrics API**. That API group is not part of
+Kubernetes: it exists only when something serves it, which in practice means
+[metrics-server](https://github.com/kubernetes-sigs/metrics-server).
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+It is deliberately not a dependency of the chart. It is cluster-wide, it has its
+own footprint and lifecycle, and a chart that installed one would be making a
+decision that belongs to whoever runs the cluster.
+
+Without it everything still works, and the panels say usage is unavailable rather
+than showing zeros — a pod using nothing and a cluster that cannot measure look
+identical at zero, and only one is worth acting on. **Requests and limits are
+unaffected**: the kubelet enforces them and the scheduler uses them whether or not
+anything reports usage. `hack/environment.sh` installs metrics-server into the
+debugger environment, since it is what the console's monitoring is for.
+
 ### Finding out what went wrong
 
 `GET /apps/{app}/diagnose` answers "why is my app down" in one call: the pods and
@@ -545,6 +567,17 @@ openly.
   secrets. That is the cost of an AppLab with no Secret objects — a value written
   this way is readable by more people than one kept in `etcd`, and worth knowing
   before putting a production credential in one.
+- **An app's container runs with every capability dropped**, privilege escalation
+  disabled, and — if the image says so — as a non-root user. An uploaded image is
+  untrusted code sharing a namespace with every other app, so this is the
+  container boundary rather than a hardening pass. It is also the thing most
+  likely to break a Dockerfile that works elsewhere: a base image that starts as
+  root to `chown` something and then drops to its own user fails at that step,
+  because `CAP_CHOWN` is gone. The fix is to do the privileged setup at build
+  time and `USER` the unprivileged account, which is what the seeded `Dockerfile`
+  demonstrates. Binding port 80 is unaffected — AppLab lowers
+  `net.ipv4.ip_unprivileged_port_start` in the pod so an unprivileged process can
+  bind it.
 
 ## Configuring an app
 

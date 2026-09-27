@@ -12,6 +12,8 @@
 #   kind cluster (ns ops-system)
 #     AppLab         the published image, installed with this repository's chart
 #     istio-ingress  the gateway everything is published through (NodePort 30080)
+#     metrics-server the resource metrics API, which the console reads usage from
+#                    (ns kube-system; optional, and the console says so without it)
 #
 #   on the runner
 #     minio          the object store AppLab keeps everything in
@@ -511,6 +513,57 @@ done
 
 show "the object store (a container on this host)" \
   docker inspect --format '{{.State.Status}} {{.Config.Image}}' "$APPLAB_OBJECT_STORE_NAME"
+
+log "installing metrics-server, so the console can show resource usage"
+# The Kubernetes resource metrics API, which is what the console's monitoring
+# panels and `applab resources` read. It is not part of Kubernetes: the API group
+# exists only when a server provides it, and a cluster without one answers 404
+# for the whole group.
+#
+# AppLab works either way — the panels say usage is unavailable and every limit
+# still applies — but then the one feature this environment exists to exercise
+# cannot be seen at all, so it is installed here rather than left to whoever
+# notices two em dashes in the console.
+#
+# The upstream components.yaml, unmodified except for the kubelet TLS flag below.
+metrics-server_version="v0.7.2"
+kubectl apply -f "https://github.com/kubernetes-sigs/metrics-server/releases/download/${metrics-server_version}/components.yaml"
+
+# kind's kubelet serves its own self-signed certificate, and metrics-server
+# verifies it by default — so without this every scrape fails with an x509
+# error and the Deployment sits unavailable with nothing in the console
+# explaining why. This is the flag the project's own kind documentation gives;
+# it is safe here because the kubelet is reached over the cluster's own network.
+kubectl -n kube-system patch deployment metrics-server --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+
+# Not fatal, unlike the Istio wait above: AppLab installs and serves fine without
+# a metrics API, it just cannot show usage. Ending the whole environment because
+# an optional component did not come up would be the wrong trade, so this warns
+# and carries on.
+if ! kubectl -n kube-system wait --for=condition=available --timeout=300s deployment/metrics-server; then
+  warn "metrics-server did not become available; the console will report usage as unavailable"
+fi
+show "metrics-server" kubectl -n kube-system get deployment metrics-server
+
+# Waited for a reading rather than for the Deployment, because those are not the
+# same moment: metrics-server becomes available when it starts and answers only
+# after its first scrape of the kubelet — up to a minute later. A check that
+# stopped at "available" would let the AppLab install proceed against an API that
+# still 404s, which is exactly the failure this block exists to rule out.
+#
+# `top nodes` needs one row, and until one arrives the CLI reports "no metrics
+# known". Sixty tries at two seconds is two minutes, which is about the interval
+# metrics-server takes to serve its first sample.
+for i in $(seq 1 60); do
+  if kubectl top nodes >/dev/null 2>&1; then
+    break
+  fi
+  if [ "$i" = 60 ]; then
+    warn "metrics-server is up but reports no readings; usage will be unavailable in the console"
+  fi
+  sleep 2
+done
 
 log "installing Istio (this is the slow step)"
 # The community default profile, into the community default namespace, producing

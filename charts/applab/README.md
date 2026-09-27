@@ -89,9 +89,11 @@ applab push myshop
 
 ## Before you install
 
-A bucket and three decisions. The bucket is required and has no default, and each
-decision is much easier to make now than after, because it changes what the
-cluster has to be able to do.
+A bucket and three decisions, plus one optional component. The bucket is required
+and has no default, and each decision is much easier to make now than after,
+because it changes what the cluster has to be able to do. The last section is the
+one you can skip and come back to: resource usage is a readout, and everything
+else works without it.
 
 ### 0. A bucket, which is where everything lives
 
@@ -372,6 +374,46 @@ With the pipeline off there is no registry to authenticate to either, so the
 registry credential is ignored: `build.secret` is emptied along with
 `build.registry`, and no Secret has to exist for an app to deploy.
 
+### 4. Whether the cluster can report resource usage (optional)
+
+The console shows a CPU and memory reading for the platform's own pods and for
+each of an app's, on the Instances list and on the overview's monitoring panel.
+Those numbers come from the Kubernetes **resource metrics API**
+(`metrics.k8s.io`), which is not part of Kubernetes: the API group exists only
+when something serves it, and that something is
+[**metrics-server**](https://github.com/kubernetes-sigs/metrics-server).
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+**This is optional, and AppLab does not install it for you.** It is a cluster-wide
+component with its own resource footprint and its own lifecycle, and a chart that
+installed one would be claiming a decision that belongs to whoever runs the
+cluster. Every other feature works without it.
+
+What changes when it is missing: the monitoring panels say usage is unavailable
+rather than showing zeros, and `applab resources` reports `available: false` with
+the bounds still in place. The distinction matters — a pod using nothing and a
+cluster that cannot measure look identical at zero, and only one of them is worth
+acting on. **Requests and limits are unaffected**: they are part of the pod spec,
+they are enforced by the kubelet, and the scheduler uses them whether or not
+anything reports usage.
+
+Two things to know if you install it:
+
+- **On kind, the kubelet's certificate is self-signed**, so metrics-server's
+  verification fails until you add `--kubelet-insecure-tls` to its arguments. The
+  symptom is a Deployment that never becomes available and a console with no
+  readings, and nothing in AppLab's log says why. `hack/environment.sh` in this
+  repository does this for the debugger environment.
+- **The first reading takes up to a minute.** metrics-server becomes ready when
+  it starts and answers only after its first scrape, so a fresh install reports
+  nothing for a short while. That is not a failure.
+
+The Role the chart installs already grants `get` and `list` on
+`metrics.k8s.io/pods`, so nothing here needs a permission change to work.
+
 ## What gets installed
 
 | Resource | Why |
@@ -413,6 +455,13 @@ so the reach of a bug in it is the apps it manages.
 The rules in `role.yaml` are exactly what AppLab uses, each with a comment saying
 why. Nothing is granted for future convenience. In particular there is no
 permission on `namespaces` at all, and none to write pods.
+
+One rule is worth pointing out here because it is the only one that can grant
+nothing: `get` and `list` on `metrics.k8s.io/pods`, the resource metrics API. That
+group is served by whatever is installed to serve it — see
+[§4](#4-whether-the-cluster-can-report-resource-usage-optional) — and on a cluster
+without one the Role holds a rule for an API that does not exist, which Kubernetes
+accepts and never consults.
 
 **What this costs:** apps are not isolated from one another by a namespace
 boundary. A resource-hungry app affects its neighbours, and an operator reading

@@ -215,6 +215,35 @@ keeping straight for the person who has to decide what to put in one.
 `PORT` is refused as an environment variable: it is derived from the app's
 configured port.
 
+## The container does not run as root, and holds no capabilities
+
+Your image is started with every Linux capability dropped and privilege
+escalation disabled, and it does not run as root. That is deliberate — an
+uploaded image is untrusted code sharing a namespace with every other app — and
+it is the thing most likely to break a Dockerfile that works everywhere else.
+
+The failure is confusing when you meet it: the build succeeds, the deploy
+succeeds, and the app never becomes ready. The log names something inside the
+base image rather than AppLab. A stock `nginx` is the usual example —
+
+    [emerg] chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not permitted)
+
+— because that image starts as root, chowns its cache, and only then drops to its
+own user. With `CAP_CHOWN` gone the first step fails.
+
+Three things follow, and the seeded `Dockerfile` demonstrates the first:
+
+- **Do the privileged setup at build time, where the build does run as root.**
+  `RUN mkdir -p /var/cache/nginx && chown -R nginx:nginx /var/cache/nginx`, then
+  `USER nginx`. Anything a start-up script would have needed root for belongs in
+  the image instead.
+- **Binding a port below 1024 is fine.** AppLab lowers
+  `net.ipv4.ip_unprivileged_port_start` in the pod, so an unprivileged process
+  can bind 80. This is why an app on the default port needs no capability.
+- **A base image that already runs unprivileged needs none of this.** Many do;
+  the check is whether the start-up writes anywhere outside the container's own
+  writable paths as root.
+
 ## Three things that are easy to get wrong
 
 **A deploy is not a build.** They are separate calls on purpose, so a build

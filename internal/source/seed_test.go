@@ -66,6 +66,53 @@ func TestANewAppStartsWithAnExampleDockerfile(t *testing.T) {
 	}
 }
 
+// TestTheExampleDockerfileDoesNotNeedRoot is the regression this file exists for.
+//
+// nginx's stock image starts as root and chowns its cache directory before
+// dropping to its own user. AppLab drops every capability from an app's
+// container, CAP_CHOWN included, so that chown fails:
+//
+//	[emerg] chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not permitted)
+//
+// and the container exits before serving. The symptom is the worst kind: the
+// build succeeds, the deploy succeeds, and the app sits not-ready with a log
+// that names nginx rather than AppLab. The example therefore has to run
+// unprivileged from its first instruction.
+//
+// Asserted on the rendered tree rather than on the template, so a substitution
+// that broke the file would be caught here too.
+func TestTheExampleDockerfileDoesNotNeedRoot(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	body := fileAtTip(t, s, "shop", "Dockerfile")
+
+	// A USER instruction, and it is not root. Without one the container is root
+	// and every chown in the base image's start-up runs into the dropped
+	// capability set.
+	user := ""
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToUpper(trimmed), "USER ") {
+			user = strings.TrimSpace(trimmed[len("USER "):])
+		}
+	}
+	if user == "" {
+		t.Error("the example Dockerfile never drops root, so nginx's start-up chown fails against the capabilities AppLab drops")
+	} else if user == "root" || user == "0" {
+		t.Errorf("the example Dockerfile runs as %q, which is the case this guards against", user)
+	}
+
+	// And the base image is nginx, since the comment above is about nginx's
+	// entrypoint specifically. A different base would need its own check.
+	if !strings.Contains(body, "FROM nginx:") {
+		t.Errorf("the example no longer builds from nginx, so the note about its start-up does not apply:\n%s", body)
+	}
+}
+
 // TestAnUploadedDockerfileIsNotOverwritten is the test that guards the seed-once
 // rule, and it is the one whose absence would be expensive.
 //

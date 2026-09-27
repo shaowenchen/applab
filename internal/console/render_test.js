@@ -65,6 +65,10 @@ function makeElement(id = "") {
       contains(c) { return this._set.has(c); },
     },
     appendChild(child) { this.children.push(child); return child; },
+    // Variadic, unlike appendChild. The KPI tiles are built with it, and a
+    // refresh is what reaches that code — a check that only loaded the overview
+    // once would never have called it.
+    append(...kids) { for (const k of kids) this.children.push(k); },
     // A real element always reports one, and the instances table reads it back
     // after appending: it builds a pill, copies it, appends the copy and then
     // restyles the cell's first child.
@@ -149,6 +153,10 @@ for (const id of ids) {
 }
 
 const store = new Map();
+
+// The timers the console starts, recorded rather than run. Declared up here
+// because the sandbox closes over it — see setInterval below.
+const intervals = [];
 const sandbox = {
   console,
   document: {
@@ -213,6 +221,21 @@ const sandbox = {
   URLSearchParams,
   setTimeout,
   clearTimeout,
+  // The console reloads the current view on a timer. Recorded rather than run:
+  // a real interval would keep the process alive and fire during unrelated
+  // checks. What the timer *does* is reachable directly through refreshCurrent,
+  // which is what the checks exercise.
+  // The console reloads the current view on a timer. Recorded rather than run:
+  // a real interval would keep the process alive and fire during unrelated
+  // checks. What the timer *does* is reachable directly through refreshCurrent,
+  // which is what the checks exercise.
+  // `this` inside a method would not be the sandbox — the console's script is in
+  // strict mode, so a bare call has no receiver. The array is closed over.
+  setInterval: (fn, ms) => {
+    intervals.push({ fn, ms });
+    return intervals.length;
+  },
+  clearInterval() {},
   Promise,
   JSON,
   Math,
@@ -1098,6 +1121,10 @@ async function render(apps) {
               status: "failed",
               created_at: "2026-01-01T00:00:00Z",
               reason: "error building image: getting stage builder for stage 0: failed to resolve source metadata for docker.io/library/golang:1.24-alpine",
+              // A pod, because the events column is built from it. A Job that
+              // failed before its pod existed carries none, which is the case
+              // the check below covers with the row above.
+              pod: { name: "applab-build-shop-def" },
             },
           ],
         }),
@@ -1115,26 +1142,45 @@ async function render(apps) {
     // there is no pod to name and a caller must not read the column as one.
     check("and a build with no pod says so rather than showing nothing", done, "—");
 
-    // A failed build's reason is a sentence from kaniko — it names the layer,
-    // the command and the exit status — and it is rendered into a cell that is
-    // capped and truncated, with the whole of it on the title.
+    // The Events column, which replaced the reason text.
     //
-    // Without the cap it stretches its column until the two buttons beside it
-    // wrap onto three lines and the rest of the table is squeezed. The class is
-    // what does that, so it is what is asserted; the CSS rule is checked below.
-    const reasonCell = rows[2] && rows[2].children[5];
-    const reasonSpan = reasonCell && reasonCell.children[0];
-    check("a failed build's reason is in a capped cell", reasonSpan && reasonSpan.className, "report-cell");
-    check(
-      "and the whole of it is on the title, so nothing is hidden",
-      reasonSpan && reasonSpan.title.startsWith("error building image"),
-      true
-    );
-    // And the class has a rule, because the assertion above is about the markup
-    // and a class with no rule behind it is a cell that still stretches. The
-    // cap has to be on a block child rather than on the <td>: a table cell
-    // ignores max-width, so the obvious version of this fix silently does
-    // nothing in a browser while reading as though it did.
+    // The reason was a sentence from kaniko — the layer, the command, the exit
+    // status — capped and truncated to keep the table on one line, which put the
+    // useful half of a failure behind an ellipsis. Events carry the same
+    // information with the rest of it: why the pod landed where it did, why the
+    // pull was retried, what the container exited with.
+    //
+    // A button rather than text, because they open in the shared dialog, where
+    // they are refreshed while it is up.
+    const eventsCell = rows[2] && rows[2].children[5];
+    const eventsButton = eventsCell && eventsCell.children[0];
+    check("a finished build offers its pod's events", eventsButton && eventsButton.textContent, "Events");
+
+    // Offered only when there is a pod to have events about. The second row is
+    // the finished build with no pod, and a button that opened an empty panel
+    // would read as a failure rather than as an absence.
+    const noPodCell = rows[1] && rows[1].children[5];
+    check("and a build with no pod offers none", (noPodCell && noPodCell.children.length) || 0, 0);
+
+    // The deploy button is gone from this table. Deploying a build's commit is
+    // what the History card and the State card's Deploy latest are for, and a
+    // third copy of it here was a button on every successful row.
+    const labels = rows.map((r) => r.children.map((c) => c.allText()).join(" ")).join(" | ");
+    check("a build row no longer offers a deploy", labels.includes("Deploy"), false);
+
+    // And no em dash on a finished build's stop cell. A column of dashes down a
+    // table of completed builds is noise that reads as missing data; the cell is
+    // simply empty. The running build is the exception, and it is the one that
+    // has something to stop.
+    const lastOf = (r) => (r.children[r.children.length - 1] || {}).allText();
+    check("a finished build's stop cell is empty rather than a dash", lastOf(rows[1]) + lastOf(rows[2]), "");
+    check("and the build still running keeps its stop", lastOf(rows[0]), "Stop");
+
+    // The capped-cell rule is still in the stylesheet, because the instances
+    // table's reason column still uses it. The cap has to be on a block child
+    // rather than on the <td>: a table cell ignores max-width, so the obvious
+    // version of this fix silently does nothing in a browser while reading as
+    // though it did.
     check(
       "the capped-cell class is a real rule, not just a name",
       /\.report-cell\s*\{[^}]*max-width/.test(markup),
@@ -1290,22 +1336,33 @@ async function render(apps) {
     const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
     ctx.globalThis = ctx;
     ctx.requests = [];
+    // Answered per URL, because loadPods makes two reads: the rows and the
+    // reading that is a column of them. One stub for both would put the pod list
+    // where the usage was expected, and every check below would pass while
+    // testing nothing.
     ctx.fetch = async (url) => {
       ctx.requests.push(String(url));
-      return {
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        headers: { get: () => "application/json" },
-        text: async () => JSON.stringify({
-          data: {
+      const body = String(url).endsWith("/resources")
+        ? {
+            app_id: "shop",
+            available: true,
+            cpu: "150m",
+            memory: "96Mi",
+            pods: { "applab-shop-abc": { cpu: "150m", memory: "96Mi" } },
+          }
+        : {
             app_id: "shop",
             count: 1,
             pods: [
               { name: "applab-shop-abc", ready: false, restarts: 5, reason: "CrashLoopBackOff" },
             ],
-          },
-        }),
+          };
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: body }),
       };
     };
     vm.runInContext(source, ctx, { filename: "console.js" });
@@ -1313,11 +1370,21 @@ async function render(apps) {
     await vm.runInContext("loadPods", ctx)();
 
     const row = elements.get("pods").children[0];
-    const actions = row && row.children[4];
+    // Found by class rather than by position: the row grew two usage cells, and
+    // an index that has to be re-counted every time a column is added is a check
+    // that quietly starts reading the wrong cell instead of failing.
+    const actions = row && row.children.find((c) => c.className === "actions");
     const buttons = (actions && actions.children) || [];
     const labels = buttons.map((b) => b.textContent).join(" | ");
     check("an instance row offers its own log", labels.includes("Log"), true);
     check("and its own events", labels.includes("Events"), true);
+
+    // What the pod is using, on its row — the reason the usage read is here at
+    // all. Rendered in cores and GiB rather than as the raw quantity, so it can
+    // be compared against the limit beside it by eye.
+    const cells = row.children.map((c) => c.textContent);
+    check("and its cpu, in cores", cells.includes("0.15 cores"), true);
+    check("and its memory, in GiB", cells.includes("0.09375 GiB"), true);
 
     // Clicking Log names the pod. Without it the endpoint answers with the
     // newest pod's log, so the button on a crashing row would show a different
@@ -1542,13 +1609,6 @@ async function render(apps) {
     );
   }
 
-  if (failures > 0) {
-    console.error(`\n${failures} check(s) failed`);
-    process.exit(1);
-  }
-  console.log("\nall console rendering checks passed");
-})();
-
   // The dialogs are outside every view section.
   //
   // This is the bug that made all three log views unusable. Both dialogs used to
@@ -1601,3 +1661,296 @@ async function render(apps) {
       true
     );
   }
+
+  // The overview's monitoring card.
+  //
+  // Above the platform log card rather than below it, because the two answer
+  // different questions and this one is the smaller: the log says what AppLab
+  // did, and the readings say whether it has the room to keep doing it. Asserted
+  // as an order rather than a presence, since "put it somewhere on the page"
+  // would pass with the card at the bottom, which is not what was asked for.
+  {
+    const idx = (needle) => markup.indexOf(needle);
+    const monitor = idx('id="card-monitor"');
+    const platformLog = idx('id="platform-logs-open"');
+    check("the overview carries a monitoring card", monitor > 0, true);
+    check("above the platform log", monitor < platformLog, true);
+
+    // The card's own picker and readings, and not some other card's.
+    check("with a pod picker", markup.includes('id="monitor-pod"'), true);
+    check("and a place for the readings", markup.includes('id="monitor-readings"'), true);
+
+    // It is the overview's, so it is inside that section and not the app view's.
+    const overviewStart = idx('id="overview-view"');
+    const overviewEnd = idx('id="apps-view"');
+    check("inside the overview view", monitor > overviewStart && monitor < overviewEnd, true);
+
+    // And the app page's side nav lists cards of the *app* view. The monitoring
+    // card is the overview's, so an entry for it there would be a link to a card
+    // this page never renders.
+    check("and it is not one of the app page's sections", markup.includes('{ id: "card-monitor"'), false);
+  }
+
+  // The picker's options, and what changes when one is chosen.
+  //
+  // The sum is first and each pod after it, because the interesting figure with
+  // more than one replica is the outlier and a panel offering only the total is
+  // the one thing that cannot show it.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    const render = vm.runInContext("renderMonitoring", ctx);
+    render(
+      {
+        available: true,
+        cpu: "150m",
+        memory: "96Mi",
+        limited: { cpu: "1", memory: "512Mi" },
+        pods: {
+          "applab-shop-abc": { cpu: "100m", memory: "64Mi" },
+          "applab-shop-def": { cpu: "50m", memory: "32Mi" },
+        },
+      },
+      [
+        { name: "applab-shop-abc" },
+        { name: "applab-shop-def" },
+      ]
+    );
+
+    const picker = elements.get("monitor-pod");
+    check(
+      "the picker offers every pod and the sum",
+      picker.children.map((o) => o.value).join(","),
+      ",applab-shop-abc,applab-shop-def"
+    );
+    check("with the sum first", picker.children[0].value, "");
+    check("and it is not disabled", picker.disabled, false);
+
+    // The first entry is the whole app, so the readings are the totals.
+    picker.value = "";
+    picker.onchange();
+    let text = elements.get("monitor-readings").allText();
+    check("the sum renders the total cpu", text.includes("0.15 cores"), true);
+    check("and the total memory", text.includes("0.09375 GiB"), true);
+
+    // Choosing a pod swaps them for that pod's own, which is the point of the
+    // picker: one replica's figure, not the app's.
+    picker.value = "applab-shop-def";
+    picker.onchange();
+    text = elements.get("monitor-readings").allText();
+    check("a pod renders its own cpu", text.includes("0.05 cores"), true);
+    check("not the sum's", text.includes("0.15 cores"), false);
+
+    // Switching back has to restore the totals rather than leaving the last
+    // pod's numbers under the "all pods" entry.
+    picker.value = "";
+    picker.onchange();
+    text = elements.get("monitor-readings").allText();
+    check("and the sum is restored when it is chosen again", text.includes("0.15 cores"), true);
+  }
+
+  // A cluster with no metrics API.
+  //
+  // The card says so rather than showing zeros. A control plane being starved of
+  // CPU and an idle one look identical at zero, and only one of them is a
+  // problem — so the distinction is the whole reason the available flag exists.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    vm.runInContext("renderMonitoring", ctx)({ available: false }, []);
+
+    const note = elements.get("monitor-note");
+    check("with no metrics the card says so", note.textContent.length > 0, true);
+    check("and the note is shown", note.classList.contains("hidden"), false);
+    check("and the readings are empty rather than zero", elements.get("monitor-readings").allText(), "");
+    check("and the picker is disabled rather than offering nothing", elements.get("monitor-pod").disabled, true);
+  }
+
+  // The periodic refresh, which replaced the per-card Refresh buttons.
+  //
+  // What is asserted is the part that would be a bug: the timer exists, it is
+  // not so eager that it hammers the API, and it declines to fire in the three
+  // cases where reloading would be wrong — signed out, a hidden tab, and a
+  // reader mid-edit. The last is the one that would actually lose work: the
+  // loaders write form fields from the server, so a tick between two keystrokes
+  // would replace what someone was typing with the stored value.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { apps: {}, builds: {} } }),
+      };
+    };
+
+    // The elements and the interval list are shared by every block in this file
+    // and earlier ones have opened dialogs, so the starting state is set rather
+    // than assumed — otherwise a card left showing by an unrelated check would
+    // suppress the refresh and every assertion below would pass for a reason
+    // that has nothing to do with what it is testing.
+    elements.get("log-modal").classList.add("hidden");
+    elements.get("apps-new-modal").classList.add("hidden");
+    ctx.document.activeElement = null;
+    const before = intervals.length;
+
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Boot starts it, so a page that is never touched still keeps itself true.
+    const started = intervals.slice(before);
+    check("boot starts a refresh timer", started.length, 1);
+    // Conservative on purpose. A dashboard that polls every second is a
+    // dashboard that costs more than it is looked at.
+    check("and the interval is not aggressive", started[0].ms >= 5000, true);
+
+    const refresh = vm.runInContext("refreshCurrent", ctx);
+
+    // Signed out: nothing to refresh and nothing to refresh it with.
+    vm.runInContext("state.signedIn = false", ctx);
+    ctx.requests.length = 0;
+    await refresh();
+    check("a signed-out console refreshes nothing", ctx.requests.length, 0);
+
+    // Signed in on the overview: the read the view is made of.
+    vm.runInContext('state.signedIn = true; state.view = "overview";', ctx);
+    ctx.requests.length = 0;
+    await refresh();
+    check("signed in, the overview is re-read", ctx.requests.some((u) => u.includes("/api/v1/overview")), true);
+
+    // Mid-edit: the case that would overwrite what someone is typing.
+    vm.runInContext("state.view = 'app'", ctx);
+    ctx.document.activeElement = { tagName: "INPUT", type: "number" };
+    ctx.requests.length = 0;
+    await refresh();
+    check("a tick while someone is typing is skipped", ctx.requests.length, 0);
+
+    // But a checkbox being focused is not someone typing, and must not block it.
+    ctx.document.activeElement = { tagName: "INPUT", type: "checkbox" };
+    ctx.requests.length = 0;
+    await refresh();
+    check("and a focused checkbox does not block it", ctx.requests.length > 0, true);
+
+    // Nothing focused at all — the ordinary case.
+    ctx.document.activeElement = null;
+    ctx.requests.length = 0;
+    await refresh();
+    check("and with nothing focused the app view is re-read", ctx.requests.some((u) => u.includes("/pods")), true);
+  }
+
+  // The events panel is live.
+  //
+  // Events are the answer to "why is this not starting", and that answer arrives
+  // *after* the dialog is opened — a pod still pulling its image has one event
+  // when it is opened and three a minute later. A panel that showed the snapshot
+  // from when it opened would be stale exactly when it mattered.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({
+          data: {
+            events: [
+              { object: "applab-build-shop-abc", type: "Warning", reason: "FailedScheduling", message: "no nodes", count: 3 },
+              { object: "someone-elses-pod", type: "Normal", reason: "Pulled", message: "a different pod entirely" },
+            ],
+          },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.app = "shop";', ctx);
+
+    const before = intervals.length;
+    const pageIntervalMs = intervals.find((i) => i.ms >= 5000).ms;
+    await vm.runInContext("showPodEvents", ctx)("applab-build-shop-abc");
+
+    const el = elements.get("events-output");
+    const text = el.allText();
+    check("the events panel reads the pod when it opens", ctx.requests.length, 1);
+    // Filtered to the pod. The endpoint answers per app, and every app's pods
+    // share one namespace, so an unfiltered render would show another pod's
+    // events under this one's name.
+    check("and shows only that pod's", text.includes("FailedScheduling"), true);
+    // Matched on the other event's message rather than on its object name: the
+    // rendered lines carry the reason and the message, not the object, so a
+    // check looking for the name would pass on an unfiltered render — which is
+    // exactly the bug it is here to catch.
+    check("not another pod's", text.includes("a different pod entirely"), false);
+    check("with the count when there is one", text.includes("x3"), true);
+
+    // And it keeps reading: one more timer, on its own interval.
+    check("and it starts its own timer", intervals.length, before + 1);
+    check("at a shorter interval than the page", intervals[before].ms < pageIntervalMs, true);
+
+    // Opening another panel stops it. A timer left running behind a log the
+    // reader has moved on to is a request every five seconds for output nobody
+    // will render.
+    vm.runInContext("stopEvents", ctx)();
+    check("and switching away stops it", vm.runInContext("state.eventsTimer", ctx), null);
+    check("and clears the panel's timer handle", intervals.length - before, 1);
+  }
+
+  // The clone command's mask is the width of the app's address above it.
+  //
+  // Two values in one column, one of them a run of bullets of its own length,
+  // read as a ragged column — the mask is the taller of the two and the address
+  // looks cut short beside it. The mask asks the address how wide it is.
+  //
+  // Exercised through the registration the console actually makes rather than
+  // through mask() alone: the width comes from a callback that reads another
+  // element, and a check on the pure function would pass while the callback
+  // returned a constant.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const address = vm.runInContext('$("app-address")', ctx);
+    const hint = vm.runInContext('$("app-git-hint")', ctx);
+    const reveal = vm.runInContext("appGitReveal", ctx);
+
+    address.textContent = "https://shop.apps.example.com/with/a/long/path";
+    // 200 characters of key against a 47-character address: without the width
+    // the mask would be capped at the constant, so a "matches" assertion here is
+    // only meaningful because the two numbers differ.
+    reveal.set("x".repeat(200));
+    check(
+      "the clone command's mask matches the address's width",
+      hint.textContent.length,
+      address.textContent.length
+    );
+
+    // And the floor: a short address does not produce a short mask, which reads
+    // as a short value rather than as a withheld one.
+    address.textContent = "https://a.io";
+    reveal.refresh();
+    check("and never drops below the readable minimum", hint.textContent.length, 32);
+
+    // Masked, not shown. The whole point of the eye.
+    check("and the key itself is not on the page", hint.textContent.includes("x"), false);
+  }
+
+  if (failures > 0) {
+    console.error(`\n${failures} check(s) failed`);
+    process.exit(1);
+  }
+  console.log("\nall console rendering checks passed");
+})();

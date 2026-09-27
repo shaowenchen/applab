@@ -9,17 +9,61 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/shaowenchen/applab/internal/deploy"
+	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/observe"
 )
 
-// handleAppUsage reports what an app is using and what it may use.
+// usageResponse is what both usage routes return.
 //
-// The two halves come from the cluster rather than from the app's record, and
-// that is the point of the endpoint: an app's settings say what it *asked* for,
-// which is not what a container is running under once the deployment's defaults
-// have been applied to the fields the app left empty. Reading the running
-// Deployment answers the second question, and it is the one a person looking at
-// a resource limit is asking.
+// It embeds the app-level Usage so every field it had is still where it was —
+// available, the cpu/memory totals, requested and limited — and adds the
+// per-pod readings a picker needs. The totals are what a caller shows with
+// nothing selected; Pods is what it shows when one is.
+//
+// The map is keyed by pod name, which is the same key the pods endpoints
+// report, so a caller joins the two by name rather than by position.
+//
+// The platform route returns this too, with requested and limited absent. That
+// is why they are the omitempty halves of a struct rather than required fields:
+// the two panels are one piece of console code, and one shape is what keeps them
+// that way.
+type usageResponse struct {
+	observe.Usage
+
+	// Pods is each pod's own CPU and memory. Absent rather than empty on a
+	// cluster that cannot report metrics, which is the same distinction
+	// Available draws: "no pods" and "no metrics here" are different answers.
+	Pods map[string]podUsage `json:"pods,omitempty"`
+}
+
+// podUsage is one pod's reading.
+//
+// A struct rather than the bare k8s.Usage so the wire shape is this package's
+// to keep stable: what the metrics API reports is an implementation detail, and
+// its PodName field would be the map key repeated inside every value.
+type podUsage struct {
+	CPU       string `json:"cpu,omitempty"`
+	Memory    string `json:"memory,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+// podUsagesFrom converts the observer's readings into the wire shape.
+//
+// Nil in, nil out: an absent map and an empty one render the same here, and nil
+// keeps the omitempty tag meaning what it says — "this cluster reports no
+// metrics" rather than "this app has no pods".
+func podUsagesFrom(usage map[string]k8s.Usage) map[string]podUsage {
+	if len(usage) == 0 {
+		return nil
+	}
+	out := make(map[string]podUsage, len(usage))
+	for name, u := range usage {
+		out[name] = podUsage{CPU: u.CPU, Memory: u.Memory, Timestamp: u.Timestamp}
+	}
+	return out
+}
+
+// handleAppUsage reports what an app is using and what it may use.
 //
 // It is deliberately not folded into the app response or the pod list. Usage is
 // the only thing here the cluster samples, so it is the only one that changes
@@ -42,7 +86,42 @@ func (s *Server) handleAppUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respond(w, http.StatusOK, usage)
+	respond(w, http.StatusOK, usageResponse{
+		Usage: usage,
+		Pods:  podUsagesFrom(usage.PerPod),
+	})
+}
+
+// handleSelfUsage reports what AppLab's own pods are using.
+//
+// The platform-side counterpart of handleAppUsage, and it exists for the same
+// reason the platform log route does: diagnosing AppLab itself used to mean
+// shelling into the cluster. A control plane that is being starved of CPU is a
+// thing its own console should be able to show.
+//
+// Admin only, like the other platform routes. An app key reaches one app, and
+// the deployment serving the API is not it.
+//
+// The response carries no requested or limited, and that is deliberate rather
+// than unset: AppLab's own Deployment belongs to the chart, so its requests and
+// limits are the release's business. Reporting the app-shaped fields as empty
+// would be claiming the control plane is unbounded.
+func (s *Server) handleSelfUsage(w http.ResponseWriter, r *http.Request) {
+	if s.observer == nil || !s.observer.Ready() {
+		fail(w, r, Errorf(http.StatusNotImplemented, "this deployment cannot observe: no cluster is configured"))
+		return
+	}
+
+	usage, err := s.observer.PlatformUsage(r.Context(), s.cfg.Namespace)
+	if err != nil {
+		fail(w, r, Errorf(http.StatusInternalServerError, "read what applab is using").Wrap(err))
+		return
+	}
+
+	respond(w, http.StatusOK, usageResponse{
+		Usage: usage,
+		Pods:  podUsagesFrom(usage.PerPod),
+	})
 }
 
 // handleListPods reports an app's pods.

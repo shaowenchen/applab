@@ -349,6 +349,23 @@
   .resources-table tbody tr:hover { background: transparent; }
   .resources-table input { width: 110px; font-variant-numeric: tabular-nums; }
 
+  /* A live reading, above the settings it belongs to.
+
+     Laid out as one row that wraps rather than a grid: two readings and a
+     picker, and on a narrow console the picker drops to its own line instead of
+     squeezing the numbers. The numbers are tabular so a reading that changes
+     from 9m to 12m does not shift the label beside it.
+
+     The value is the loud half and the bound the quiet one — the reading is the
+     live fact and the limit is the context for it, so they are set at different
+     weights rather than as two equal figures. */
+  .monitor { display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; margin-top: 16px; }
+  .monitor-readings { display: flex; gap: 28px; flex-wrap: wrap; }
+  .monitor-reading { display: flex; flex-direction: column; gap: 2px; }
+  .monitor-reading .label { color: var(--text-muted); font-size: 13px; }
+  .monitor-reading .value { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .monitor-reading .of { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
   /* A page's title, above its cards and outside them. Nothing is gained by
@@ -676,7 +693,6 @@
   <section id="overview-view" class="hidden">
     <div class="page-head">
       <h1 data-i18n="Overview">Overview</h1>
-      <button id="overview-refresh" data-i18n="Refresh">Refresh</button>
     </div>
 
     <!-- The KPI row. A handful of headline numbers is a stat tile, not a chart:
@@ -728,6 +744,36 @@
          a dashboard whose job is to be read at a glance, and a 480px box pushed
          the build list off the first screen. The lines scroll inside it, so
          nothing is lost — only the amount visible without scrolling. -->
+    <!-- What the control plane itself is using.
+
+         Above the platform log and for a different question: the log says what
+         AppLab *did*, and this says whether it has the room to keep doing it. A
+         control plane being starved of CPU shows up nowhere else — apps keep
+         serving, builds just get slow, and the log stays silent about it.
+
+         The picker offers each of AppLab's own pods and, first, all of them
+         together. Which pod is the one to look at is not something this page can
+         guess: with more than one replica the interesting one is the outlier, and
+         the sum is what hides it, so both are offered rather than one chosen.
+
+         Only these two readings, because only these two exist: the Kubernetes
+         metrics API carries usage.cpu and usage.memory and nothing else. Network
+         and disk I/O would need a Prometheus or a shell into the pod, and a panel
+         that showed them as zeros would be inventing them. -->
+    <div class="card" id="card-monitor">
+      <div class="card-head">
+        <h2 data-i18n="Monitoring">Monitoring</h2>
+        <label class="field">
+          <span data-i18n="Pod">Pod</span>
+          <select id="monitor-pod"></select>
+        </label>
+      </div>
+      <div class="monitor">
+        <div class="monitor-readings" id="monitor-readings"></div>
+      </div>
+      <p id="monitor-note" class="muted hidden"></p>
+    </div>
+
     <!-- Opening the log is what this card offers; the log itself is in the
          dialog at the end of the page, which is shared with the other two
          surfaces that stream. The card keeps a line of the description so it
@@ -744,7 +790,6 @@
   <section id="apps-view" class="hidden">
     <div class="page-head">
       <h1 data-i18n="Apps">Apps</h1>
-      <button id="apps-refresh" data-i18n="Refresh">Refresh</button>
       <button id="apps-new" class="primary" data-i18n="New app">New app</button>
     </div>
     <!-- Creating an app mints its key, which is the credential whoever deploys
@@ -893,7 +938,13 @@
            deployment's default", which is what the placeholder shows — filling
            it with the resolved number would turn a default into an explicit
            setting the first time anyone pressed save. -->
-      <table class="resources-table" style="margin-top:16px">
+      <!-- What the app is using is not here. It used to be, as a live reading
+           above these four inputs, and it moved to the Instances card where the
+           pods it describes already are: a figure about a pod belongs on the
+           row of that pod, so which copy is at its limit is legible without
+           picking one out of a dropdown first. What is left here is settings,
+           which are the app's rather than any pod's. -->
+      <table class="resources-table">
         <thead>
           <tr>
             <th></th>
@@ -955,13 +1006,22 @@
                button says Switch rather than anything that sounds like a view. -->
           <button id="app-branch-use" data-i18n="Switch">Switch</button>
         </label>
-        <button id="pods-refresh" data-i18n="Refresh">Refresh</button>
       </div>
 
+      <!-- Instances, with what each one is using on its own row.
+           The usage columns are here rather than on the Resources card because
+           this is the table whose rows are pods: a figure about a pod belongs
+           beside that pod, and a card with one number for the whole app cannot
+           show the case this is for — one replica at its limit during a rollout
+           while the total looks comfortable.
+
+           The columns are absent rather than zeroed when the cluster has no
+           metrics API, and the note below the table is what says so. -->
       <table>
-        <thead><tr><th data-i18n="Instance">Instance</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="Reason">Reason</th></tr></thead>
+        <thead><tr><th data-i18n="Instance">Instance</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="CPU">CPU</th><th data-i18n="Memory">Memory</th><th data-i18n="Reason">Reason</th><th></th></tr></thead>
         <tbody id="pods"></tbody>
       </table>
+      <p id="pods-usage-note" class="muted hidden"></p>
       <div id="pods-empty" class="empty hidden" data-i18n="Nothing is running.">Nothing is running.</div>
       <div id="pods-problem" class="error hidden" style="margin-top:8px"></div>
     </div>
@@ -1013,7 +1073,6 @@
     <div class="card flush" id="card-builds">
       <div class="card-head">
         <h2 data-i18n="Builds">Builds</h2>
-        <button id="app-builds-refresh" data-i18n="Refresh">Refresh</button>
       </div>
       <table>
         <thead>
@@ -1021,7 +1080,7 @@
                instance of the app — it is what produces the image the instances
                run — so it is reported here, on the build, and deliberately not
                in the Instances card above. -->
-          <tr><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Build pod">Build pod</th><th data-i18n="Age">Age</th><th data-i18n="Reason">Reason</th><th></th><th></th></tr>
+          <tr><th data-i18n="Build">Build</th><th data-i18n="Commit">Commit</th><th data-i18n="Status">Status</th><th data-i18n="Build pod">Build pod</th><th data-i18n="Age">Age</th><th data-i18n="Events">Events</th><th></th></tr>
         </thead>
         <tbody id="app-builds"></tbody>
       </table>
@@ -1185,6 +1244,17 @@ const state = {
   // rather than from a card. Empty for the app's own log read from the card,
   // which is the newest pod's — see openPodLog for why the row names one.
   logPod: "",
+  // The open app's pods, newest first, as the API last reported them. Kept here
+  // because the resource panel's picker is built from the *readings* the usage
+  // endpoint returns, whose names are the only ones that can actually be shown;
+  // this is the fuller list, used for the label a pod is offered under. The
+  // overview's platform picker keeps its own beside it — the two name disjoint
+  // sets of pods and one slot would have them overwrite each other.
+  pods: [],
+  platformPods: [],
+  // The open events panel's refresh timer, or null. There is one events panel
+  // and one dialog, so one slot describes it.
+  eventsTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1285,7 +1355,6 @@ const ZH = {
   "An API key is required.": "请填写 API key。",
 
   // -- Overview -------------------------------------------------------------
-  "Refresh": "刷新",
   "Recent builds": "最近构建",
   "Platform log": "平台日志",
   "View log": "查看日志",
@@ -1326,6 +1395,15 @@ const ZH = {
   "Ready": "就绪",
   "Restarts": "重启",
   "Reason": "原因",
+  "CPU": "CPU",
+  "Memory": "内存",
+  "cores": "核心",
+  "GiB": "GiB",
+  "Monitoring": "监控",
+  "Pod": "实例",
+  "all pods": "全部实例",
+  "of {limit} {unit}": "上限 {limit} {unit}",
+  "Resource usage is not available: this cluster reports no metrics.": "无法获取资源用量：该集群未上报指标。",
   "Name": "名称",
   "Value": "值",
   "When": "时间",
@@ -1410,7 +1488,6 @@ const ZH = {
   "Builds": "构建",
   "Build pod": "构建 Pod",
   "Build log": "构建日志",
-  "Deploy": "部署",
   "(loading)": "（加载中）",
   "Could not stop the build: {error}": "无法停止构建：{error}",
   "Nothing has been built yet. Build the newest commit with": "还没有构建过。构建最新提交请用",
@@ -1696,10 +1773,18 @@ function trimNumber(n) {
   return String(Number(n.toFixed(6)));
 }
 
-function mask(value) {
-  // Never longer than the value itself, so a short one — a placeholder, a
-  // truncated field — is not padded out to look like something it is not.
-  return "•".repeat(Math.min(String(value).length, MASK_WIDTH));
+// mask renders a value as bullets.
+//
+// The width is the caller's, defaulted to MASK_WIDTH. It is a parameter rather
+// than a constant because one caller knows better: the clone command sits in the
+// state table directly under the app's address, and a mask of its own width
+// beside that address makes the two rows look ragged. It asks for the address's
+// width instead, so the two values in that column end together.
+//
+// Never longer than the value itself, so a short one — a placeholder, a
+// truncated field — is not padded out to look like something it is not.
+function mask(value, width = MASK_WIDTH) {
+  return "•".repeat(Math.min(String(value).length, width));
 }
 
 // setRevealButton draws the eye and names it. The name is what a screen reader
@@ -1759,7 +1844,13 @@ function selectAll(button) {
 
 // concealed registers a value and its eye, in either of the two shapes it comes
 // in: a field the browser masks itself, or a run of text the console masks.
-function concealed(valueId, buttonId, copyId) {
+//
+// opts.maskWidth, when given, is how wide to draw the masked run.
+//
+// A function rather than a number because it reports the width of something else
+// on the page — the app's address, in the row above the clone command — and the
+// app can change between renders while this registration does not.
+function concealed(valueId, buttonId, copyId, opts) {
   // Accepts an element or an id, because the callers differ: the clone command's
   // pair is in the markup and is named by id, while the environment table builds
   // one pair per row and has no id to give. Resolving here rather than at each
@@ -1800,7 +1891,8 @@ function concealed(valueId, buttonId, copyId) {
       return;
     }
     button.classList.remove("hidden");
-    valueEl.textContent = shown ? full : mask(full);
+    const width = (opts && opts.maskWidth) ? opts.maskWidth() : MASK_WIDTH;
+    valueEl.textContent = shown ? full : mask(full, width);
     setRevealButton(button, shown);
     // Copy works whether or not the value is on screen: it puts the real thing
     // on the clipboard either way, which is what someone masking a value to take
@@ -2131,6 +2223,110 @@ function goHome() {
   showOverview();
 }
 
+// --- Keeping the page current ----------------------------------------------
+//
+// Everything here is a reading of a cluster that keeps changing: a build
+// finishes, a replica becomes ready, a pod is replaced. A page that showed them
+// once and then sat there is a page someone has to remember to reload, and the
+// number they are looking at is quietly wrong in the meantime.
+//
+// It used to be a Refresh button per card, which put that work back on the
+// reader. A timer is the same request on a schedule they do not have to keep.
+//
+// The cost is requests, so the tick is deliberately conservative: a view that is
+// not on screen is not refreshed, a signed-out page is not refreshed, and a
+// background tab is skipped entirely — a browser throttles those anyway, and one
+// that has been in a background tab for an hour has nothing to gain from
+// catching up.
+
+const REFRESH_INTERVAL_MS = 15000;
+
+let refreshTimer = null;
+
+// refreshCurrent reloads whatever the reader is looking at, and nothing else.
+//
+// By view rather than by card: on the app page all seven panels are about the
+// same app and are read together, so refreshing a subset would leave the page
+// describing two different moments.
+//
+// The loaders are safe to call in any state — each is guarded, and the app view
+// runs them under allSettled — so this does not have to check whether a card
+// exists before asking for it.
+async function refreshCurrent() {
+  if (!state.signedIn) return;
+  // A hidden tab is not being read. document.hidden is undefined in some
+  // embedded webviews, which reads as visible, which is the safe way round.
+  if (document.hidden) return;
+  // A dialog is a deliberate interruption — a log being followed, an app being
+  // created — and re-rendering the page under it would move what the reader is
+  // looking at. The dialog has its own refresh, if it wants one.
+  if (isShown($("log-modal")) || isShown($("apps-new-modal"))) return;
+  // Nobody is mid-edit. This is the one that would actually lose work: the
+  // loaders write form fields from the server — the four resource bounds, the
+  // port, the replicas, the environment table — so a tick landing between two
+  // keystrokes would replace what someone was typing with the stored value, and
+  // it would look like the field fighting back.
+  //
+  // Blur is not required first, and deliberately: the next tick after they move
+  // on picks the change up, so a field left half-filled on purpose is the only
+  // thing deferred, and that is the one case where deferring is right.
+  if (isEditing()) return;
+
+  switch (state.view) {
+    case "overview":
+      await loadOverview();
+      break;
+    case "apps":
+      await loadApps();
+      break;
+    case "app":
+      await loadAppView();
+      break;
+  }
+}
+
+// isShown reports whether an element is on screen.
+//
+// A missing element is reported as not shown rather than throwing: these are
+// guards on a timer path, and a dialog that is not in the document cannot be
+// interrupting anything.
+function isShown(el) {
+  return !!el && !el.classList.contains("hidden");
+}
+
+// isEditing reports whether the reader is typing into something.
+//
+// activeElement is the browser's own answer and needs no state kept here. The
+// tag test excludes the controls that are not text: a checkbox is focusable
+// without being something someone is in the middle of, and the periodic reload
+// should not be blocked by one that happens to have focus.
+function isEditing() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = (el.tagName || "").toUpperCase();
+  if (tag === "TEXTAREA") return true;
+  if (tag === "SELECT") return true;
+  // input types that hold text the reader put there. A checkbox, a radio or a
+  // button is focusable but has nothing in flight to lose.
+  if (tag === "INPUT") {
+    const type = (el.type || "text").toLowerCase();
+    return type !== "checkbox" && type !== "radio" && type !== "button" && type !== "submit";
+  }
+  // Anything the reader can type into that is not one of the above — a
+  // contenteditable region, or a control added later.
+  return el.isContentEditable === true;
+}
+
+// startRefresh begins the periodic reload.
+//
+// Called once from boot and never restarted: the interval outlives every view,
+// and refreshCurrent decides what it means at the moment it fires. Restarting it
+// per view would be a second thing to keep in step with navigation.
+function startRefresh() {
+  if (refreshTimer !== null) return;
+  refreshTimer = setInterval(() => { refreshCurrent(); }, REFRESH_INTERVAL_MS);
+}
+
 async function showOverview() {
   stopLogs();
   state.app = "";
@@ -2218,16 +2414,163 @@ function buildRows(builds) {
 // cluster state and the recent-builds table all come from the same
 // /api/v1/overview response, so asking twice would be the same answer at twice
 // the cost.
+// renderMonitoring fills the overview's monitoring card.
+//
+// Reads nothing: both halves are handed in, because they were fetched with the
+// rest of the view and a panel that fetched its own would be a second round trip
+// on a page whose point is to be one glance.
+//
+// The picker is the whole feature rather than decoration. With more than one
+// replica the interesting figure is the outlier — a pod at its limit while the
+// others idle — and that is precisely what a single total hides, so the sum is
+// offered first and each pod after it.
+//
+// Changing the picker re-renders from what is already in hand. The readings do
+// change, but not between two clicks a second apart, and refetching would put a
+// spinner under the cursor of someone comparing two pods.
+function renderMonitoring(usage, pods) {
+  const picker = $("monitor-pod");
+  const readings = $("monitor-readings");
+  const note = $("monitor-note");
+
+  // The mapping from the picker's value to what it should show, rebuilt here and
+  // read back by the change handler. Kept in the closure rather than on the
+  // element: what a pod is measuring is this render's answer, and a stale one
+  // left on the DOM is how a picker ends up showing one pod's numbers under
+  // another's name.
+  const readingsByChoice = {};
+  picker.replaceChildren();
+
+  const option = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    picker.appendChild(o);
+  };
+
+  // The label for a pod, preferring the name the pod list gave it. A pod that
+  // appears in the usage map but not the list still gets an option — it is being
+  // measured and hiding it would make the sum unexplainable — so the fallback is
+  // its own key.
+  const labelFor = (name) => name;
+
+  if (!usage || !usage.available) {
+    // Nothing to pick. The picker keeps one disabled entry rather than being
+    // emptied, so the control does not vanish and reflow the card between
+    // refreshes on a cluster that never had metrics.
+    option("", t("all pods"));
+    picker.disabled = true;
+    readings.replaceChildren();
+    note.textContent = t("Resource usage is not available: this cluster reports no metrics.");
+    show(note, true);
+    return;
+  }
+
+  picker.disabled = false;
+
+  // The totals as the first choice, then each pod. The totals come from the
+  // response rather than being re-added here, so the number under "all pods" is
+  // the server's sum and not a browser's second opinion about it.
+  readingsByChoice[""] = { cpu: usage.cpu, memory: usage.memory, of: usage.limited };
+  option("", t("all pods"));
+
+  const names = Object.keys(usage.pods || {}).sort();
+  for (const name of names) {
+    readingsByChoice[name] = { cpu: usage.pods[name].cpu, memory: usage.pods[name].memory };
+    option(name, labelFor(name));
+  }
+
+  // A pod in the list with no sample yet — one that has just started — is still
+  // offered, so the row is there to be looked at rather than silently missing
+  // from a table the reader is counting. Its reading is the em dash the render
+  // below produces for an empty value.
+  for (const pod of pods) {
+    if (!(pod.name in readingsByChoice)) {
+      readingsByChoice[pod.name] = {};
+      option(pod.name, labelFor(pod.name));
+    }
+  }
+
+  show(note, false);
+
+  const render = () => {
+    const choice = readingsByChoice[picker.value] || {};
+    const cards = [
+      reading(t("CPU"), choice.cpu, choice.of && choice.of.cpu, "cores", toCores),
+      reading(t("Memory"), choice.memory, choice.of && choice.of.memory, "GiB", toGi),
+    ];
+    readings.replaceChildren(...cards);
+  };
+
+  picker.onchange = render;
+  render();
+}
+
+// reading builds one figure of the monitoring panel: the value, in the unit the
+// page uses for that resource, with the limit beneath it where there is one.
+//
+// The bound is shown only when it applies. AppLab's own pods have no app-shaped
+// limits to report — the control plane's Deployment belongs to the chart — so on
+// the overview this is the reading alone, and on an app it is the same shape with
+// the limit beside it. One function for both is what keeps the two panels from
+// drifting apart.
+//
+// An absent reading is an em dash rather than a zero, and that distinction is the
+// point of the whole card: a pod with no sample yet and a pod using nothing look
+// identical at zero, and only one of them is a problem.
+function reading(label, quantity, limit, unit, convert) {
+  const box = document.createElement("div");
+  box.className = "monitor-reading";
+
+  const name = document.createElement("span");
+  name.className = "label";
+  name.textContent = label;
+  box.appendChild(name);
+
+  const value = document.createElement("span");
+  value.className = "value";
+  value.textContent = quantity ? convert(quantity) + " " + t(unit) : "–";
+  box.appendChild(value);
+
+  if (limit) {
+    const of = document.createElement("span");
+    of.className = "of";
+    of.textContent = tf("of {limit} {unit}", { limit: convert(limit), unit: t(unit) });
+    box.appendChild(of);
+  }
+
+  return box;
+}
+
 async function loadOverview() {
   setError("");
 
-  let data;
-  try {
-    data = await api("/api/v1/overview");
-  } catch (err) {
-    setError(tf("Could not read the overview: {error}", { error: err.message }));
+  // Three reads, in parallel, because the view is three independent panels: the
+  // tiles and build list come from one call, and the monitoring card needs the
+  // control plane's pods and what they are using.
+  //
+  // allSettled rather than all: the monitoring reads are the ones that can fail
+  // alone — a deployment with no cluster answers the overview happily and 501s
+  // the other two, and a cluster without metrics-server answers the pod list and
+  // not the reading. A dashboard that went blank because one panel of it could
+  // not be filled would be a worse answer than a panel that says so.
+  const [overviewResult, platformPodsResult, platformUsageResult] = await Promise.allSettled([
+    api("/api/v1/overview"),
+    api("/api/v1/platform/pods"),
+    api("/api/v1/platform/resources"),
+  ]);
+
+  if (overviewResult.status !== "fulfilled") {
+    setError(tf("Could not read the overview: {error}", { error: overviewResult.reason.message }));
     return;
   }
+
+  const data = overviewResult.value;
+
+  renderMonitoring(
+    platformUsageResult.status === "fulfilled" ? platformUsageResult.value : null,
+    platformPodsResult.status === "fulfilled" ? (platformPodsResult.value.pods || []) : []
+  );
 
   const apps = data.apps || {};
   const builds = data.builds || {};
@@ -2323,34 +2666,29 @@ async function loadAppBuilds() {
     when.textContent = ago(build.created_at);
     tr.appendChild(when);
 
-    // The reason is a sentence from the cluster — kaniko names the layer, the
-    // command and the exit status — and at its natural length it stretches this
-    // one column until the buttons beside it wrap and the rest of the table is
-    // squeezed. Truncated to a readable width, with the whole of it on the
-    // title, so the row stays one line and nothing is lost.
-    const reason = document.createElement("td");
-    reason.className = "muted";
-    const reasonText = document.createElement("span");
-    reasonText.className = "report-cell";
-    reasonText.textContent = build.reason || "—";
-    if (build.reason) reasonText.title = build.reason;
-    reason.appendChild(reasonText);
-    tr.appendChild(reason);
-
-    // Deploying a build's commit is the reason to look at this table at all —
-    // finding the sha and pasting it into the History card would be the same
-    // information one column over and a copy-paste away.
-    const deploy = document.createElement("td");
-    if (build.status === "succeeded" && build.image) {
-      const button = document.createElement("button");
-      button.textContent = t("Deploy");
-      button.onclick = () => deployCommit(build.commit_sha);
-      deploy.appendChild(button);
-    } else {
-      deploy.className = "muted";
-      deploy.textContent = "—";
+    // The events the build's own pod produced, in the shared dialog. This
+    // column used to be the reason text, a sentence from the cluster — kaniko
+    // naming the layer, the command and the exit status — truncated to keep the
+    // table on one line, which meant the useful half of a failure was usually
+    // behind an ellipsis.
+    //
+    // Events instead, because they are the same information with the rest of it:
+    // why the pod was scheduled where it was, why an image pull was retried, what
+    // the container exited with. They open in the dialog the instances rows
+    // already use, refreshed while it is up, so a build still running can be
+    // watched rather than sampled.
+    //
+    // Offered only when the build has a pod. A build that never started has no
+    // pod and so has no events, and a button that opens an empty panel reads as
+    // a failure rather than as an absence.
+    const events = document.createElement("td");
+    if (build.pod) {
+      const eventsButton = document.createElement("button");
+      eventsButton.textContent = t("Events");
+      eventsButton.onclick = () => showPodEvents(build.pod.name);
+      events.appendChild(eventsButton);
     }
-    tr.appendChild(deploy);
+    tr.appendChild(events);
 
     // The log is the build's own output, which is where a failure is explained.
     const logs = document.createElement("td");
@@ -2361,16 +2699,15 @@ async function loadAppBuilds() {
     tr.appendChild(logs);
 
     // Only offered while there is something to stop. A finished build's cancel
-    // would be a button whose only outcome is a 409.
+    // would be a button whose only outcome is a 409, and the cell is left empty
+    // rather than filled with an em dash: a run of dashes down a column of
+    // finished builds is noise that reads as missing data.
     const stop = document.createElement("td");
     if (!["succeeded", "failed", "cancelled"].includes(build.status)) {
       const stopButton = document.createElement("button");
       stopButton.textContent = t("Stop");
       stopButton.onclick = () => cancelBuild(build.id);
       stop.appendChild(stopButton);
-    } else {
-      stop.className = "muted";
-      stop.textContent = "—";
     }
     tr.appendChild(stop);
 
@@ -2819,12 +3156,38 @@ async function openApp(id) {
 
   stopLogs();
 
-  // allSettled, not all: these are independent panels, and one of them failing
-  // must not take the others with it. With `all`, a single rejection — an
-  // endpoint this deployment does not serve, a momentary 500 — skipped every
-  // line after it, so the page came up with one panel showing an error and the
-  // rest of the view half-built. All that is lost now is the one panel that
-  // failed, which reports itself.
+  await loadAppView();
+  // The log lives in a dialog now rather than in a card on the page, so opening
+  // an app no longer starts reading one — the reader asks for it. Nothing is
+  // left streaming from the app that was open either: `stopLogs` above aborted
+  // it. Its output is cleared, or the next app's dialog would open showing the
+  // previous app's container output under this app's name.
+  show($("log-modal"), false);
+  for (const panel of Object.values(LOG_PANELS)) $(panel.output).textContent = "";
+  $("build-logs-label").textContent = "";
+  state.logBuild = "";
+}
+
+// loadAppView reads every panel of the app page, for whichever app is open.
+//
+// Split out of openApp so the periodic refresh can call it. Everything in
+// openApp around this is one-time setup for *opening* — the title, the back
+// button, clearing the previous app's credential — none of which should run
+// again every fifteen seconds, and some of which would be actively wrong (the
+// clone command is cleared at the top of openApp and refilled by the load below;
+// re-running the whole thing would blank it once a tick).
+//
+// allSettled, not all: these are independent panels, and one of them failing
+// must not take the others with it. With `all`, a single rejection — an endpoint
+// this deployment does not serve, a momentary 500 — skipped every line after it,
+// so the page came up with one panel showing an error and the rest of the view
+// half-built. All that is lost now is the one panel that failed, which reports
+// itself.
+//
+// That property is what makes this safe to call on a timer as well: a panel that
+// fails on one tick is retried on the next, and the rest of the page is
+// unaffected either way.
+async function loadAppView() {
   await Promise.allSettled([
     loadAppState(),
     loadPods(),
@@ -2835,15 +3198,6 @@ async function openApp(id) {
     loadRepository(),
     loadBranches(),
   ]);
-  // The log lives in a dialog now rather than in a card on the page, so opening
-  // an app no longer starts reading one — the reader asks for it. Nothing is
-  // left streaming from the app that was open either: `stopLogs` above aborted
-  // it. Its output is cleared, or the next app's dialog would open showing the
-  // previous app's container output under this app's name.
-  show($("log-modal"), false);
-  for (const panel of Object.values(LOG_PANELS)) $(panel.output).textContent = "";
-  $("build-logs-label").textContent = "";
-  state.logBuild = "";
 }
 
 // loadAppConfig renders the app's environment variables.
@@ -3040,11 +3394,16 @@ async function loadAppState() {
   // a new tab with rel="noopener noreferrer" — the app is served by the same
   // gateway as this console, and an app given a handle on this window is an app
   // that could navigate the console out from under whoever is reading it.
-  const addLink = (term, href) => {
+  //
+  // id, when given, names the link so another row can be measured against it —
+  // the clone command asks for this one's width. Only the address passes one;
+  // it is the only row whose width something else is meant to match.
+  const addLink = (term, href, id) => {
     const dt = document.createElement("dt");
     dt.textContent = term;
     const dd = document.createElement("dd");
     const link = document.createElement("a");
+    if (id) link.id = id;
     link.href = href;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
@@ -3065,7 +3424,7 @@ async function loadAppState() {
   // deployed)" — and the row below it is the status, which says exactly that.
   const appAddress = statusURL(status);
   if (appAddress) {
-    addLink(t("url"), appAddress);
+    addLink(t("url"), appAddress, "app-address");
   }
 
   add(t("status"), t(status.status));
@@ -3095,6 +3454,14 @@ async function loadAppState() {
   // heading for it.
   list.append(repoRow[0], repoRow[1]);
 
+  // Now that the address is on the page, the clone command's mask can be drawn
+  // to its width. The two are fetched together and either can finish first, so
+  // this re-render is what settles it whichever order they arrived in — without
+  // it the mask is only as wide as the address when the key happened to come
+  // back second, which is a bug that would show up on some networks and not
+  // others.
+  appGitReveal.refresh();
+
   // A rollout that cannot progress carries the reason, which is the most useful
   // single thing to surface when an app will not come up.
   const problem = $("app-problem");
@@ -3107,15 +3474,49 @@ async function loadAppState() {
 }
 
 async function loadPods() {
-  let result;
-  try {
-    result = await api("/api/v1/apps/" + state.app + "/pods");
-  } catch (err) {
+  // Two reads, in parallel: the pods are the rows and the usage is a column of
+  // them. They come from separate endpoints because the pod list is the cluster's
+  // own objects while usage is a sampled reading — one is fetched per view, the
+  // other is worth asking for again on its own.
+  //
+  // allSettled rather than all, because the usage read is the one that can fail
+  // on its own: a cluster with no metrics-server answers 501 for it while the
+  // pod list works fine, and losing the rows because a column is missing would
+  // be the wrong trade.
+  const [podsResult, usageResult] = await Promise.allSettled([
+    api("/api/v1/apps/" + state.app + "/pods"),
+    api("/api/v1/apps/" + state.app + "/resources"),
+  ]);
+
+  if (podsResult.status !== "fulfilled") {
     // Observability is an optional capability; a deployment without a cluster
     // reports 501 here, which is not a failure of the console.
+    show($("pods-usage-note"), false);
     show($("pods-empty"), true);
-    $("pods-empty").textContent = tf("Instances are not available: {error}", { error: err.message });
+    $("pods-empty").textContent = tf("Instances are not available: {error}", {
+      error: podsResult.reason.message,
+    });
     return;
+  }
+
+  const result = podsResult.value;
+  const usage = usageResult.status === "fulfilled" ? usageResult.value : null;
+  const byPod = (usage && usage.pods) || {};
+
+  // Said rather than shown as two empty columns. A cluster that cannot report
+  // metrics is a way to run one, and a `–` in a column with no explanation reads
+  // as a bug in the console rather than as a fact about the cluster.
+  //
+  // Three cases collapse into it, and the sentence is true of all three: no
+  // metrics-server, a deployment with no cluster, and a cluster that answered the
+  // pod list but not the reading.
+  const noUsage = !usage || !usage.available;
+  const note = $("pods-usage-note");
+  if (noUsage) {
+    note.textContent = t("Resource usage is not available: this cluster reports no metrics.");
+    show(note, true);
+  } else {
+    show(note, false);
   }
 
   const body = $("pods");
@@ -3149,6 +3550,27 @@ async function loadPods() {
     const restarts = document.createElement("td");
     restarts.textContent = pod.restarts;
     tr.appendChild(restarts);
+
+    // What this copy is using, on its own row — the case the app-level total
+    // cannot show. A pod that has just started has no sample yet and is absent
+    // from the map rather than zero, so it reads as an em dash like a cluster
+    // that cannot measure at all.
+    //
+    // Rendered in the units the rest of the page uses — cores and GiB, through
+    // the same helpers the resource form does — rather than as the raw quantity
+    // the metrics API returns: "128849018880" beside a limit of "1" is not a
+    // comparison anyone can make by eye.
+    const reading = byPod[pod.name];
+    const cells = [
+      reading && reading.cpu ? toCores(reading.cpu) + " " + t("cores") : "",
+      reading && reading.memory ? toGi(reading.memory) + " " + t("GiB") : "",
+    ];
+    for (const value of cells) {
+      const td = document.createElement("td");
+      td.className = "mono muted";
+      td.textContent = value || "–";
+      tr.appendChild(td);
+    }
 
     // A crash loop's reason is on the previous container instance, so the
     // server promotes it here — this is the column that explains a failure.
@@ -3201,12 +3623,31 @@ function openPodLog(podName) {
   startLogs("app");
 }
 
-// showPodEvents reads one pod's events into the shared dialog.
+// EVENTS_INTERVAL_MS is how often the open events panel re-reads.
+//
+// Faster than the page's own refresh, because it is a different kind of view: a
+// dialog is opened *because* something is happening — a pod is crash-looping, a
+// build is being scheduled — and the reader is watching it rather than glancing
+// at it. Five seconds is quick enough to see a container move from
+// ContainerCreating to Running without hammering the API for a list that usually
+// changes once.
+const EVENTS_INTERVAL_MS = 5000;
+
+// showPodEvents opens one pod's events in the shared dialog, live.
 //
 // Filtered to the pod here rather than server-side: the endpoint answers per
 // app, because that is the scope it can match reliably — every app shares one
-// namespace, and a pod *name* is not a prefix of anything. One read serves
-// every row, so opening this twice is one request.
+// namespace, and a pod *name* is not a prefix of anything. One read serves every
+// row.
+//
+// Re-read on a timer while the dialog is up, rather than fetched once. Events are
+// the answer to "why is this not starting", and that answer arrives *after* the
+// dialog is opened — a build pod that is still pulling its image has one event
+// when it is opened and three a minute later. A panel that showed the snapshot
+// from when it was opened would be stale exactly when it mattered.
+//
+// The timer belongs to the dialog and is cleared when it closes, so a dialog
+// nobody is looking at is not polling.
 async function showPodEvents(podName) {
   state.logPod = podName;
   openLogDialog("events");
@@ -3214,28 +3655,67 @@ async function showPodEvents(podName) {
   const el = $("events-output");
   el.textContent = t("(loading)");
 
+  // Started before the first read so a slow request cannot leave the panel
+  // static forever, and stopped by stopEvents, which openLogDialog calls when
+  // the dialog moves to another panel.
+  stopEvents();
+  const read = () => renderPodEvents(podName, el);
+  await read();
+  state.eventsTimer = setInterval(read, EVENTS_INTERVAL_MS);
+}
+
+// renderPodEvents writes one pod's events into the panel.
+//
+// Deliberately does not clear the panel before it has an answer. The first read
+// shows a placeholder; every one after it leaves the previous list up until the
+// new one arrives, so a refresh that fails or is slow shows the last known
+// events rather than an empty box or a spinner where the reader was reading.
+async function renderPodEvents(podName, el) {
+  let result;
   try {
-    const result = await api("/api/v1/apps/" + state.app + "/events?limit=200");
-    const mine = (result.events || []).filter((e) => e.object === podName);
-
-    if (mine.length === 0) {
-      // Empty is the common and healthy answer: events expire after about an
-      // hour, so a pod that started cleanly and stayed up has none. Said as
-      // such rather than left blank, because a blank panel reads as a failure
-      // to load.
-      el.textContent = tf("No recent events for {pod}. Events expire after about an hour, so a pod that started cleanly and stayed up has none.", { pod: podName });
-      return;
-    }
-
-    const lines = mine.map((e) => {
-      const when = e.last_seen || e.first_seen || "";
-      const count = e.count > 1 ? " x" + e.count : "";
-      return when + "  " + e.type + "  " + e.reason + count + "\n    " + e.message;
-    });
-    el.textContent = lines.join("\n\n");
+    result = await api("/api/v1/apps/" + state.app + "/events?limit=200");
   } catch (err) {
-    el.textContent = tf("Could not read events: {error}", { error: err.message });
+    // Only reported if there is nothing on screen to keep. A panel showing a
+    // good list from four seconds ago is more useful than an error about the
+    // attempt to replace it.
+    if (!el.dataset.loaded) el.textContent = tf("Could not read events: {error}", { error: err.message });
+    return;
   }
+
+  const mine = (result.events || []).filter((e) => e.object === podName);
+
+  if (mine.length === 0) {
+    // Empty is the common and healthy answer: events expire after about an
+    // hour, so a pod that started cleanly and stayed up has none. Said as
+    // such rather than left blank, because a blank panel reads as a failure
+    // to load.
+    el.textContent = tf("No recent events for {pod}. Events expire after about an hour, so a pod that started cleanly and stayed up has none.", { pod: podName });
+    el.dataset.loaded = "1";
+    return;
+  }
+
+  const lines = mine.map((e) => {
+    const when = e.last_seen || e.first_seen || "";
+    const count = e.count > 1 ? " x" + e.count : "";
+    return when + "  " + e.type + "  " + e.reason + count + "\n    " + e.message;
+  });
+  el.textContent = lines.join("\n\n");
+  el.dataset.loaded = "1";
+}
+
+// stopEvents clears the events panel's timer.
+//
+// Called from openLogDialog, which every panel switch goes through, and from
+// stopLogs, which every close goes through — so there is no path that leaves it
+// running. The dataset flag goes with it: whether the panel holds a list worth
+// keeping is a fact about the pod that was shown, and the next one starts empty.
+function stopEvents() {
+  if (state.eventsTimer !== null) {
+    clearInterval(state.eventsTimer);
+    state.eventsTimer = null;
+  }
+  const el = $("events-output");
+  if (el) delete el.dataset.loaded;
 }
 
 // HISTORY_LIMIT is how many commits the History card shows.
@@ -3526,26 +4006,6 @@ async function deployLatest() {
   await Promise.all([loadAppState(), loadPods(), loadCommits()]);
 }
 
-// deployCommit deploys one named commit, which is what the builds table's
-// Deploy button does.
-//
-// The same call as deployLatest with the commit named rather than derived from
-// the tip, and with the same build:true — a commit with an image reuses it, so
-// deploying a build from this table does not rebuild it.
-async function deployCommit(sha) {
-  setError("");
-  try {
-    await api("/api/v1/apps/" + state.app + "/deploy", {
-      method: "POST",
-      body: JSON.stringify({ commit_sha: sha, build: true }),
-    });
-  } catch (err) {
-    setError(tf("Could not deploy: {error}", { error: err.message }));
-    return;
-  }
-  await Promise.all([loadAppState(), loadPods(), loadCommits()]);
-}
-
 // headCommit returns the app's newest commit, or "" after reporting why not.
 async function headCommit() {
   setError("");
@@ -3681,6 +4141,11 @@ function openLogDialog(name) {
   const panel = LOG_PANELS[name];
   if (!panel) return;
 
+  // Whatever was polling stops here. Every panel goes through this function, so
+  // a switch cannot leave the events timer running behind a log the reader has
+  // moved on to — and showPodEvents starts a fresh one straight after.
+  stopEvents();
+
   for (const other of Object.values(LOG_PANELS)) {
     show($(other.output), other.output === panel.output);
   }
@@ -3737,6 +4202,7 @@ function stopLogStream() {
 // to the viewport, so it would sit there over the view that replaced it.
 function stopLogs() {
   stopLogStream();
+  stopEvents();
   show($("log-modal"), false);
 }
 
@@ -3962,9 +4428,7 @@ $("home").onclick = goHome;
 
 $("nav-overview").onclick = showOverview;
 $("nav-apps").onclick = showApps;
-$("overview-refresh").onclick = loadOverview;
 
-$("apps-refresh").onclick = () => { loadApps(); };
 $("apps-new").onclick = () => {
   show($("apps-new-modal"), true);
   show($("apps-new-problem"), false);
@@ -3997,10 +4461,8 @@ $("app-replicas").onkeydown = (e) => { if (e.key === "Enter") setReplicas(); };
 $("app-build").onclick = buildLatest;
 $("app-deploy").onclick = deployLatest;
 $("app-branch-use").onclick = switchBranch;
-$("app-builds-refresh").onclick = loadAppBuilds;
 $("app-stop").onclick = stop;
 $("app-delete").onclick = remove;
-$("pods-refresh").onclick = loadPods;
 
 // Reloading as the selector is typed would fire a request per keystroke; on
 // Enter and on blur is what someone filtering a short list does anyway, and a
@@ -4089,12 +4551,38 @@ $("log-modal").onkeydown = (e) => {
   // by the time boot runs, and it has one. The sign-in eye is local to boot —
   // refreshReveals reaches the other through the variable above.
   const signinReveal = concealed("signin-key", "signin-reveal");
-  appGitReveal = concealed("app-git-hint", "app-git-hint-reveal", "app-git-hint-copy");
+  appGitReveal = concealed("app-git-hint", "app-git-hint-reveal", "app-git-hint-copy", {
+    // The clone command is masked to the width of the app's address, the row
+    // directly above it. Two values in one column, one of them a run of bullets
+    // of its own length, read as a ragged column: the mask is the taller of the
+    // two and the address looks like it was cut short beside it.
+    //
+    // Measured from what is on screen rather than counted from the URL, because
+    // the address is a link in a table cell: its rendered width is the browser's
+    // answer, and a count of characters times some assumed advance width would
+    // be a guess that drifts with the font.
+    //
+    // Falls back to the constant when there is no address — an installation with
+    // no base domain, where an app has no URL and the row is absent — and floors
+    // at MASK_WIDTH for the same reason the constant exists: a short mask reads
+    // as a short value rather than as a withheld one.
+    maskWidth() {
+      const address = $("app-address");
+      const chars = address ? (address.textContent || "").length : 0;
+      return Math.max(MASK_WIDTH, chars);
+    },
+  });
 
   // The header is up on both screens: on the sign-in screen its theme and
   // language controls are the whole of what it offers, and keeping it in place
   // is what stops those two moving once someone signs in.
   show($("app-header"), true);
+
+  // The periodic reload, started once here rather than from connect: the timer
+  // outlives the session it is ticking for, and refreshCurrent checks
+  // state.signedIn before doing anything — so a signed-out page pays one no-op
+  // interval rather than one timer per sign-in.
+  startRefresh();
 
   state.url = baseURL();
 

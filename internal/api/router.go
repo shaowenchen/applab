@@ -15,6 +15,7 @@ import (
 	"github.com/shaowenchen/applab/internal/build"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/deploy"
+	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/observe"
 	"github.com/shaowenchen/applab/internal/source"
@@ -449,8 +450,16 @@ type Observer interface {
 	// containers are allowed to use.
 	AppUsage(ctx context.Context, namespace, appID string) (observe.Usage, error)
 
+	// PodUsages reports CPU and memory for each pod matching a selector, keyed
+	// by pod name, and whether the cluster reports metrics at all.
+	PodUsages(ctx context.Context, namespace, selector string) (map[string]k8s.Usage, bool, error)
+
 	// SelfPods lists AppLab's own pods.
 	SelfPods(ctx context.Context, namespace string, limit int) ([]observe.Pod, error)
+
+	// PlatformUsage reports what AppLab's own pods are using: the totals across
+	// them and each pod's own reading.
+	PlatformUsage(ctx context.Context, namespace string) (observe.Usage, error)
 
 	// SelfLogs returns one of AppLab's own containers' logs.
 	SelfLogs(ctx context.Context, namespace string, opts observe.LogOptions) (string, error)
@@ -674,6 +683,21 @@ func (s *Server) routes() []route {
 			Auth:    true,
 			Doc:     "AppLab's own pods, newest first — the deployment that serves this API, not the apps it manages. `?limit=` (default 100). Admin key only: an app key reaches one app and this is not it.",
 			Handler: s.handleListSelfPods,
+		},
+		{
+			// Admin key only, like the routes above and for the same reason: the
+			// control plane is not any app, so there is nothing for an app key to
+			// be scoped against.
+			//
+			// The platform's counterpart to
+			// GET /api/v1/apps/{app}/resources, and deliberately its own route
+			// rather than a flag on that one — they report different shapes. An
+			// app has effective bounds from its Deployment to report; AppLab's own
+			// limits belong to the chart, so this reports usage alone.
+			Pattern: "GET /api/v1/platform/resources",
+			Auth:    true,
+			Doc:     "CPU and memory for each of AppLab's own pods, keyed by pod name, with `available` saying whether the cluster reports metrics at all. Admin key only. On a cluster without metrics-server `available` is false and the pods map is empty — a reading that could not be taken, which is not the same as an idle deployment.",
+			Handler: s.handleSelfUsage,
 		},
 		{
 			// The reason this exists: diagnosing AppLab itself used to mean

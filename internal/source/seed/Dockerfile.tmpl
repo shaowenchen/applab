@@ -24,6 +24,32 @@
 # commands that build and deploy it.
 FROM nginx:1.27-alpine
 
+# nginx's stock image starts as root and drops to its own `nginx` user, which it
+# can only do because root is allowed to chown the directories it writes. AppLab
+# drops *every* capability from an app's container — CAP_CHOWN included — so that
+# start-up fails:
+#
+#     [emerg] 1#1: chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not permitted)
+#
+# and the container exits before it serves anything, which presents as an app
+# that builds, deploys, and then never becomes ready.
+#
+# The fix is not to give the capability back. It is to not need root at all:
+# nginx runs as the user it was going to drop to anyway, and the two paths it
+# writes are chowned here, at build time, where the build does run as root. The
+# entrypoint scripts notice they cannot rewrite /etc/nginx/conf.d/default.conf
+# and carry on, which is the behaviour this relies on.
+#
+# Port 80 is still bindable without root because AppLab lowers
+# net.ipv4.ip_unprivileged_port_start in the pod — that is what lets an app
+# listen below 1024 without being privileged, and it applies whether or not the
+# app is nginx. A base image whose own build already runs unprivileged, or one
+# listening above 1024, needs none of this.
+RUN mkdir -p /var/cache/nginx \
+ && touch /var/run/nginx.pid \
+ && chown -R nginx:nginx /var/cache/nginx /var/run/nginx.pid
+USER nginx
+
 # nginx's own image already listens on 80 and serves /usr/share/nginx/html, so
 # there is nothing to configure. It is stated anyway because it is the one thing
 # an app has to get right and the one thing AppLab cannot guess: the app's port

@@ -271,6 +271,185 @@ func TestUsageSumsAcrossPods(t *testing.T) {
 	}
 }
 
+// TestUsageReportsEachPodBesideTheTotal asserts the app's usage carries the
+// per-pod breakdown as well as the sum.
+//
+// Both are wanted and neither replaces the other: the total answers "is this app
+// near its limit", and the breakdown answers "which replica is" — during a
+// rollout one pod can be at its limit while the sum looks comfortable, and that
+// is the case a monitoring panel is opened for.
+func TestUsageReportsEachPodBesideTheTotal(t *testing.T) {
+	srv, client, _ := newObserveServer(t)
+	h := srv.Handler()
+	createAppForObserve(t, h, "shop")
+	createAppDeployment(t, client, "shop", nil, strings.Repeat("a", 40))
+	giveDeploymentBounds(t, client, "shop")
+
+	srv.WithObserver(observe.New(client).WithUsage(fakeUsage{pods: map[string]k8s.Usage{
+		"applab-shop-1": {PodName: "applab-shop-1", CPU: "100m", Memory: "64Mi"},
+		"applab-shop-2": {PodName: "applab-shop-2", CPU: "250m", Memory: "96Mi"},
+	}}))
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/resources", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("usage: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var usage struct {
+		CPU  string `json:"cpu"`
+		Pods map[string]struct {
+			CPU    string `json:"cpu"`
+			Memory string `json:"memory"`
+		} `json:"pods"`
+	}
+	decodeData(t, rec, &usage)
+
+	if usage.CPU != "350m" {
+		t.Errorf("total cpu = %q, want 350m — the total is still the total", usage.CPU)
+	}
+	if len(usage.Pods) != 2 {
+		t.Fatalf("pods = %d entries, want one per pod (%s)", len(usage.Pods), rec.Body.String())
+	}
+	for _, want := range []struct{ name, cpu, memory string }{
+		{"applab-shop-1", "100m", "64Mi"},
+		{"applab-shop-2", "250m", "96Mi"},
+	} {
+		got, ok := usage.Pods[want.name]
+		if !ok {
+			t.Errorf("pod %q is missing from the breakdown", want.name)
+			continue
+		}
+		if got.CPU != want.cpu || got.Memory != want.memory {
+			t.Errorf("pod %q = %s/%s, want %s/%s", want.name, got.CPU, got.Memory, want.cpu, want.memory)
+		}
+	}
+}
+
+// TestPlatformResourcesReportsAppLabsOwnPods asserts the platform route reads
+// the control plane's pods and only those.
+//
+// The selector is the whole point: an app's pods live in the same namespace, so a
+// route that listed everything would report the apps' usage as AppLab's.
+func TestPlatformResourcesReportsAppLabsOwnPods(t *testing.T) {
+	srv, client, _ := newObserveServer(t)
+	h := srv.Handler()
+
+	srv.WithObserver(observe.New(client).WithUsage(fakeUsage{pods: map[string]k8s.Usage{
+		"applab-6b9f7-abc": {PodName: "applab-6b9f7-abc", CPU: "12m", Memory: "80Mi"},
+		"applab-6b9f7-def": {PodName: "applab-6b9f7-def", CPU: "8m", Memory: "40Mi"},
+	}}))
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/platform/resources", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("platform resources: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		Available bool   `json:"available"`
+		CPU       string `json:"cpu"`
+		Memory    string `json:"memory"`
+		Pods      map[string]struct {
+			CPU    string `json:"cpu"`
+			Memory string `json:"memory"`
+		} `json:"pods"`
+	}
+	decodeData(t, rec, &result)
+
+	if !result.Available {
+		t.Error("available = false with a metrics API that answers")
+	}
+	// The totals are the picker's first entry — "all pods" — so they have to be
+	// reported here and not only per pod.
+	if result.CPU != "20m" || result.Memory != "120Mi" {
+		t.Errorf("totals = %s/%s, want 20m/120Mi", result.CPU, result.Memory)
+	}
+	got, ok := result.Pods["applab-6b9f7-abc"]
+	if !ok {
+		t.Fatalf("the control plane's pod is absent from the breakdown (%s)", rec.Body.String())
+	}
+	if got.CPU != "12m" || got.Memory != "80Mi" {
+		t.Errorf("pod reading = %s/%s, want 12m/80Mi", got.CPU, got.Memory)
+	}
+}
+
+// TestPlatformResourcesSelectsOnlyAppLabPods asserts the label selector the
+// platform route reads by.
+//
+// Asserted on the selector rather than on the answer because a fake metrics
+// reader answers for any selector it is given — the filter is the thing that
+// would be wrong, and only the selector it asked with shows that.
+func TestPlatformResourcesSelectsOnlyAppLabPods(t *testing.T) {
+	srv, client, _ := newObserveServer(t)
+	h := srv.Handler()
+
+	recorder := &capturingUsage{pods: map[string]k8s.Usage{"applab-6b9f7-abc": {PodName: "applab-6b9f7-abc"}}}
+	srv.WithObserver(observe.New(client).WithUsage(recorder))
+
+	if rec := doRequest(t, h, http.MethodGet, "/api/v1/platform/resources", nil); rec.Code != http.StatusOK {
+		t.Fatalf("platform resources: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// The chart labels every object it installs with this, apps included — which
+	// is why it is the selector and not, say, the presence of a Deployment.
+	if recorder.selector != "app.kubernetes.io/part-of=applab" {
+		t.Errorf("selector = %q, want the label the chart puts on its own pods", recorder.selector)
+	}
+}
+
+// TestPlatformResourcesReportsUnavailableRatherThanZero asserts the honest empty
+// case on the platform route too.
+//
+// The route carries no totals, so `available` is the only thing separating "the
+// control plane is idle" from "this cluster cannot say" — and a control plane
+// shown as idle while it is being starved of CPU is the exact failure the route
+// exists to reveal.
+func TestPlatformResourcesReportsUnavailableRatherThanZero(t *testing.T) {
+	srv, _, _ := newObserveServer(t) // no usage reader: no metrics-server
+	h := srv.Handler()
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/platform/resources", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("platform resources: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		Available bool           `json:"available"`
+		Pods      map[string]any `json:"pods"`
+	}
+	decodeData(t, rec, &result)
+
+	if result.Available {
+		t.Error("available = true on a cluster with no metrics API")
+	}
+	if len(result.Pods) != 0 {
+		t.Errorf("pods = %v, want none — an unknown reading is not zero", result.Pods)
+	}
+}
+
+// capturingUsage records the selector it was asked with.
+//
+// The one thing a fake metrics reader cannot otherwise be made to prove: it
+// answers for whatever it is given, so a route that selected the wrong pods would
+// pass every assertion about the answer.
+type capturingUsage struct {
+	pods     map[string]k8s.Usage
+	selector string
+}
+
+func (c *capturingUsage) PodUsage(ctx context.Context, namespace, selector string) (map[string]k8s.Usage, bool, error) {
+	c.selector = selector
+	return c.pods, true, nil
+}
+
+// recordingUsage answers with what the test says, whatever it is asked.
+type recordingUsage struct {
+	pods map[string]k8s.Usage
+}
+
+func (r recordingUsage) PodUsage(ctx context.Context, namespace, selector string) (map[string]k8s.Usage, bool, error) {
+	return r.pods, true, nil
+}
+
 // giveDeploymentBounds puts requests and limits on an app's container.
 //
 // createAppDeployment builds a bare container — it exists for the status tests,
