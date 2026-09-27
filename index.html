@@ -200,9 +200,11 @@ export APPLAB_KEY=&lt;the key from the release's Secret&gt;
 applab push myshop
 </code></pre>
 <h2 id="before-you-install">Before you install</h2>
-<p>A bucket and three decisions. The bucket is required and has no default, and each
-decision is much easier to make now than after, because it changes what the
-cluster has to be able to do.</p>
+<p>A bucket and three decisions, plus one optional component. The bucket is required
+and has no default, and each decision is much easier to make now than after,
+because it changes what the cluster has to be able to do. The last section is the
+one you can skip and come back to: resource usage is a readout, and everything
+else works without it.</p>
 <h3 id="0-a-bucket-which-is-where-everything-lives">0. A bucket, which is where everything lives</h3>
 <p>AppLab is stateless: every app, every repository, every commit, every build and
 every key are objects in a bucket you point it at. Create the bucket before
@@ -442,6 +444,39 @@ elsewhere. <code>applab push</code> will say clearly that this deployment cannot
 <p>With the pipeline off there is no registry to authenticate to either, so the
 registry credential is ignored: <code>build.secret</code> is emptied along with
 <code>build.registry</code>, and no Secret has to exist for an app to deploy.</p>
+<h3 id="4-whether-the-cluster-can-report-resource-usage-optional">4. Whether the cluster can report resource usage (optional)</h3>
+<p>The console shows a CPU and memory reading for the platform's own pods and for
+each of an app's, on the Instances list and on the overview's monitoring panel.
+Those numbers come from the Kubernetes <strong>resource metrics API</strong>
+(<code>metrics.k8s.io</code>), which is not part of Kubernetes: the API group exists only
+when something serves it, and that something is
+<a href="https://github.com/kubernetes-sigs/metrics-server"><strong>metrics-server</strong></a>.</p>
+<pre><code class="language-bash">kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+</code></pre>
+<p><strong>This is optional, and AppLab does not install it for you.</strong> It is a cluster-wide
+component with its own resource footprint and its own lifecycle, and a chart that
+installed one would be claiming a decision that belongs to whoever runs the
+cluster. Every other feature works without it.</p>
+<p>What changes when it is missing: the monitoring panels say usage is unavailable
+rather than showing zeros, and <code>applab resources</code> reports <code>available: false</code> with
+the bounds still in place. The distinction matters — a pod using nothing and a
+cluster that cannot measure look identical at zero, and only one of them is worth
+acting on. <strong>Requests and limits are unaffected</strong>: they are part of the pod spec,
+they are enforced by the kubelet, and the scheduler uses them whether or not
+anything reports usage.</p>
+<p>Two things to know if you install it:</p>
+<ul>
+<li><strong>On kind, the kubelet's certificate is self-signed</strong>, so metrics-server's
+verification fails until you add <code>--kubelet-insecure-tls</code> to its arguments. The
+symptom is a Deployment that never becomes available and a console with no
+readings, and nothing in AppLab's log says why. <code>hack/environment.sh</code> in this
+repository does this for the debugger environment.</li>
+<li><strong>The first reading takes up to a minute.</strong> metrics-server becomes ready when
+it starts and answers only after its first scrape, so a fresh install reports
+nothing for a short while. That is not a failure.</li>
+</ul>
+<p>The Role the chart installs already grants <code>get</code> and <code>list</code> on
+<code>metrics.k8s.io/pods</code>, so nothing here needs a permission change to work.</p>
 <h2 id="what-gets-installed">What gets installed</h2>
 <table>
 <thead>
@@ -503,6 +538,12 @@ so the reach of a bug in it is the apps it manages.</p>
 <p>The rules in <code>role.yaml</code> are exactly what AppLab uses, each with a comment saying
 why. Nothing is granted for future convenience. In particular there is no
 permission on <code>namespaces</code> at all, and none to write pods.</p>
+<p>One rule is worth pointing out here because it is the only one that can grant
+nothing: <code>get</code> and <code>list</code> on <code>metrics.k8s.io/pods</code>, the resource metrics API. That
+group is served by whatever is installed to serve it — see
+<a href="#4-whether-the-cluster-can-report-resource-usage-optional">§4</a> — and on a cluster
+without one the Role holds a rule for an API that does not exist, which Kubernetes
+accepts and never consults.</p>
 <p><strong>What this costs:</strong> apps are not isolated from one another by a namespace
 boundary. A resource-hungry app affects its neighbours, and an operator reading
 <code>kubectl get pods</code> sees every app at once. The CPU and memory limits on each app
