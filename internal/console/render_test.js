@@ -1505,7 +1505,7 @@ async function render(apps) {
             app_id: "shop",
             count: 1,
             pods: [
-              { name: "applab-shop-abc", ready: false, restarts: 5, reason: "CrashLoopBackOff" },
+              { name: "applab-shop-abc", phase: "Running", ready: false, restarts: 5, reason: "CrashLoopBackOff" },
             ],
           };
       return {
@@ -1521,21 +1521,41 @@ async function render(apps) {
     await vm.runInContext("loadPods", ctx)();
 
     const row = elements.get("pods").children[0];
-    // Found by class rather than by position: the row grew two usage cells, and
-    // an index that has to be re-counted every time a column is added is a check
-    // that quietly starts reading the wrong cell instead of failing.
+    // Found by class rather than by position: the row's cells have changed more
+    // than once, and an index that has to be re-counted every time a column is
+    // added is a check that quietly starts reading the wrong cell instead of
+    // failing.
     const actions = row && row.children.find((c) => c.className === "actions");
     const buttons = (actions && actions.children) || [];
     const labels = buttons.map((b) => b.textContent).join(" | ");
     check("an instance row offers its own log", labels.includes("Log"), true);
     check("and its own events", labels.includes("Events"), true);
 
-    // What the pod is using, on its row — the reason the usage read is here at
-    // all. Rendered in cores and GiB rather than as the raw quantity, so it can
-    // be compared against the limit beside it by eye.
-    const cells = row.children.map((c) => c.textContent);
-    check("and its cpu, in cores", cells.includes("0.15 cores"), true);
-    check("and its memory, in GiB", cells.includes("0.09375 GiB"), true);
+    // The status cell says the pod's phase, not "not ready". A pod that is
+    // Running with a failing probe and one that is Pending are different
+    // situations, and one word for both flattened them.
+    //
+    // Read through allText rather than textContent: the value is inside a pill
+    // the cell contains, and the cell's own textContent is empty.
+    //
+    // Coloured by readiness rather than by phase, because the colour answers
+    // "healthy": this pod is not ready, so it is the bad colour even though its
+    // phase is a word that sounds fine.
+    const cells = row.children.map((c) => c.allText());
+    check("the status column reads the pod's phase", cells.includes("Running"), true);
+    check("and not the old readiness wording", cells.includes("not ready"), false);
+    const statusCell = row.children.find((c) => c.allText() === "Running");
+    check("and it is coloured by readiness", statusCell.children[0].className, "pill bad");
+
+    // The reason is still here, as the cell's title. It is the most useful single
+    // thing about a pod that will not run, and hiding it in a tooltip is the
+    // trade that keeps a long message from squeezing every other column.
+    check("the reason is the status cell's title", statusCell.title, "CrashLoopBackOff");
+
+    // And the usage is not a column any more: the dialog behind the row shows
+    // the pod's own history, which one figure per replica never did.
+    check("no cpu cell is left on the row", cells.includes("0.15 cores"), false);
+    check("nor a memory cell", cells.includes("0.09 GiB"), false);
 
     // Clicking Log names the pod. Without it the endpoint answers with the
     // newest pod's log, so the button on a crashing row would show a different
@@ -1882,8 +1902,12 @@ async function render(apps) {
     // A row's Log button is what reads one, and it names the pod it was pressed
     // on — the platform log route answers with the newest replica's output when
     // no pod is given, which is not the row that was clicked.
-    const opened = vm.runInContext("openPlatformPodLog", ctx);
-    opened("applab-6b9f7-abc");
+    //
+    // Opened with the platform scope, which is how the row above it passes what
+    // its own table knows: the same opener serves an app's rows and these, and
+    // the scope is what picks the endpoint.
+    const opened = vm.runInContext("openPodLog", ctx);
+    opened("applab-6b9f7-abc", "platform");
     await new Promise((r) => setTimeout(r, 0));
 
     const asked = ctx.requests.find((u) => u.includes("/api/v1/platform/logs")) || "";
@@ -1982,7 +2006,19 @@ async function render(apps) {
     ctx.globalThis = ctx;
     ctx.requests = [];
     ctx.fetch = async (url) => {
-      ctx.requests.push(String(url));
+      const target = String(url);
+      ctx.requests.push(target);
+
+      // Answered per endpoint, because this block presses all three of a row's
+      // buttons and each one reads something different. A single stub that
+      // answered everything the same way would let a button read the wrong
+      // endpoint and still look like it worked.
+      const data = target.includes("/resources")
+        ? { available: true, limited: {}, pods: {} }
+        : target.includes("/events")
+          ? { events: [] }
+          : {};
+
       return {
         ok: true,
         status: 200,
@@ -1990,7 +2026,7 @@ async function render(apps) {
         headers: { get: () => "application/json" },
         // A stream of one chunk, so startLogs finishes rather than waiting.
         body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
-        text: async () => "",
+        text: async () => JSON.stringify({ data }),
       };
     };
     vm.runInContext(source, ctx, { filename: "console.js" });
@@ -2002,8 +2038,8 @@ async function render(apps) {
       empty: elements.get("platform-instances-empty"),
       note: elements.get("platform-usage-note"),
       pods: [
-        { name: "applab-6b9f7-abc", ready: true, restarts: 0 },
-        { name: "applab-6b9f7-def", ready: false, restarts: 3, reason: "CrashLoopBackOff" },
+        { name: "applab-6b9f7-abc", phase: "Running", ready: true, restarts: 0 },
+        { name: "applab-6b9f7-def", phase: "Running", ready: false, restarts: 3, reason: "CrashLoopBackOff" },
       ],
       usage: {
         available: true,
@@ -2013,7 +2049,7 @@ async function render(apps) {
         },
       },
       failure: "",
-      onLog: vm.runInContext("openPlatformPodLog", ctx),
+      scope: "platform",
     });
 
     check("one row per pod", body.children.length, 2);
@@ -2021,31 +2057,63 @@ async function render(apps) {
 
     const first = body.children[0];
     check("the pod is named", first.children[0].textContent, "applab-6b9f7-abc");
-    check("with its readiness", first.children[1].allText(), "ready");
-    // Its own reading, on its own row — the case a single total cannot show.
-    check("and its own cpu", first.children[3].textContent, "0.012 cores");
-    check("and its own memory", first.children[4].textContent, "0.078125 GiB");
+    check("with its phase", first.children[1].allText(), "Running");
+    check("and the healthy colour", first.children[1].children[0].className, "pill ok");
+    check("and its restart count", first.children[2].textContent, 0);
 
-    // A not-ready pod's reason is the column that explains it.
+    // A pod that is Running but not ready is the case the colour has to get
+    // right: its phase reads fine and it is not. The reason that explains it is
+    // the cell's title rather than a column of its own.
     const second = body.children[1];
-    check("a failing pod shows why", second.children[5].allText(), "CrashLoopBackOff");
+    check("a not-ready pod is coloured as bad", second.children[1].children[0].className, "pill bad");
+    check("and its reason is the title", second.children[1].title, "CrashLoopBackOff");
+
 
     // And its Log button names *that* pod. Without it the endpoint answers with
     // the newest replica's output, which is not the row that was clicked.
-    const actions = second.children[6];
+    //
+    // Found by class rather than by index: the row's cells have changed more than
+    // once, and a count that has to be redone whenever a column moves is a check
+    // that silently reads the wrong cell instead of failing.
+    const actions = second.children.find((c) => c.className === "actions");
+    if (!actions) {
+      console.error("FAIL: the row has no actions cell\n  row cells: " + second.children.map((c) => c.className || c.textContent).join(", "));
+      process.exit(1);
+    }
     check("every row offers its own log", actions.children[0].textContent, "Log");
     check("and its own metrics", actions.children[1].textContent, "Metrics");
-    check(
-      "and nothing else — there is no platform events endpoint to offer",
-      actions.children.length,
-      2
-    );
+    // Events used to be absent here, and their absence was asserted: an app's
+    // events route matches on that app's label and there was no platform
+    // equivalent. GET /api/v1/platform/events is that equivalent, so the button
+    // belongs on these rows as much as on an app's.
+    check("and its own events", actions.children[2].textContent, "Events");
 
     ctx.requests.length = 0;
     actions.children[0].onclick();
     await new Promise((r) => setTimeout(r, 0));
     const asked = ctx.requests.find((u) => u.includes("/platform/logs")) || "";
     check("and the log it reads names that pod", asked.includes("pod=applab-6b9f7-def"), true);
+
+    // The readings read the platform's own route. They used to read the app's,
+    // which on the overview meant `/api/v1/apps//resources` — an empty app id,
+    // because this table is not about an app. This is the check that pins it.
+    ctx.requests.length = 0;
+    actions.children[1].onclick();
+    await new Promise((r) => setTimeout(r, 0));
+    const usageAsked = ctx.requests.find((u) => u.includes("/resources")) || "";
+    check("and the readings it reads are the platform's", usageAsked.includes("/api/v1/platform/resources"), true);
+    check("not an app's, which has no app to name here", usageAsked.includes("/api/v1/apps//"), false);
+    vm.runInContext("closePodMetrics", ctx)();
+
+    // And the events, likewise.
+    ctx.requests.length = 0;
+    actions.children[2].onclick();
+    await new Promise((r) => setTimeout(r, 0));
+    const eventsAsked = ctx.requests.find((u) => u.includes("/events")) || "";
+    check("and the events it reads are the platform's", eventsAsked.includes("/api/v1/platform/events"), true);
+    check("not an app's", eventsAsked.includes("/api/v1/apps//"), false);
+    vm.runInContext("closeLogDialog", ctx)();
+
   }
 
   // A cluster with no metrics API.
@@ -2063,21 +2131,22 @@ async function render(apps) {
       body: elements.get("platform-instances"),
       empty: elements.get("platform-instances-empty"),
       note: elements.get("platform-usage-note"),
-      pods: [{ name: "applab-6b9f7-abc", ready: true, restarts: 0 }],
+      pods: [{ name: "applab-6b9f7-abc", phase: "Running", ready: true, restarts: 0 }],
       usage: { available: false },
       failure: "",
-      onLog: () => {},
+      scope: "platform",
     });
 
     const note = elements.get("platform-usage-note");
     check("with no metrics the table says so", note.classList.contains("hidden"), false);
 
-    // The rows are still there. Usage is one column of this table, and losing
-    // every pod because a column is missing would be the wrong trade — the pods
-    // and their restarts are as useful without a reading.
+    // The rows are still there. A reading that could not be taken must not empty
+    // a table whose other columns were read fine — the pods and their restarts
+    // are as useful without it, and the row's Metrics button is where the
+    // absence is explained.
     const row = elements.get("platform-instances").children[0];
     check("and the pod is still listed", row.children[0].textContent, "applab-6b9f7-abc");
-    check("with its reading unknown rather than zero", row.children[3].textContent, "–");
+    check("with its state, which needs no metrics", row.children[1].allText(), "Running");
   }
 
   // Building is triggered from where the builds are.
@@ -2282,9 +2351,14 @@ async function render(apps) {
         headers: { get: () => "application/json" },
         text: async () => JSON.stringify({
           data: {
+            // "Kind/Name", which is what the API sends. This stub used to send
+            // the bare pod name, which matched the comparison the console made
+            // and hid the fact that the server's answer never did — so the panel
+            // reported "no recent events" for every pod in the real product while
+            // this test passed.
             events: [
-              { object: "applab-build-shop-abc", type: "Warning", reason: "FailedScheduling", message: "no nodes", count: 3 },
-              { object: "someone-elses-pod", type: "Normal", reason: "Pulled", message: "a different pod entirely" },
+              { object: "Pod/applab-build-shop-abc", type: "Warning", reason: "FailedScheduling", message: "no nodes", count: 3 },
+              { object: "Pod/someone-elses-pod", type: "Normal", reason: "Pulled", message: "a different pod entirely" },
             ],
           },
         }),
@@ -2406,10 +2480,10 @@ async function render(apps) {
       body,
       empty: elements.get("platform-instances-empty"),
       note,
-      pods: [{ name: "applab-6b9f7-abc", ready: true, restarts: 0 }],
+      pods: [{ name: "applab-6b9f7-abc", phase: "Running", ready: true, restarts: 0 }],
       usage,
       failure,
-      onLog: () => {},
+      scope: "platform",
     });
 
     // No metrics-server: a fact about the installation, and the message says so.
@@ -2429,10 +2503,12 @@ async function render(apps) {
     );
 
     // A cluster that answers but has sampled nothing yet is a third case, and it
-    // is not an error: the readings are unknown, which the empty strings the
-    // server sends render as em dashes.
+    // is not an error: the row still renders from what the pod list said, and the
+    // empty readings simply do not appear anywhere — they are the dialog's now,
+    // and it draws an em dash for one it has not sampled yet.
     show({ available: true, cpu: "", memory: "", pods: null }, "");
-    check("an unsampled cluster shows unknown rather than zero", body.children[0].children[3].textContent, "–");
+    check("an unsampled cluster still shows the row", body.children[0].children[0].textContent, "applab-6b9f7-abc");
+    check("and does not claim metrics are missing", note.classList.contains("hidden"), true);
     check("and does not claim metrics are missing", note.classList.contains("hidden"), true);
   }
 

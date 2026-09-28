@@ -774,7 +774,7 @@
       </div>
       <table>
         <thead>
-          <tr><th data-i18n="Instance">Instance</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="CPU">CPU</th><th data-i18n="Memory">Memory</th><th data-i18n="Reason">Reason</th><th></th></tr>
+          <tr><th data-i18n="Instance">Instance</th><th data-i18n="Status">Status</th><th data-i18n="Restarts">Restarts</th><th></th></tr>
         </thead>
         <tbody id="platform-instances"></tbody>
       </table>
@@ -971,7 +971,7 @@
            The columns are absent rather than zeroed when the cluster has no
            metrics API, and the note below the table is what says so. -->
       <table>
-        <thead><tr><th data-i18n="Instance">Instance</th><th data-i18n="Ready">Ready</th><th data-i18n="Restarts">Restarts</th><th data-i18n="CPU">CPU</th><th data-i18n="Memory">Memory</th><th data-i18n="Reason">Reason</th><th></th></tr></thead>
+        <thead><tr><th data-i18n="Instance">Instance</th><th data-i18n="Status">Status</th><th data-i18n="Restarts">Restarts</th><th></th></tr></thead>
         <tbody id="pods"></tbody>
       </table>
       <p id="pods-usage-note" class="muted hidden"></p>
@@ -1277,6 +1277,10 @@ const state = {
   // them: the metrics API reports the current instant only, so a chart of the
   // last few minutes is a series this page has to build as it watches.
   metricsPod: "",
+  // Which table opened the metrics dialog: "app" or "platform". The two read
+  // different endpoints, and the timer re-reads every five seconds, so the
+  // dialog has to remember which one it belongs to for as long as it is open.
+  metricsScope: "app",
   metricsTimer: null,
   metricsSamples: { cpu: [], memory: [] },
   // What the pod may use, from the same response. Null until the first read.
@@ -1409,9 +1413,7 @@ const ZH = {
   "Where": "地址",
   "Instance": "实例",
   "Instances": "实例",
-  "Ready": "就绪",
   "Restarts": "重启",
-  "Reason": "原因",
   "CPU": "CPU",
   "Memory": "内存",
   "cores": "核心",
@@ -2489,14 +2491,13 @@ function buildRows(builds) {
 // cluster state and the recent-builds table all come from the same
 // /api/v1/overview response, so asking twice would be the same answer at twice
 // the cost.
-// renderInstances fills an instances table: one row per pod, with what it is
-// using and how to read its log.
+// renderInstances fills an instances table: one row per pod, with its state and
+// how to read its log, metrics and events.
 //
 // One function for both tables — the overview's platform instances and an app's
-// instances — because they are the same thing seen through two endpoints. The
-// columns are the ones a pod can be judged by: whether it is ready, how often it
-// has restarted, what it is using against what it may use, and why it is not
-// running when it is not.
+// instances — because they are the same thing seen through two endpoints. What a
+// pod can be judged by is its state, how often it has restarted, and what the
+// dialogs behind its buttons say.
 //
 //   body       the <tbody> to fill
 //   empty      the placeholder shown when there are no pods
@@ -2504,17 +2505,17 @@ function buildRows(builds) {
 //   pods       the pod list, as its endpoint returned it
 //   usage      the matching usage response, or null when its read failed
 //   failure    the usage read's error message, or "" — see below
+//   scope      whose pods these are, "app" or "platform", which picks the
+//              endpoint each row's dialogs read — see podUsagePath and
+//              podEventsPath
 //   onLog      called with a pod name to open that pod's log
-//   onMetrics  called with a pod name to open its live readings
-//   onEvents   called with a pod name to open its events, or omitted where
-//              there is no endpoint behind it — see below
 //
 // The usage note distinguishes two things that used to be one message: a cluster
 // that reports no metrics (a fact about the installation, and the remedy is
 // documented) and a read that failed (a 401, a 500, a proxy with no route).
 // Blaming the cluster for the second sent whoever was debugging to check
 // metrics-server when the answer was in the response body.
-function renderInstances({ body, empty, note, pods, usage, failure, onLog, onMetrics, onEvents }) {
+function renderInstances({ body, empty, note, pods, usage, failure, scope, onLog }) {
   // Guarded here rather than at each caller. One caller passes
   // `value.pods || []` and the other passes the API's field straight through,
   // so a 200 carrying `pods: null` threw on `pods.length` inside the app view's
@@ -2532,6 +2533,11 @@ function renderInstances({ body, empty, note, pods, usage, failure, onLog, onMet
     return;
   }
 
+  // The usage read is kept even though it no longer fills a column, because this
+  // note is the only place that says whether the row's Metrics button will have
+  // anything to show. A cluster with no metrics-server answers the endpoint, so
+  // the dialogs open on "no metrics" rather than on an error — and saying so
+  // once above the table is better than each dialog saying it on its own.
   if (!usage || !usage.available) {
     note.textContent = failure
       ? tf("Could not read resource usage: {error}", { error: failure })
@@ -2539,15 +2545,39 @@ function renderInstances({ body, empty, note, pods, usage, failure, onLog, onMet
     show(note, true);
   }
 
-  const byPod = (usage && usage.pods) || {};
-
   for (const pod of pods) {
-    body.appendChild(instanceRow(pod, byPod[pod.name], onLog, onMetrics, onEvents));
+    body.appendChild(instanceRow(pod, scope, onLog));
   }
 }
 
+// podStatus is what a row's Status cell says, and how it is coloured.
+//
+// The phase, not "ready"/"not ready": a pod that is Pending and a pod that is
+// Running-and-ready are in different situations, and the two words this replaced
+// flattened them into one. The colour is still decided by readiness, because
+// that is the question the colour was answering — a Running pod whose readiness
+// probe is failing is not healthy, and its phase alone would call it fine.
+//
+// Readiness is read first because it is the stricter of the two: a crash-looping
+// pod reports Running, and calling that green would be the one thing a status
+// colour must not do.
+function podStatus(pod) {
+  const phase = pod.phase || "";
+  if (pod.ready) return { text: phase || "Running", kind: "ok" };
+  if (phase === "Succeeded") return { text: phase, kind: "neutral" };
+  return { text: phase || "not ready", kind: "bad" };
+}
+
 // instanceRow builds one row of an instances table.
-function instanceRow(pod, reading, onLog, onMetrics, onEvents) {
+//
+// Two columns and the actions. It used to carry CPU, memory and a reason as well,
+// and the first two cost a request on every refresh to fill a column that said
+// the same thing three times over — one figure per replica when the dialog behind
+// the row shows the pod's own history. The reason is still here, as the Status
+// cell's title: it is the most useful single thing about a pod that will not run,
+// and a column for it squeezed every other cell to make room for a string that is
+// usually short and sometimes a paragraph.
+function instanceRow(pod, scope, onLog) {
   const tr = document.createElement("tr");
 
   const name = document.createElement("td");
@@ -2563,47 +2593,21 @@ function instanceRow(pod, reading, onLog, onMetrics, onEvents) {
   }
   tr.appendChild(name);
 
-  const ready = document.createElement("td");
-  ready.appendChild(pill(pod.ready ? "ready" : "not ready").cloneNode(true));
-  ready.firstChild.className = "pill " + (pod.ready ? "ok" : "bad");
-  tr.appendChild(ready);
+  const status = podStatus(pod);
+  const state = document.createElement("td");
+  state.appendChild(pill(status.text).cloneNode(true));
+  state.firstChild.className = "pill " + status.kind;
+  // The explanation, where the Reason column used to be. A crash loop's reason is
+  // on the previous container instance and the server promotes it to the pod, so
+  // this is the string that says *why* — "CrashLoopBackOff", "ImagePullBackOff",
+  // or the message that came with it.
+  const why = pod.reason || pod.message;
+  if (why) state.title = why;
+  tr.appendChild(state);
 
   const restarts = document.createElement("td");
   restarts.textContent = pod.restarts;
   tr.appendChild(restarts);
-
-  // What this copy is using, on its own row — the case a single total cannot
-  // show. A pod with no sample yet is absent from the map rather than zero, so
-  // it reads as an em dash like a cluster that cannot measure at all.
-  //
-  // In the units the rest of the page uses — cores and GiB, through the same
-  // helpers the resource form does — rather than the raw quantity the metrics
-  // API returns: "128849018880" beside a limit of "1" is not a comparison anyone
-  // can make by eye.
-  for (const value of [
-    reading && reading.cpu ? toCores(reading.cpu) + " " + t("cores") : "",
-    reading && reading.memory ? toGi(reading.memory) + " " + t("GiB") : "",
-  ]) {
-    const td = document.createElement("td");
-    td.className = "mono muted";
-    td.textContent = value || "–";
-    tr.appendChild(td);
-  }
-
-  // A crash loop's reason is on the previous container instance, so the server
-  // promotes it here — this is the column that explains a failure. Capped like
-  // the build table's, and for the same reason: a reason is short
-  // ("CrashLoopBackOff") but a message is not, and one long one would stretch the
-  // column and squeeze the rest of the row.
-  const reason = document.createElement("td");
-  reason.className = "muted";
-  const reasonText = document.createElement("span");
-  reasonText.className = "report-cell";
-  reasonText.textContent = pod.reason || pod.message || "—";
-  const full = pod.reason || pod.message;
-  if (full) reasonText.title = full;
-  reason.appendChild(reasonText);
-  tr.appendChild(reason);
 
   // The log, on the row it is about. A pod's log is what someone comes to this
   // table to read when a copy is not ready, and it is about *that* pod — the
@@ -2614,7 +2618,7 @@ function instanceRow(pod, reading, onLog, onMetrics, onEvents) {
 
   const logs = document.createElement("button");
   logs.textContent = t("Log");
-  logs.onclick = () => onLog(pod.name);
+  logs.onclick = () => openPodLog(pod.name, scope);
   actions.appendChild(logs);
 
   // And the readings, on the row it is about. A reading is per pod — which copy
@@ -2622,23 +2626,21 @@ function instanceRow(pod, reading, onLog, onMetrics, onEvents) {
   // so this opens on the pod of the row rather than on the newest.
   //
   // Both tables offer it. The platform's pods are measured the same way and are
-  // the ones nobody can otherwise look inside.
+  // the ones nobody can otherwise look inside. The scope goes with the name
+  // because the two tables read different endpoints — see podUsagePath.
   const metrics = document.createElement("button");
   metrics.textContent = t("Metrics");
-  metrics.onclick = () => onMetrics(pod.name);
+  metrics.onclick = () => openPodMetrics(pod.name, scope);
   actions.appendChild(metrics);
 
-  // Events are offered only where there is an endpoint to read them. The events
-  // route is scoped to an app — it matches on the app's label, because every
-  // app's pods share one namespace and a pod name is not a prefix of anything —
-  // so there is no way to ask it about AppLab's own pods. A button that opened
-  // nothing would be worse than its absence.
-  if (onEvents) {
-    const events = document.createElement("button");
-    events.textContent = t("Events");
-    events.onclick = () => onEvents(pod.name);
-    actions.appendChild(events);
-  }
+  // Events, likewise. This used to be conditional, because an app's events route
+  // matches on the app's label and the platform had no equivalent — so AppLab's
+  // own rows had no Events button at all. GET /api/v1/platform/events closed
+  // that, and the scope picks between the two.
+  const events = document.createElement("button");
+  events.textContent = t("Events");
+  events.onclick = () => showPodEvents(pod.name, scope);
+  actions.appendChild(events);
 
   tr.appendChild(actions);
 
@@ -2682,8 +2684,10 @@ async function loadOverview() {
     pods: platformPodsResult.status === "fulfilled" ? (platformPodsResult.value.pods || []) : [],
     usage: platformUsageResult.status === "fulfilled" ? platformUsageResult.value : null,
     failure: platformUsageResult.status === "rejected" ? platformUsageResult.reason.message : "",
-    onLog: openPlatformPodLog,
-    onMetrics: openPodMetrics,
+    // Whose pods these are. Everything a row can open — the log, the readings,
+    // the events — reads an endpoint that is scoped to an app or to the
+    // deployment, and this is where the row learns which.
+    scope: "platform",
   });
 
   const apps = data.apps || {};
@@ -3651,9 +3655,7 @@ async function loadPods() {
     pods: podsResult.value.pods,
     usage: usageResult.status === "fulfilled" ? usageResult.value : null,
     failure: usageResult.status === "rejected" ? usageResult.reason.message : "",
-    onLog: openPodLog,
-    onMetrics: openPodMetrics,
-    onEvents: showPodEvents,
+    scope: "app",
   });
 }
 
@@ -3662,10 +3664,18 @@ async function loadPods() {
 // The pod is named rather than defaulted, which is the whole point of the row
 // it was clicked from: without it the endpoint answers with the newest pod's
 // log, and a crash loop is usually not the newest pod.
-function openPodLog(podName) {
+//
+// `scope` picks which log endpoint, exactly as it does for a row's metrics and
+// events: an app's pods are logged through the app's route and AppLab's through
+// its own. The two dialog panels were already separate for this reason — an
+// app-key console reaching the platform route would be refused — so one opener
+// with the scope held in hand is the same division with one fewer place to
+// forget it.
+function openPodLog(podName, scope) {
+  const panel = scope === "platform" ? "platform" : "app";
   state.logPod = podName;
-  openLogDialog("app");
-  startLogs("app");
+  openLogDialog(panel);
+  startLogs(panel);
 }
 
 // METRICS_INTERVAL_MS is how often the open metrics dialog samples.
@@ -3704,13 +3714,17 @@ const METRICS_FALLBACK_LIMIT = { cpu: "2", memory: "2Gi" };
 // dialog is that pod's. Sampling rather than streaming, because the metrics API
 // is a poll: there is no watch on it, so a "live" chart is a timer and a series
 // kept here.
-async function openPodMetrics(podName) {
+async function openPodMetrics(podName, scope) {
   // Whatever was sampling stops here, before the pod is set: stopMetrics clears
   // the name and the samples, and running it after would wipe the ones just
   // established. It is the previous dialog's timer this is after.
   stopMetrics();
 
   state.metricsPod = podName;
+  // Whose pod it is, so the timer keeps reading the right endpoint. Held in
+  // state rather than closed over because the sampler is called by name from
+  // the interval, and it has to know which table the dialog was opened from.
+  state.metricsScope = scope === "platform" ? "platform" : "app";
   state.metricsSamples = { cpu: [], memory: [] };
   state.metricsLimit = null;
 
@@ -3731,6 +3745,20 @@ async function openPodMetrics(podName) {
   await samplePodMetrics();
 }
 
+// podUsagePath is the usage endpoint for the table a row belongs to.
+//
+// Two endpoints reporting the same shape, and they are not interchangeable: an
+// app's resources carry the bounds from its Deployment, and the platform's
+// report usage alone because AppLab's own limits belong to the chart. Asking the
+// app route about a platform pod gets the wrong list — and on the overview there
+// is no app to name, since `state.app` is empty there, so the path would be
+// `/apps//resources`.
+function podUsagePath(scope) {
+  return scope === "platform"
+    ? "/api/v1/platform/resources"
+    : "/api/v1/apps/" + state.app + "/resources";
+}
+
 // closePodMetrics stops sampling and closes the dialog.
 function closePodMetrics() {
   stopMetrics();
@@ -3748,22 +3776,27 @@ function stopMetrics() {
     state.metricsTimer = null;
   }
   state.metricsPod = "";
+  state.metricsScope = "app";
   state.metricsSamples = { cpu: [], memory: [] };
   state.metricsLimit = null;
 }
 
-// samplePodMetrics reads the app's usage and appends this pod's reading.
+// samplePodMetrics reads one pod's usage and appends its reading.
 //
 // One request for both resources, because the endpoint answers both at once —
 // and because it also carries the bounds, which is what the chart is scaled
 // against without a second call.
+//
+// The endpoint depends on which table the dialog was opened from; see
+// podUsagePath. The platform's answer carries no bounds, so the chart falls back
+// to the deployment's defaults — which is what METRICS_FALLBACK_LIMIT is for.
 async function samplePodMetrics() {
   const podName = state.metricsPod;
   if (!podName) return;
 
   let usage;
   try {
-    usage = await api("/api/v1/apps/" + state.app + "/resources");
+    usage = await api(podUsagePath(state.metricsScope));
   } catch (err) {
     // Said once and then shown as stale rather than spamming: a poll that fails
     // every five seconds would otherwise overwrite the same message forever, and
@@ -3953,21 +3986,11 @@ function drawChart({ plot, valueEl, rangeEl, samples, ceiling, unit, format, lim
 // changes once.
 const EVENTS_INTERVAL_MS = 5000;
 
-// openPlatformPodLog opens one of AppLab's own pods' logs.
-//
-// The platform twin of openPodLog, and separate for one reason: which endpoint
-// to read. An app's log is scoped to the app, AppLab's is scoped to the
-// deployment, and the pod name alone does not say which — a platform pod listed
-// through the app route would be refused, and an app pod through the platform
-// route would be too.
-//
-// Worth its own function rather than a flag, because the two are reached from
-// different tables that are never on screen together.
-function openPlatformPodLog(podName) {
-  state.logPod = podName;
-  openLogDialog("platform");
-  startLogs("platform");
-}
+// The platform's pod log used to have its own opener here, because which
+// endpoint to read was the one thing that differed and nothing carried it. The
+// row's scope now does: openPodLog takes it and picks the panel, so the two
+// openers are one and the table that knows whose pod it is says so once — for
+// the log, the metrics and the events alike.
 
 // showPodEvents opens one pod's events in the shared dialog, live.
 //
@@ -3984,7 +4007,10 @@ function openPlatformPodLog(podName) {
 //
 // The timer belongs to the dialog and is cleared when it closes, so a dialog
 // nobody is looking at is not polling.
-async function showPodEvents(podName) {
+//
+// `scope` is whose pod it is — "app" or "platform" — and it picks the endpoint,
+// because there are two and they are not interchangeable. See podEventsPath.
+async function showPodEvents(podName, scope) {
   state.logPod = podName;
   openLogDialog("events");
 
@@ -3999,10 +4025,24 @@ async function showPodEvents(podName) {
   // stopEvents again, and the panel went on re-reading the app's events every
   // five seconds behind it until the page was reloaded. Created first, the
   // close has something to clear.
-  const read = () => renderPodEvents(podName, el);
+  const read = () => renderPodEvents(podName, scope, el);
   stopEvents();
   state.eventsTimer = setInterval(read, EVENTS_INTERVAL_MS);
   await read();
+}
+
+// podEventsPath is the events endpoint for the table a row belongs to.
+//
+// Two endpoints, because an app's events and the control plane's are matched
+// differently: an app's are the objects carrying that app's label, and the
+// platform's are the ones carrying AppLab's. Asking the app route about a
+// platform pod answers with the wrong list rather than with nothing, so the
+// scope has to be carried from the row rather than guessed here — and on the
+// overview there is no app to name anyway, since `state.app` is empty there.
+function podEventsPath(scope) {
+  return scope === "platform"
+    ? "/api/v1/platform/events?limit=200"
+    : "/api/v1/apps/" + state.app + "/events?limit=200";
 }
 
 // renderPodEvents writes one pod's events into the panel.
@@ -4011,10 +4051,10 @@ async function showPodEvents(podName) {
 // shows a placeholder; every one after it leaves the previous list up until the
 // new one arrives, so a refresh that fails or is slow shows the last known
 // events rather than an empty box or a spinner where the reader was reading.
-async function renderPodEvents(podName, el) {
+async function renderPodEvents(podName, scope, el) {
   let result;
   try {
-    result = await api("/api/v1/apps/" + state.app + "/events?limit=200");
+    result = await api(podEventsPath(scope));
   } catch (err) {
     // Only reported if there is nothing on screen to keep. A panel showing a
     // good list from four seconds ago is more useful than an error about the
@@ -4023,7 +4063,16 @@ async function renderPodEvents(podName, el) {
     return;
   }
 
-  const mine = (result.events || []).filter((e) => e.object === podName);
+  // The API reports the object as "Kind/Name" and the row knows the pod's bare
+  // name, so the comparison is against the part after the slash.
+  //
+  // It used to be `e.object === podName`, which compared "Pod/applab-abc" to
+  // "applab-abc" and was never true — so this panel reported "no recent events"
+  // for every pod, including the ones that had events and the ones that were
+  // failing *because* of them. Nothing caught it because the test's stub sent
+  // the bare name, which is the shape the console assumed rather than the shape
+  // the server sends.
+  const mine = (result.events || []).filter((e) => (e.object || "").split("/").pop() === podName);
 
   if (mine.length === 0) {
     // Empty is the common and healthy answer: events expire after about an
