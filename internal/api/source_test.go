@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,15 @@ import (
 func newSourceServer(t *testing.T) (*api.Server, *store.Store, *source.Store) {
 	t.Helper()
 
+	return newSourceServerWithLimit(t, 0)
+}
+
+// newSourceServerWithLimit is newSourceServer with the single-request upload
+// limit set. A limit of zero leaves the default, which is what the other tests
+// want: they are about the archive, not about the size.
+func newSourceServerWithLimit(t *testing.T, maxSimpleUpload int64) (*api.Server, *store.Store, *source.Store) {
+	t.Helper()
+
 	dataDir := t.TempDir()
 
 	st, err := store.OpenLocal(context.Background(), filepath.Join(dataDir, "test.db"))
@@ -42,6 +52,13 @@ func newSourceServer(t *testing.T) (*api.Server, *store.Store, *source.Store) {
 	cfg.Keys = []string{"test-key"}
 	cfg.BaseDomain = "apps.example.com"
 	cfg.DataDir = dataDir
+	if maxSimpleUpload > 0 {
+		cfg.MaxSimpleUpload = maxSimpleUpload
+		// The part size has to stay under the simple limit — config validation
+		// refuses the other way round — and this keeps the chunked tests that
+		// use the same config honest.
+		cfg.ChunkSize = maxSimpleUpload
+	}
 
 	srv := api.New(cfg, st, auth.New(cfg.Keys)).WithSource(src)
 	drainBackgroundWork(t, srv)
@@ -86,6 +103,22 @@ func gzipBytes(t *testing.T, raw []byte) []byte {
 		t.Fatalf("gzip close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// incompressible returns n bytes that do not compress.
+//
+// Seeded, so a failure is reproducible, and drawn from a pseudo-random source
+// rather than from arithmetic on the index — a short cycle is the trap here: a
+// counter cycling through 251 values compresses 64 KB down to about a kilobyte,
+// which is under the limit the test means to exceed and makes the test pass
+// against a handler that does no enforcement at all.
+func incompressible(n int) string {
+	rng := rand.New(rand.NewSource(1))
+	buf := make([]byte, n)
+	for i := range buf {
+		buf[i] = byte(rng.Intn(256))
+	}
+	return string(buf)
 }
 
 // TestUploadSourceRawBody covers the main path an agent takes: a tarball piped
@@ -174,6 +207,107 @@ func TestUploadSourceMultipart(t *testing.T) {
 	decodeData(t, rec, &result)
 	if want := 1 + source.SeededFileCount(); result.Files != want {
 		t.Errorf("files = %d, want %d", result.Files, want)
+	}
+}
+
+// TestUploadSourceRefusesOverTheAdvertisedLimit is the guarantee the config
+// endpoint makes.
+//
+// `max_simple_upload` is published through GET /api/v1/config so a client can
+// size an upload without discovering the limit by being rejected. That promise
+// only holds if the simple path enforces it: for a long time it did not — the
+// field was advertised, the simple path capped at the 2 GiB absolute ceiling
+// instead, and nothing ever read the configured figure. A client that trusted
+// the number it was handed would send a tree the deployment had said was too
+// large and have it accepted.
+//
+// Both body forms, because they are capped in different places: the raw body is
+// limited where it is streamed into the ingest, and the multipart form has to be
+// capped before ParseMultipartForm reads it.
+func TestUploadSourceRefusesOverTheAdvertisedLimit(t *testing.T) {
+	srv, _, _ := newSourceServerWithLimit(t, 4<<10)
+	h := srv.Handler()
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+		t.Fatalf("create app: %d", rec.Code)
+	}
+
+	// Incompressible, so the archive that actually goes over the wire is over
+	// the limit. A repeated character would not do: 64 KB of "x" gzips to a few
+	// hundred bytes, and the test would pass a body the deployment was right to
+	// accept.
+	big := map[string]string{"big.bin": incompressible(64 << 10)}
+	archive := gzipBytes(t, tarFiles(t, big))
+
+	t.Run("raw body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/shop/source", bytes.NewReader(archive))
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Content-Type", "application/gzip")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413 (%s)", rec.Code, rec.Body.String())
+		}
+		// The message has to name a way through. "Too large" on its own leaves
+		// the caller with nothing to do about it.
+		if body := rec.Body.String(); !strings.Contains(body, "source/uploads") {
+			t.Errorf("the refusal does not name the chunked path: %s", body)
+		}
+	})
+
+	t.Run("multipart form", func(t *testing.T) {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		partHeader := textproto.MIMEHeader{}
+		partHeader.Set("Content-Disposition", `form-data; name="file"; filename="source.tar.gz"`)
+		partHeader.Set("Content-Type", "application/gzip")
+		part, err := writer.CreatePart(partHeader)
+		if err != nil {
+			t.Fatalf("create part: %v", err)
+		}
+		if _, err := part.Write(archive); err != nil {
+			t.Fatalf("write part: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close writer: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/shop/source", &body)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		// Not asserted on the exact body here: this form is refused by
+		// MaxBytesReader before the part is parsed, so the handler never reaches
+		// the message. What matters is that it is refused rather than spooled.
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413 (%s)", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestUploadSourceUnderTheLimitStillWorks is the other half of the guarantee,
+// and the one that keeps the enforcement from being a wall: an archive inside
+// the advertised limit is accepted exactly as before.
+func TestUploadSourceUnderTheLimitStillWorks(t *testing.T) {
+	srv, _, _ := newSourceServerWithLimit(t, 1<<20)
+	h := srv.Handler()
+
+	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"}); rec.Code != http.StatusCreated {
+		t.Fatalf("create app: %d", rec.Code)
+	}
+
+	archive := gzipBytes(t, tarFiles(t, map[string]string{"main.go": "package main\n"}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/shop/source", bytes.NewReader(archive))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/gzip")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload under the limit: %d (%s)", rec.Code, rec.Body.String())
 	}
 }
 

@@ -732,50 +732,54 @@ type UploadOptions struct {
 //
 // It exists so a source tree too large for one request can still be sent, and it
 // is deliberately not the default: for an archive of ordinary size the single
-// request is faster and has fewer ways to go wrong.
+// request is faster and has fewer ways to go wrong. `applab push` reaches for it
+// when the deployment refuses the simple upload for its size, using the figure
+// the deployment advertises in Config — see the fallback in cmd/applab-cli.
 //
-// Nothing calls it yet. `MaxSimpleUpload` is advertised through Config as the
-// limit above which a caller should switch to this, but the simple path does not
-// enforce it — see the note on maxArchiveBytes in internal/api/source.go — so no
-// caller ever needs the fallback, and `applab push` uses the simple path for
-// everything. That is a gap rather than a design: either the limit is enforced
-// and this becomes the path large pushes take, or the limit and these three
-// routes go away. Whoever resolves it should resolve both halves together.
+// **The archive is spooled to a temporary file first**, and that is a
+// requirement of the protocol rather than a convenience. The server is told how
+// many parts to expect before the first one arrives, so a client has to know the
+// total length up front — and the archive arrives as a `io.Reader` from a pipe
+// in the CLI, which cannot be seeked or measured without reading it. The earlier
+// version of this function resolved that by reading every part into a slice,
+// which meant an archive of a gigabyte was a gigabyte of memory: exactly the
+// case the chunked path exists for, and exactly the case where it would have
+// been killed. Spooling costs the disk the server is going to spend anyway and
+// keeps memory to one part.
+//
+// The parts are then sent one at a time from the file, so a retry of a single
+// part costs one part rather than the whole upload.
 func (c *Client) UploadSourceChunked(ctx context.Context, appID string, archive io.Reader, opts UploadOptions, chunkSize int64) (*UploadResult, error) {
 	if chunkSize <= 0 {
 		chunkSize = 8 << 20
 	}
 
-	// The archive is read in parts and each is sent as it is read, so the whole
-	// thing never has to be in memory.
-	type part struct {
-		index int
-		data  []byte
+	// A spool file rather than a buffer. os.CreateTemp's directory is the
+	// system temp dir, which is where a caller staging an upload would put it.
+	spool, err := os.CreateTemp("", "applab-upload-*")
+	if err != nil {
+		return nil, fmt.Errorf("create a staging file for the archive: %w", err)
 	}
-	var parts []part
+	spoolPath := spool.Name()
+	defer func() {
+		spool.Close()
+		os.Remove(spoolPath)
+	}()
 
-	reader := io.LimitReader(archive, 2<<30)
-	buffer := make([]byte, chunkSize)
-	for index := 1; ; index++ {
-		n, err := io.ReadFull(reader, buffer)
-		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buffer[:n])
-			parts = append(parts, part{index: index, data: chunk})
-		}
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read source archive: %w", err)
-		}
+	// Capped at the same absolute ceiling the server enforces, so a reader that
+	// never ends is refused here rather than filling the disk.
+	size, err := io.Copy(spool, io.LimitReader(archive, 2<<30))
+	if err != nil {
+		return nil, fmt.Errorf("read source archive: %w", err)
 	}
-	if len(parts) == 0 {
+	if size == 0 {
 		return nil, fmt.Errorf("the source archive is empty")
 	}
 
+	total := int((size + chunkSize - 1) / chunkSize)
+
 	beginBody, _ := json.Marshal(map[string]any{
-		"total":      len(parts),
+		"total":      total,
 		"chunk_size": chunkSize,
 		"message":    opts.Message,
 	})
@@ -791,10 +795,22 @@ func (c *Client) UploadSourceChunked(ctx context.Context, appID string, archive 
 		return nil, fmt.Errorf("the deployment did not return an upload id")
 	}
 
-	for _, p := range parts {
-		path := fmt.Sprintf("/api/v1/apps/%s/source/uploads/%s/parts/%d", appID, begin.UploadID, p.index)
-		if err := c.do(ctx, http.MethodPut, path, bytes.NewReader(p.data), "application/octet-stream", nil); err != nil {
-			return nil, fmt.Errorf("send part %d of %d: %w", p.index, len(parts), err)
+	for index := 1; index <= total; index++ {
+		offset := int64(index-1) * chunkSize
+		length := chunkSize
+		if remaining := size - offset; remaining < length {
+			length = remaining
+		}
+
+		// One part in memory at a time, sliced out of the spool file.
+		part := make([]byte, length)
+		if _, err := spool.ReadAt(part, offset); err != nil {
+			return nil, fmt.Errorf("read part %d of %d: %w", index, total, err)
+		}
+
+		path := fmt.Sprintf("/api/v1/apps/%s/source/uploads/%s/parts/%d", appID, begin.UploadID, index)
+		if err := c.do(ctx, http.MethodPut, path, bytes.NewReader(part), "application/octet-stream", nil); err != nil {
+			return nil, fmt.Errorf("send part %d of %d: %w", index, total, err)
 		}
 	}
 

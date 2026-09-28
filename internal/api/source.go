@@ -23,22 +23,57 @@ import (
 // roughly "this is build output that should have been excluded", not "this is
 // what we expect a source tree to weigh".
 //
-// **It is the only limit the simple path enforces.** `MaxSimpleUpload` exists in
-// the configuration, defaults to 8 MiB, and is advertised to clients through
-// `GET /api/v1/config` as the size above which they should switch to the chunked
-// endpoints — but nothing here reads it, so a 500 MiB tree posted to
-// `POST /source` in one request is accepted. That is a gap, not a decision:
-// either the simple path should enforce the configured limit (and then
-// `applab push` needs the chunked fallback that `UploadSourceChunked` was
-// written for and never wired to), or the advertised limit and the three
-// /source/uploads routes should go. Both halves belong together, and neither is
-// free — the first makes oversized pushes work, the second removes code that
-// does not.
-//
-// What can break in the meantime is the memory of a client that trusts the
-// advertised figure, not the server: the stream is capped here, so an oversized
-// upload is refused rather than expanding without bound.
+// It is the ceiling; `MaxSimpleUpload` is the working limit on the one-request
+// path. That one is advertised through `GET /api/v1/config` as the size above
+// which a client should switch to the chunked endpoints, and it is enforced here
+// so a client can rely on the figure it was given: an upload over it is refused
+// with 413 and a message naming the chunked path, rather than accepted and
+// quietly expanded. `applab push` and the seeded `applab.sh` both read that
+// figure and fall back on their own — see Client.UploadSourceChunked.
 const maxArchiveBytes int64 = 2 << 30 // 2 GiB
+
+// multipartSlack is how much larger than the archive a multipart body may be.
+//
+// The body carries the archive plus its part headers and the closing boundary,
+// and the client cannot know that overhead exactly before it renders it. This is
+// the amount the *body* is allowed over the archive limit; the archive itself is
+// still capped at the limit exactly, by a second reader around the file part.
+//
+// That split is the point. A single cap on the body cannot serve both jobs: set
+// it at the limit and a file exactly at the advertised size is refused for the
+// few hundred bytes of framing around it, so the number the deployment
+// published is quietly wrong; set it at the limit plus a generous slack and a
+// small limit is no limit at all — a 4 KiB limit with a 1 MiB slack accepts a
+// megabyte, which is worse than not enforcing it, because the caller believed
+// the figure it was given. The body cap is a cheap early guard against spooling
+// something enormous; the file cap is the guarantee.
+const multipartSlack int64 = 8 << 10 // 8 KiB of framing
+
+// simpleUploadLimit is the largest archive the single-request path accepts.
+//
+// Falls back to the absolute ceiling when nothing is configured, so a
+// deployment that deliberately sets no limit keeps the old behaviour rather than
+// gaining a zero-byte one.
+func (s *Server) simpleUploadLimit() int64 {
+	if s.cfg.MaxSimpleUpload <= 0 {
+		return maxArchiveBytes
+	}
+	return s.cfg.MaxSimpleUpload
+}
+
+// overLimitError is what an upload over the advertised limit is told.
+//
+// A 413 rather than a 400, and it names the way through rather than only the
+// wall. The limit is published in /api/v1/config so a client can size its
+// uploads without discovering it by rejection — and a client that hits it
+// anyway needs to hear that a chunked path exists, because "too large" on its
+// own leaves nothing to do about it.
+func overLimitError(limit int64) *apiError {
+	return Errorf(http.StatusRequestEntityTooLarge,
+		"the archive is larger than this deployment's single-request limit of %d bytes; "+
+			"upload it in parts through /api/v1/apps/{app}/source/uploads, or raise max_simple_upload",
+		limit)
+}
 
 // handleUploadSource accepts a source archive in a single request.
 //
@@ -82,6 +117,14 @@ func (s *Server) handleUploadSource(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.sourceIngest(r.Context(), app.ID, branch, body, message, parent)
 	if err != nil {
+		// A body past the cap reports itself from inside the ingest, because
+		// that is what reads the stream — so the classification lands here.
+		// The limit is read again rather than carried down: it is a property of
+		// the deployment, and the message needs the number.
+		if isBodyTooLarge(err) {
+			fail(w, r, overLimitError(s.simpleUploadLimit()))
+			return
+		}
 		fail(w, r, ingestError(err))
 		return
 	}
@@ -128,11 +171,27 @@ func (s *Server) handleUploadSource(w http.ResponseWriter, r *http.Request) {
 // as it arrives, which is what lets a large piped archive avoid a second copy.
 func (s *Server) requestArchive(r *http.Request) (io.Reader, func(), error) {
 	contentType := r.Header.Get("Content-Type")
+	limit := s.simpleUploadLimit()
 
 	if strings.HasPrefix(contentType, "multipart/form-data") {
+		// MaxBytesReader before ParseMultipartForm, not after: the parse is what
+		// reads the body, so a limit applied afterwards has already been passed.
+		// It also truncates the connection rather than letting the upload run to
+		// completion and only then be refused, which for a gigabyte is the
+		// difference between a fast no and a long one.
+		//
+		// The reader is installed on the request rather than used directly here
+		// because ParseMultipartForm reads r.Body itself; replacing r.Body is
+		// what gets the cap in front of it.
+		r.Body = http.MaxBytesReader(nil, r.Body, limit+multipartSlack)
+
 		// ParseMultipartForm's argument is the in-memory threshold; anything
 		// larger spills to a temp file that RemoveAll cleans up.
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				return nil, func() {}, overLimitError(limit)
+			}
 			return nil, func() {}, BadRequest("parse multipart body: %s", err.Error())
 		}
 		cleanup := func() {
@@ -146,12 +205,23 @@ func (s *Server) requestArchive(r *http.Request) (io.Reader, func(), error) {
 			cleanup()
 			return nil, func() {}, BadRequest("multipart body has no \"file\" field: %s", err.Error())
 		}
-		return file, func() { file.Close(); cleanup() }, nil
+
+		// The exact limit, applied to the part rather than the body. The body
+		// cap above is limit+slack and only guards against spooling something
+		// enormous; this is what makes the advertised figure true.
+		//
+		// One byte over is read so an archive exactly at the limit still passes:
+		// MaxBytesReader trips on the (limit+1)th byte, so a file of exactly
+		// `limit` is read whole and accepted.
+		capped := http.MaxBytesReader(nil, file, limit)
+		return capped, func() { file.Close(); cleanup() }, nil
 	}
 
-	// A raw body. The size is capped so an over-large upload is refused before
-	// it has been fully consumed and expanded on disk.
-	limited := http.MaxBytesReader(nil, r.Body, maxArchiveBytes)
+	// A raw body, capped at the advertised limit rather than the absolute
+	// ceiling. MaxBytesReader reports the overflow as a *MaxBytesError from the
+	// read, so the refusal surfaces where the stream is consumed — inside
+	// sourceIngest — rather than here, where nothing has been read yet.
+	limited := http.MaxBytesReader(nil, r.Body, limit)
 	return limited, func() { r.Body.Close() }, nil
 }
 
@@ -214,6 +284,17 @@ func ingestError(err error) *apiError {
 		}
 		return Errorf(http.StatusInternalServerError, "store source").Wrap(err)
 	}
+}
+
+// isBodyTooLarge reports whether an ingest failure is a request body that ran
+// past the cap the handler put on it.
+//
+// It is separate from ingestError because the size that was exceeded is only
+// known where the cap was set, and the message that helps a caller names it —
+// see overLimitError. This only classifies.
+func isBodyTooLarge(err error) bool {
+	var tooLarge *http.MaxBytesError
+	return errors.As(err, &tooLarge)
 }
 
 // isArchiveProblem reports whether an error describes a bad archive rather than

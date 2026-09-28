@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -659,5 +660,98 @@ func TestDeployReportsAnUnavailableCapability(t *testing.T) {
 		t.Fatal("Deploy succeeded against a deployment that cannot build")
 	} else if !strings.Contains(deployErr.Error(), message) {
 		t.Errorf("error = %q, want it to carry the server's explanation", deployErr)
+	}
+}
+
+// TestUploadSourceChunkedSendsEveryPart asserts the three-call protocol is
+// driven correctly: the declared part count matches what is sent, the parts
+// reassemble into the original archive, and the commit comes back.
+//
+// This method had no test and no caller for its whole life, which is how it
+// came to buffer an entire archive in memory despite its comment claiming it
+// did not. A test that only checked the request count would not have caught
+// that; this one round-trips the bytes.
+func TestUploadSourceChunkedSendsEveryPart(t *testing.T) {
+	// Not a multiple of the part size, so the last part is short — the case
+	// where an off-by-one in the part count shows up.
+	original := []byte(strings.Repeat("applab-chunked-upload-", 500) + "tail")
+
+	parts := map[string][]byte{}
+	var declaredTotal, declaredChunkSize int
+
+	srv, _ := newTestServer(t, map[string]func(http.ResponseWriter, *http.Request){
+		"/api/v1/apps/shop/source/uploads": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Total     int   `json:"total"`
+				ChunkSize int64 `json:"chunk_size"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			declaredTotal, declaredChunkSize = body.Total, int(body.ChunkSize)
+			dataResponse(w, map[string]any{"upload_id": "up-1"})
+		},
+		"/api/v1/apps/shop/source/uploads/up-1/parts/*": func(w http.ResponseWriter, r *http.Request) {
+			index := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			body, _ := io.ReadAll(r.Body)
+			parts[index] = body
+			dataResponse(w, map[string]any{"index": index})
+		},
+		"/api/v1/apps/shop/source/uploads/up-1/complete": func(w http.ResponseWriter, r *http.Request) {
+			dataResponse(w, map[string]any{"commit_sha": strings.Repeat("a", 40), "files": 3})
+		},
+	})
+
+	c := newTestClient(t, srv.URL)
+	result, err := c.UploadSourceChunked(context.Background(), "shop",
+		bytes.NewReader(original), UploadOptions{Message: "big upload"}, 1000)
+	if err != nil {
+		t.Fatalf("UploadSourceChunked: %v", err)
+	}
+	if result.Files != 3 {
+		t.Errorf("files = %d, want 3", result.Files)
+	}
+
+	if declaredChunkSize != 1000 {
+		t.Errorf("declared chunk_size = %d, want 1000", declaredChunkSize)
+	}
+	// The count the server was promised has to match what it is sent, or the
+	// completion is refused for a missing part.
+	if declaredTotal != len(parts) {
+		t.Fatalf("declared %d parts but sent %d", declaredTotal, len(parts))
+	}
+
+	// Reassembled in order, the parts are the archive again. Read back by index
+	// rather than by map order, which is the whole point of the index.
+	var got []byte
+	for i := 1; i <= declaredTotal; i++ {
+		part, ok := parts[strconv.Itoa(i)]
+		if !ok {
+			t.Fatalf("part %d was never sent", i)
+		}
+		got = append(got, part...)
+	}
+	if !bytes.Equal(got, original) {
+		t.Errorf("the reassembled archive is %d bytes, want %d", len(got), len(original))
+	}
+}
+
+// TestUploadSourceChunkedReportsAnEmptyArchive asserts an archive that turns out
+// to have nothing in it is refused before the server is asked to create an
+// upload for it.
+func TestUploadSourceChunkedReportsAnEmptyArchive(t *testing.T) {
+	begun := false
+	srv, _ := newTestServer(t, map[string]func(http.ResponseWriter, *http.Request){
+		"/api/v1/apps/shop/source/uploads": func(w http.ResponseWriter, r *http.Request) {
+			begun = true
+			dataResponse(w, map[string]any{"upload_id": "up-1"})
+		},
+	})
+
+	c := newTestClient(t, srv.URL)
+	if _, err := c.UploadSourceChunked(context.Background(), "shop",
+		strings.NewReader(""), UploadOptions{}, 1000); err == nil {
+		t.Fatal("an empty archive was accepted")
+	}
+	if begun {
+		t.Error("the server was asked to begin an upload for an empty archive")
 	}
 }

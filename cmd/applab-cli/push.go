@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,6 +199,78 @@ func applySettingsIfChanged(ctx context.Context, c *client.Client, app *client.A
 	return err
 }
 
+// archiver streams a source archive into a pipe.
+//
+// It exists as a type rather than as the four lines it wraps because the upload
+// can be tried twice: a deployment refuses an archive over the limit it
+// advertises, and by then the first stream may have been partly consumed and
+// cannot be rewound. A second one has to be built from the same tree, so the
+// construction is named rather than open-coded at the call site.
+//
+// Three things have to stay true, and each is a line here:
+//
+//   - The archive is built into a pipe, so a tree larger than memory never has
+//     to fit in memory.
+//   - The goroutine's error reaches the caller. A failure mid-archive that only
+//     closed the pipe would look like a short upload, and a short upload commits
+//     half a source tree.
+//   - Abandoning the stream is possible without waiting for the archiver to
+//     finish, since the reader stopped early and the writer is blocked.
+type archiver struct {
+	reader io.Reader
+	pipe   *io.PipeWriter
+	errCh  chan error
+}
+
+func newArchiver(ctx context.Context, dir string, skip []string) *archiver {
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+
+	go func() {
+		err := client.ArchiveDir(ctx, dir, pw, skip)
+		// CloseWithError propagates the failure to the reader, which is what
+		// makes a broken archive fail the upload instead of sending a truncated
+		// one that would commit half a source tree.
+		pw.CloseWithError(err)
+		errCh <- err
+	}()
+
+	return &archiver{reader: pr, pipe: pw, errCh: errCh}
+}
+
+// Read makes an archiver an io.Reader, which is what the client wants.
+func (a *archiver) Read(p []byte) (int, error) { return a.reader.Read(p) }
+
+// finish waits for the archiver and reports whether it succeeded. It is called
+// on the path where the upload did not error, so the archive was read to the end
+// and the goroutine has already exited.
+func (a *archiver) finish() error {
+	if err := <-a.errCh; err != nil {
+		return fmt.Errorf("package source: %w", err)
+	}
+	return nil
+}
+
+// abandon releases the archiver after a failed read.
+//
+// Closing the pipe with the error unblocks the goroutine, which is the only way
+// it can stop once nobody is reading. The drain afterwards is what makes the
+// wait bounded: a failure that came from the server — a refusal, a dropped
+// connection — leaves the archiver with more to write, and abandoning without
+// waiting would let the command return while a goroutine is still walking the
+// tree.
+func (a *archiver) abandon(cause error) {
+	a.pipe.CloseWithError(cause)
+	<-a.errCh
+}
+
+// isTooLarge reports whether an upload failed because the archive was over the
+// deployment's single-request limit.
+func isTooLarge(err error) bool {
+	var apiErr *client.APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusRequestEntityTooLarge
+}
+
 // uploadDirectory packages and uploads the source.
 func uploadDirectory(ctx context.Context, c *client.Client, opts *pushOptions, cfg *client.Config) error {
 	dir, err := filepath.Abs(opts.dir)
@@ -226,22 +299,6 @@ func uploadDirectory(ctx context.Context, c *client.Client, opts *pushOptions, c
 
 	skip := append(append([]string{}, client.DefaultSkipDirs...), opts.skip...)
 
-	// The archive is built into a pipe so a large tree never has to fit in
-	// memory, and the upload streams from the other end. The goroutine reports
-	// its error through a channel because a failure mid-archive has to reach the
-	// caller rather than silently truncating the upload.
-	pr, pw := io.Pipe()
-	archiveErr := make(chan error, 1)
-
-	go func() {
-		err := client.ArchiveDir(ctx, dir, pw, skip)
-		// CloseWithError propagates the failure to the reader, which is what
-		// makes a broken archive fail the upload instead of sending a truncated
-		// one that would commit half a source tree.
-		pw.CloseWithError(err)
-		archiveErr <- err
-	}()
-
 	fmt.Fprintf(os.Stderr, "AppLab: uploading %s\n", dir)
 
 	// Publish: false because the command ships the commit itself, by name, a few
@@ -252,20 +309,42 @@ func uploadDirectory(ctx context.Context, c *client.Client, opts *pushOptions, c
 	// The server's default is to publish, so this is the one caller that has to
 	// say otherwise; a curl or the console uploading a tarball gets the
 	// behaviour it expects without asking.
-	result, err := c.UploadSource(ctx, opts.app, pr, client.UploadOptions{
-		Compressed: true,
-		Message:    opts.message,
-		Publish:    false,
-	})
+	uploadOpts := client.UploadOptions{Compressed: true, Message: opts.message, Publish: false}
+
+	source := newArchiver(ctx, dir, skip)
+	result, err := c.UploadSource(ctx, opts.app, source, uploadOpts)
 	if err != nil {
-		// Drain the pipe so the archiving goroutine is not left blocked on a
-		// write nobody will read.
-		pr.CloseWithError(err)
-		<-archiveErr
-		return fmt.Errorf("upload source: %w", err)
-	}
-	if archiveErr := <-archiveErr; archiveErr != nil {
-		return fmt.Errorf("package source: %w", archiveErr)
+		// The archiver may still be writing into a pipe nobody is reading;
+		// closing it is what releases the goroutine.
+		source.abandon(err)
+
+		// A deployment refuses an archive over the limit it advertises, and the
+		// limit is advertised precisely so a client can find another way rather
+		// than discover it by being rejected. The other way is the chunked
+		// endpoints, which is what they exist for.
+		if !isTooLarge(err) {
+			return fmt.Errorf("upload source: %w", err)
+		}
+
+		fmt.Fprintf(os.Stderr, "AppLab: over this deployment's single-request limit (%s); sending it in parts\n",
+			humanBytes(cfg.MaxSimpleUpload))
+
+		// A second run of the archiver rather than a rewind: the refusal can
+		// arrive after part of the stream has been consumed, and a pipe cannot
+		// be seeked, so what is left of the first one is not an archive. The
+		// tree is the same tree, so re-running tar produces the same bytes.
+		retry := newArchiver(ctx, dir, skip)
+		chunked, chunkedErr := c.UploadSourceChunked(ctx, opts.app, retry, uploadOpts, cfg.ChunkSize)
+		if chunkedErr != nil {
+			retry.abandon(chunkedErr)
+			return fmt.Errorf("upload source in parts: %w", chunkedErr)
+		}
+		if err := retry.finish(); err != nil {
+			return err
+		}
+		result = chunked
+	} else if err := source.finish(); err != nil {
+		return err
 	}
 
 	if result.StrippedRoot != "" {
