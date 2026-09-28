@@ -516,9 +516,20 @@ resources:
     cpu: "1"
     memory: 1Gi
 
-# Upload limits. maxSimpleUpload should stay at or below the body limit of
-# whatever proxy sits in front — a rejected body from an ingress arrives as HTML,
-# which is useless to a client parsing JSON.
+# Upload limits.
+#
+# maxSimpleUpload is the largest archive accepted in one request. Above it the
+# API refuses with a 413, and both clients — `applab push` and the seeded
+# applab.sh — fall back to sending the archive in parts of chunkSize, so raising
+# this is a trade rather than a capacity: a single request is faster and needs no
+# temp file, while the chunked path stages the archive on disk and sends it a
+# part at a time.
+#
+# What bounds it from above is the proxy in front. An ingress with a smaller
+# body limit rejects the request before AppLab sees it, and the client gets
+# whatever the proxy says — nginx's is an HTML error page, which is useless to a
+# caller parsing JSON and, worse, does not carry the 413 the fallback looks for.
+# Keep this at or below that limit, or the fallback never gets a chance to run.
 upload:
   maxSimpleUpload: 8388608
   chunkSize: 8388608

@@ -123,16 +123,22 @@ type Config struct {
 	// a hostname of its own, the original behaviour.
 	PathPrefix string `yaml:"path_prefix"`
 
-	// MaxSimpleUpload is meant to be the largest source archive accepted in one
-	// request, above which a client should switch to the chunked endpoints. It is
-	// advertised through GET /api/v1/config for that reason: a client that
-	// discovers a limit by being rejected wastes a whole upload to learn
-	// something the server could have told it.
+	// MaxSimpleUpload is the largest source archive accepted in one request,
+	// above which a client switches to the chunked endpoints. It is advertised
+	// through GET /api/v1/config for that reason: a client that discovers a
+	// limit by being rejected wastes a whole upload to learn something the
+	// server could have told it, and both `applab push` and the seeded
+	// applab.sh read it to size their upload rather than guess.
 	//
-	// It is not enforced. The simple path caps at maxArchiveBytes (2 GiB) and
-	// never reads this, so the advertised figure is smaller than the one in use —
-	// and nothing consumes the chunked endpoints it points at. See the note on
-	// maxArchiveBytes in internal/api/source.go for the two ways to close that.
+	// It is enforced on `POST /source`, on both the raw and the multipart body,
+	// and an upload over it is refused with a 413 that names the chunked path.
+	// The absolute ceiling is higher and separate: see maxArchiveBytes in
+	// internal/api/source.go for why there are two numbers rather than one.
+	//
+	// Raising it trades memory and a single request for the transfer: an
+	// archive sent in one request is spooled whole, while the chunked path
+	// stages it on disk and sends a part at a time. It must not be smaller than
+	// ChunkSize, which the config validation refuses.
 	MaxSimpleUpload int64 `yaml:"max_simple_upload"`
 
 	// ChunkSize is the part size the chunked upload endpoints advertise.
