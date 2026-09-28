@@ -45,9 +45,23 @@ FROM nginx:1.27-alpine
 # listen below 1024 without being privileged, and it applies whether or not the
 # app is nginx. A base image whose own build already runs unprivileged, or one
 # listening above 1024, needs none of this.
-RUN mkdir -p /var/cache/nginx \
- && touch /var/run/nginx.pid \
- && chown -R nginx:nginx /var/cache/nginx /var/run/nginx.pid
+#
+# /run and not /var/run, which is what this used to name and what breaks the
+# build: on Alpine /var/run is a relative symlink to ../run, and kaniko excludes
+# /var/run from the filesystem it unpacks — --ignore-var-run, on by default — so
+# the symlink dangles and the RUN dies with
+#
+#     touch: /var/run/nginx.pid: No such file or directory
+#
+# The real path is also the one nginx itself uses: its config says
+# `pid /run/nginx.pid`, so touching the /var/run spelling was writing a file
+# nothing would read even when it worked. /run is a real directory in the base
+# image and is not excluded.
+#
+# The directory is chowned rather than only the pid file, because nginx creates
+# that file itself at start-up and needs to write inside its parent.
+RUN mkdir -p /var/cache/nginx /run \
+ && chown -R nginx:nginx /var/cache/nginx /run
 USER nginx
 
 # nginx's own image already listens on 80 and serves /usr/share/nginx/html, so

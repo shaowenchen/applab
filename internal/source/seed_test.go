@@ -91,6 +91,72 @@ func TestANewAppStartsWithAnExampleDockerfile(t *testing.T) {
 //
 // Asserted on the rendered tree rather than on the template, so a substitution
 // that broke the file would be caught here too.
+// TestTheExampleDockerfileDoesNotTouchVarRun is the regression for a build that
+// failed on the very first deploy of a new app.
+//
+// The example chowned nginx's pid file through /var/run, and the build died:
+//
+//	touch: /var/run/nginx.pid: No such file or directory
+//
+// Two things are wrong with that path, and either alone breaks it. On Alpine
+// /var/run is a *relative symlink* to ../run, and kaniko excludes /var/run from
+// the filesystem it unpacks — --ignore-var-run, on by default — so the symlink
+// dangles and the redirect fails. And even where it resolves, nginx's own config
+// says `pid /run/nginx.pid`, so the /var/run spelling wrote a file nothing read.
+//
+// The check is on the real path rather than on the absence of a string: /run is
+// a directory in the base image, is not excluded, and is what nginx uses.
+func TestTheExampleDockerfileDoesNotTouchVarRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Create(ctx, "shop", main); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	body := fileAtTip(t, s, "shop", "Dockerfile")
+
+	// The RUN instructions, joined across their continuations. Read per
+	// instruction rather than per line: a RUN is allowed to wrap, and the broken
+	// version put /var/run on the continuation line — a scan that looked at one
+	// line at a time passed against it, which is how this check was written
+	// wrong the first time.
+	//
+	// Comments are dropped, since the comment above explains this very path and
+	// a check over the raw text would force the explanation out of the file.
+	var instructions []string
+	var current string
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if current == "" && !strings.HasPrefix(strings.ToUpper(trimmed), "RUN ") {
+			continue
+		}
+		if strings.HasSuffix(trimmed, "\\") {
+			current += strings.TrimSuffix(trimmed, "\\") + " "
+			continue
+		}
+		instructions = append(instructions, current+trimmed)
+		current = ""
+	}
+
+	if len(instructions) == 0 {
+		t.Fatal("the example Dockerfile has no RUN instruction, so this check is reading nothing")
+	}
+	for _, ins := range instructions {
+		if strings.Contains(ins, "/var/run") {
+			t.Errorf("the example's RUN touches /var/run, which kaniko excludes and which is only a symlink to /run:\n  %s", ins)
+		}
+	}
+
+	// And it does prepare the pid file's directory, or nginx cannot write there
+	// as the unprivileged user this file drops to.
+	if !strings.Contains(body, "/run") {
+		t.Error("the example prepares no pid path; nginx as a non-root user cannot write /run/nginx.pid without it")
+	}
+}
+
 func TestTheExampleDockerfileDoesNotNeedRoot(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
