@@ -1121,6 +1121,30 @@ async function render(apps) {
     }
 
     {
+      // The dialog streams, and the request has to say so.
+      //
+      // The response is read through body.getReader() and appended to as chunks
+      // arrive, and the Follow button toggles between Follow and Stop to abort
+      // that read — so the whole design is the streaming one. It asked for
+      // follow=false anyway, which returns a single snapshot and closes: the
+      // reader hit done on the first read, the finally block reset the button to
+      // "Follow", and output written after that never appeared. The panel looked
+      // like a log viewer and behaved like a screenshot.
+      const ctx = await logContext(200);
+      const asked = ctx.requests[0] || "";
+      check(
+        "the log request asks the server to follow",
+        asked.includes("follow=true"),
+        true
+      );
+      check(
+        "and never asks for a static snapshot while streaming the body",
+        asked.includes("follow=false"),
+        false
+      );
+    }
+
+    {
       // No cluster client: a legitimate way to run, not a fault, so the panel
       // says which it is instead of sending someone after a bug that is not
       // there. Same 501 the branch control treats as "not configured".

@@ -4419,7 +4419,14 @@ async function startLogs(name) {
   state.logFollowing = true;
   $("log-modal-follow").textContent = t("Stop");
 
-  const params = new URLSearchParams({ follow: "false", tail: "500" });
+  // follow=true, because that is what the button above says it is doing: the
+  // response is read as a stream, appended to as chunks arrive, and the button
+  // toggles between Follow and Stop to abort it. Asking for follow=false here —
+  // which this did — returns one static snapshot and closes, so the reader hit
+  // `done` on the first read, the finally block flipped the button straight back
+  // to "Follow", and nothing a running app wrote afterwards ever appeared. A log
+  // panel that does not follow is the thing people open a log panel for.
+  const params = new URLSearchParams({ follow: "true", tail: "500" });
   if ($("log-modal-previous").checked) params.set("previous", "true");
   // Named when the dialog was opened from an instance row. Without it the
   // endpoint answers with the newest pod's log, which is not the pod that is
