@@ -17,12 +17,27 @@ import (
 	"github.com/shaowenchen/applab/internal/store"
 )
 
-// maxArchiveBytes bounds what the chunked-upload endpoints will assemble.
+// maxArchiveBytes bounds a source archive, on both upload paths.
 //
-// It is larger than the single-request limit because the whole point of the
-// chunked path is to carry something too big for one request — but it is still
-// bounded, since a source tree larger than this is almost always build output
-// that should have been excluded.
+// It is deliberately a large ceiling rather than a working limit: 2 GiB is
+// roughly "this is build output that should have been excluded", not "this is
+// what we expect a source tree to weigh".
+//
+// **It is the only limit the simple path enforces.** `MaxSimpleUpload` exists in
+// the configuration, defaults to 8 MiB, and is advertised to clients through
+// `GET /api/v1/config` as the size above which they should switch to the chunked
+// endpoints — but nothing here reads it, so a 500 MiB tree posted to
+// `POST /source` in one request is accepted. That is a gap, not a decision:
+// either the simple path should enforce the configured limit (and then
+// `applab push` needs the chunked fallback that `UploadSourceChunked` was
+// written for and never wired to), or the advertised limit and the three
+// /source/uploads routes should go. Both halves belong together, and neither is
+// free — the first makes oversized pushes work, the second removes code that
+// does not.
+//
+// What can break in the meantime is the memory of a client that trusts the
+// advertised figure, not the server: the stream is capped here, so an oversized
+// upload is refused rather than expanding without bound.
 const maxArchiveBytes int64 = 2 << 30 // 2 GiB
 
 // handleUploadSource accepts a source archive in a single request.

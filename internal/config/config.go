@@ -123,10 +123,16 @@ type Config struct {
 	// a hostname of its own, the original behaviour.
 	PathPrefix string `yaml:"path_prefix"`
 
-	// MaxSimpleUpload is the largest source archive accepted in one request.
-	// Anything larger must use the chunked endpoints, which is why it is
-	// advertised: a client that discovers the limit by being rejected wastes a
-	// whole upload to learn something the server could have told it.
+	// MaxSimpleUpload is meant to be the largest source archive accepted in one
+	// request, above which a client should switch to the chunked endpoints. It is
+	// advertised through GET /api/v1/config for that reason: a client that
+	// discovers a limit by being rejected wastes a whole upload to learn
+	// something the server could have told it.
+	//
+	// It is not enforced. The simple path caps at maxArchiveBytes (2 GiB) and
+	// never reads this, so the advertised figure is smaller than the one in use —
+	// and nothing consumes the chunked endpoints it points at. See the note on
+	// maxArchiveBytes in internal/api/source.go for the two ways to close that.
 	MaxSimpleUpload int64 `yaml:"max_simple_upload"`
 
 	// ChunkSize is the part size the chunked upload endpoints advertise.

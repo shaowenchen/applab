@@ -39,12 +39,21 @@ a second deployment, or with a key you rotated, takes.
 cloned, uploaded, built into an image and mirrored, so the key goes with every
 copy — into an image layer too, if this directory is what gets built. That is a
 deliberate trade: it is what makes a fresh clone work with no setup. It is
-recoverable, because an admin can replace the key with `applab keys rotate
-{{APP}}` and the next upload writes the new one in. Treat a copy of this
-repository as a copy of the credential. A value the app needs *at runtime*
-belongs in its environment or secret configuration instead — `./applab.sh env
-set` and `./applab.sh secret set` — which is applied on the next deploy and never
-enters the source.
+recoverable, because whoever runs the deployment can replace it with the
+`applab-cli` command
+
+    applab keys rotate {{APP}}
+
+and the next upload writes the new one in. That is the CLI
+(https://github.com/shaowenchen/applab), not the `./applab.sh` in this
+directory: the script has no such command, and it cannot usefully have one —
+rotating from here would invalidate the very credential the script is holding.
+Once the key has been rotated, a checkout whose copy is now stale recovers by
+exporting the new one: `APPLAB_KEY=<new> ./applab.sh self-update`. Treat a copy
+of this repository as a copy of the credential. A value the app needs *at
+runtime* belongs in its environment or secret configuration instead —
+`./applab.sh env set` and `./applab.sh secret set` — which is applied on the
+next deploy and never enters the source.
 
 ## `./applab.sh`
 

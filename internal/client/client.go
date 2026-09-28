@@ -652,8 +652,9 @@ type UploadResult struct {
 // UploadSource sends a source archive.
 //
 // The body is streamed as the request body rather than buffered, so a large
-// archive does not have to fit in memory. Over the simple-upload limit the caller
-// is told to use the chunked path instead of being rejected with an opaque 413.
+// archive does not have to fit in memory. The server accepts anything up to its
+// own hard cap; there is no smaller "simple upload" limit enforced today, so this
+// does not fall back to UploadSourceChunked — see the note on that method.
 func (c *Client) UploadSource(ctx context.Context, appID string, archive io.Reader, opts UploadOptions) (*UploadResult, error) {
 	// publish=false is the only thing that ever travels; see UploadOptions.
 	query := url.Values{}
@@ -704,13 +705,20 @@ type UploadOptions struct {
 	Publish bool
 }
 
-// UploadSourceChunked sends an archive in parts.
+// UploadSourceChunked sends an archive in parts, through the three
+// /source/uploads endpoints.
 //
-// This is the fallback for an archive above the simple-upload limit. It is
-// deliberately not the default: for a source tree of ordinary size the single
-// request is faster and has fewer ways to go wrong, and the deployment reports
-// its own limit through Config so the choice can be made correctly rather than
-// by guessing.
+// It exists so a source tree too large for one request can still be sent, and it
+// is deliberately not the default: for an archive of ordinary size the single
+// request is faster and has fewer ways to go wrong.
+//
+// Nothing calls it yet. `MaxSimpleUpload` is advertised through Config as the
+// limit above which a caller should switch to this, but the simple path does not
+// enforce it — see the note on maxArchiveBytes in internal/api/source.go — so no
+// caller ever needs the fallback, and `applab push` uses the simple path for
+// everything. That is a gap rather than a design: either the limit is enforced
+// and this becomes the path large pushes take, or the limit and these three
+// routes go away. Whoever resolves it should resolve both halves together.
 func (c *Client) UploadSourceChunked(ctx context.Context, appID string, archive io.Reader, opts UploadOptions, chunkSize int64) (*UploadResult, error) {
 	if chunkSize <= 0 {
 		chunkSize = 8 << 20
