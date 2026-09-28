@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -13,17 +14,33 @@ import (
 
 // podMetricsGVR names the resource metrics API for the dynamic client.
 //
-// The same reasoning as virtualServiceGVR: `k8s.io/metrics` is a module of its
-// own, and AppLab reads two numbers out of two fields of one resource. Taking the
-// dependency on would be a second Kubernetes API surface to keep in step with the
-// client-go version, in order to avoid reading a map.
+// v1beta1 and not v1, which is the version this used to ask for and the reason
+// the monitoring panels were empty on every real cluster.
 //
-// The group is metrics.k8s.io, served by metrics-server rather than by the API
-// server itself. A cluster without it answers 404 for this resource and nothing
-// else breaks — see PodUsage.
+// metrics-server registers exactly one version in its storage map, and in every
+// released version — v0.6 through v0.8, including the v0.7.2 this repository's
+// debugger environment installs — that version is v1beta1:
+//
+//	apiGroupInfo.VersionedResourcesStorageMap[v1beta1.SchemeGroupVersion.Version] = metricsServerResources
+//
+// Only master adds a v1 line. A request for a version a group does not serve is
+// answered 404, and PodUsage treats NotFound as "this cluster has no metrics
+// API" — an optional component that is absent rather than a fault — so the
+// whole thing failed silently: no readings, no error, and a console that could
+// not tell that apart from an idle deployment. `kubectl top` reads v1beta1 for
+// the same reason.
+//
+// The same reasoning as virtualServiceGVR applies to the dynamic client:
+// `k8s.io/metrics` is a module of its own, and AppLab reads two numbers out of
+// one resource. Taking the dependency would be a second Kubernetes API surface
+// to keep in step with client-go in order to avoid reading a map.
+//
+// The group is served by metrics-server rather than by the API server itself. A
+// cluster without it answers 404 for the whole group and nothing else breaks —
+// see PodUsage.
 var podMetricsGVR = schema.GroupVersionResource{
 	Group:    "metrics.k8s.io",
-	Version:  "v1",
+	Version:  "v1beta1",
 	Resource: "pods",
 }
 
@@ -62,17 +79,34 @@ type UsageReader interface {
 // resource, which is a missing optional component rather than a fault. Anything
 // else — a timeout, a refused connection — is returned, because that is a real
 // failure the caller may want to report.
+//
+// That conflation is what made the empty panels undiagnosable, and it is kept
+// only because the alternative is worse. A 404 here means one of several things
+// — no metrics-server, no permission to read it, or a version the group does not
+// serve — and none of them is distinguishable from the response alone, so each
+// would have to be reported as a guess. What is logged instead is the one fact
+// the caller cannot see: that the request was answered 404 at all, which is what
+// separates "this cluster has no metrics" from the silent-empty case that made
+// the bug invisible. See podMetricsGVR for the version mismatch that did it.
 func (c *Client) PodUsage(ctx context.Context, namespace, selector string) (map[string]Usage, bool, error) {
 	if c.dynamic == nil {
 		return nil, false, nil
 	}
 
+	// The version is named explicitly rather than left to the client's
+	// negotiation, because there is nothing to negotiate: a group that serves
+	// one version answers 404 for any other, and that 404 is swallowed below.
+	// See podMetricsGVR.
 	list, err := c.dynamic.Resource(podMetricsGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: selector,
 	})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			// No metrics API in this cluster. Not a failure; see the doc comment.
+			// No metrics API this client can read. Not a failure; see the doc
+			// comment. Logged rather than silent, because this is the branch that
+			// hides a version or permission mistake behind an empty panel.
+			slog.DebugContext(ctx, "this cluster answered 404 for the resource metrics API, so no usage is available",
+				"group_version", podMetricsGVR.GroupVersion().String(), "namespace", namespace)
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("read pod usage in %s: %w", namespace, err)

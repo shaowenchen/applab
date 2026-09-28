@@ -380,3 +380,64 @@ func dynamicTestClient(t *testing.T, objects ...*unstructured.Unstructured) *Cli
 	}
 	return NewWithClientset(fake.NewSimpleClientset(), testNS).NewWithDynamic(dyn)
 }
+
+// TestTheMetricsAPIIsReadAsV1beta1 pins the version this reads.
+//
+// It asked for v1, and no released metrics-server serves v1: its storage map
+// registers v1beta1 alone, from v0.6 through v0.8, and only master adds a v1
+// line. A request for a version a group does not serve is answered 404, and
+// PodUsage reads 404 as "this cluster has no metrics API" — a legitimate way to
+// run a cluster — so every reading was silently absent with nothing in the log
+// and nothing on the screen. Empty panels, no error, on a cluster whose
+// metrics-server was working.
+//
+// Asserted as a version rather than as a string in the source, because the
+// mistake is not a typo: v1 is the more modern-looking choice and the reason to
+// prefer v1beta1 is a fact about what the server registers, which is what this
+// records. `kubectl top` reads v1beta1 for the same reason.
+func TestTheMetricsAPIIsReadAsV1beta1(t *testing.T) {
+	if got := podMetricsGVR.Version; got != "v1beta1" {
+		t.Errorf("the metrics API is read as %q, want v1beta1: metrics-server registers v1beta1 in every released version, and asking for anything else is answered 404 — which this code treats as a cluster without metrics, so the panels empty out with no error anywhere", got)
+	}
+	if got := podMetricsGVR.Group; got != "metrics.k8s.io" {
+		t.Errorf("group = %q, want metrics.k8s.io", got)
+	}
+	if got := podMetricsGVR.Resource; got != "pods" {
+		t.Errorf("resource = %q, want pods", got)
+	}
+}
+
+// TestPodUsageReadsTheVersionItAsksFor asserts the fixture and the client agree.
+//
+// The helper builds its fake over podMetricsGVR, so a fixture written against a
+// different version would be registered somewhere the client never looks and the
+// readings would come back empty — passing for the wrong reason, which is how a
+// version mistake hides.
+func TestPodUsageReadsTheVersionItAsksFor(t *testing.T) {
+	metrics := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": podMetricsGVR.GroupVersion().String(),
+		"kind":       "PodMetrics",
+		"metadata": map[string]any{
+			"name":      "applab-shop-1",
+			"namespace": testNS,
+			"labels":    map[string]any{"app.kubernetes.io/part-of": "applab"},
+		},
+		"timestamp": "2026-09-28T12:00:00Z",
+		"containers": []any{
+			map[string]any{"name": "app", "usage": map[string]any{"cpu": "5m", "memory": "1Mi"}},
+		},
+	}}
+
+	client := dynamicTestClient(t, metrics)
+	usage, available, err := client.PodUsage(context.Background(), testNS, "app.kubernetes.io/part-of=applab")
+	if err != nil {
+		t.Fatalf("PodUsage: %v", err)
+	}
+	if !available {
+		t.Fatalf("the fixture is registered on %s but the client read nothing back — the two disagree about the version",
+			podMetricsGVR.GroupVersion())
+	}
+	if got := usage["applab-shop-1"].CPU; got != "5m" {
+		t.Errorf("cpu = %q, want %q", got, "5m")
+	}
+}
