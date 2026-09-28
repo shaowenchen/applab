@@ -1393,19 +1393,42 @@ const $ = (id) => document.getElementById(id);
 
 // baseURL is the deployment's address, taken from where this page was served.
 //
-// The path is included, not just the origin: AppLab can be served under a path
-// (ingress.path), and the console's own directory is exactly that path. Taking
-// the origin alone would drop the prefix and every API call built from it would
-// miss the server. The trailing slash is trimmed, so the result is the form
-// someone would type and what the server reports.
+// The base path is read from the tag the server writes into the head, not from
+// the page's own location. This page is served for *any* address that is not a
+// file — a deep link, a link someone was handed, the address bar after a
+// refresh — so its location is the address a person is reading it at, which is
+// not the same thing as where the deployment is. Deriving the API base from it
+// meant an app's address, which is a real page, asked its own URL for the API:
+// https://host/applab/apps/shop became https://host/applab/apps/shop/api/v1/…
+// That path is not an asset either, so the server answered it with this page —
+// a 200 carrying HTML — and the sign-in failed with "Could not connect: 200 OK:
+// <!doctype html>". Every request built from the base path was the same. The
+// server knows the prefix; the page cannot work it out.
+//
+// The origin is still this page's, because the deployment is reached at the one
+// origin in the location bar and the API is at that origin. Only the path has
+// to come from the server.
 //
 // Guarded rather than assumed: a document can be created without a location
 // (about:blank, some embedded webviews), and reading through it would throw
-// before the sign-in form was usable. The origin alone is the right fallback —
-// it is only wrong for a deployment under a path.
+// before the sign-in form was usable. The tag being absent is the other case —
+// a page served by something that is not this server, which is how the console
+// is served in the tests. The origin alone is the right fallback there, and the
+// path is only wrong for a deployment under a prefix.
 function baseURL() {
-  return (window.location.origin || "") +
-    (window.location.pathname || "").replace(/\/+$/, "");
+  return (window.location.origin || "") + basePath();
+}
+
+// basePath is the path this deployment is served under, "" at the root.
+//
+// Read from the meta tag the server injects — see console.go. An empty
+// attribute value is the root, which is why the tag's presence is checked
+// rather than its content: absent means the page is not being served by a
+// server that knows, and root is the honest answer for that.
+function basePath() {
+  const tag = document.querySelector('meta[name="applab-base-path"]');
+  const path = tag && tag.getAttribute("content");
+  return typeof path === "string" ? path.replace(/\/+$/, "") : "";
 }
 
 // appURL is the address an app is served at.

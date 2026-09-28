@@ -252,7 +252,7 @@ func run() error {
 	// The console is a client of the same public API, so it holds no privileges
 	// and adds no endpoints — it is a page, and everything it does is a call a
 	// person could make with curl.
-	if consoleHandler, err := console.New(); err != nil {
+	if consoleHandler, err := console.New(cfg.BasePath); err != nil {
 		slog.Warn("console is unavailable", "error", err)
 	} else {
 		srv.WithConsole(consoleHandler)

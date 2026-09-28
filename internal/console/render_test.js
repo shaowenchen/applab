@@ -35,6 +35,16 @@ const source = match[1];
 // it would invent elements that do not exist.
 const markup = html.slice(0, html.indexOf("<script>"));
 
+// The base path the server would inject into this page.
+//
+// The server writes it into the head as it serves the page — see console.go —
+// and the console reads it from there rather than from its own location, so a
+// harness that left the tag out would be testing a page the server never
+// serves. Keeping it a constant here rather than deriving it from the stub's
+// location is the point: the two differing is exactly the bug this covers.
+const injectedBasePath = "/applab";
+
+
 // --- A DOM stub, only as complete as the console needs ----------------------
 
 function makeElement(id = "") {
@@ -183,18 +193,37 @@ const sandbox = {
     // the JS-produced strings, which are what the rendering checks assert on,
     // go through t() directly and are covered.
     querySelectorAll: () => [],
+    // The console reads the deployment's base path from the meta tag the server
+    // injects, and this is that tag. Answered rather than left null because a
+    // null here is the "not served by applab" case, which has its own check —
+    // every other check in this file is about a deployment under a path, and
+    // they would all silently become tests of a root deployment without it.
+    querySelector: (selector) => {
+      if (selector !== 'meta[name="applab-base-path"]') return null;
+      return {
+        getAttribute: (name) => (name === "content" ? injectedBasePath : null),
+      };
+    },
     createRange: () => ({ selectNodeContents() {} }),
   },
   // A browser always has both of these. Modelled here rather than left as
   // origin alone, because the console derives the address it offers from them —
   // and a deployment served under a path (ingress.path, the default) would be
   // offered the wrong one if only the origin were read.
+  //
+  // The pathname is deliberately a *deep link* under the base path, not the
+  // base path itself. The page is served for every non-asset address, so this
+  // is what a console opened at an app's own address sees — and reading the
+  // API base from it is the bug that shipped: the console asked
+  // /applab/apps/shop/api/v1/apps, which the server answered with this page, so
+  // sign-in failed with "200 OK: <!doctype html>". A stub whose pathname was
+  // the base path could never have caught it.
   window: {
     // protocol is included because the console reads it: an app's address is
     // offered over the scheme the page was loaded with. A stub without it would
     // make the console look like it mangles every URL, which is the harness
     // missing a field rather than the console having a bug.
-    location: { protocol: "https:", origin: "https://applab.example.com", pathname: "/applab/" },
+    location: { protocol: "https:", origin: "https://applab.example.com", pathname: injectedBasePath + "/apps/shop" },
     // The clipboard fallback selects the value in the document, so the selection
     // API has to exist for that path to run at all.
     getSelection: () => ({ removeAllRanges() {}, addRange(r) { this._range = r; } }),
@@ -424,20 +453,29 @@ async function render(apps) {
 
   // The address the console talks to.
   //
-  // It has to carry the path the page was served from, not just its origin: a
-  // deployment under a path (ingress.path, which the chart defaults to /applab)
-  // is reached at https://host/applab, and every API call built from a bare
-  // origin would miss the server. The stub's pathname is "/applab/", so the
-  // trailing slash being trimmed is part of what this checks.
+  // It has to carry the path the deployment is served under, not just the
+  // origin: a deployment under a path (ingress.path, which the chart defaults to
+  // /applab) is reached at https://host/applab, and every API call built from a
+  // bare origin would miss the server.
   //
-  // Read from baseURL() itself, which is what every call is built from. It used
-  // to be asserted through the sign-in card, which printed it as "Sent to
-  // <address>" — that line was removed, so the check moved to the value rather
-  // than being dropped with the display it happened to be read through.
+  // The path comes from the tag the server injects, and the stub's pathname is
+  // deliberately *not* it — it is a deep link under it. Deriving the base from
+  // the location is the bug that shipped: a console opened at an app's own
+  // address asked /applab/apps/shop/api/v1/apps, the server answered with this
+  // page, and sign-in reported "200 OK: <!doctype html>". If baseURL ever reads
+  // the location again, this returns the deep link and fails.
   check(
-    "the console reports the address it was served from, trailing slash trimmed",
+    "the console reports the deployment's address, from the injected path",
     vm.runInContext("baseURL()", context),
     "https://applab.example.com/applab"
+  );
+
+  // And the injected path is what it says, so the check above cannot pass by
+  // both values happening to agree.
+  check(
+    "which is the injected base path, not the address the page was opened at",
+    vm.runInContext("basePath()", context) !== "/applab/apps/shop",
+    true
   );
 
   // Nothing on the sign-in screen names the deployment's address. It is in the
