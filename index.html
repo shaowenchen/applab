@@ -754,14 +754,16 @@ on. It reaches this app and nothing else: it can push, build, deploy and roll
 back, but cannot delete the app and cannot see any other. That is what makes it
 safe to keep on the machine doing the work, where the admin key — which can
 delete every app this installation manages — should not be.</p>
-<pre><code class="language-bash">export APPLAB_APP_KEY=&lt;the key the command printed&gt;
+<pre><code class="language-bash">export APPLAB_KEY=&lt;the key the command printed&gt;
 </code></pre>
-<p>Both keys authenticate; the difference is reach. See <a href="#keys">Keys</a> for the full
-comparison.</p>
+<p>Both keys go in the same variable — <code>APPLAB_KEY</code> is whichever key you are using,
+and its tier is what decides reach. Nothing reads a separate variable for the
+app's key, so exporting this one replaces the admin key above rather than sitting
+beside it. See <a href="#keys">Keys</a> for the full comparison.</p>
 <h3 id="3-clone-the-apps-repository">3. Clone the app's repository</h3>
 <p>Every app <em>is</em> a git repository from the moment it is created, so it can be
 cloned before it has any content:</p>
-<pre><code class="language-bash">git clone &quot;https://x:$APPLAB_APP_KEY@applab.example.com/git/shop.git&quot;
+<pre><code class="language-bash">git clone &quot;https://x:$APPLAB_KEY@applab.example.com/git/shop.git&quot;
 cd shop
 </code></pre>
 <p>Three things about that URL:</p>
@@ -777,7 +779,7 @@ another is <code>/git/shop@dev.git</code>. Pushing to a branch that does not exi
 creates it.</li>
 </ul>
 <p>If you would rather the key never enter the URL:</p>
-<pre><code class="language-bash">git -c http.extraHeader=&quot;Authorization: Bearer $APPLAB_APP_KEY&quot; \
+<pre><code class="language-bash">git -c http.extraHeader=&quot;Authorization: Bearer $APPLAB_KEY&quot; \
   clone https://applab.example.com/git/shop.git
 </code></pre>
 <h3 id="4-push">4. Push</h3>
@@ -833,12 +835,12 @@ curl -sS &quot;$APPLAB_URL/api/v1/apps/shop/key&quot; \
 either way, and the push is what starts the build.</p>
 <p>Step 5 is a read, since the build and the deploy were already started:</p>
 <pre><code class="language-bash">curl -sS &quot;$APPLAB_URL/api/v1/apps/shop/status&quot; \
-  -H &quot;Authorization: Bearer $APPLAB_APP_KEY&quot;
+  -H &quot;Authorization: Bearer $APPLAB_KEY&quot;
 </code></pre>
 <p>To build and deploy a commit without pushing one — a rebuild, or a commit built
 from another machine:</p>
 <pre><code class="language-bash">curl -sS -X POST &quot;$APPLAB_URL/api/v1/apps/shop/deploy&quot; \
-  -H &quot;Authorization: Bearer $APPLAB_APP_KEY&quot; \
+  -H &quot;Authorization: Bearer $APPLAB_KEY&quot; \
   -H &quot;Content-Type: application/json&quot; \
   -d '{&quot;build&quot;:true}'
 </code></pre>
