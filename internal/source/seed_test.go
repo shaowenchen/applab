@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1217,11 +1218,18 @@ func TestTheSeededScriptFallsBackToPartsWhenRefusedForSize(t *testing.T) {
 
 	// A tree big enough to be cut into more than one 4 KiB part, and with the
 	// Dockerfile the script's own packaging expects to carry.
+	//
+	// The payload is incompressible on purpose. A repeated string is the obvious
+	// fixture and it does not work: 30 KB of "applab-payload-" gzips to about
+	// 270 bytes, so the archive is a single part on any platform. It passed
+	// locally only because GNU tar pads its output to a 20-block record — on
+	// Linux, where the CI runs, the same test declared one part and failed. The
+	// payload has to survive gzip to make the part count mean anything.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
 		t.Fatalf("write Dockerfile: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "payload.bin"), bytes.Repeat([]byte("applab-payload-"), 2000), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "payload.bin"), incompressible(30<<10), 0o644); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
 	scriptPath := filepath.Join(dir, "applab.sh")
@@ -1299,4 +1307,25 @@ func writeJSON(t *testing.T, w http.ResponseWriter, data map[string]any) {
 	if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
 		t.Errorf("encode response: %v", err)
 	}
+}
+
+// incompressible returns n bytes that do not compress.
+//
+// The seed tests build a tree and measure the archive made from it, and gzip
+// undoes anything patterned: 30 KB of a repeated string becomes a few hundred
+// bytes, so an archive meant to need several parts arrives as one and the check
+// passes vacuously. Seeded rather than drawn from the clock so a failure is
+// reproducible, and drawn byte-by-byte rather than from arithmetic on the index
+// — a counter cycling through a short range is compressed nearly as well as a
+// constant, which is the same trap one step further along.
+//
+// The api package has the same helper; the two are separate packages, so it is
+// written twice rather than exported from a test file that cannot be imported.
+func incompressible(n int) []byte {
+	rng := rand.New(rand.NewSource(1))
+	buf := make([]byte, n)
+	for i := range buf {
+		buf[i] = byte(rng.Intn(256))
+	}
+	return buf
 }
