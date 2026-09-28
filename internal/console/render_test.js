@@ -2002,37 +2002,55 @@ async function render(apps) {
     check("an app key's examples name its own app", read("docs-push-cmd").includes("applab push shop"), true);
     check("and its clone command does too", read("docs-clone-cmd").includes("/git/shop.git"), true);
 
-    // How to get applab.sh in the first place.
-    //
-    // The section used to open with `cd <app> && ./applab.sh status`, which
-    // assumes a script the reader may have no way to obtain — it lives in the
-    // repository, and someone who has not cloned anything has no repository.
-    // The deployment serves the same file at /bootstrap.
+    // How to get applab.sh in the first place, which is the developer's section
+    // and the thing this page was missing: it opened with `cd <app> &&
+    // ./applab.sh status`, assuming a script the reader may have no way to
+    // obtain — it lives in the repository, and someone who has not cloned has
+    // no repository.
     {
-      const bootstrap = read("docs-bootstrap-cmd");
+      const developer = read("docs-developer-script-cmd");
       check(
-        "the script section says where to fetch applab.sh from",
-        bootstrap.includes("/bootstrap/applab.sh"),
+        "the developer section says where to fetch applab.sh from",
+        developer.includes("/bootstrap/applab.sh"),
         true
       );
-      check("and makes it executable", bootstrap.includes("chmod +x applab.sh"), true);
-      check("and carries the reader's key", bootstrap.includes("APPLAB_KEY=app-secret"), true);
-      // An app key reaches exactly one app and cannot create one, so the verb
-      // it wants is `use`. Offering `create` to this reader would be a command
-      // that fails.
-      check("and points the fetched script at their app with use", bootstrap.includes("./applab.sh use shop"), true);
-      check("not with create, which that key cannot do", bootstrap.includes("./applab.sh create"), false);
+      check("and makes it executable", developer.includes("chmod +x applab.sh"), true);
+      check("and carries the reader's key", developer.includes("APPLAB_KEY=app-secret"), true);
+      // An app key reaches exactly one app and cannot create one, so pointing
+      // the fetched script at it is `use`. Offering `create` would be a command
+      // that fails for this reader.
+      check("and points it at their app with use", developer.includes("./applab.sh use shop"), true);
+      check("not with create, which that key cannot do", developer.includes("./applab.sh create"), false);
+      // And the shorter path is offered too: the clone, which brings the script
+      // with it already filled in.
+      const clone = read("docs-developer-clone-cmd");
+      check("the developer section leads with the clone", clone.includes("git clone https://applab.example.com/git/shop.git"), true);
+      check("and cds into it", clone.includes("cd shop"), true);
     }
 
-    // An admin has no single app, so the same block has to fall back to a
-    // placeholder and to `create`, which is the verb that makes one.
+    // The admin's section is the other role, and it is the one that makes an
+    // app. An admin has no single app, so it falls back to a placeholder — and
+    // to `create`, the verb that makes one.
     vm.runInContext('state.key = "sk-secret"; state.scope = "admin"; state.app = "";', ctx);
     await docs();
     {
-      const bootstrap = read("docs-bootstrap-cmd");
-      check("an admin is offered create, not use", bootstrap.includes("./applab.sh create <app>"), true);
-      check("and not a use of an app they did not name", bootstrap.includes("./applab.sh use"), false);
-      check("with the deployment's own address", bootstrap.includes("https://applab.example.com/bootstrap/applab.sh"), true);
+      const admin = read("docs-admin-cmd");
+      check("the admin section fetches the script too", admin.includes("/bootstrap/applab.sh"), true);
+      check("an admin is offered create, not use", admin.includes("./applab.sh create <app>"), true);
+      check("and not a use of an app they did not name", admin.includes("./applab.sh use"), false);
+      check("with the deployment's own address", admin.includes("https://applab.example.com/bootstrap/applab.sh"), true);
+      // The handover is what an admin is actually doing, so the section says
+      // how the developer gets the key — reading it back, not remembering it.
+      check("and says how to read the app's key back for handover", read("docs-admin-handover-cmd").includes("applab keys <app>"), true);
+    }
+
+    // Configure: the running app's environment, secrets, bounds and count.
+    {
+      const configure = read("docs-configure-cmd");
+      check("the configure section sets env", configure.includes("./applab.sh env set"), true);
+      check("sets secrets", configure.includes("./applab.sh secret set"), true);
+      check("sets resource bounds", configure.includes("./applab.sh resources set"), true);
+      check("and reads back what is set", configure.includes("./applab.sh config"), true);
     }
 
     // Back to the app key for the sign-out check below.

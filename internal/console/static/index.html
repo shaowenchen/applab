@@ -868,13 +868,32 @@
           <p data-i18n="The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.">The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.</p>
         </div>
 
-        <div class="card" id="doc-script">
-          <h2 data-i18n="Or use the script in the repository">Or use the script in the repository</h2>
-          <p data-i18n="Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.">Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.</p>
-          <pre id="docs-script-cmd"></pre>
-          <p data-i18n="That copy is inside the app's repository, so it is the one you get by cloning. If you have not cloned anything yet — no app, nothing set up — the deployment serves the same script with no app and no key in it. This needs no key, since it names no app; `create` is what then makes one.">That copy is inside the app's repository, so it is the one you get by cloning. If you have not cloned anything yet — no app, nothing set up — the deployment serves the same script with no app and no key in it. This needs no key, since it names no app; <code>create</code> is what then makes one.</p>
-          <pre id="docs-bootstrap-cmd"></pre>
+        <div class="card" id="doc-admin">
+          <h2 data-i18n="Admin: make an app and hand it over">Admin: make an app and hand it over</h2>
+          <p data-i18n="You are the one with an admin key. Making an app takes two commands and no prior setup: fetch the tool, then create the app. The tool is served by the deployment with no app and no key in it, so fetching it needs no credential — that route is what makes a first app possible from nothing.">You are the one with an admin key. Making an app takes two commands and no prior setup: fetch the tool, then create the app. The tool is served by the deployment with no app and no key in it, so fetching it needs no credential — that route is what makes a first app possible from nothing.</p>
+          <pre id="docs-admin-cmd"></pre>
+          <p data-i18n="create prints the new app's key and its clone address. Give the developer both: the address is where they clone from, and the key is what that clone authenticates with. The key can be read again at any time, so it is not the only chance to write it down.">create prints the new app's key and its clone address. Give the developer both: the address is where they clone from, and the key is what that clone authenticates with. The key can be read again at any time, so it is not the only chance to write it down.</p>
+          <pre id="docs-admin-handover-cmd"></pre>
+          <p data-i18n="An app key reaches that one app and nothing else. That is the whole point of handing it over: the developer can ship, roll back and read logs without being able to see or delete anything of anyone else's.">An app key reaches that one app and nothing else. That is the whole point of handing it over: the developer can ship, roll back and read logs without being able to see or delete anything of anyone else's.</p>
+        </div>
+
+        <div class="card" id="doc-developer">
+          <h2 data-i18n="Developer: get the script">Developer: get the script</h2>
+          <p data-i18n="You have been given an app's address and key. Cloning that address gets you the source and applab.sh with it — the script is committed into every app's repository, written with that app's id, key and address already in it, so a fresh clone runs with nothing exported. This is the shortest path from being handed an app to shipping to it.">You have been given an app's address and key. Cloning that address gets you the source and applab.sh with it — the script is committed into every app's repository, written with that app's id, key and address already in it, so a fresh clone runs with nothing exported. This is the shortest path from being handed an app to shipping to it.</p>
+          <pre id="docs-developer-clone-cmd"></pre>
+          <p data-i18n="If you would rather not clone — or you have a project of your own to push — fetch the same script from the deployment and point it at the app. Nothing is exported here either: the deployment's address is written in, and use remembers the app.">If you would rather not clone — or you have a project of your own to push — fetch the same script from the deployment and point it at the app. Nothing is exported here either: the deployment's address is written in, and use remembers the app.</p>
+          <pre id="docs-developer-script-cmd"></pre>
+          <p data-i18n="Either way, the script refreshes itself from the deployment before each command, so a checkout that has not been pushed in a while still talks to the current API. From inside the project:" >Either way, the script refreshes itself from the deployment before each command, so a checkout that has not been pushed in a while still talks to the current API. From inside the project:</p>
+          <pre id="docs-developer-use-cmd"></pre>
           <p><code>./applab.sh help</code> <span data-i18n="lists everything it can do.">lists everything it can do.</span></p>
+        </div>
+
+        <div class="card" id="doc-configure">
+          <h2 data-i18n="Configure the app">Configure the app</h2>
+          <p data-i18n="These change the running app without touching its source, and each takes effect immediately — the pods are replaced, not patched in place. The app's page in this console does all of it by hand.">These change the running app without touching its source, and each takes effect immediately — the pods are replaced, not patched in place. The app's page in this console does all of it by hand.</p>
+          <pre id="docs-configure-cmd"></pre>
+          <p data-i18n="Environment variables and secrets are set the same way and differ in one respect that matters: a secret's value cannot be read back, so a value set and forgotten is one you re-set rather than look up. config lists the names either way.">Environment variables and secrets are set the same way and differ in one respect that matters: a secret's value cannot be read back, so a value set and forgotten is one you re-set rather than look up. config lists the names either way.</p>
+          <p data-i18n="The app must listen on its port for anything to reach it — the Service and the route both target that number. Changing it here changes what they point at; the code has to agree.">The app must listen on its port for anything to reach it — the Service and the route both target that number. Changing it here changes what they point at; the code has to agree.</p>
         </div>
 
         <div class="card" id="doc-keys">
@@ -1730,11 +1749,27 @@ const ZH = {
     "每个应用从创建那一刻起就是一个 git 仓库，所以 clone 和 push 跟平时完全一样。这就是仓库的 clone 地址，它和上传方式提交的是同一份源码。",
   "The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.":
     "key 作为密码写在 URL 里，所以用户名随便填。分支就是在应用名后面加 @分支名，地址其余部分不变。",
-  "Or use the script in the repository": "或者用仓库里的脚本",
-  "Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.":
-    "每个应用的仓库里都带一个 applab.sh，只用 curl 就能完成整个生命周期。脚本里已经写好了应用 ID、key 和地址，所以刚 clone 下来就能直接跑，不需要 export 任何变量；而且每次执行命令前它会自动从部署拉取最新版本。",
-  "That copy is inside the app's repository, so it is the one you get by cloning. If you have not cloned anything yet — no app, nothing set up — the deployment serves the same script with no app and no key in it. This needs no key, since it names no app; `create` is what then makes one.":
-    "那份脚本在应用的仓库里，clone 下来就有。如果还没有 clone 过任何东西——连应用都还没有——部署本身也提供同一个脚本，只是里面不写应用、也不带 key。取它不需要 key，因为它不指向任何应用；应用是用 create 创建的。",
+  "Admin: make an app and hand it over": "管理员：创建应用并交给开发者",
+  "You are the one with an admin key. Making an app takes two commands and no prior setup: fetch the tool, then create the app. The tool is served by the deployment with no app and no key in it, so fetching it needs no credential — that route is what makes a first app possible from nothing.":
+    "你手里是管理员 key。创建应用只需要两条命令，不需要任何预先准备：先取工具，再创建应用。部署提供的这个脚本里不写应用、也不带 key，所以取它不需要任何凭据——正是这个接口让「从零开始建第一个应用」成为可能。",
+  "create prints the new app's key and its clone address. Give the developer both: the address is where they clone from, and the key is what that clone authenticates with. The key can be read again at any time, so it is not the only chance to write it down.":
+    "create 会打印新应用的 key 和 clone 地址。这两样都要给开发者：地址是他们 clone 的来源，key 是那次 clone 用来认证的凭据。key 随时都能再查，所以不是只有这一次记录的机会。",
+  "An app key reaches that one app and nothing else. That is the whole point of handing it over: the developer can ship, roll back and read logs without being able to see or delete anything of anyone else's.":
+    "应用 key 只能访问那一个应用，别的都碰不到。这正是把它交出去的意义：开发者可以发布、回滚、看日志，但看不到也删不掉别人的任何东西。",
+  "Developer: get the script": "开发者：拿到脚本",
+  "You have been given an app's address and key. Cloning that address gets you the source and applab.sh with it — the script is committed into every app's repository, written with that app's id, key and address already in it, so a fresh clone runs with nothing exported. This is the shortest path from being handed an app to shipping to it.":
+    "你拿到了某个应用的地址和 key。clone 这个地址，就同时得到源码和 applab.sh——这个脚本被提交在每个应用的仓库里，里面已经写好该应用的 ID、key 和地址，所以刚 clone 下来不需要 export 任何变量就能直接用。这是从「拿到一个应用」到「发布」的最短路径。",
+  "If you would rather not clone — or you have a project of your own to push — fetch the same script from the deployment and point it at the app. Nothing is exported here either: the deployment's address is written in, and use remembers the app.":
+    "如果你不想 clone——或者你本来就有自己的项目要推——也可以直接从部署取同一个脚本，再让它指向那个应用。同样不需要 export 什么：部署地址已经写在脚本里，应用用 use 记住。",
+  "Either way, the script refreshes itself from the deployment before each command, so a checkout that has not been pushed in a while still talks to the current API. From inside the project:":
+    "两种方式都一样：脚本每次执行命令前会先从部署拉取最新版本，所以一个很久没推过的 checkout 也仍然对接当前的 API。在项目目录里：",
+  "Configure the app": "配置应用",
+  "These change the running app without touching its source, and each takes effect immediately — the pods are replaced, not patched in place. The app's page in this console does all of it by hand.":
+    "这些命令改动的是正在运行的应用，不涉及源码，而且立即生效——pod 会被替换，而不是原地打补丁。控制台的应用页面也能手工完成这些操作。",
+  "Environment variables and secrets are set the same way and differ in one respect that matters: a secret's value cannot be read back, so a value set and forgotten is one you re-set rather than look up. config lists the names either way.":
+    "环境变量和密钥的设置方式相同，但有一点关键区别：密钥的值无法读回，所以设过又忘了的值只能重新设，查不回来。两边的名字都能用 config 列出。",
+  "The app must listen on its port for anything to reach it — the Service and the route both target that number. Changing it here changes what they point at; the code has to agree.":
+    "应用必须监听它自己的端口，外部才访问得到——Service 和路由都指向这个端口号。在这里改动它，改的是它们指向哪里；代码必须与之保持一致。",
   "lists everything it can do.": "会列出它支持的全部命令。",
   "Two kinds of key": "两种 key",
   "Which one you hold decides what you can do, and they are not interchangeable.":
@@ -2663,11 +2698,18 @@ async function showApps() {
 // a screenful, and a link to a section is how someone gets to the one they came
 // for. Named by the card's own heading so the nav and the page cannot disagree
 // about what a section is called.
+//
+// Ordered by role rather than by system. There are two people here — whoever
+// runs the platform and can make an app, and whoever is developing one — and
+// each arrives with a different question. The first two sections answer those,
+// and what follows is the task-oriented part both of them use.
 const DOC_SECTIONS = [
   { id: "doc-start", label: "Where you are" },
+  { id: "doc-admin", label: "Admin: make an app and hand it over" },
+  { id: "doc-developer", label: "Developer: get the script" },
   { id: "doc-push", label: "Ship a change" },
   { id: "doc-clone", label: "Work over git instead" },
-  { id: "doc-script", label: "Or use the script in the repository" },
+  { id: "doc-configure", label: "Configure the app" },
   { id: "doc-keys", label: "Two kinds of key" },
   { id: "doc-watch", label: "Watch it running" },
   { id: "doc-diagnose", label: "When it is not working" },
@@ -2719,6 +2761,11 @@ function renderDocs() {
   // one. An admin has no single app, and a signed-out reader has none either —
   // both get the placeholder.
   const appID = state.scope === "app" && state.app ? state.app : "<app>";
+  // Whether the reader is an app key holder, which is what picks between the two
+  // roles the page is arranged by. Not derived from `appID` against "<app>":
+  // that compares a value to the placeholder standing in for its absence, and
+  // would misread a reader whose own app happens to be named anything at all.
+  const hasApp = state.scope === "app" && state.app !== "";
 
   // Where you are. The address and what a key reaches, which is the two things
   // someone needs before any of the commands below make sense.
@@ -2750,27 +2797,53 @@ function renderDocs() {
     "git clone " + base + "/git/" + appID + "@dev.git",
   ].join("\n"));
 
-  setText("docs-script-cmd", [
+  // The admin's path: make an app, then hand it over.
+  //
+  // This is the one section that reads differently depending on who is looking.
+  // An admin key is what the commands need, and this is where someone without
+  // one finds out that they are in the other section.
+  setText("docs-admin-cmd", [
+    "curl -fsS " + base + "/bootstrap/applab.sh -o applab.sh && chmod +x applab.sh",
+    "export APPLAB_KEY=" + key,
+    "",
+    "./applab.sh create " + (hasApp ? state.app : "<app>"),
+  ].join("\n"));
+
+  const handoverApp = hasApp ? state.app : "<app>";
+  setText("docs-admin-handover-cmd", [
+    "./applab.sh url                  # the address the app is served at",
+    "applab keys " + handoverApp + "              # the app's own key, to hand over",
+    "",
+    "# what the developer needs, and nothing else:",
+    "#   the clone address, and that key",
+  ].join("\n"));
+
+  // The developer's path. Two ways in, and the clone is the shorter one: the
+  // script is already in the repository, with this app's id and key written in.
+  setText("docs-developer-clone-cmd", [
+    "git clone " + base + "/git/" + appID + ".git",
     "cd " + appID,
+  ].join("\n"));
+
+  setText("docs-developer-script-cmd", [
+    "curl -fsS " + base + "/bootstrap/applab.sh -o applab.sh && chmod +x applab.sh",
+    "export APPLAB_KEY=" + key,
+    "./applab.sh use " + (hasApp ? state.app : "<app>"),
+  ].join("\n"));
+
+  setText("docs-developer-use-cmd", [
     "./applab.sh status      # what is running, and where",
     "./applab.sh logs -f     # follow the newest pod's log",
     "./applab.sh push        # upload, build and deploy",
   ].join("\n"));
 
-  // Where the script comes from when there is nothing cloned yet. The first
-  // command is the whole answer to "how do I get applab.sh": the route is
-  // unauthenticated because the copy it serves names no app.
-  //
-  // The second points the fetched script at an app, and which verb depends on
-  // the reader. An app key already reaches exactly one app and cannot create
-  // one, so `use` is the command they want; for an admin or a signed-out reader
-  // there is no app yet and `create` is what makes one.
-  const hasApp = state.scope === "app" && state.app;
-  setText("docs-bootstrap-cmd", [
-    "curl -fsS " + base + "/bootstrap/applab.sh -o applab.sh && chmod +x applab.sh",
-    "",
-    "export APPLAB_KEY=" + key,
-    "./applab.sh " + (hasApp ? "use " : "create ") + (hasApp ? state.app : "<app>"),
+  // Changing the running app without touching its source.
+  setText("docs-configure-cmd", [
+    "./applab.sh replicas 3                            # how many copies to run",
+    "./applab.sh env set LOG_LEVEL=debug               # environment",
+    "./applab.sh secret set DATABASE_URL=postgres://…  # secrets, write-only",
+    "./applab.sh resources set memory_limit=512Mi      # cpu/memory bounds",
+    "./applab.sh config                                # what is set now",
   ].join("\n"));
 
   setText("docs-watch-cmd", [
