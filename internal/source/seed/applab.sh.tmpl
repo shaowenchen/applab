@@ -66,14 +66,61 @@
 
 set -eu
 
-APP="{{APP}}"
+# The app this script is about, and the deployment. All three are defaults — see
+# the header — and each yields to the environment.
+#
+# APP is empty in the copy fetched from the deployment's own bootstrap route,
+# which is the copy someone with no app yet has. That is not a broken state: the
+# `create` and `use` commands below are what fill it in, and `use` remembers the
+# choice in a file beside the script so it does not have to be repeated. A copy
+# written into a repository has the app's id here, so it is driven the same way
+# but never asks.
+APP="${APPLAB_APP:-{{APP}}}"
 
-# The deployment, and this app's key. Both are defaults — see the header.
+# Where a `use` writes the app it chose. Alongside the script rather than in the
+# home directory, so that one checkout of one app cannot retarget another — and
+# so that deleting the directory forgets the choice, which is what someone
+# cleaning up expects. It is keyed off this file's own name for that reason.
+APPLAB_STATE="$(dirname "$0")/.applab-app"
+
+# A copy fetched from the bootstrap route has no app in it, and a `use` may have
+# chosen one. Yielding to the environment first is what keeps a caller able to
+# say "this command is about that app" without editing the file.
+if [ -z "$APP" ] && [ -f "$APPLAB_STATE" ]; then
+  APP="$(cat "$APPLAB_STATE" 2>/dev/null || true)"
+fi
+
 APPLAB_URL="${APPLAB_URL:-{{URL}}}"
 APPLAB_KEY="${APPLAB_KEY:-{{KEY}}}"
 
 : "${APPLAB_URL:?set APPLAB_URL to the deployment, e.g. https://applab.example.com}"
-: "${APPLAB_KEY:?set APPLAB_KEY to the key for this app; see the notes at the top of this file}"
+
+# The key is checked per command rather than here, because two of them do not
+# need one: `help` explains the script without reaching the deployment, and
+# `create` is the command a caller with no key runs to find out they need one.
+# Demanding it at the top would make the script unable to say what it is for
+# until someone already had a way in.
+require_key() {
+  [ -n "$APPLAB_KEY" ] || {
+    echo "this command needs a key for an app." >&2
+    echo >&2
+    echo "If you have one already:      export APPLAB_KEY=<key>" >&2
+    echo "If you are starting from here: export APPLAB_KEY=<admin key>, then" >&2
+    echo "                              $0 create <app>" >&2
+    exit 2
+  }
+}
+
+# require_app is the other half: a command about one app needs to know which.
+require_app() {
+  [ -n "$APP" ] || {
+    echo "this script does not know which app it is about." >&2
+    echo >&2
+    echo "Choose one:  $0 use <app>" >&2
+    echo "Make one:    $0 create <app>" >&2
+    exit 2
+  }
+}
 
 # Every call is JSON in and JSON out. Success is the payload under "data";
 # failure is a non-2xx with {"error": "..."} and sometimes {"retryable": true}.
@@ -199,6 +246,18 @@ branch_list() {
 usage() {
   cat <<'EOF'
 usage: ./applab.sh <command>
+
+Start here
+  create <app>       make a new app, and print its key and clone address
+  use <app>          point this script at an app; remembered for next time
+
+  A copy fetched from the deployment has no app in it, so `use` (or `create`) is
+  how it gets one. A copy in an app's repository already knows its app, and these
+  two are then only needed to work on a different one.
+
+  Fetch a fresh, app-less copy of this script at any time:
+
+    curl -fsS <deployment>/bootstrap/applab.sh -o applab.sh && chmod +x applab.sh
 
 Source
   push [message]     upload this directory, build it and deploy it
@@ -365,6 +424,28 @@ upload() {
 # The script's own file is replaced last and by a move, so a run of the refresh
 # is never a half-updated pair: either both files are current or neither was
 # touched.
+# looks_like reports whether a downloaded file is plausibly the file asked for.
+#
+# Deliberately cheap and shallow — it cannot verify the content, only reject the
+# things that are obviously not it. JSON and HTML are the two a proxy produces,
+# and each is recognisable by its first character; a shell script is recognisable
+# by its shebang. A file that passes this and is still wrong is a server
+# serving the wrong *script*, which no check here could catch.
+looks_like() {
+  case "$1" in
+    applab.sh)
+      # `head -c 2` rather than the whole file: this runs before every command.
+      [ "$(head -c 2 "$2" 2>/dev/null)" = "#!" ]
+      ;;
+    *)
+      # A markdown document. Rejected if it opens like a JSON body or an HTML
+      # document, which are the two ways a routing mistake presents itself.
+      first=$(head -c 1 "$2" 2>/dev/null)
+      [ "$first" != "{" ] && [ "$first" != "<" ]
+      ;;
+  esac
+}
+
 self_update() {
   only="${1:-}"
   dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -385,14 +466,18 @@ self_update() {
       echo "could not fetch $name from $url" >&2
       return 1
     fi
-    # An empty response is not the file, and writing it would replace a working
-    # script with something that cannot run.
-    if [ ! -s "$tmp" ]; then
+    # What came back has to look like the file it would replace. A non-empty
+    # check is not enough: a proxy that answers a 200 with an HTML error page, or
+    # a misrouted path that returns JSON, replaces a working script with
+    # something that cannot run — and the failure appears on the *next* command,
+    # which now cannot parse its own body. "Nothing was replaced" is always
+    # better than that, since the caller still has a script that works.
+    if ! looks_like "$name" "$tmp"; then
       rm -f "$tmp"
       if [ -n "$only" ]; then
         return 1
       fi
-      echo "$name came back empty; nothing was replaced" >&2
+      echo "$name did not come back as $name; nothing was replaced" >&2
       return 1
     fi
 
@@ -441,6 +526,12 @@ refresh() {
   [ "${APPLAB_NO_REFRESH:-}" = "1" ] && return 0
   [ "${APPLAB_REFRESHED:-}" = "1" ] && return 0
 
+  # Nothing to refresh against without an app: the files are served per app, and
+  # a bootstrap copy has none yet. Asked anyway, it would be a request that
+  # cannot succeed on every command — the failure is swallowed, but a request
+  # that is known to be useless should not be made.
+  [ -n "$APP" ] || return 0
+
   changed=$(self_update applab.sh 2>/dev/null) || return 0
   [ -n "$changed" ] || return 0
 
@@ -471,6 +562,16 @@ require_app_matches() {
 case "${1:-help}" in
   help|-h|--help|self-update) ;;
   *) refresh "${1:-help}" "$@" ;;
+esac
+
+# Every command but these four is about one app, and a copy fetched from the
+# bootstrap route does not know which. Checked here rather than inside each arm
+# so that the list of exceptions is one line a reader can check against the
+# usage, and so a command added later fails loudly instead of asking the
+# deployment about an app named "".
+case "${1:-help}" in
+  help|-h|--help|self-update|create|use) ;;
+  *) require_app ;;
 esac
 
 case "${1:-help}" in
@@ -596,6 +697,67 @@ case "${1:-help}" in
     ;;
   builds)
     api GET "/api/v1/apps/$APP/builds?limit=20"
+    ;;
+  create)
+    # Make a new app and print what to do with it.
+    #
+    # Needs an admin key, which is why it is the one command a caller with *no*
+    # key is told to run: its refusal names the thing they are missing, and the
+    # alternative is a script that cannot explain itself until they have already
+    # found a way in.
+    #
+    # Only creates. It does not build or deploy — an app with no source has
+    # nothing to build, and the platform's own auto-publish covers the case
+    # where one appears. `push` is what ships code.
+    shift
+    [ -n "${1:-}" ] || { echo "usage: $0 create <app>" >&2; exit 2; }
+    require_key
+    new="${1}"
+
+    created=$(api POST "/api/v1/apps" "{\"id\":\"$(json_escape "$new")\"}") || exit 1
+
+    echo "created $new" >&2
+    # The clone address with the key in it, straight from the API — it knows the
+    # deployment's host and the new app's branch, and a caller assembling one
+    # gets the branch wrong for anything but the default.
+    key=$(printf '%s' "$created" | json_field app_key)
+    clone=$(printf '%s' "$created" | json_field git_url_with_key)
+    where=$(printf '%s' "$created" | json_field url)
+
+    printf '%s\n' "$key"
+    [ -n "$clone" ] && echo "git clone $clone" >&2
+    [ -n "$where" ] && echo "served at $where" >&2
+
+    # Bound for the rest of this process, and remembered for the next one, so
+    # `create shop && push` works in one line.
+    APP="$new"
+    printf '%s' "$new" > "$APPLAB_STATE" 2>/dev/null || true
+    echo >&2
+    echo "now: $0 push  (or the git clone above)" >&2
+    ;;
+  use)
+    # Point this copy of the script at an app.
+    #
+    # Written to a file beside the script rather than exported, because the
+    # script is invoked fresh each time and a plain export would not survive.
+    shift
+    [ -n "${1:-}" ] || { echo "usage: $0 use <app>" >&2; exit 2; }
+    require_key
+
+    # Checked before it is remembered: a typo that is silently stored would make
+    # every later command fail with something about an app that does not exist.
+    #
+    # curl's own message is suppressed and replaced. It reports the status, which
+    # is the one thing the reader already knows; what they need is that an app by
+    # that name does not exist here.
+    api GET "/api/v1/apps/$1" >/dev/null 2>&1 || {
+      echo "no app named $1 on this deployment" >&2
+      exit 1
+    }
+
+    APP="$1"
+    printf '%s' "$APP" > "$APPLAB_STATE"
+    echo "now using $APP" >&2
     ;;
   url)
     where

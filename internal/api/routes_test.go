@@ -130,6 +130,12 @@ func TestEveryDataRouteRequiresAuth(t *testing.T) {
 		// Open so a Prometheus scraper can reach it; the deployment restricts it
 		// at the network edge instead. See the route's own comment.
 		"GET /metrics": true,
+		// The bootstrap script, for the caller who has no key yet. Safe to serve
+		// openly only because it carries none and names no app — the same
+		// reasoning as /api/v1/config, and asserted rather than assumed. See the
+		// note in TestOpenRoutesAreOnlyTheExpectedOnes.
+		"GET /bootstrap":           true,
+		"GET /bootstrap/applab.sh": true,
 	}
 
 	for _, pattern := range srv.SortedPatterns() {
@@ -154,6 +160,19 @@ func TestOpenRoutesAreOnlyTheExpectedOnes(t *testing.T) {
 		}
 		switch pattern {
 		case "GET /health", "GET /api/v1/config", "GET /api/v1/describe", "GET /api/v1/version", "GET /metrics":
+		case "GET /bootstrap", "GET /bootstrap/applab.sh":
+			// The script AppLab writes into every app's repository, rendered
+			// with no app and no key in it. Every other route serving that file
+			// is app-scoped and authenticated, which left someone with neither
+			// an app nor a key — a new user — no way to get the tool.
+			//
+			// Open because it holds no credential and names no app: the same
+			// bytes go to every caller, and the deployment's own address is the
+			// only thing in it that is not already public. That is the whole
+			// reason it can be open, and it is asserted separately — see
+			// TestTheBootstrapScriptCarriesNothingToLeak, which renders it
+			// beside a real app and checks that neither the id nor the key
+			// reaches the response.
 		default:
 			t.Errorf("route %q is open but is not on the list of routes expected to be open", pattern)
 		}

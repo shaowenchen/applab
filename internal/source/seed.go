@@ -228,6 +228,41 @@ func AgentFileNames() []string {
 	return out
 }
 
+// BootstrapFile renders the script for a caller who has no app yet.
+//
+// It is the same template as an app's copy, rendered against the deployment's
+// address alone: App and Key are left empty, so the script does not claim to be
+// about an app it is not about and does not carry a credential. What it does
+// carry is the deployment's URL, which is the one thing a reader in this
+// position cannot supply for themselves and the one thing they need to reach
+// anything.
+//
+// The empty APP is not a placeholder to be filled in later by the same file —
+// the script's `use` command is what rebinds it, and its `create` command is
+// what makes a new app in the first place. A copy fetched here is meant to be
+// driven, not to be an app's script with holes in it.
+func BootstrapFile(v SeedValues) (seedFile, bool) {
+	// The app and its key are cleared rather than passed through: this is the
+	// one caller that must not render them, and clearing them here means a
+	// caller cannot pass an app's values in by accident.
+	v.App = ""
+	v.Key = ""
+	v.AppURL = ""
+
+	for _, f := range seedFor(v) {
+		if f.Name == bootstrapScriptName {
+			return f, true
+		}
+	}
+	return seedFile{}, false
+}
+
+// bootstrapScriptName is the file the bootstrap route serves.
+//
+// A name rather than an index into seedPaths, because the order of that list is
+// its own contract and this should not break when it changes.
+const bootstrapScriptName = "applab.sh"
+
 // seedValues assembles what an app's seeded files are rendered against: its id,
 // the address people reach this deployment at, the address the app itself is
 // served at, and the app's own key.

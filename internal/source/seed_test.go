@@ -336,11 +336,23 @@ func TestSeedingWithoutAKeyLeavesTheLineForTheCaller(t *testing.T) {
 		if !strings.Contains(f.Body, `APPLAB_KEY="${APPLAB_KEY:-}"`) {
 			t.Error("with no key to seed, applab.sh should leave APPLAB_KEY empty for the caller to export")
 		}
-		if !strings.Contains(f.Body, "set APPLAB_KEY") {
-			t.Error("the script should say the key is missing rather than calling an empty one")
+		// The key is guarded per command rather than at the top, because
+		// `create` is the command someone with no key runs — a top-level guard
+		// would make the script unable to explain itself to exactly the person
+		// who needs it to.
+		if !strings.Contains(f.Body, "require_key()") {
+			t.Error("the script should have a key guard the commands can call")
 		}
-		// The guards are what turn an empty value into a sentence; without them
-		// the script would issue requests against a relative URL.
+		if !strings.Contains(f.Body, "APPLAB_KEY=<key>") {
+			t.Error("the guard should say how to supply a key rather than failing silently")
+		}
+		// It must not be a top-level guard any more: `create` has to be
+		// reachable without one.
+		if strings.Contains(f.Body, `: "${APPLAB_KEY:?`) {
+			t.Error("the key is required at the top of the script, so `create` cannot be run without one")
+		}
+		// The URL still is guarded there, because every command needs it and it
+		// is the one value with no meaning when empty.
 		if !strings.Contains(f.Body, ":?set APPLAB_URL") {
 			t.Error("applab.sh does not guard against an empty APPLAB_URL")
 		}
@@ -773,8 +785,9 @@ func TestASeedWithNoKeyOrAddressStillRenders(t *testing.T) {
 	if !strings.Contains(got, `APPLAB_KEY="${APPLAB_KEY:-}"`) {
 		t.Error("with no key, the script should leave APPLAB_KEY to the environment")
 	}
-	if !strings.Contains(got, ":?set APPLAB_KEY") {
-		t.Error("with no key, the script should say so rather than call with an empty credential")
+	// Guarded per command, not at the top — see the note in the test above.
+	if !strings.Contains(got, "require_key()") {
+		t.Error("with no key, the script should have a guard the commands call rather than calling with an empty credential")
 	}
 }
 
@@ -1083,5 +1096,52 @@ func TestTheRefreshNeverStopsTheCommandFromRunning(t *testing.T) {
 	}
 	if strings.Contains(pinnedErr.String(), "could not fetch") {
 		t.Error("APPLAB_NO_REFRESH=1 still made a request")
+	}
+}
+
+// TestBootstrapFileRendersNoAppAndNoKey is the guard on the unauthenticated
+// bootstrap route, and it has to be here rather than at the route.
+//
+// The API test drives the real handler, and the handler passes only a URL — so
+// it would pass whatever BootstrapFile did with an app's values, because it
+// never supplies any. The clearing inside BootstrapFile is the actual
+// protection, and this is what exercises it.
+//
+// The values are deliberately real: a route that renders these into a response
+// hands out a working credential to an unauthenticated caller.
+func TestBootstrapFileRendersNoAppAndNoKey(t *testing.T) {
+	f, ok := BootstrapFile(SeedValues{
+		App:    "shop",
+		URL:    "https://applab.example.com",
+		AppURL: "http://shop.apps.example.com",
+		Key:    "s3cret-key",
+	})
+	if !ok {
+		t.Fatal("BootstrapFile found no script; the bootstrap route has nothing to serve")
+	}
+
+	for _, leak := range []struct {
+		name string
+		text string
+	}{
+		{"the app's key", "s3cret-key"},
+		{"the app's id", `APP="shop"`},
+		{"the app's own address", "shop.apps.example.com"},
+	} {
+		if strings.Contains(f.Body, leak.text) {
+			t.Errorf("the bootstrap script contains %s (%q); that route is unauthenticated", leak.name, leak.text)
+		}
+	}
+
+	// And it does carry what makes it usable: the deployment's address, and the
+	// empty app assignment the `use` command rebinds.
+	if !strings.Contains(f.Body, "https://applab.example.com") {
+		t.Error("the bootstrap script does not carry the deployment's address, so it cannot reach anything")
+	}
+	if !strings.Contains(f.Body, `APP="${APPLAB_APP:-}"`) {
+		t.Error("the app assignment is not the empty, overridable form")
+	}
+	if strings.Contains(f.Body, "{{") {
+		t.Error("the bootstrap script has an unsubstituted placeholder")
 	}
 }

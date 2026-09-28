@@ -119,7 +119,26 @@ address and a key; both are kept in your browser.
 
 ## Or by hand
 
-If you would rather not install the CLI:
+With nothing but curl and an admin key — no CLI, no app yet:
+
+```bash
+# Fetch the driver script. No key required, and it names no app.
+curl -fsS "$APPLAB_URL/bootstrap/applab.sh" -o applab.sh && chmod +x applab.sh
+
+# Create an app with it. This one needs an admin key.
+export APPLAB_KEY=<admin key>
+./applab.sh create shop        # prints the app's key and its clone address
+./applab.sh use shop           # remembered, so later commands need no app name
+./applab.sh git                # the clone command, branch and all
+```
+
+`applab.sh` is the same script AppLab writes into every app's repository. The
+copy fetched from `/bootstrap` is rendered with no app and no key in it — that
+is the whole point of the route, and why it can be served without one. The copy
+in a repository knows its app and carries its key, so a fresh clone runs with
+nothing exported; `create` and `use` exist for the case where you have neither.
+
+The same thing without the script:
 
 ```bash
 # Create the app (once).

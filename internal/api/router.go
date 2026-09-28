@@ -659,6 +659,20 @@ func (s *Server) routes() []route {
 			Handler: s.handleConfig,
 		},
 		{
+			// The script AppLab writes into every app's repository, served
+			// without an app in it. Unauthenticated because it holds no
+			// credential and names no app — see handleBootstrapScript, which is
+			// also where the line is drawn between this and the app-scoped copy.
+			Pattern: "GET /bootstrap/applab.sh",
+			Doc:     "The `applab.sh` AppLab writes into every app's repository, rendered with no app and no key in it, as `text/plain`. This is how a caller who has neither gets the tool: fetch it, export an admin key, and run `./applab.sh create <app>`. No key required.",
+			Handler: s.handleBootstrapScript,
+		},
+		{
+			Pattern: "GET /bootstrap",
+			Doc:     "What `GET /bootstrap/applab.sh` serves. No key required.",
+			Handler: s.handleBootstrapFiles,
+		},
+		{
 			// Unauthenticated, like /api/v1/describe, because it is the other
 			// half of the same answer: describe says what this deployment is,
 			// this says what came before it. Together they are how a client that
