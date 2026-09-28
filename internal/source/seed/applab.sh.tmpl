@@ -26,12 +26,24 @@
 #     sleep                     waiting on a build           (push)
 #     grep, tr                  finding the build in flight  (cancel)
 #     read                      typing the app id to confirm (delete)
-#     dirname, pwd, mv, chmod, rm   replacing the script     (self-update)
+#     dirname, pwd, mv, chmod, rm   replacing the script     (self-update,
+#                               and the refresh every command does first)
+#     cmp                       has the script changed?      (the same refresh)
 #
 # There is deliberately no jq. A JSON parser is exactly the kind of tool that is
 # on a developer's laptop and absent from a build image, and the fields this
 # script reads are few and fixed, so they go through sed instead — see json_field
 # for what that does and does not handle.
+#
+# THE SCRIPT REFRESHES ITSELF BEFORE EVERY COMMAND. AppLab's API changes between
+# releases, and this file is written into the repository on every upload, so a
+# checkout that has not been pushed in a while carries a version that may call an
+# endpoint that no longer exists. Rather than fail there, every command first
+# fetches the deployment's current applab.sh and AGENT.md and re-runs itself from
+# the new copy — so `./applab.sh push` behaves the way *this* deployment's push
+# behaves, whatever the checkout is carrying. It costs one request, and it is
+# skipped when the copy is already current. Set APPLAB_NO_REFRESH=1 to turn it
+# off, which is what a caller who wants a specific pinned version does.
 #
 # THE KEY BELOW IS A CREDENTIAL, AND THIS REPOSITORY IS NOT PRIVATE. It is
 # cloned, uploaded, built into an image and mirrored like any other source, so
@@ -211,7 +223,7 @@ Looking
 
 Changing
   replicas [n]       how many copies to run (no argument: print the current one)
-  resources          what it is using, and the bounds it runs under
+  resources          what each pod is using, and the bounds it runs under
   resources set K=V  set cpu/memory request and limit, e.g. memory_limit=512Mi
                      (an empty value clears it back to the deployment default)
   env set K=V ...    set environment variables
@@ -255,9 +267,16 @@ Keys and upkeep
   self-update        fetch the current applab.sh and AGENT.md from the deployment
   help               this
 
+  Every command except this one and "self-update" refreshes applab.sh and
+  AGENT.md from the deployment first, and re-runs itself if either had changed.
+  That is what keeps a checkout that has not been pushed in a while working
+  against a deployment whose API has moved on. Set APPLAB_NO_REFRESH=1 to skip
+  it.
+
 Environment:
   APPLAB_URL   the deployment              (default: built into this script)
   APPLAB_KEY   the key for this app        (default: built into this script)
+  APPLAB_NO_REFRESH   set to 1 to skip the refresh above
 
   Both are defaults — the values below the APP assignment. Export either to
   override it, which is what working against another deployment, or with a key
@@ -332,15 +351,32 @@ upload() {
 #
 # Each file is written to a temporary and then moved, so an interrupted or failed
 # download cannot leave a half-written script where a working one was.
+#
+# No argument updates both files, and prints what it did — that is the `self-update`
+# command. An argument picks one file and says whether it changed, on *stdout*,
+# which is what the refresh below reads as its signal; the messages the no-argument
+# form prints go to stderr, because they are progress rather than output.
+#
+# The script's own file is replaced last and by a move, so a run of the refresh
+# is never a half-updated pair: either both files are current or neither was
+# touched.
 self_update() {
+  only="${1:-}"
   dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
   for name in applab.sh AGENT.md; do
+    if [ -n "$only" ] && [ "$name" != "$only" ]; then
+      continue
+    fi
+
     url="$APPLAB_URL/api/v1/apps/$APP/agent/files/$name"
     tmp="$dir/$name.applab-new"
 
     if ! curl -fsS -H "Authorization: Bearer $APPLAB_KEY" "$url" -o "$tmp"; then
       rm -f "$tmp"
+      if [ -n "$only" ]; then
+        return 1
+      fi
       echo "could not fetch $name from $url" >&2
       return 1
     fi
@@ -348,17 +384,66 @@ self_update() {
     # script with something that cannot run.
     if [ ! -s "$tmp" ]; then
       rm -f "$tmp"
+      if [ -n "$only" ]; then
+        return 1
+      fi
       echo "$name came back empty; nothing was replaced" >&2
       return 1
     fi
+
+    # Comparing before replacing is what makes the no-argument refresh cheap to
+    # run before every command: an unchanged file is not rewritten, so its
+    # mtime does not move and nothing is printed.
+    if [ -f "$dir/$name" ] && cmp -s "$tmp" "$dir/$name"; then
+      rm -f "$tmp"
+      continue
+    fi
+
     if [ "$name" = "applab.sh" ]; then
       chmod +x "$tmp"
     fi
     mv "$tmp" "$dir/$name"
-    echo "updated $dir/$name" >&2
-  done
 
-  echo "re-run the script to use the new version" >&2
+    if [ -n "$only" ]; then
+      echo "updated $dir/$name"
+    else
+      echo "updated $dir/$name" >&2
+    fi
+  done
+}
+
+# refresh re-runs this command from the deployment's current copy of the script.
+#
+# It is the whole of the "keep yourself current" behaviour: fetch, compare, and
+# if the copy in the checkout is not the deployment's, replace it and re-exec.
+#
+# Re-exec rather than fetching and continuing, because the running shell is the
+# old script and cannot become the new one — the command that was typed has to be
+# interpreted by the version it was typed against. `exec` keeps the exit status
+# and the terminal, so the caller sees one command's output and not two.
+#
+# Every failure here is non-fatal and silent, which is the point: this runs before
+# `status`, before `logs -f`, before a push into an air-gapped network. A
+# deployment that is unreachable, a key that was rotated, a directory that is not
+# writable — none of those are reasons for the command the caller actually asked
+# for to fail, and the local copy is what they were working with a moment ago.
+#
+# The recursion is bounded by the comparison: the second run finds the file it
+# just wrote to be identical and does not re-exec again. APPLAB_REFRESHED stops it
+# even if the comparison cannot — a server that renders the script differently on
+# every read would otherwise be an infinite loop of processes.
+refresh() {
+  [ "${APPLAB_NO_REFRESH:-}" = "1" ] && return 0
+  [ "${APPLAB_REFRESHED:-}" = "1" ] && return 0
+
+  changed=$(self_update applab.sh 2>/dev/null) || return 0
+  [ -n "$changed" ] || return 0
+
+  self_update AGENT.md >/dev/null 2>&1 || true
+
+  echo "$changed" >&2
+  echo "re-running $1 with the current applab.sh" >&2
+  APPLAB_REFRESHED=1 exec "$0" "$@"
 }
 
 # require_app_matches guards the one command that is not about a single app.
@@ -374,6 +459,14 @@ require_app_matches() {
     exit 2
   }
 }
+
+# Bring this checkout up to the deployment's current script before doing anything
+# — see refresh. `help` is exempt because it documents the copy in hand, and
+# `self-update` because it does this itself and would otherwise do it twice.
+case "${1:-help}" in
+  help|-h|--help|self-update) ;;
+  *) refresh "${1:-help}" "$@" ;;
+esac
 
 case "${1:-help}" in
   push)
@@ -663,6 +756,7 @@ case "${1:-help}" in
     ;;
   self-update)
     self_update
+    echo "the current version is now in place; every command refreshes it first anyway" >&2
     ;;
   help|-h|--help)
     usage

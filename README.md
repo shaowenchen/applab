@@ -160,6 +160,38 @@ git -c http.extraHeader="Authorization: Bearer $APPLAB_KEY" \
 
 ## How it works
 
+### Three ways in, one set of things they can do
+
+Everything AppLab can do is reachable three ways: the console, `applab-cli`, and
+the `applab.sh` script that is written into every app's repository.
+
+They are deliberately the same surface. The API is the substance — the console
+and both clients are callers of it and nothing else — and every route is listed
+with the credential it needs by `GET /api/v1/describe`, so the three cannot drift
+into offering different capabilities. A test asserts it: the console's routes are
+enumerated in `internal/source/seed_test.go`, and the seeded script has to call
+each one, so a feature added to the console and not to the script fails the
+build rather than being noticed later by someone in a terminal.
+
+Watching is part of that, not an exception: an app's live resource usage, its
+pods' logs, and the platform's own pods and usage are all readable from the CLI
+(`applab resources`, `applab logs`, `applab platform resources`) and from the
+seeded script, not only from the dashboard.
+
+**The script keeps itself current.** `applab.sh` is committed into the
+repository, so a checkout that has not been pushed in a while carries a version
+from whenever it last was — while AppLab's API moves. So every command fetches
+the deployment's current `applab.sh` and `AGENT.md` first, and if either differs
+it replaces it and re-runs the command from the new copy. What runs is always the
+deployment's current script, whatever the checkout is carrying, and a stale
+checkout recovers without a push. It costs one request per command while current,
+none of it is fatal, and `APPLAB_NO_REFRESH=1` pins the local copy instead.
+
+The same applies to an agent handed one of these repositories: `AGENT.md` is
+rewritten on every upload for exactly this reason, and the refresh means a
+document that describes an endpoint that no longer exists corrects itself before
+it is acted on.
+
 ### Source is a git repository
 
 Every app's source lives in its own real git repository, hosted here. An upload

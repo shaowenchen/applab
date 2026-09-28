@@ -1,7 +1,12 @@
 package source
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -577,6 +582,11 @@ func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
 		// is not.
 		{"GET", "/logs"},
 		{"GET", "/pods"},
+		// The live reading of what the pods are using. It is here for the same
+		// reason as the rest: the console shows it and the script has to be able
+		// to ask, or "api, cli and web do the same things" stops being true at
+		// exactly the moment someone is diagnosing a pod at its limit.
+		{"GET", "/resources"},
 		{"POST", "/restart"},
 		{"POST", "/rollback"},
 		{"GET", "/status"},
@@ -899,5 +909,179 @@ func TestTheSeededScriptCanReachBothLogsAndTheEvents(t *testing.T) {
 	}
 	if !strings.Contains(script, "Start with \"diagnose\"") {
 		t.Error("the usage does not say where to start; the four commands are only useful if the first one to reach for is named")
+	}
+}
+
+// seededScript returns the rendered applab.sh for an app.
+func seededScript(t *testing.T) string {
+	t.Helper()
+	for _, f := range seedFor(SeedValues{App: "shop", URL: "http://deployment.invalid", Key: "k"}) {
+		if strings.HasSuffix(f.Name, ".sh") {
+			return f.Body
+		}
+	}
+	t.Fatal("no seeded script")
+	return ""
+}
+
+// TestTheRefreshReplacesAStaleScriptAndReRuns drives the shipped refresh against
+// a real server, because the whole of this behaviour is process-level: a query
+// form that signals on the wrong stream, or an exec that does not happen, looks
+// exactly like success in the source and is invisible in a static check.
+//
+// The script under test is the stale one; the "deployment" serves a version with
+// a marker in url(), so which copy ran is observable from the output. That is
+// the property that matters: the command the caller typed is interpreted by the
+// deployment's current script, not by the one in the checkout.
+func TestTheRefreshReplacesAStaleScriptAndReRuns(t *testing.T) {
+	shBin, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh is not on PATH")
+	}
+
+	stale := seededScript(t)
+	current := strings.Replace(stale,
+		`api GET "/api/v1/apps/$APP" | json_field url`,
+		`echo "CURRENT: https://shop.example.test"`,
+		1)
+	if current == stale {
+		t.Fatal("the marker was not inserted; url() has changed shape and this test is no longer testing what it says")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch filepath.Base(r.URL.Path) {
+		case "applab.sh":
+			_, _ = io.WriteString(w, current)
+		case "AGENT.md":
+			_, _ = io.WriteString(w, "CURRENT AGENT\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "applab.sh")
+	if err := os.WriteFile(script, []byte(stale), 0o755); err != nil {
+		t.Fatalf("write the stale script: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("STALE AGENT\n"), 0o644); err != nil {
+		t.Fatalf("write the stale AGENT.md: %v", err)
+	}
+
+	cmd := exec.Command(shBin, script, "url")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"APPLAB_URL="+server.URL,
+		"APPLAB_KEY=k",
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run the script: %v\nstderr: %s", err, stderr.String())
+	}
+
+	if got := strings.TrimSpace(string(out)); got != "CURRENT: https://shop.example.test" {
+		t.Errorf("printed %q; the command did not run against the deployment's current script", got)
+	}
+	if !strings.Contains(stderr.String(), "re-running") {
+		t.Errorf("stderr was %q; the refresh did not say what it did", stderr.String())
+	}
+
+	// Both files, not just the one that triggered the re-run: a checkout left
+	// with a current script and a stale AGENT.md documents an API it no longer
+	// matches.
+	after, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("read back the script: %v", err)
+	}
+	if string(after) != current {
+		t.Error("the script on disk is not the deployment's current one")
+	}
+	agent, err := os.ReadFile(filepath.Join(dir, "AGENT.md"))
+	if err != nil {
+		t.Fatalf("read back AGENT.md: %v", err)
+	}
+	if string(agent) != "CURRENT AGENT\n" {
+		t.Errorf("AGENT.md is %q; the refresh updated the script and not the document beside it", agent)
+	}
+
+	// Second run: nothing to fetch that differs, so nothing is printed and the
+	// command still works. Without this the refresh could be re-execing forever
+	// and every assertion above would still pass.
+	second := exec.Command(shBin, script, "url")
+	second.Dir = dir
+	second.Env = cmd.Env
+	var secondErr bytes.Buffer
+	second.Stderr = &secondErr
+	out2, err := second.Output()
+	if err != nil {
+		t.Fatalf("second run: %v\nstderr: %s", err, secondErr.String())
+	}
+	if got := strings.TrimSpace(string(out2)); got != "CURRENT: https://shop.example.test" {
+		t.Errorf("second run printed %q", got)
+	}
+	if strings.Contains(secondErr.String(), "re-running") {
+		t.Error("the second run refreshed again; an already-current checkout must not re-exec")
+	}
+}
+
+// TestTheRefreshNeverStopsTheCommandFromRunning is the half that matters when
+// something is wrong: an unreachable deployment, a rotated key, a directory that
+// cannot be written. None of those are a reason for the command the caller asked
+// for to fail — they were working with this copy a moment ago.
+//
+// The command is `unknown-command` rather than `help`, and that is the point:
+// help and self-update are exempt from the refresh, so a test that drives them
+// never reaches the code it means to test — it passes whatever that code does.
+// This one takes the refresh path and then fails at the command, which is the
+// signal that the script got all the way there.
+func TestTheRefreshNeverStopsTheCommandFromRunning(t *testing.T) {
+	shBin, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh is not on PATH")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "applab.sh")
+	if err := os.WriteFile(script, []byte(seededScript(t)), 0o755); err != nil {
+		t.Fatalf("write the script: %v", err)
+	}
+
+	// A port nothing is listening on: the fetch fails at the connection.
+	cmd := exec.Command(shBin, script, "unknown-command")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "APPLAB_URL=http://127.0.0.1:1", "APPLAB_KEY=k")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+
+	// Exit 2 is the script's own "unknown command", which is only reached if the
+	// refresh let it through. The message goes to stderr — that is where the
+	// script reports problems — so it is stderr that shows the command reached
+	// its own handler.
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+		t.Fatalf("an unreachable deployment changed what the command did: err %v, stdout %q, stderr %q",
+			err, out, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown command: unknown-command") {
+		t.Errorf("stderr was %q; the command did not reach its own handler", stderr.String())
+	}
+
+	// And APPLAB_NO_REFRESH is the way to pin a version: with it set, no request
+	// is made at all, so even a script whose deployment is a black hole runs.
+	cmd = exec.Command(shBin, script, "unknown-command")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "APPLAB_URL=http://127.0.0.1:1", "APPLAB_KEY=k", "APPLAB_NO_REFRESH=1")
+	var pinnedErr bytes.Buffer
+	cmd.Stderr = &pinnedErr
+	out, err = cmd.Output()
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+		t.Fatalf("with APPLAB_NO_REFRESH=1 the run errored differently: %v, stdout %q, stderr %q", err, out, pinnedErr.String())
+	}
+	if strings.Contains(pinnedErr.String(), "could not fetch") {
+		t.Error("APPLAB_NO_REFRESH=1 still made a request")
 	}
 }

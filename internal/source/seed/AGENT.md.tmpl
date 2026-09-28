@@ -97,15 +97,32 @@ does not, which is why it takes the id as an argument and makes you type it.
 
 **Keep it current.** Both files are written into this repository every time
 source is uploaded, so a checkout that has not been pushed in a while carries a
-copy from whenever it last was — and AppLab's API changes between releases. If a
-command here fails in a way that suggests the deployment has moved on, refresh
-them from the running server:
+copy from whenever it last was — and AppLab's API changes between releases.
 
-    ./applab.sh self-update
+You do not have to do anything about that. **Every command refreshes the script
+first**: it fetches the deployment's current `applab.sh` and `AGENT.md`, and if
+either differs from the copy in the checkout it replaces it and re-runs the
+command from the new one. So `./applab.sh push` behaves the way the deployment
+you are pointed at behaves, whatever version this checkout is carrying, and a
+command that would otherwise call an endpoint that no longer exists just works.
 
-That fetches the current `applab.sh` and `AGENT.md`, which is exactly what the
-next upload would write — including the two defaults above, so a working
-checkout keeps working.
+What that means in practice:
+
+- The first command in a stale checkout prints two lines to stderr — which file
+  it updated and that it is re-running — and then runs normally. Later commands
+  print nothing extra, because there is nothing to update.
+- It costs one request per command while the checkout is current, and none of it
+  is fatal: if the deployment is unreachable, or the key was rotated, or the
+  directory is read-only, the command you asked for runs against the copy you
+  have.
+- `APPLAB_NO_REFRESH=1 ./applab.sh push` skips it, for when you want a specific
+  pinned version rather than the deployment's current one.
+- `./applab.sh self-update` does the fetch without running anything else, which
+  is what you want if you would rather see the update on its own.
+
+The refreshed copy is exactly what the next upload would write — including the
+two defaults above — so a working checkout keeps working, and the credential in
+it is the current one for this app.
 
 ## The API, if you would rather not use the script
 

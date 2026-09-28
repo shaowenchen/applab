@@ -580,17 +580,47 @@ type AppUsage struct {
 	// without metrics-server, where the bounds are still known.
 	Available bool `json:"available"`
 
+	// CPU and Memory are the totals across the app's pods. Empty rather than
+	// zero when nothing has been sampled — see the server's own note on why.
 	CPU    string `json:"cpu"`
 	Memory string `json:"memory"`
 
 	Requested AppResources `json:"requested"`
 	Limited   AppResources `json:"limited"`
+
+	// Pods is each pod's own reading, keyed by pod name.
+	//
+	// The same sample the totals were summed from, and the answer to a question
+	// a total cannot: which replica is the odd one out. During a rollout one copy
+	// can be at its limit while the sum looks comfortable.
+	Pods map[string]PodUsage `json:"pods,omitempty"`
+}
+
+// PodUsage is one pod's reading.
+type PodUsage struct {
+	CPU       string `json:"cpu"`
+	Memory    string `json:"memory"`
+	Timestamp string `json:"timestamp"`
 }
 
 // AppUsage reads what an app is using, and the bounds its containers run under.
 func (c *Client) AppUsage(ctx context.Context, appID string) (*AppUsage, error) {
 	var out AppUsage
 	if err := c.do(ctx, http.MethodGet, "/api/v1/apps/"+appID+"/resources", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PlatformUsage reads what AppLab's own pods are using.
+//
+// The deployment serving you rather than any app it manages, so it is admin-only
+// like the rest of the platform routes. The bounds are absent deliberately: the
+// control plane's Deployment belongs to the chart, and reporting its requests
+// and limits as empty would claim the deployment is unbounded.
+func (c *Client) PlatformUsage(ctx context.Context) (*AppUsage, error) {
+	var out AppUsage
+	if err := c.do(ctx, http.MethodGet, "/api/v1/platform/resources", nil, "", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

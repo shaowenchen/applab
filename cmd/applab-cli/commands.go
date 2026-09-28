@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -479,6 +480,36 @@ func bound(quantity string, render func(string) string) string {
 	return render(quantity)
 }
 
+// printPodUsage writes each pod's own CPU and memory under a heading.
+//
+// The totals above it answer "is this app near its ceiling"; this answers
+// "which copy is", which is what a rollout makes askable and what a total
+// cannot answer at all. Read against the limit already printed above it, it is
+// also what says whether one replica or all of them are the busy ones.
+//
+// Silently absent when there is nothing to list, so a caller on a cluster
+// without metrics-server sees the "unavailable" line and no empty heading.
+// Named and sorted, because a map has no order and a list that reorders itself
+// between two runs is a list nobody can diff.
+func printPodUsage(pods map[string]client.PodUsage) {
+	if len(pods) == 0 {
+		return
+	}
+
+	names := make([]string, 0, len(pods))
+	for name := range pods {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "\nPOD\tCPU\tMEMORY")
+	for _, name := range names {
+		fmt.Fprintf(w, "%s\t%s\t%s GiB\n", name, cores(pods[name].CPU), gib(pods[name].Memory))
+	}
+	w.Flush()
+}
+
 // resourcesCommand reports what an app is using and what it may use.
 //
 // The console has a panel for this and the seeded script has `resources`; the
@@ -497,9 +528,11 @@ func resourcesCommand(urlFlag, keyFlag *string) *cobra.Command {
 		Short: "Show what an app is using, and the bounds it runs under",
 		Long: `Show what an app is using, and the bounds it runs under.
 
-Usage is read from the cluster's metrics API and is the total across the app's
-pods. Bounds are the *effective* ones, taken from the running Deployment — so an
-app that has set nothing shows this deployment's defaults rather than blanks.
+Usage is read from the cluster's metrics API: the total across the app's pods,
+then each pod's own figure beneath it, which is what tells you *which* copy of a
+rollout is near the ceiling. Bounds are the *effective* ones, taken from the
+running Deployment — so an app that has set nothing shows this deployment's
+defaults rather than blanks.
 
 CPU is in cores and memory is in GiB, the same units the console shows. A cluster
 without metrics-server reports usage as unavailable rather than as zero, which is
@@ -539,6 +572,7 @@ those same units.`,
 			}
 			fmt.Printf("cpu      %s of %s\n", cores(usage.CPU), cores(usage.Limited.CPULimit))
 			fmt.Printf("memory   %s of %s GiB\n", gib(usage.Memory), gib(usage.Limited.MemoryLimit))
+			printPodUsage(usage.Pods)
 			return nil
 		},
 	}
