@@ -174,9 +174,24 @@ each one, so a feature added to the console and not to the script fails the
 build rather than being noticed later by someone in a terminal.
 
 Watching is part of that, not an exception: an app's live resource usage, its
-pods' logs, and the platform's own pods and usage are all readable from the CLI
-(`applab resources`, `applab logs`, `applab platform resources`) and from the
-seeded script, not only from the dashboard.
+pods' logs and its events are readable from the CLI and from the seeded script,
+not only from the dashboard. The platform's own pods, usage and log are readable
+from the console and the CLI — **not** from the script, which holds one app's key
+and nothing else, and those routes are admin-only.
+
+The three surfaces are held to the same routes rather than the same *layout*.
+Where they divide things differently — the console has an Instances card holding
+the pods, usage and replicas together, the CLI has `applab pods`, `applab
+resources` and `applab update` — that is presentation, and each surface arranges
+its own. A capability reaching only one of them is the failure; a command
+living under a different heading is not.
+
+Parity is asserted where it is checkable and stated where it is not. A test
+enumerates the console's routes and requires the seeded script to reach each one,
+so those two cannot drift. The CLI is not covered by that test — it is a caller
+of the same API, and keeping a third list in step is more likely to be forgotten
+than kept — so a capability added to the console and to the script should be
+added there by hand.
 
 **The script keeps itself current.** `applab.sh` is committed into the
 repository, so a checkout that has not been pushed in a while carries a version
