@@ -293,6 +293,22 @@ func (s *Server) WithGit(h http.Handler) *Server { s.git = h; return s }
 func (s *Server) WithConsole(h http.Handler) *Server { s.console = h; return s }
 
 // WithBuild attaches a build engine.
+//
+// Wiring, not configuration: it must be called before the server serves
+// anything, and every caller does — main.go wires the halves and only then builds
+// the http.Server, and a test calls it before the first request.
+//
+// That is a contract rather than a lock because the alternative buys nothing. A
+// mutex here would have to be held across the read sites too — canBuild, the
+// build routes, the push watcher — and those are on the request path, so every
+// request would take a lock to read a value that never changes after start-up.
+//
+// It is worth stating because the cost of getting it wrong is not obvious: a
+// push starts a background watcher that reads this field, so detaching an engine
+// while one is in flight is a data race on it — reported as such by the race
+// detector, and surfacing on a loaded machine as a panic inside the watcher
+// rather than as anything pointing at the caller. See the no-build-half subtest
+// in push_test.go for the one place it happened.
 func (s *Server) WithBuild(engine BuildEngine) *Server { s.build = engine; return s }
 
 // WithAppObjectsDeleter attaches the teardown that removes everything AppLab

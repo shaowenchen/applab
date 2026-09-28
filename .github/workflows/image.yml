@@ -67,6 +67,20 @@ jobs:
       - name: make check
         run: make check
 
+      # The same suite under the race detector.
+      #
+      # The target existed and nothing ran it, which is how a data race reached
+      # main: a test detached a server's build engine while a background publish
+      # goroutine was reading it, and the ordinary suite passed on this machine
+      # while failing intermittently in CI as a panic inside a goroutine the
+      # test had never heard of.
+      #
+      # Kept as a separate step from `make check` rather than folded into it,
+      # because the race build is several times slower than the plain one and it
+      # is worth being able to tell at a glance which of the two failed.
+      - name: make test-race
+        run: make test-race
+
       # Renders the chart and asserts what it has to contain. Skipped by the
       # script itself if helm were missing, which is why helm is installed above.
       - name: check the chart

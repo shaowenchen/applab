@@ -131,17 +131,35 @@ func TestAPushWithNothingToBuildOrDeployIsANoOp(t *testing.T) {
 	t.Run("no build half", func(t *testing.T) {
 		// A deployment with no registry: source and the API work, and a push is
 		// only a push.
-		srv, engine, _, _ := pushServer(t)
+		srv, _, _, client := pushServer(t)
+
+		// The build half is detached before anything is served, which is the
+		// state this covers.
+		//
+		// Before, and not after the app is created. Creating an app starts a
+		// background publish, and that goroutine reads the build wiring on its
+		// way to the guards — so detaching it once an app exists is a write
+		// racing that read. The race detector reported it as a data race on
+		// s.build between WithBuild here and canBuild there; on a loaded
+		// machine it surfaced in CI as a panic inside the push watcher
+		// instead, which is the same bug arriving by a different door.
+		srv.WithBuild(nil)
+
 		h := srv.Handler()
 		sortAppWithCommit(t, srv, h, "shop")
 
-		// The build half is detached, which is the state this covers.
-		srv.WithBuild(nil)
-
 		srv.StartPushBuild(context.Background(), "shop", "main")
 
-		if builds, _ := engine.List(context.Background(), "ops-system", "shop", 0); len(builds) != 0 {
-			t.Errorf("a deployment that cannot build started %d builds from a push", len(builds))
+		// Asserted on the cluster rather than on the engine. The engine is
+		// detached, so asking it whether it was ever asked to build is asking
+		// a bystander — it answers no whether or not the guard worked. The Job
+		// is where a build would have to appear.
+		jobs, err := client.BatchV1().Jobs("ops-system").List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			t.Fatalf("list build jobs: %v", err)
+		}
+		if len(jobs.Items) != 0 {
+			t.Errorf("a deployment that cannot build started %d builds from a push", len(jobs.Items))
 		}
 	})
 
