@@ -1,8 +1,11 @@
 package source
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -11,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shaowenchen/applab/internal/objectstore"
@@ -1143,5 +1147,156 @@ func TestBootstrapFileRendersNoAppAndNoKey(t *testing.T) {
 	}
 	if strings.Contains(f.Body, "{{") {
 		t.Error("the bootstrap script has an unsubstituted placeholder")
+	}
+}
+
+// TestTheSeededScriptFallsBackToPartsWhenRefusedForSize drives the shipped
+// upload against a server that refuses the single request, because the fallback
+// is process-level: a status that is read wrongly, a re-package that reuses a
+// consumed pipe, or a part count off by one all look fine in the source and
+// only show up when the script is actually run.
+//
+// The deployment refuses `POST /source` with a 413 — which is what it now does
+// for an archive over the limit it advertises — and accepts the three chunked
+// calls. What has to hold is that the parts reassemble into the same archive
+// `package` produced: the retry has to re-run tar, because the first pipe was
+// partly read and cannot be rewound.
+func TestTheSeededScriptFallsBackToPartsWhenRefusedForSize(t *testing.T) {
+	shBin, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh is not on PATH")
+	}
+	for _, tool := range []string{"tar", "dd", "wc", "mktemp", "curl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not on PATH", tool)
+		}
+	}
+
+	script := seededScript(t)
+
+	var (
+		mu            sync.Mutex
+		declaredTotal int
+		assembled     []byte
+		completed     bool
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case path == "/api/v1/config":
+			writeJSON(t, w, map[string]any{"chunk_size": 4096})
+		case strings.HasSuffix(path, "/source"):
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			writeJSON(t, w, map[string]any{"error": "too large; use /source/uploads"})
+		case strings.HasSuffix(path, "/source/uploads"):
+			var body struct {
+				Total int `json:"total"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			declaredTotal = body.Total
+			mu.Unlock()
+			writeJSON(t, w, map[string]any{"upload_id": "up-1"})
+		case strings.Contains(path, "/source/uploads/up-1/parts/"):
+			body, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			assembled = append(assembled, body...)
+			mu.Unlock()
+			writeJSON(t, w, map[string]any{"ok": true})
+		case strings.HasSuffix(path, "/complete"):
+			mu.Lock()
+			completed = true
+			mu.Unlock()
+			writeJSON(t, w, map[string]any{"commit_sha": strings.Repeat("c", 40)})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// A tree big enough to be cut into more than one 4 KiB part, and with the
+	// Dockerfile the script's own packaging expects to carry.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatalf("write Dockerfile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "payload.bin"), bytes.Repeat([]byte("applab-payload-"), 2000), 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	scriptPath := filepath.Join(dir, "applab.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write the script: %v", err)
+	}
+
+	cmd := exec.Command(shBin, scriptPath, "upload")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"APPLAB_URL="+server.URL,
+		"APPLAB_KEY=k",
+		// The script refreshes itself before every command, which here would
+		// fetch a script the stub server does not serve.
+		"APPLAB_NO_REFRESH=1",
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run the script: %v\nstderr: %s", err, stderr.String())
+	}
+
+	if got := strings.TrimSpace(string(out)); got != strings.Repeat("c", 40) {
+		t.Errorf("printed %q, want the commit the deployment returned\nstderr: %s", got, stderr.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !completed {
+		t.Fatal("the chunked upload was never completed")
+	}
+	if declaredTotal < 2 {
+		t.Errorf("declared %d parts; the archive should have needed several at a 4 KiB part size", declaredTotal)
+	}
+
+	// The parts, in order, have to be a tar.gz holding the tree. This is the
+	// assertion that catches a retry which reuses the consumed pipe: those bytes
+	// are not a valid gzip stream at all.
+	//
+	// Read as a tar rather than draining the gzip reader, which is what the
+	// server does and is not the same thing. tar pads its output to its own
+	// record size with NULs, and on macOS that padding lands *after* the gzip
+	// member — so a ReadAll on the decompressor gets every byte of the archive
+	// and then an error about the trailing zeros. The server never sees it
+	// because the tar reader stops at the end-of-archive marker first.
+	gz, err := gzip.NewReader(bytes.NewReader(assembled))
+	if err != nil {
+		t.Fatalf("the assembled archive is not a gzip stream (%d bytes): %v", len(assembled), err)
+	}
+	tr := tar.NewReader(gz)
+	names := map[string]bool{}
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the assembled archive as tar: %v", err)
+		}
+		names[strings.TrimPrefix(header.Name, "./")] = true
+	}
+	for _, want := range []string{"Dockerfile", "payload.bin"} {
+		if !names[want] {
+			t.Errorf("the assembled archive does not contain %s (it holds %v)", want, names)
+		}
+	}
+}
+
+// writeJSON answers with the API's success envelope.
+func writeJSON(t *testing.T, w http.ResponseWriter, data map[string]any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+		t.Errorf("encode response: %v", err)
 	}
 }

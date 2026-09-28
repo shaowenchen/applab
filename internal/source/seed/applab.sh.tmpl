@@ -29,6 +29,10 @@
 #     dirname, pwd, mv, chmod, rm   replacing the script     (self-update,
 #                               and the refresh every command does first)
 #     cmp                       has the script changed?      (the same refresh)
+#     mktemp, dd, wc            sending a large upload in parts, which needs the
+#                               archive staged and measured first — the one path
+#                               here that cannot stream, and one only a tree over
+#                               the deployment's single-request limit takes
 #
 # There is deliberately no jq. A JSON parser is exactly the kind of tool that is
 # on a developer's laptop and absent from a build image, and the fields this
@@ -385,11 +389,45 @@ upload() {
   # refused upload would return an empty commit and the caller would carry on to
   # build nothing. Assigning from a command substitution is not exempt from a
   # failure either: the assignment has to be checked, which `if !` does.
-  response=$(package | curl -fsS -X POST \
+  #
+  # -sS with -o and -w rather than -f, because the status has to be readable:
+  # -f turns any refusal into a bare non-zero exit, and the one refusal with a
+  # different remedy — 413, over the deployment's single-request limit — would
+  # be indistinguishable from a bad key or a dead server.
+  out="$(mktemp "${TMPDIR:-/tmp}/applab-upload.XXXXXX")" || return 1
+  status=$(package | curl -sS -o "$out" -w '%{http_code}' -X POST \
     "$APPLAB_URL/api/v1/apps/$APP/source?message=$message" \
     -H "Authorization: Bearer $APPLAB_KEY" \
     -H "Content-Type: application/gzip" \
-    --data-binary @-) || return 1
+    --data-binary @-) || {
+    rm -f "$out"
+    echo "could not reach $APPLAB_URL to upload" >&2
+    return 1
+  }
+
+  case "$status" in
+    200|201) response="$(cat "$out")" ;;
+    413)
+      # The archive is over the size this deployment accepts in one request, and
+      # it says so with the number and a way through. Now the way through: the
+      # same archive sent as parts through /source/uploads.
+      #
+      # Rebuilt rather than reused, and this is the part worth knowing. `package`
+      # writes into a pipe that curl has already read part of, and a pipe cannot
+      # be rewound — so what is left of it is the tail of a tar, not an archive.
+      # The tree is unchanged, so running tar again produces the same bytes.
+      response="$(upload_in_parts "${1:-upload from applab.sh}")" || {
+        rm -f "$out"
+        return 1
+      }
+      ;;
+    *)
+      echo "upload refused ($status): $(cat "$out")" >&2
+      rm -f "$out"
+      return 1
+      ;;
+  esac
+  rm -f "$out"
 
   sha=$(printf '%s' "$response" | json_field commit_sha)
   if [ -z "$sha" ]; then
@@ -397,6 +435,81 @@ upload() {
     return 1
   fi
   printf '%s' "$sha"
+}
+
+# upload_in_parts sends this directory's archive through the chunked endpoints.
+#
+# The fallback for a tree over the single-request limit. It needs two tools the
+# rest of this script does not, both of which every POSIX system ships:
+#
+#     mktemp          staging the archive, because it has to be measured
+#     dd, wc          cutting it into parts, and finding out how many
+#
+# The archive is spooled to a file rather than streamed, which is the whole
+# difference from the one-request path: the protocol is told how many parts to
+# expect before the first arrives, so the length has to be known up front, and a
+# piped tar cannot be measured without being read. That trades the streaming for
+# a temp file the size of the archive, which is the price of the fallback
+# existing at all — and it is only paid by a tree large enough to need it.
+upload_in_parts() {
+  raw_message="$1"
+
+  # The body runs in an explicit subshell so its EXIT trap is scoped to it. A
+  # trap set inside a function otherwise outlives the function and fires when the
+  # whole script ends — which after a `push` is minutes later, once the build has
+  # finished, leaving the staged archive on disk for the length of that wait. The
+  # caller uses a command substitution, which is a subshell too, but saying so
+  # here means the cleanup does not depend on how it happens to be called.
+  (
+    archive="$(mktemp "${TMPDIR:-/tmp}/applab-source.XXXXXX")" || exit 1
+    trap 'rm -f "$archive"' EXIT HUP INT TERM
+
+    if ! package > "$archive"; then
+      echo "could not package this directory" >&2
+      exit 1
+    fi
+
+    # The deployment's own part size, so a client and a server agree on what a
+    # part is without this script hardcoding a number that drifts from the
+    # config.
+    chunk=$(api GET /api/v1/config | json_field chunk_size)
+    case "$chunk" in '' | *[!0-9]*) chunk=8388608 ;; esac
+
+    size=$(wc -c < "$archive" | tr -d ' ')
+    count=$(( (size + chunk - 1) / chunk ))
+    if [ "$count" -lt 1 ]; then
+      echo "there is nothing to upload" >&2
+      exit 1
+    fi
+    echo "uploading $count parts of $chunk bytes" >&2
+
+    begin=$(api POST "/api/v1/apps/$APP/source/uploads" \
+      "{\"total\":$count,\"chunk_size\":$chunk,\"message\":\"$(json_escape "$raw_message")\"}") || exit 1
+    upload_id=$(printf '%s' "$begin" | json_field upload_id)
+    if [ -z "$upload_id" ]; then
+      echo "the deployment did not accept the upload: $begin" >&2
+      exit 1
+    fi
+
+    i=1
+    while [ "$i" -le "$count" ]; do
+      # One part at a time, cut by dd rather than by `split`: dd is the same tool
+      # on every base system and needs no directory to write parts into.
+      if ! dd if="$archive" bs="$chunk" skip=$((i - 1)) count=1 2>/dev/null \
+        | curl -fsS -X PUT "$APPLAB_URL/api/v1/apps/$APP/source/uploads/$upload_id/parts/$i" \
+          -H "Authorization: Bearer $APPLAB_KEY" \
+          -H "Content-Type: application/octet-stream" \
+          --data-binary @- >/dev/null; then
+        echo "part $i of $count failed" >&2
+        exit 1
+      fi
+      i=$((i + 1))
+    done
+
+    # The commit is stored here, not at the parts: assembling and committing are
+    # one step on the server, so a part that never arrives leaves nothing behind.
+    api POST "/api/v1/apps/$APP/source/uploads/$upload_id/complete" || exit 1
+  )
 }
 
 # self-update replaces this script and AGENT.md with the deployment's current
