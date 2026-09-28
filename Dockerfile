@@ -1,8 +1,10 @@
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
-# CGO is off because the SQLite driver is pure Go, so the binary is static and
-# carries no libc dependency of its own.
+# CGO is off so the binary is static and carries no libc dependency of its own.
+# Nothing in the module needs cgo — the store is an object store, and the SQLite
+# volume it replaced is gone — so this is a choice about the artifact rather
+# than a constraint of a dependency.
 #
 # The runtime base is Alpine rather than distroless, and that is a deliberate
 # trade. AppLab shells out to `git` for everything that touches a repository, and

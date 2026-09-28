@@ -15,9 +15,12 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.BuildTime=$(BUILT)
 
-# CGO is off because the SQLite driver is pure Go. The payoff is a static
-# binary that runs on a distroless base image, which is what keeps the runtime
-# image small and free of a shell.
+# CGO is off so the shipped binary is static and carries no libc of its own.
+#
+# Nothing here needs cgo: the store is an object store and the SQLite volume it
+# replaced is gone, so this is a choice about the artifact rather than a
+# constraint of a dependency. That distinction matters for test-race below,
+# which cannot honour it.
 export CGO_ENABLED := 0
 
 IMAGE ?= docker.io/shaowenchen/applab
@@ -47,9 +50,20 @@ run:
 test:
 	go test ./... -count=1
 
+# CGO_ENABLED=1 for this target only, overriding the export above.
+#
+# The race detector is built on cgo, and on linux/amd64 it refuses to run
+# without it: `go: -race requires cgo`. On darwin/arm64 cgo-free race builds are
+# allowed, so this target passed on a developer's machine and failed in CI,
+# which is the worst shape a build target can have.
+#
+# Nothing about the test suite changes under cgo — it is the same pure-Go code,
+# and no test asserts on the static link that the shipped binary needs. The
+# override is per-command so the build, vet and plain test targets keep the
+# static setting.
 .PHONY: test-race
 test-race:
-	go test ./... -count=1 -race
+	CGO_ENABLED=1 go test ./... -count=1 -race
 
 .PHONY: coverage
 coverage:
