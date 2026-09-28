@@ -34,8 +34,6 @@
 
     --ok: #15803d;
     --ok-bg: #dcfce7;
-    --warn: #a16207;
-    --warn-bg: #fef9c3;
     --bad: #b91c1c;
     --bad-bg: #fee2e2;
     --busy: #1d4ed8;
@@ -58,8 +56,6 @@
 
       --ok: #6ee7a0;
       --ok-bg: #14331f;
-      --warn: #fcd34d;
-      --warn-bg: #332b0d;
       --bad: #fca5a5;
       --bad-bg: #3b1616;
       --busy: #93b4f8;
@@ -81,8 +77,6 @@
 
     --ok: #6ee7a0;
     --ok-bg: #14331f;
-    --warn: #fcd34d;
-    --warn-bg: #332b0d;
     --bad: #fca5a5;
     --bad-bg: #3b1616;
     --busy: #93b4f8;
@@ -453,7 +447,6 @@
   }
   .pill.ok { background: var(--ok-bg); color: var(--ok); }
   .pill.bad { background: var(--bad-bg); color: var(--bad); }
-  .pill.warn { background: var(--warn-bg); color: var(--warn); }
   .pill.busy { background: var(--busy-bg); color: var(--busy); }
   .pill.neutral { background: var(--bg-sunken); color: var(--text-muted); }
 
@@ -551,7 +544,6 @@
   .chart-limit { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
   .chart-line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
   .chart-area { stroke: none; opacity: 0.14; }
-  .chart-empty { fill: var(--text-muted); font-size: 12px; }
   /* The output takes the remaining height and scrolls itself, so the head stays
      put while the log moves under it. */
   .log-modal-panel pre { flex: 1; min-height: 0; margin: 0; }
@@ -984,7 +976,6 @@
       </table>
       <p id="pods-usage-note" class="muted hidden"></p>
       <div id="pods-empty" class="empty hidden" data-i18n="Nothing is running.">Nothing is running.</div>
-      <div id="pods-problem" class="error hidden" style="margin-top:8px"></div>
     </div>
 
     <div class="card" id="card-env">
@@ -1007,9 +998,9 @@
       </table>
 
       <div class="row hidden" id="config-env-form" style="margin-top:8px">
-        <input id="config-env-name" placeholder="NAME" size="16">
+        <input id="config-env-name" placeholder="NAME" size="16" data-i18n-placeholder="NAME">
         <input id="config-env-value" placeholder="value" type="password" size="24"
-               style="flex:1">
+               style="flex:1" data-i18n-placeholder="value">
         <button id="config-env-set" data-i18n="Save">Save</button>
         <button id="config-env-cancel" data-i18n="Cancel">Cancel</button>
       </div>
@@ -1057,7 +1048,7 @@
         <tbody id="app-builds"></tbody>
       </table>
       <div id="app-builds-empty" class="empty hidden">
-        <span data-i18n="Nothing has been built yet. Build the newest commit with">Nothing has been built yet. Build the newest commit with</span> <span class="mono">Build latest</span>.
+        <span data-i18n="Nothing has been built yet. Build the newest commit with">Nothing has been built yet. Build the newest commit with</span> <span class="mono" data-i18n="Build latest">Build latest</span>.
       </div>
     </div>
 
@@ -1276,14 +1267,6 @@ const state = {
   // rather than from a card. Empty for the app's own log read from the card,
   // which is the newest pod's — see openPodLog for why the row names one.
   logPod: "",
-  // The open app's pods, newest first, as the API last reported them. Kept here
-  // because the resource panel's picker is built from the *readings* the usage
-  // endpoint returns, whose names are the only ones that can actually be shown;
-  // this is the fuller list, used for the label a pod is offered under. The
-  // overview's platform picker keeps its own beside it — the two name disjoint
-  // sets of pods and one slot would have them overwrite each other.
-  pods: [],
-  platformPods: [],
   // The open events panel's refresh timer, or null. There is one events panel
   // and one dialog, so one slot describes it.
   eventsTimer: null,
@@ -1463,8 +1446,8 @@ const ZH = {
   "Replicas must be at least 1, not {n}; use the stop endpoint to scale an app down.": "副本数至少为 1，不能是 {n}；请使用 stop 接口缩容。",
   "Replicas {n} exceeds the maximum of {max}.": "副本数 {n} 超过上限 {max}。",
   "Could not create {id}: {error}": "无法创建 {id}：{error}",
-  "No apps yet. Push one with": "还没有应用。用这个命令推送一个，或者在这里创建一个：",
-  "or create one here.": "",
+  "No apps yet. Push one with": "还没有应用。用",
+  "or create one here.": "推送一个，或者在这里创建一个。",
   "Could not list apps: {error}": "无法获取应用列表：{error}",
 
   // -- App detail -----------------------------------------------------------
@@ -1522,6 +1505,8 @@ const ZH = {
     "这些会在下次部署时作为环境变量注入容器，任何能读取该 Deployment 的人都能看到。这里的眼睛只是不把它们显示在屏幕上。",
   "Set": "设置",
   "Save": "保存",
+  "NAME": "名称",
+  "value": "值",
   "Remove": "移除",
   "History": "历史",
   "Builds": "构建",
@@ -2184,6 +2169,36 @@ function shortSHA(sha) {
   return sha ? sha.slice(0, 10) : "—";
 }
 
+// appIDCell builds the cell that opens an app, in the apps list and in the
+// overview's recent builds.
+//
+// A cell with a click handler rather than a button, because the app id is the
+// row's subject and styling it as a button would make every row read as an
+// action — but the click handler alone left the app id, which is the *only* way
+// into an app from either list, unreachable by keyboard. There was no other
+// affordance on the row to tab to.
+//
+// So it carries the three things a div needs to be a control: focusable
+// (tabindex), announced as one (role), and operable by the key a button would
+// answer to (Enter and Space, the two the browser gives a real button). The
+// Space case needs the preventDefault: on a div the browser scrolls the page
+// with it, so without that the row would jump before it opened.
+function appIDCell(appID) {
+  const cell = document.createElement("td");
+  cell.className = "app-id";
+  cell.textContent = appID;
+  cell.setAttribute("tabindex", "0");
+  cell.setAttribute("role", "button");
+  cell.onclick = () => openApp(appID);
+  cell.onkeydown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openApp(appID);
+    }
+  };
+  return cell;
+}
+
 function ago(iso) {
   if (!iso) return "—";
   const then = new Date(iso);
@@ -2432,10 +2447,7 @@ function buildRows(builds) {
   for (const build of builds) {
     const tr = document.createElement("tr");
 
-    const app = document.createElement("td");
-    app.className = "app-id";
-    app.textContent = build.app_id;
-    app.onclick = () => openApp(build.app_id);
+    const app = appIDCell(build.app_id);
     tr.appendChild(app);
 
     const id = document.createElement("td");
@@ -2628,11 +2640,11 @@ function instanceRow(pod, reading, onLog, onMetrics, onEvents) {
 async function loadOverview() {
   setError("");
 
-  // Three reads, in parallel, because the view is three independent panels: the
-  // tiles and build list come from one call, and the monitoring card needs the
-  // control plane's pods and what they are using.
+  // Three reads, in parallel, because the view is two independent panels — the
+  // tiles and build list come from one call, and the platform-instances card
+  // needs the control plane's pods and what they are using, which are two more.
   //
-  // allSettled rather than all: the monitoring reads are the ones that can fail
+  // allSettled rather than all: the platform reads are the ones that can fail
   // alone — a deployment with no cluster answers the overview happily and 501s
   // the other two, and a cluster without metrics-server answers the pod list and
   // not the reading. A dashboard that went blank because one panel of it could
@@ -2876,10 +2888,7 @@ async function loadApps() {
   for (const app of apps) {
     const tr = document.createElement("tr");
 
-    const id = document.createElement("td");
-    id.className = "app-id";
-    id.textContent = app.id;
-    id.onclick = () => openApp(app.id);
+    const id = appIDCell(app.id);
     tr.appendChild(id);
 
     // Running: what the cluster has. Built: what the newest build did. The
@@ -3325,6 +3334,18 @@ async function loadAppConfig() {
   } catch (err) {
     // A deployment with no cluster cannot answer this at all, and saying so is
     // more useful than hiding the card.
+    //
+    // The rows are cleared before returning, and that is not tidiness. This card
+    // is filled per app and the table is not emptied by the read failing, so
+    // opening a second app whose config cannot be read left the first app's
+    // variables on screen under the new app's title — with their real values in
+    // `dataset.value`, behind Remove buttons that send
+    // `DELETE /api/v1/apps/<the new app>/env/<the old app's name>`. A
+    // destructive action aimed at the wrong app, from a row belonging to
+    // another one. Empty covers it: the table and the note are hidden for an
+    // app with no variables, which is what this card should show while it has
+    // nothing.
+    renderEnv({});
     show(problem, true);
     problem.textContent = tf("Could not read configuration: {error}", { error: err.message });
     return;
@@ -3479,7 +3500,13 @@ async function loadAppState() {
   // marked as not deployed.
   const open = $("app-open");
   if (status.url) {
-    open.href = status.url;
+    // Through statusURL like the row below, not the raw value. The deployment
+    // reports the scheme it thinks it is served over, and behind a TLS
+    // terminator that is `http://` while the page is https — so the raw address
+    // gave an https row and a mixed-content Open button beside it, which the
+    // browser blocks. One of the two had to be the odd one out; this makes the
+    // button agree with the address printed next to it.
+    open.href = statusURL(status);
     open.textContent = t("Open") + " ↗";
     show(open, true);
   } else {
@@ -3642,20 +3669,18 @@ function openPodLog(podName) {
 // rather than twelve.
 const METRICS_INTERVAL_MS = 5000;
 
-// METRICS_WINDOW is how much history the chart shows.
+// METRICS_CEILING is how many samples the chart keeps, and therefore how much
+// history it shows.
 //
 // Kept in the browser, because nothing keeps it anywhere else: the metrics API
 // reports the current instant only, so there is no query for "this pod over the
 // last hour" and building one would mean storing samples nobody asked to keep.
 // The consequence is that the chart starts empty and fills as the dialog stays
 // open — which is honest, and is why the first thing it draws says so.
-const METRICS_WINDOW = 60;
-
-// METRICS_CEILING is where the browser stops drawing.
 //
-// A sample outside the window is forgotten, so the arrays cannot grow without
-// bound, and a dialog left open overnight is not a memory leak. Sixty samples is
-// five minutes, which is more history than the two below want.
+// A sample past the ceiling is dropped from the front, so the arrays cannot grow
+// without bound and a dialog left open overnight is not a memory leak. At
+// METRICS_INTERVAL_MS this is ten minutes of history.
 const METRICS_CEILING = 120;
 
 // METRICS_FALLBACK_LIMIT is what a CPU chart is scaled against when the app has
@@ -3672,6 +3697,11 @@ const METRICS_FALLBACK_LIMIT = { cpu: "2", memory: "2Gi" };
 // is a poll: there is no watch on it, so a "live" chart is a timer and a series
 // kept here.
 async function openPodMetrics(podName) {
+  // Whatever was sampling stops here, before the pod is set: stopMetrics clears
+  // the name and the samples, and running it after would wipe the ones just
+  // established. It is the previous dialog's timer this is after.
+  stopMetrics();
+
   state.metricsPod = podName;
   state.metricsSamples = { cpu: [], memory: [] };
   state.metricsLimit = null;
@@ -3681,12 +3711,16 @@ async function openPodMetrics(podName) {
   show($("metrics-note"), false);
   show($("metrics-modal"), true);
 
-  // A first read before the dialog is drawn, so it opens with a number rather
-  // than an em dash and a chart that fills in a second later.
-  await samplePodMetrics();
-
-  stopMetrics();
+  // The timer goes up before the first read, so the dialog is live from the
+  // moment it is open and a close during that read has something to clear.
+  // Both halves of that were bugs when it was written the other way round:
+  // created after the read, a close mid-read left a timer nothing would ever
+  // clear; and the `stopMetrics()` that ran between them wiped `metricsPod`, so
+  // every tick after the first returned early and the chart never drew a line
+  // at all — one reading, then nothing, until the dialog was closed and
+  // reopened.
   state.metricsTimer = setInterval(samplePodMetrics, METRICS_INTERVAL_MS);
+  await samplePodMetrics();
 }
 
 // closePodMetrics stops sampling and closes the dialog.
@@ -3750,7 +3784,7 @@ async function samplePodMetrics() {
 
   const now = Date.now();
   for (const [key, quantity] of [["cpu", reading.cpu], ["memory", reading.memory]]) {
-    const value = quantityToNumber(quantity, key);
+    const value = quantityToNumber(quantity);
     if (value === null) continue;
     const series = state.metricsSamples[key];
     series.push({ at: now, value });
@@ -3767,15 +3801,21 @@ function showMetricsNote(message) {
   show(note, message !== "");
 }
 
-// quantityToNumber parses a Kubernetes quantity into the unit the chart draws in
-// — cores for CPU, bytes for memory — or null when there is nothing to parse.
+// quantityToNumber parses a Kubernetes quantity into a plain number in the unit
+// the chart draws in — cores for CPU, bytes for memory.
 //
 // Parsed here rather than server-side because the API reports the quantity as
 // the metrics API gave it, and the console is the only thing that needs a
-// number. A quantity written without a suffix means cores for CPU and *bytes*
-// for memory, which is the Kubernetes rule and the reason this is not one
-// function for both.
-function quantityToNumber(quantity, resource) {
+// number. A quantity written without a suffix is already in the base unit for
+// both resources — cores and bytes — so the suffix is the whole of the parsing:
+// a number carries through unchanged and "250m" becomes 0.25.
+//
+// It used to take the resource as a second argument and end in
+// `resource === "cpu" ? n : n`, which is the same number either way. The two
+// resources do differ in what the number *means*, but that is the formatter's
+// business — formatCores appends "cores" and formatGiB divides by 2^30 — not
+// this function's, which only ever produces the base-unit count.
+function quantityToNumber(quantity) {
   const raw = String(quantity || "").trim();
   if (!raw) return null;
 
@@ -3790,10 +3830,7 @@ function quantityToNumber(quantity, resource) {
     Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4,
   }[scaled[2] || ""] || 1;
 
-  const n = value * factor;
-  // CPU is a ratio of cores and memory is a count of bytes; the API's units for
-  // each are its own, and the chart draws in the smaller one.
-  return resource === "cpu" ? n : n;
+  return value * factor;
 }
 
 // renderMetrics draws both charts from the samples in hand.
@@ -3805,7 +3842,7 @@ function renderMetrics() {
     ["memory", "metrics-memory-plot", "metrics-memory-value", "metrics-memory-range", "GiB", formatGiB, limit.memory],
   ]) {
     const samples = state.metricsSamples[key] || [];
-    const ceil = quantityToNumber(limitQuantity, key);
+    const ceil = quantityToNumber(limitQuantity);
     drawChart({
       plot: $(plotID),
       valueEl: $(valueID),
@@ -3946,13 +3983,18 @@ async function showPodEvents(podName) {
   const el = $("events-output");
   el.textContent = t("(loading)");
 
-  // Started before the first read so a slow request cannot leave the panel
-  // static forever, and stopped by stopEvents, which openLogDialog calls when
-  // the dialog moves to another panel.
-  stopEvents();
+  // The interval is created *before* the first read rather than after it, and
+  // that order is the fix rather than a detail of it. Created after, a close
+  // arriving while the first read was in flight found `state.eventsTimer` still
+  // null, cleared nothing, and then the read's continuation assigned a timer
+  // that no path would ever clear — the dialog was closed, so nothing reaches
+  // stopEvents again, and the panel went on re-reading the app's events every
+  // five seconds behind it until the page was reloaded. Created first, the
+  // close has something to clear.
   const read = () => renderPodEvents(podName, el);
-  await read();
+  stopEvents();
   state.eventsTimer = setInterval(read, EVENTS_INTERVAL_MS);
+  await read();
 }
 
 // renderPodEvents writes one pod's events into the panel.
@@ -3986,7 +4028,12 @@ async function renderPodEvents(podName, el) {
   }
 
   const lines = mine.map((e) => {
-    const when = e.last_seen || e.first_seen || "";
+    // Relative, like every other date on the page. These were printed raw —
+    // the one place a reader saw 2026-09-28T09:31:41Z — and the question an
+    // event list answers is "how long has it been doing that", which a
+    // timestamp makes you subtract and "4m ago" answers outright. The absolute
+    // instant is still there in the API's own answer for anyone who needs it.
+    const when = ago(e.last_seen || e.first_seen);
     const count = e.count > 1 ? " x" + e.count : "";
     return when + "  " + e.type + "  " + e.reason + count + "\n    " + e.message;
   });
@@ -4022,6 +4069,11 @@ async function loadCommits() {
   try {
     history = await api("/api/v1/apps/" + state.app + "/commits?limit=" + HISTORY_LIMIT);
   } catch (err) {
+    // Emptied for the same reason the configuration card is: the rows in this
+    // table belong to the app that was open when they were read, and a failed
+    // read is not a reason to leave the previous app's commits under the new
+    // app's name — the Rollback buttons in them name commits of another app.
+    $("commits").replaceChildren();
     setError(tf("Could not read history: {error}", { error: err.message }));
     return;
   }
@@ -4186,10 +4238,17 @@ async function setAutoDeploy() {
       body: JSON.stringify({ auto_deploy: wanted }),
     });
   } catch (err) {
-    setError(tf("Could not set auto-deploy: {error}", { error: err.message }));
     // Put the box back, so what it shows is what the app is set to. Left as the
     // reader moved it, a failed change would look applied.
+    //
+    // Restored first and reported after, which is the opposite of the obvious
+    // order and the reason this is commented at all: loadAppState begins by
+    // clearing the error banner, so setting the message before it wiped the
+    // message a line later. The failure was completely silent — the box
+    // reverted with no explanation, which reads as the page disagreeing with
+    // the click rather than as a request that did not go through.
     await loadAppState();
+    setError(tf("Could not set auto-deploy: {error}", { error: err.message }));
     return;
   }
 }

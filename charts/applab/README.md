@@ -613,11 +613,13 @@ safe to keep on the machine doing the work, where the admin key — which can
 delete every app this installation manages — should not be.
 
 ```bash
-export APPLAB_APP_KEY=<the key the command printed>
+export APPLAB_KEY=<the key the command printed>
 ```
 
-Both keys authenticate; the difference is reach. See [Keys](#keys) for the full
-comparison.
+Both keys go in the same variable — `APPLAB_KEY` is whichever key you are using,
+and its tier is what decides reach. Nothing reads a separate variable for the
+app's key, so exporting this one replaces the admin key above rather than sitting
+beside it. See [Keys](#keys) for the full comparison.
 
 ### 3. Clone the app's repository
 
@@ -625,7 +627,7 @@ Every app *is* a git repository from the moment it is created, so it can be
 cloned before it has any content:
 
 ```bash
-git clone "https://x:$APPLAB_APP_KEY@applab.example.com/git/shop.git"
+git clone "https://x:$APPLAB_KEY@applab.example.com/git/shop.git"
 cd shop
 ```
 
@@ -644,7 +646,7 @@ Three things about that URL:
 If you would rather the key never enter the URL:
 
 ```bash
-git -c http.extraHeader="Authorization: Bearer $APPLAB_APP_KEY" \
+git -c http.extraHeader="Authorization: Bearer $APPLAB_KEY" \
   clone https://applab.example.com/git/shop.git
 ```
 
@@ -723,7 +725,7 @@ Step 5 is a read, since the build and the deploy were already started:
 
 ```bash
 curl -sS "$APPLAB_URL/api/v1/apps/shop/status" \
-  -H "Authorization: Bearer $APPLAB_APP_KEY"
+  -H "Authorization: Bearer $APPLAB_KEY"
 ```
 
 To build and deploy a commit without pushing one — a rebuild, or a commit built
@@ -731,7 +733,7 @@ from another machine:
 
 ```bash
 curl -sS -X POST "$APPLAB_URL/api/v1/apps/shop/deploy" \
-  -H "Authorization: Bearer $APPLAB_APP_KEY" \
+  -H "Authorization: Bearer $APPLAB_KEY" \
   -H "Content-Type: application/json" \
   -d '{"build":true}'
 ```

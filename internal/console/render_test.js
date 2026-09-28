@@ -332,6 +332,47 @@ async function render(apps) {
     check("with their scheme", text.includes("https://shop.apps.example.com"), true);
   }
 
+  // The app id is the only way into an app from the list, and it is reachable
+  // without a mouse.
+  //
+  // A click handler on a <td> is enough to open an app with a pointer and
+  // nothing else: no tab stop, so the row cannot be reached by keyboard at all,
+  // and no role, so a screen reader announces it as an ordinary empty cell. The
+  // cell carries tabindex, role=button and the two keys a real button answers
+  // to; this checks all four, because dropping any one of them silently removes
+  // the row from keyboard use again.
+  //
+  // Built directly rather than through render(), and openApp is replaced in this
+  // context first: the real handler navigates the page, and the elements here
+  // are shared with every other check, so pressing a key would leave the app
+  // view open for the checks that follow.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    const opened = [];
+    vm.runInContext("openApp = (id) => opened.push(id)", ctx);
+    ctx.opened = opened;
+
+    const cell = vm.runInContext("appIDCell", ctx)("shop");
+    check("the app id cell is focusable", cell.getAttribute("tabindex"), "0");
+    check("and announced as a control", cell.getAttribute("role"), "button");
+    check("and clicking it opens that app", (() => { cell.onclick(); return opened.join(","); })(), "shop");
+
+    // Space must not also scroll the page, which is what it does by default on
+    // a div — and the row would jump before the app opened.
+    let prevented = false;
+    cell.onkeydown({ key: " ", preventDefault: () => { prevented = true; } });
+    check("space opens the app", opened[opened.length - 1], "shop");
+    check("and does not scroll the page on the way", prevented, true);
+
+    // Enter is the other key a real button answers to.
+    cell.onkeydown({ key: "Enter", preventDefault: () => {} });
+    check("enter opens it too", opened[opened.length - 1], "shop");
+    check("and both keys opened it once each", opened.length, 3);
+  }
+
   // Not deployed: the app has no `url` from the API yet, but its address is
   // still known and is still what the row should offer. A plain-text address
   // that becomes a link on first deploy teaches nothing, and "where will this
@@ -806,6 +847,22 @@ async function render(apps) {
     check(
       "every string the interface shows is translated",
       missing.join(" | "),
+      ""
+    );
+
+    // A translation that is present but empty is worse than a missing one: the
+    // coverage check above finds the key and reports the sentence translated,
+    // while t() — `ZH[s] || s` — treats the empty string as absent and returns
+    // the English. So the only person who sees the bug is the one reading the
+    // page, in the one language where it is wrong.
+    //
+    // "or create one here." shipped that way, as the tail of the apps-list empty
+    // sentence; because that sentence is assembled from three markup fragments it
+    // was also mistranslated as a fragment, and the empty value hid it.
+    const emptyTranslation = Object.keys(zh).filter((k) => !zh[k]);
+    check(
+      "no translation is empty, which t() treats as none at all",
+      emptyTranslation.join(" | "),
       ""
     );
 
@@ -1646,6 +1703,136 @@ async function render(apps) {
     );
   }
 
+  // One app's configuration and history must not survive into another's page.
+  //
+  // Both cards are filled per app, and neither read clears the table before it
+  // has an answer — so opening a second app whose read fails left the first
+  // app's rows on screen under the new app's title. In the configuration table
+  // that is worse than a stale display: each row carries the value in
+  // `dataset.value` and a Remove button aimed at `state.app`, so the button
+  // under the new app deleted the *old* app's variable name from the new app —
+  // and the name shown was not one the new app had. The history card has the
+  // same shape with a Rollback button in it.
+  //
+  // Driven through the real loaders rather than by calling renderEnv directly,
+  // because the bug is the failure path not reaching it.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+
+    // The second app's config and commits reads fail; everything else answers.
+    let second = false;
+    ctx.fetch = async (url) => {
+      const target = String(url);
+      ctx.requests.push(target);
+      if (second && (target.includes("/config") || target.includes("/commits"))) {
+        return {
+          ok: false,
+          status: 500,
+          statusText: "Server Error",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ error: "boom" }),
+        };
+      }
+      if (target.includes("/config")) {
+        return {
+          ok: true, status: 200, statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ data: { env: { SHOP_ONLY: "s3cret" } } }),
+        };
+      }
+      if (target.includes("/commits")) {
+        return {
+          ok: true, status: 200, statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ data: { commits: [{ sha: "a".repeat(40), created_at: "2026-01-01T00:00:00Z", message: "shop only" }] } }),
+        };
+      }
+      // The build list is iterated, so it has to be a list rather than the
+      // generic object the other paths get away with.
+      if (target.includes("/builds")) {
+        return {
+          ok: true, status: 200, statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ data: [] }),
+        };
+      }
+      return {
+        ok: true, status: 200, statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { id: "x", port: 80, replicas: 1 } }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = "k";', ctx);
+
+    await vm.runInContext("openApp", ctx)("shop");
+    const envBody = elements.get("config-env");
+    const commitsBody = elements.get("commits");
+    check("the first app's config is on the page", envBody.children.length, 1);
+    check("and its history", commitsBody.children.length, 1);
+
+    second = true;
+    await vm.runInContext("openApp", ctx)("blog");
+
+    check(
+      "opening an app whose config cannot be read shows no rows rather than another app's",
+      envBody.children.length,
+      0
+    );
+    check(
+      "and the same for its history",
+      commitsBody.children.length,
+      0
+    );
+  }
+
+  // A failed auto-deploy change says so.
+  //
+  // The handler puts the checkbox back from the server, which means reloading
+  // the app's state — and loadAppState starts by clearing the error banner. With
+  // the message set before that reload, the reload wiped it and the toggle
+  // reverted in complete silence: the page appeared to disagree with the click
+  // for no stated reason. The failure has to be reported after the restore.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url, options) => {
+      const target = String(url);
+      ctx.requests.push(target);
+      if (options && options.method === "PATCH") {
+        return {
+          ok: false,
+          status: 500,
+          statusText: "Server Error",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ error: "nope" }),
+        };
+      }
+      return {
+        ok: true, status: 200, statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { id: "shop", auto_deploy: true, port: 80, replicas: 1 } }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = "k"; state.app = "shop";', ctx);
+
+    // The reader has just turned it off, so the box differs from the server.
+    elements.get("app-auto-deploy").checked = false;
+    await vm.runInContext("setAutoDeploy", ctx)();
+
+    check(
+      "a failed auto-deploy change is reported",
+      elements.get("error").textContent.includes("Could not set auto-deploy"),
+      true
+    );
+    check("and it is visible rather than hidden", elements.get("error").classList.contains("hidden"), false);
+    check("while the box goes back to what the app is set to", elements.get("app-auto-deploy").checked, true);
+  }
+
   // The log dialog is opened by a button, and it is the only thing that starts a
   // stream.
   //
@@ -2136,6 +2323,69 @@ async function render(apps) {
     check("and clears the panel's timer handle", intervals.length - before, 1);
   }
 
+  // Closing a dialog while its first read is still in flight must not leave a
+  // timer behind.
+  //
+  // The events panel and the metrics dialog both used to create their interval
+  // *after* awaiting the first read. A close arriving during that read therefore
+  // found the timer slot still empty, cleared nothing, and then the read's
+  // continuation assigned an interval nothing would ever clear — the dialog was
+  // closed, so no close path runs again. The panel went on polling until the
+  // page was reloaded.
+  //
+  // The window is the duration of one request, which is small but not
+  // theoretical: against a deployment with no cluster the metrics read is a 501
+  // that takes as long as the server takes to say so. Driven here by holding
+  // the fetch open until the test says to let it go.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    ctx.fetch = async (url) => {
+      ctx.requests.push(String(url));
+      await held;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({
+          data: { available: true, limited: {}, pods: { "applab-shop-abc": { cpu: "250m", memory: "128Mi" } }, events: [] },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.app = "shop";', ctx);
+
+    const before = intervals.length;
+
+    // Events first.
+    const events = vm.runInContext("showPodEvents", ctx)("applab-shop-abc");
+    vm.runInContext("closeLogDialog", ctx)();
+    release();
+    await events;
+    check(
+      "a dialog closed during its first read leaves no events timer",
+      vm.runInContext("state.eventsTimer", ctx),
+      null
+    );
+
+    // And the metrics dialog, which has the same shape.
+    const metrics = vm.runInContext("openPodMetrics", ctx)("applab-shop-abc");
+    vm.runInContext("closePodMetrics", ctx)();
+    release();
+    await metrics;
+    check(
+      "a metrics dialog closed during its first read leaves no sample timer",
+      vm.runInContext("state.metricsTimer", ctx),
+      null
+    );
+    check("and neither one grew a timer after the close", intervals.length - before <= 2, true);
+  }
+
   // The instances table distinguishes "no metrics here" from "the read failed".
   //
   // They are different problems with different remedies, and conflating them
@@ -2233,6 +2483,20 @@ async function render(apps) {
     // Scaled to the limit by default, which is what makes the line's height mean
     // "how much of the allowance is in use".
     check("scaled against the limit", elements.get("metrics-cpu-range").textContent, "limit 1 cores");
+
+    // The timer it put up actually samples. Asserting only that a timer exists
+    // is not enough: the interval used to be created before `metricsPod` was
+    // set, so every fired tick took the "no pod" early return and the chart
+    // stayed a single point forever. Firing it here is what tells the two
+    // apart, and the sample count is the thing that changes.
+    const samplesBefore = vm.runInContext("state.metricsSamples.cpu.length", ctx);
+    const tick = intervals[intervals.length - 1];
+    await tick.fn();
+    check(
+      "and each tick adds a reading rather than returning early",
+      vm.runInContext("state.metricsSamples.cpu.length", ctx),
+      samplesBefore + 1
+    );
 
     // A pod the response does not mention is said so, not charted from another
     // pod's numbers. A pod is replaced by a deploy or a crash loop, and the
