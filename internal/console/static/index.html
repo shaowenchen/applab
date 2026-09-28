@@ -2515,6 +2515,14 @@ function buildRows(builds) {
 // Blaming the cluster for the second sent whoever was debugging to check
 // metrics-server when the answer was in the response body.
 function renderInstances({ body, empty, note, pods, usage, failure, onLog, onMetrics, onEvents }) {
+  // Guarded here rather than at each caller. One caller passes
+  // `value.pods || []` and the other passes the API's field straight through,
+  // so a 200 carrying `pods: null` threw on `pods.length` inside the app view's
+  // allSettled — caught, so the table simply kept the previous app's rows
+  // instead of being emptied. The function that iterates is the right place to
+  // decide that "no list" and "empty list" are the same thing.
+  pods = pods || [];
+
   body.replaceChildren();
   show(empty, pods.length === 0);
   show(note, false);
