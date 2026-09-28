@@ -370,11 +370,27 @@ func sortAppWithCommit(t *testing.T, srv *api.Server, h http.Handler, appID stri
 	// Creating it with the switch on would publish the seeded commit — creating
 	// an app writes a repository, and a repository change publishes — so these
 	// tests would find a build already started and count it against the one
-	// their push is supposed to start. Off-then-on is the same end state with
-	// nothing in between.
+	// their push is supposed to start.
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": appID, "auto_deploy": false}); rec.Code != http.StatusCreated {
 		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
 	}
+
+	// The publish creating the app started has to finish before the switch is
+	// turned on, and this is not tidiness — without it the helper is flaky.
+	//
+	// That job reads the app when it runs rather than capturing the setting from
+	// the request, so switching on first lets it find auto-deploy already on,
+	// and it then builds the seeded commit. The caller sees a build it did not
+	// start and counts it against the one its push was supposed to make. Which
+	// of the two runs first is a race, so the failure came and went.
+	//
+	// Draining is enough rather than necessary: with the switch off the job
+	// reads the app, decides there is nothing to do and returns, so this waits
+	// for one store read rather than for a build.
+	settleCtx, cancelSettle := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelSettle()
+	srv.WaitForBackgroundWork(settleCtx)
+
 	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/"+appID, map[string]any{"auto_deploy": true}); rec.Code != http.StatusOK {
 		t.Fatalf("turn auto-deploy on: %d (%s)", rec.Code, rec.Body.String())
 	}
