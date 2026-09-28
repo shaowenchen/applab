@@ -42,8 +42,10 @@ type Metrics struct {
 	authRejections atomic.Int64
 
 	// gauges holds values sampled at scrape time, since they are read from
-	// elsewhere rather than counted here.
-	gauges   map[string]func() float64
+	// elsewhere rather than counted here. Each carries the description it was
+	// registered with, because the scrape writes a HELP line and a metric without
+	// one is one a reader has to guess at.
+	gauges   map[string]gauge
 	gaugesMu sync.Mutex
 }
 
@@ -51,7 +53,7 @@ type Metrics struct {
 func NewMetrics() *Metrics {
 	return &Metrics{
 		started: time.Now(),
-		gauges:  map[string]func() float64{},
+		gauges:  map[string]gauge{},
 	}
 }
 
@@ -63,8 +65,13 @@ func NewMetrics() *Metrics {
 func (m *Metrics) RegisterGauge(name, help string, fn func() float64) {
 	m.gaugesMu.Lock()
 	defer m.gaugesMu.Unlock()
-	m.gauges[name] = fn
-	_ = help
+	m.gauges[name] = gauge{help: help, read: fn}
+}
+
+// gauge is a registered sampled value and the sentence describing it.
+type gauge struct {
+	help string
+	read func() float64
 }
 
 // ObserveRequest records one request.
@@ -167,8 +174,12 @@ func (m *Metrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(names)
 
 	for _, name := range names {
+		g := m.gauges[name]
+		if g.help != "" {
+			fmt.Fprintf(&b, "# HELP %s %s\n", name, g.help)
+		}
 		fmt.Fprintf(&b, "# TYPE %s gauge\n", name)
-		fmt.Fprintf(&b, "%s %g\n", name, m.gauges[name]())
+		fmt.Fprintf(&b, "%s %g\n", name, g.read())
 	}
 	m.gaugesMu.Unlock()
 

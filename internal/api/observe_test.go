@@ -641,6 +641,38 @@ func TestMetricsEndpointIsOpenAndWellFormed(t *testing.T) {
 			t.Errorf("metrics output is missing %q", want)
 		}
 	}
+
+	// Every series carries its description, not just its type. Prometheus treats
+	// HELP as optional, which is exactly why it goes missing silently: a metric
+	// with a TYPE line and no HELP renders fine and is one a reader has to guess
+	// at. The registered gauges were in that state — RegisterGauge took a help
+	// string and discarded it.
+	//
+	// Asserted as a property over everything the endpoint emits rather than as a
+	// list of names, so a metric added later is covered by the same check.
+	typed, helped := map[string]bool{}, map[string]bool{}
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case strings.HasPrefix(line, "# TYPE "):
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				typed[fields[2]] = true
+			}
+		case strings.HasPrefix(line, "# HELP "):
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				helped[fields[2]] = true
+			}
+		}
+	}
+	if len(typed) == 0 {
+		t.Fatal("no # TYPE lines at all; the parse below would pass vacuously")
+	}
+	for name := range typed {
+		if !helped[name] {
+			t.Errorf("%s has a # TYPE line and no # HELP; its description was dropped on the way out", name)
+		}
+	}
 }
 
 // TestMetricsCountsRequests asserts the counters actually move, since a metric
