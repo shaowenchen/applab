@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -81,20 +82,81 @@ func (c *Client) PodUsage(ctx context.Context, namespace, selector string) (map[
 	for i := range list.Items {
 		item := &list.Items[i]
 
-		// Read as strings rather than through a numeric accessor: the API reports
-		// quantities with suffixes ("12m", "48Mi"), and asking the unstructured
-		// layer for a number would fail on every one of them. A field that is
-		// absent is left empty and reported as such rather than as zero.
-		cpu, _, _ := unstructured.NestedString(item.Object, "usage", "cpu")
-		memory, _, _ := unstructured.NestedString(item.Object, "usage", "memory")
+		// The timestamp is on the pod, and describes the window every container
+		// below was sampled over.
 		stamp, _, _ := unstructured.NestedString(item.Object, "timestamp")
 
-		out[item.GetName()] = Usage{
-			PodName:   item.GetName(),
-			CPU:       cpu,
-			Memory:    memory,
-			Timestamp: stamp,
+		// Usage is per container, and a pod's is their sum.
+		//
+		// This read used to be `NestedString(item.Object, "usage", "cpu")` —
+		// a top-level field that does not exist on a PodMetrics. It does on a
+		// *Node*Metrics, which is presumably where the shape was taken from, so
+		// the lookup was well-formed and always empty: every pod reported no cpu
+		// and no memory, the map was still keyed by pod name, and the console
+		// drew nothing while saying the pod was fine. metrics.k8s.io/v1beta1
+		// defines PodMetrics as metadata, timestamp, window and containers[],
+		// and only ContainerMetrics has a usage.
+		//
+		// Summed rather than picked out of one container, because a pod is what
+		// this reports on: an app's pod may carry a sidecar — Istio's proxy is
+		// injected into these namespaces — and reporting the app container alone
+		// would understate what the pod costs the node, which is the number
+		// anyone reading this is asking about.
+		cpu, cpuSeen := sumContainerUsage(item.Object, "cpu")
+		memory, memSeen := sumContainerUsage(item.Object, "memory")
+		usage := Usage{PodName: item.GetName(), Timestamp: stamp}
+		if cpuSeen {
+			usage.CPU = cpu
 		}
+		if memSeen {
+			usage.Memory = memory
+		}
+		out[item.GetName()] = usage
 	}
 	return out, true, nil
+}
+
+// sumContainerUsage adds one resource across a PodMetrics' containers.
+//
+// The second return says whether any container reported it, which is what keeps
+// "nothing reported this yet" apart from a real zero. A pod whose sample has not
+// landed has no containers with a usage, and summing nothing would otherwise
+// produce "0" — an idle-looking pod that may be starving, which is the failure
+// the callers of this package are built to avoid.
+//
+// Quantities are the metrics API's own strings ("12m", "48Mi"), parsed rather
+// than concatenated. One that does not parse is skipped rather than failing the
+// read: this is a display path, and the rest of the pod's containers are still
+// worth reporting.
+func sumContainerUsage(item map[string]any, name string) (string, bool) {
+	containers, ok := item["containers"].([]any)
+	if !ok {
+		return "", false
+	}
+
+	total := resource.NewQuantity(0, resource.DecimalSI)
+	seen := false
+	for _, raw := range containers {
+		container, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Read as strings rather than through a numeric accessor: the API
+		// reports quantities with suffixes, and asking the unstructured layer
+		// for a number would fail on every one of them.
+		value, _, _ := unstructured.NestedString(container, "usage", name)
+		if value == "" {
+			continue
+		}
+		q, err := resource.ParseQuantity(value)
+		if err != nil {
+			continue
+		}
+		total.Add(q)
+		seen = true
+	}
+	if !seen {
+		return "", false
+	}
+	return total.String(), true
 }

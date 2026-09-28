@@ -10,7 +10,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
 )
@@ -260,3 +263,120 @@ var errForbidden = &forbiddenError{}
 type forbiddenError struct{}
 
 func (e *forbiddenError) Error() string { return "forbidden" }
+
+// TestPodUsageReadsPerContainerUsage is the regression for a metrics panel that
+// showed nothing.
+//
+// The read asked for a top-level "usage" on a PodMetrics. That field does not
+// exist: metrics.k8s.io/v1beta1 defines PodMetrics as metadata, timestamp,
+// window and containers[], and only each ContainerMetrics has a usage. (Node,
+// not Pod — NodeMetrics is the one with a top-level usage, which is where the
+// shape looks to have been taken from.) So the lookup was well-formed and
+// always empty, every pod came back with no cpu and no memory, and because the
+// map was still keyed by pod name the console did not say "unavailable" — it
+// said the pod had stopped reporting while the pod was perfectly fine.
+//
+// The fixture is the API's real shape, which is the whole point: the code was
+// never wrong about a field it read, it was wrong about where the field is, and
+// only a realistic payload can tell the two apart.
+func TestPodUsageReadsPerContainerUsage(t *testing.T) {
+	metrics := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "metrics.k8s.io/v1beta1",
+		"kind":       "PodMetrics",
+		"metadata": map[string]any{
+			"name":      "applab-shop-1",
+			"namespace": testNS,
+			// The selector the caller lists by, so this fixture is found the
+			// way a real pod is. Without it the fake filters the object out and
+			// the test reads an empty list, which is the same symptom as the
+			// bug it exists to catch.
+			"labels": map[string]any{"app.kubernetes.io/part-of": "applab"},
+		},
+		"timestamp": "2026-09-28T12:00:00Z",
+		"window":    "30s",
+		"containers": []any{
+			map[string]any{
+				"name":  "app",
+				"usage": map[string]any{"cpu": "150m", "memory": "96Mi"},
+			},
+			map[string]any{
+				"name":  "istio-proxy",
+				"usage": map[string]any{"cpu": "10m", "memory": "32Mi"},
+			},
+		},
+	}}
+
+	client := dynamicTestClient(t, metrics)
+	usage, available, err := client.PodUsage(context.Background(), testNS, "app.kubernetes.io/part-of=applab")
+	if err != nil {
+		t.Fatalf("PodUsage: %v", err)
+	}
+	if !available {
+		t.Fatal("the cluster answered with metrics but PodUsage reported them unavailable")
+	}
+
+	got, ok := usage["applab-shop-1"]
+	if !ok {
+		t.Fatalf("the pod is missing from the readings; got %v", usage)
+	}
+	// The sum across both containers, not one of them: a pod with a sidecar
+	// costs the node what both of them use.
+	if got.CPU != "160m" {
+		t.Errorf("cpu = %q, want %q (150m + 10m across the pod's containers)", got.CPU, "160m")
+	}
+	if got.Memory != "128Mi" {
+		t.Errorf("memory = %q, want %q (96Mi + 32Mi)", got.Memory, "128Mi")
+	}
+	if got.Timestamp != "2026-09-28T12:00:00Z" {
+		t.Errorf("timestamp = %q, want the pod's own", got.Timestamp)
+	}
+}
+
+// TestPodUsageReportsNothingRatherThanZero asserts a pod whose sample has not
+// landed is unknown rather than idle.
+func TestPodUsageReportsNothingRatherThanZero(t *testing.T) {
+	metrics := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "metrics.k8s.io/v1beta1",
+		"kind":       "PodMetrics",
+		"metadata":   map[string]any{"name": "applab-shop-1", "namespace": testNS},
+		"timestamp":  "2026-09-28T12:00:00Z",
+		"containers": []any{},
+	}}
+
+	client := dynamicTestClient(t, metrics)
+	usage, _, err := client.PodUsage(context.Background(), testNS, "app")
+	if err != nil {
+		t.Fatalf("PodUsage: %v", err)
+	}
+	got := usage["applab-shop-1"]
+	if got.CPU != "" {
+		t.Errorf("cpu = %q, want empty — no container reported one, and a summed nothing stringifies to \"0\", which reads as an idle pod that may be starving", got.CPU)
+	}
+	if got.Memory != "" {
+		t.Errorf("memory = %q, want empty, for the same reason", got.Memory)
+	}
+}
+
+// dynamicTestClient builds a client whose dynamic half answers the pod metrics
+// resource with the given objects.
+//
+// The objects are Created through the client rather than handed to the
+// constructor: the fake registers the ones the scheme recognizes, and
+// metrics.k8s.io is deliberately not in the scheme — this package reads it
+// unstructured so it does not have to carry that API's Go types. Passed to the
+// constructor they are silently dropped, and the list comes back empty, which
+// looks exactly like a cluster reporting no metrics.
+func dynamicTestClient(t *testing.T, objects ...*unstructured.Unstructured) *Client {
+	t.Helper()
+
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{podMetricsGVR: "PodMetricsList"})
+	for _, obj := range objects {
+		namespace := obj.GetNamespace()
+		if _, err := dyn.Resource(podMetricsGVR).Namespace(namespace).Create(
+			context.Background(), obj, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed pod metrics: %v", err)
+		}
+	}
+	return NewWithClientset(fake.NewSimpleClientset(), testNS).NewWithDynamic(dyn)
+}
