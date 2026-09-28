@@ -2002,6 +2002,43 @@ async function render(apps) {
     check("an app key's examples name its own app", read("docs-push-cmd").includes("applab push shop"), true);
     check("and its clone command does too", read("docs-clone-cmd").includes("/git/shop.git"), true);
 
+    // How to get applab.sh in the first place.
+    //
+    // The section used to open with `cd <app> && ./applab.sh status`, which
+    // assumes a script the reader may have no way to obtain — it lives in the
+    // repository, and someone who has not cloned anything has no repository.
+    // The deployment serves the same file at /bootstrap.
+    {
+      const bootstrap = read("docs-bootstrap-cmd");
+      check(
+        "the script section says where to fetch applab.sh from",
+        bootstrap.includes("/bootstrap/applab.sh"),
+        true
+      );
+      check("and makes it executable", bootstrap.includes("chmod +x applab.sh"), true);
+      check("and carries the reader's key", bootstrap.includes("APPLAB_KEY=app-secret"), true);
+      // An app key reaches exactly one app and cannot create one, so the verb
+      // it wants is `use`. Offering `create` to this reader would be a command
+      // that fails.
+      check("and points the fetched script at their app with use", bootstrap.includes("./applab.sh use shop"), true);
+      check("not with create, which that key cannot do", bootstrap.includes("./applab.sh create"), false);
+    }
+
+    // An admin has no single app, so the same block has to fall back to a
+    // placeholder and to `create`, which is the verb that makes one.
+    vm.runInContext('state.key = "sk-secret"; state.scope = "admin"; state.app = "";', ctx);
+    await docs();
+    {
+      const bootstrap = read("docs-bootstrap-cmd");
+      check("an admin is offered create, not use", bootstrap.includes("./applab.sh create <app>"), true);
+      check("and not a use of an app they did not name", bootstrap.includes("./applab.sh use"), false);
+      check("with the deployment's own address", bootstrap.includes("https://applab.example.com/bootstrap/applab.sh"), true);
+    }
+
+    // Back to the app key for the sign-out check below.
+    vm.runInContext('state.key = "app-secret"; state.scope = "app"; state.app = "shop";', ctx);
+    await docs();
+
     // Signing out must not leave the discarded key sitting in the commands.
     vm.runInContext("signOut", ctx)();
     check("signing out drops the key from the commands", read("docs-push-cmd").includes("sk-secret"), false);

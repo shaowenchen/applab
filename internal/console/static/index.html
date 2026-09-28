@@ -872,6 +872,8 @@
           <h2 data-i18n="Or use the script in the repository">Or use the script in the repository</h2>
           <p data-i18n="Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.">Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.</p>
           <pre id="docs-script-cmd"></pre>
+          <p data-i18n="That copy is inside the app's repository, so it is the one you get by cloning. If you have not cloned anything yet — no app, nothing set up — the deployment serves the same script with no app and no key in it. This needs no key, since it names no app; `create` is what then makes one.">That copy is inside the app's repository, so it is the one you get by cloning. If you have not cloned anything yet — no app, nothing set up — the deployment serves the same script with no app and no key in it. This needs no key, since it names no app; <code>create</code> is what then makes one.</p>
+          <pre id="docs-bootstrap-cmd"></pre>
           <p><code>./applab.sh help</code> <span data-i18n="lists everything it can do.">lists everything it can do.</span></p>
         </div>
 
@@ -1731,6 +1733,8 @@ const ZH = {
   "Or use the script in the repository": "或者用仓库里的脚本",
   "Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.":
     "每个应用的仓库里都带一个 applab.sh，只用 curl 就能完成整个生命周期。脚本里已经写好了应用 ID、key 和地址，所以刚 clone 下来就能直接跑，不需要 export 任何变量；而且每次执行命令前它会自动从部署拉取最新版本。",
+  "That copy is inside the app's repository, so it is the one you get by cloning. If you have not cloned anything yet — no app, nothing set up — the deployment serves the same script with no app and no key in it. This needs no key, since it names no app; `create` is what then makes one.":
+    "那份脚本在应用的仓库里，clone 下来就有。如果还没有 clone 过任何东西——连应用都还没有——部署本身也提供同一个脚本，只是里面不写应用、也不带 key。取它不需要 key，因为它不指向任何应用；应用是用 create 创建的。",
   "lists everything it can do.": "会列出它支持的全部命令。",
   "Two kinds of key": "两种 key",
   "Which one you hold decides what you can do, and they are not interchangeable.":
@@ -2751,6 +2755,22 @@ function renderDocs() {
     "./applab.sh status      # what is running, and where",
     "./applab.sh logs -f     # follow the newest pod's log",
     "./applab.sh push        # upload, build and deploy",
+  ].join("\n"));
+
+  // Where the script comes from when there is nothing cloned yet. The first
+  // command is the whole answer to "how do I get applab.sh": the route is
+  // unauthenticated because the copy it serves names no app.
+  //
+  // The second points the fetched script at an app, and which verb depends on
+  // the reader. An app key already reaches exactly one app and cannot create
+  // one, so `use` is the command they want; for an admin or a signed-out reader
+  // there is no app yet and `create` is what makes one.
+  const hasApp = state.scope === "app" && state.app;
+  setText("docs-bootstrap-cmd", [
+    "curl -fsS " + base + "/bootstrap/applab.sh -o applab.sh && chmod +x applab.sh",
+    "",
+    "export APPLAB_KEY=" + key,
+    "./applab.sh " + (hasApp ? "use " : "create ") + (hasApp ? state.app : "<app>"),
   ].join("\n"));
 
   setText("docs-watch-cmd", [
