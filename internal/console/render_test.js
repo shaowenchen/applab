@@ -512,10 +512,14 @@ async function render(apps) {
     }
   }
 
-  // Signed out, the console shows the sign-in card and nothing else: no view is
-  // left on screen behind it, and the header keeps only what is useful before a
-  // key exists. This is the state a first visit lands in, and the one the page
-  // has to get right without any JavaScript having run a view.
+  // Signed out, the console shows the sign-in card and nothing else but the
+  // document: no data view is left on screen behind it, and the header keeps
+  // only what is useful before a key exists. This is the state a first visit
+  // lands in, and the one the page has to get right without any JavaScript
+  // having run a view.
+  //
+  // Docs is the deliberate exception — see the block below, which is where the
+  // rule that used to read "and neither is the nav" now lives.
   {
     check("signed out, the sign-in card is up", elements.get("signin").classList.contains("hidden"), false);
     for (const view of ["overview", "apps", "app"]) {
@@ -525,7 +529,12 @@ async function render(apps) {
         true
       );
     }
-    check("and neither is the nav", elements.get("nav").classList.contains("hidden"), true);
+    check("and neither is the docs view", elements.get("docs-view").classList.contains("hidden"), true);
+    // The nav is up, offering the one destination that works without a key.
+    check("the nav is up for the document", elements.get("nav").classList.contains("hidden"), false);
+    check("with the data views not offered", elements.get("nav-overview").classList.contains("hidden"), true);
+    check("nor the app list", elements.get("nav-apps").classList.contains("hidden"), true);
+    check("and the document offered", elements.get("nav-docs").classList.contains("hidden"), false);
     // The header itself stays, because the theme and language controls live in
     // it and they are the whole of what this screen offers besides the card.
     check("the header stays up for its preference controls", elements.get("app-header").classList.contains("hidden"), false);
@@ -1913,6 +1922,77 @@ async function render(apps) {
     const asked = ctx.requests.find((u) => u.includes("/api/v1/platform/logs")) || "";
     check("and a row's log button is what reads one", asked.length > 0, true);
     check("naming the pod the row was about", asked.includes("pod=applab-6b9f7-abc"), true);
+  }
+
+  // The document, and the thing that makes it worth having: the commands carry
+  // the reader's own key when there is one and a placeholder when there is not.
+  //
+  // That is the whole reason it is rendered rather than written into the markup.
+  // The page has to be correct in two states — signed out, which is when it is
+  // most useful, and signed in, where a copyable command is — and a document
+  // with a hardcoded `<key>` in it would be wrong in the second one for the
+  // reader who is most likely to run it.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    const docs = vm.runInContext("showDocs", ctx);
+    const read = (id) => elements.get(id).textContent;
+
+    // Signed out: no key, no app, so the commands have placeholders in both.
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = ""; state.scope = "admin"; state.app = "";', ctx);
+    await docs();
+    check("the document names the deployment", read("docs-push-cmd").includes("APPLAB_URL=https://applab.example.com"), true);
+    check("and leaves the key for the reader to fill in", read("docs-push-cmd").includes("APPLAB_KEY=<your key>"), true);
+    check("and does not put a real key in the commands", read("docs-push-cmd").includes("undefined"), false);
+    // Signed out, the sign-in card is what the page shows and the document is
+    // behind it — but the card has to step aside or the two overlap.
+    check("the sign-in card steps aside for the document", elements.get("signin").classList.contains("hidden"), true);
+    check("and the document is on screen", elements.get("docs-view").classList.contains("hidden"), false);
+
+    // Signed in as an admin: the real key goes in, and the examples still name
+    // no app, because an admin has none in particular.
+    vm.runInContext('state.key = "sk-secret"; state.signedIn = true;', ctx);
+    await docs();
+    check("signed in, the commands carry the key", read("docs-push-cmd").includes("APPLAB_KEY=sk-secret"), true);
+    check("and an admin's examples name no single app", read("docs-push-cmd").includes("applab push <app>"), true);
+
+    // Signed in with an app key: one app, so the examples name it.
+    vm.runInContext('state.key = "app-secret"; state.scope = "app"; state.app = "shop";', ctx);
+    await docs();
+    check("an app key's examples name its own app", read("docs-push-cmd").includes("applab push shop"), true);
+    check("and its clone command does too", read("docs-clone-cmd").includes("/git/shop.git"), true);
+
+    // Signing out must not leave the discarded key sitting in the commands.
+    vm.runInContext("signOut", ctx)();
+    check("signing out drops the key from the commands", read("docs-push-cmd").includes("sk-secret"), false);
+    check("and leaves the placeholder", read("docs-push-cmd").includes("APPLAB_KEY=<your key>"), true);
+    check("while the sign-in card comes back", elements.get("signin").classList.contains("hidden"), false);
+  }
+
+  // The document is the one view reachable without a key, and it is a view like
+  // any other: it has a table of contents, every entry in it points at a section
+  // that exists, and the header's name is a way back out.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    vm.runInContext(source, ctx, { filename: "console.js" });
+
+    await vm.runInContext("showDocs", ctx)();
+    const nav = elements.get("docs-nav");
+    check("the document has a table of contents", nav.children.length > 0, true);
+
+    const sections = vm.runInContext("DOC_SECTIONS", ctx);
+    const missing = sections.filter((s) => !markup.includes('id="' + s.id + '"'));
+    check("and every entry points at a section that is in the page", missing.map((s) => s.id).join(", "), "");
+
+    // Back to the sign-in card. Without this, opening the document before
+    // signing in would be a one-way trip: the header's name is the only control
+    // left, and it was disabled in the state.
+    vm.runInContext("goHome", ctx)();
+    check("the header's name returns to the sign-in card", elements.get("signin").classList.contains("hidden"), false);
+    check("and leaves the document behind", elements.get("docs-view").classList.contains("hidden"), true);
   }
 
   // The dialogs are outside every view section.

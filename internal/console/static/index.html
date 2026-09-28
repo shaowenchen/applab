@@ -637,10 +637,17 @@
        is nowhere up from here. -->
   <h1><button id="home" type="button" disabled>AppLab</button></h1>
   <!-- Which view is showing is navigation, not decoration: it is hidden until
-       there is something to navigate, since the sign-in screen has no views. -->
+       there is something to navigate, since the sign-in screen has no views.
+
+       Docs is outside that rule and carries .always: it is the one destination
+       that is useful before signing in — someone arriving with a key they have
+       not entered yet, or with none at all, is exactly who needs to read how to
+       use the platform. The other two are the deployment's own data and stay
+       hidden until there is a session. -->
   <nav id="nav" class="hidden">
     <button id="nav-overview" data-i18n="Overview">Overview</button>
     <button id="nav-apps" data-i18n="Apps">Apps</button>
+    <button id="nav-docs" class="always" data-i18n="Docs">Docs</button>
   </nav>
   <span class="spacer"></span>
   <!-- Grouped so they move together if the header is ever rearranged, and named
@@ -813,6 +820,101 @@
       <div id="apps-empty" class="empty hidden">
         <span data-i18n="No apps yet. Push one with">No apps yet. Push one with</span>
         <span class="mono">applab push &lt;app&gt;</span><span data-i18n="or create one here.">, or create one here.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Docs. The platform's usage, written for the person reading it rather than
+       for the API's own reference: what to type, in what order, and what it
+       does.
+
+       It is the one view that is readable signed out, because that is when it
+       is worth the most — someone who has been given a key and not yet entered
+       it, or who has been handed an app's address and nothing else. The
+       commands carry their real key once there is one and a placeholder while
+       there is not, which is what makes the same page correct in both states.
+
+       Deliberately not a copy of the README. That document is for whoever
+       installs the platform, from a shell, with cluster access; this one is for
+       whoever uses it from the console, and it is arranged by the task rather
+       than by the system. The overlap is the commands, and those are assembled
+       from the deployment's own address so they can be copied as they stand. -->
+  <section id="docs-view" class="hidden">
+    <div class="page-head">
+      <h1 data-i18n="Using AppLab">Using AppLab</h1>
+    </div>
+
+    <div class="app-layout">
+      <nav class="app-nav" id="docs-nav" aria-label="Sections"></nav>
+      <div class="app-body">
+        <div class="card" id="doc-start">
+          <h2 data-i18n="Where you are">Where you are</h2>
+          <p data-i18n="This console is served by one AppLab installation. Everything below is done against that same address, so no command needs to name it.">This console is served by one AppLab installation. Everything below is done against that same address, so no command needs to name it.</p>
+          <dl id="docs-address"></dl>
+        </div>
+
+        <div class="card" id="doc-push">
+          <h2 data-i18n="Ship a change">Ship a change</h2>
+          <p data-i18n="An app is one source repository, one image and one Deployment. Uploading source is what puts code in; what is committed is what can be deployed.">An app is one source repository, one image and one Deployment. Uploading source is what puts code in; what is committed is what can be deployed.</p>
+          <pre id="docs-push-cmd"></pre>
+          <p data-i18n="That packages the current directory, uploads it, builds it and deploys it — and creates the app first if it does not exist, so the first run on a new project needs nothing set up beforehand.">That packages the current directory, uploads it, builds it and deploys it — and creates the app first if it does not exist, so the first run on a new project needs nothing set up beforehand.</p>
+          <p data-i18n="A Dockerfile is required. Build output and dependency directories are left out of the upload by default.">A Dockerfile is required. Build output and dependency directories are left out of the upload by default.</p>
+        </div>
+
+        <div class="card" id="doc-clone">
+          <h2 data-i18n="Work over git instead">Work over git instead</h2>
+          <p data-i18n="Every app is a git repository from the moment it is created, so a checkout and a push work the way they always do. This is what a repository clone gets, and it is the same source the upload path commits to.">Every app is a git repository from the moment it is created, so a checkout and a push work the way they always do. This is what a repository clone gets, and it is the same source the upload path commits to.</p>
+          <pre id="docs-clone-cmd"></pre>
+          <p data-i18n="The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.">The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.</p>
+        </div>
+
+        <div class="card" id="doc-script">
+          <h2 data-i18n="Or use the script in the repository">Or use the script in the repository</h2>
+          <p data-i18n="Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.">Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.</p>
+          <pre id="docs-script-cmd"></pre>
+          <p><code>./applab.sh help</code> <span data-i18n="lists everything it can do.">lists everything it can do.</span></p>
+        </div>
+
+        <div class="card" id="doc-keys">
+          <h2 data-i18n="Two kinds of key">Two kinds of key</h2>
+          <p data-i18n="Which one you hold decides what you can do, and they are not interchangeable.">Which one you hold decides what you can do, and they are not interchangeable.</p>
+          <table>
+            <thead><tr><th data-i18n="Kind of key">Kind of key</th><th data-i18n="Reaches">Reaches</th><th data-i18n="Can also">Can also</th></tr></thead>
+            <tbody>
+              <tr>
+                <td data-i18n="Admin key">Admin key</td>
+                <td data-i18n="Every app, and the platform itself">Every app, and the platform itself</td>
+                <td data-i18n="Create and delete apps, rotate any key, read the platform's own log and events">Create and delete apps, rotate any key, read the platform's own log and events</td>
+              </tr>
+              <tr>
+                <td data-i18n="App key">App key</td>
+                <td data-i18n="One app only">One app only</td>
+                <td data-i18n="Push, build, deploy, roll back, read logs, change its configuration — but not delete it and not see any other app">Push, build, deploy, roll back, read logs, change its configuration — but not delete it and not see any other app</td>
+              </tr>
+            </tbody>
+          </table>
+          <p data-i18n="Both go in the same variable: APPLAB_KEY is whichever key you are using. An app's own key is printed when the app is created, and can be read again at any time from the app's page.">Both go in the same variable: APPLAB_KEY is whichever key you are using. An app's own key is printed when the app is created, and can be read again at any time from the app's page.</p>
+        </div>
+
+        <div class="card" id="doc-watch">
+          <h2 data-i18n="Watch it running">Watch it running</h2>
+          <pre id="docs-watch-cmd"></pre>
+          <p data-i18n="Each of these is on the app's own page too, and each names one pod rather than the app: a pod with a problem is usually not the newest one.">Each of these is on the app's own page too, and each names one pod rather than the app: a pod with a problem is usually not the newest one.</p>
+        </div>
+
+        <div class="card" id="doc-diagnose">
+          <h2 data-i18n="When it is not working">When it is not working</h2>
+          <pre id="docs-diagnose-cmd"></pre>
+          <p data-i18n="That reports pods, events and the relevant log in one answer, ordered so the most likely cause comes first. Start there rather than with the individual reads.">That reports pods, events and the relevant log in one answer, ordered so the most likely cause comes first. Start there rather than with the individual reads.</p>
+          <p data-i18n="A build that failed keeps its log and its pod for as long as the deployment keeps build history, so a failure is diagnosable after the fact.">A build that failed keeps its log and its pod for as long as the deployment keeps build history, so a failure is diagnosable after the fact.</p>
+        </div>
+
+        <div class="card" id="doc-api">
+          <h2 data-i18n="For an agent, or a script">For an agent, or a script</h2>
+          <p data-i18n="Every route this deployment serves is listed by one call, with the key each one needs — no key required to read it.">Every route this deployment serves is listed by one call, with the key each one needs — no key required to read it.</p>
+          <pre id="docs-api-cmd"></pre>
+          <p data-i18n="Everything the console does is one of those routes, so anything done here can be done from a script against the same key.">Everything the console does is one of those routes, so anything done here can be done from a script against the same key.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -1376,6 +1478,7 @@ const ZH = {
   // -- Header and navigation ------------------------------------------------
   "Overview": "概览",
   "Apps": "应用",
+  "Docs": "使用文档",
   "Sign out": "退出登录",
 
   // -- Sign in --------------------------------------------------------------
@@ -1579,6 +1682,62 @@ const ZH = {
   "Light": "浅色",
   "Dark": "深色",
   "System": "跟随系统",
+
+  // -- Docs -----------------------------------------------------------------
+  "Using AppLab": "使用 AppLab",
+  "Where you are": "你所在的位置",
+  "This console is served by one AppLab installation. Everything below is done against that same address, so no command needs to name it.":
+    "这个控制台由某一套 AppLab 提供。下面所有操作都对同一个地址进行，所以命令里不需要再写地址。",
+  "Deployment": "部署地址",
+  "Your key": "你的 key",
+  "the one you signed in with": "你登录时使用的那把",
+  "none yet — enter one above to fill the commands in": "还没有——在上方登录后，命令会自动填上你的 key",
+  "API": "API 地址",
+  "Ship a change": "发布一次变更",
+  "An app is one source repository, one image and one Deployment. Uploading source is what puts code in; what is committed is what can be deployed.":
+    "一个应用对应一个源码仓库、一个镜像和一个 Deployment。上传源码就是写入代码的方式；已提交的内容才是可以被部署的内容。",
+  "That packages the current directory, uploads it, builds it and deploys it — and creates the app first if it does not exist, so the first run on a new project needs nothing set up beforehand.":
+    "这条命令会打包当前目录、上传、构建并部署；应用不存在时会先创建，所以新项目第一次运行不需要任何预先配置。",
+  "A Dockerfile is required. Build output and dependency directories are left out of the upload by default.":
+    "必须要有 Dockerfile。构建产物和依赖目录默认不会被上传。",
+  "Work over git instead": "改用 git 方式",
+  "Every app is a git repository from the moment it is created, so a checkout and a push work the way they always do. This is what a repository clone gets, and it is the same source the upload path commits to.":
+    "每个应用从创建那一刻起就是一个 git 仓库，所以 clone 和 push 跟平时完全一样。这就是仓库的 clone 地址，它和上传方式提交的是同一份源码。",
+  "The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.":
+    "key 作为密码写在 URL 里，所以用户名随便填。分支就是在应用名后面加 @分支名，地址其余部分不变。",
+  "Or use the script in the repository": "或者用仓库里的脚本",
+  "Every app's repository carries applab.sh, which does the whole lifecycle with nothing but curl. It is written with the app's id, key and address filled in, so a fresh clone runs with nothing exported, and it refreshes itself from the deployment before each command.":
+    "每个应用的仓库里都带一个 applab.sh，只用 curl 就能完成整个生命周期。脚本里已经写好了应用 ID、key 和地址，所以刚 clone 下来就能直接跑，不需要 export 任何变量；而且每次执行命令前它会自动从部署拉取最新版本。",
+  "lists everything it can do.": "会列出它支持的全部命令。",
+  "Two kinds of key": "两种 key",
+  "Which one you hold decides what you can do, and they are not interchangeable.":
+    "你手里是哪一种，决定了你能做什么，两者不能混用。",
+  "Kind of key": "key 种类",
+  "Reaches": "能访问",
+  "Can also": "除此之外",
+  "Admin key": "管理员 key",
+  "Every app, and the platform itself": "所有应用，以及平台本身",
+  "Create and delete apps, rotate any key, read the platform's own log and events":
+    "创建和删除应用、轮换任意 key、查看平台自身的日志和事件",
+  "App key": "应用 key",
+  "One app only": "仅限一个应用",
+  "Push, build, deploy, roll back, read logs, change its configuration — but not delete it and not see any other app":
+    "上传、构建、部署、回滚、看日志、改配置——但不能删除该应用，也看不到其他应用",
+  "Both go in the same variable: APPLAB_KEY is whichever key you are using. An app's own key is printed when the app is created, and can be read again at any time from the app's page.":
+    "两种 key 都放在同一个变量里：APPLAB_KEY 就是你正在用的那把。应用自己的 key 在创建时会打印出来，之后也可以在应用页面上随时查看。",
+  "Watch it running": "观察运行状态",
+  "Each of these is on the app's own page too, and each names one pod rather than the app: a pod with a problem is usually not the newest one.":
+    "这些在应用详情页上也都有，而且都是针对某个具体 Pod 而不是整个应用：出问题的 Pod 通常不是最新的那个。",
+  "When it is not working": "出问题时",
+  "That reports pods, events and the relevant log in one answer, ordered so the most likely cause comes first. Start there rather than with the individual reads.":
+    "这一条会一次性给出 Pod、事件和相关的日志，并按最可能的原因排序。排查时先看它，而不是逐个去查。",
+  "A build that failed keeps its log and its pod for as long as the deployment keeps build history, so a failure is diagnosable after the fact.":
+    "构建失败后，只要部署还保留构建历史，它的日志和 Pod 就还在，所以事后仍然可以排查。",
+  "For an agent, or a script": "给 agent 或脚本用",
+  "Every route this deployment serves is listed by one call, with the key each one needs — no key required to read it.":
+    "这一个接口会列出该部署提供的所有路由，以及每条路由需要哪种 key——读取它本身不需要 key。",
+  "Everything the console does is one of those routes, so anything done here can be done from a script against the same key.":
+    "控制台做的每一件事都是这些路由之一，所以在这里能做的，用同一把 key 写脚本也都能做。",
 };
 
 // lang is the current language. Set by setLang and read by t().
@@ -1990,9 +2149,14 @@ function setLang(value) {
 
   // Anything already on screen was rendered in the previous language. Only the
   // visible view needs redrawing, and there is one only once a session exists —
-  // before that the page is the static sign-in form, and switching the language
-  // on it is entirely covered by the two calls above.
-  if (!state.signedIn) return;
+  // before that the page is the sign-in form and, if it has been opened, the
+  // document. The document is redrawn too: it is the one view a signed-out
+  // reader can be looking at, and it is mostly prose, so leaving it in the old
+  // language would be the switch appearing not to work.
+  if (!state.signedIn) {
+    if (state.view === "docs") renderDocs();
+    return;
+  }
 
   // A dialog is not redrawn from here, and must not be. Both paths below go
   // through a view function, and both of those call stopLogs() — which is right
@@ -2011,6 +2175,7 @@ function setLang(value) {
   const view = state.view;
   if (view === "overview") showOverview();
   else if (view === "apps") showApps();
+  else if (view === "docs") showDocs();
   else if (view === "app" && state.app) openApp(state.app);
 }
 
@@ -2265,25 +2430,42 @@ function navTo(name) {
   // is already its own field: `cameFrom`, set by openApp before it gets here.
   state.view = name;
 
-  for (const view of ["overview", "apps", "app"]) {
+  for (const view of ["overview", "apps", "app", "docs"]) {
     show($(view + "-view"), view === name);
   }
-  for (const item of ["overview", "apps"]) {
+  for (const item of ["overview", "apps", "docs"]) {
     const button = $("nav-" + item);
     // aria-current is what a screen reader reads; the styling follows from it
     // rather than being set separately, so the two cannot disagree.
     if (item === name) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   }
-  // An app key has exactly one destination, so there is nothing to navigate
-  // between — the nav is hidden rather than shown with a single entry.
-  show($("nav"), name !== "app" && state.scope !== "app");
+
+  // Which of the nav's entries this console may use. Overview and Apps are the
+  // deployment's own data — a list of every app, the platform's health — and an
+  // app key reaches one app, so for that tier there is nothing to navigate
+  // between and the nav is hidden rather than shown with a single entry.
+  //
+  // Docs is not that: it is the same page for everyone, it names no app's data,
+  // and it is the one destination worth having before signing in at all. So it
+  // survives both rules, and the nav is shown when it is the only entry.
+  const scoped = state.scope !== "app";
+  show($("nav-overview"), scoped);
+  show($("nav-apps"), scoped);
+  show($("nav"), name !== "app" && (scoped || name === "docs"));
+
+  // A view and the sign-in card are alternatives, and Docs is the one view a
+  // signed-out reader can reach — so opening it has to put the card away, or the
+  // page would be a document with a login form floating over it. `home` is the
+  // way back, which is what the header's name means everywhere else.
+  if (!state.signedIn) show($("signin"), name !== "docs");
 
   // The header's name is the way out of a detail view, and it goes exactly where
   // the landing view goes — so it is enabled by the same condition the nav is
   // shown under, read the same way. Deriving it here rather than deciding again
   // at the click is what keeps the two from disagreeing about who has a home:
-  // an app key has no overview to go to, and neither has a signed-out page.
+  // an app key has no overview to go to, and a signed-out page's home is the
+  // sign-in card rather than any view.
   $("home").disabled = name === "overview" && state.scope !== "app";
 }
 
@@ -2291,8 +2473,20 @@ function navTo(name) {
 //
 // It is the same destination sign-in lands on, reached by calling the same
 // function — not a third notion of "home" that could drift from it.
+//
+// Signed out that destination is the sign-in card, which is the only thing a
+// reader without a key can usefully be returned to. It is reachable because
+// Docs is: without this, opening the document before signing in would be a
+// one-way trip to a page whose only other control is a disabled name.
 function goHome() {
   if ($("home").disabled) return;
+  if (!state.signedIn) {
+    for (const view of ["overview", "apps", "app", "docs"]) show($(view + "-view"), false);
+    for (const item of ["overview", "apps", "docs"]) $("nav-" + item).removeAttribute("aria-current");
+    show($("signin"), true);
+    $("signin-key").focus();
+    return;
+  }
   if (state.scope === "app") {
     // An app key's console is its own app, so that is what "home" means here:
     // the landing view for its tier, which is the app rather than an overview it
@@ -2434,6 +2628,183 @@ async function showApps() {
   // on that, so a view added later cannot expose it by accident.
   show($("apps-new"), state.scope !== "app");
   await loadApps();
+}
+
+// DOC_SECTIONS is the docs page's table of contents, in reading order.
+//
+// The same idea as APP_SECTIONS and for the same reason: the page is longer than
+// a screenful, and a link to a section is how someone gets to the one they came
+// for. Named by the card's own heading so the nav and the page cannot disagree
+// about what a section is called.
+const DOC_SECTIONS = [
+  { id: "doc-start", label: "Where you are" },
+  { id: "doc-push", label: "Ship a change" },
+  { id: "doc-clone", label: "Work over git instead" },
+  { id: "doc-script", label: "Or use the script in the repository" },
+  { id: "doc-keys", label: "Two kinds of key" },
+  { id: "doc-watch", label: "Watch it running" },
+  { id: "doc-diagnose", label: "When it is not working" },
+  { id: "doc-api", label: "For an agent, or a script" },
+];
+
+async function showDocs() {
+  stopLogs();
+  // `state.app` is deliberately not cleared here, unlike every other view
+  // switch. It is what an app-key reader's examples name — their own app, which
+  // is the only one they have — and clearing it would leave the document
+  // showing `<app>` to the one reader who does not need a placeholder. The
+  // other views clear it because they are about an app they are about to open;
+  // this one is about no app in particular and can keep what it is told.
+  closeCreateApp();
+  navTo("docs");
+  renderDocs();
+}
+
+// renderDocs fills the docs page in, against whoever is reading it.
+//
+// The commands carry the reader's own key when there is one and a placeholder
+// when there is not, which is the whole of why this is rendered rather than
+// written into the markup: the same page has to be correct signed out, where it
+// is most useful, and signed in, where a copyable command is.
+//
+// The key is not fetched for this. It is already in hand — the console
+// authenticated with it — and asking the API for it again would be a second
+// source for a value the page is holding. What that means is that a signed-in
+// reader's key appears in the commands in the clear, which is the same trade the
+// app page's clone command makes: it is the credential the page is already
+// using, and a command with a placeholder in it is not a command anyone can run.
+function renderDocs() {
+  const nav = $("docs-nav");
+  nav.replaceChildren();
+  for (const section of DOC_SECTIONS) {
+    if (!$(section.id)) continue;
+    const link = document.createElement("a");
+    link.href = "#" + section.id;
+    link.textContent = t(section.label);
+    link.dataset.section = section.id;
+    nav.appendChild(link);
+  }
+  watchDocsNav();
+
+  const base = state.url || baseURL();
+  const key = state.key || "<your key>";
+  // The app a signed-in app-key reader is holding, so the examples name a real
+  // one. An admin has no single app, and a signed-out reader has none either —
+  // both get the placeholder.
+  const appID = state.scope === "app" && state.app ? state.app : "<app>";
+
+  // Where you are. The address and what a key reaches, which is the two things
+  // someone needs before any of the commands below make sense.
+  const address = $("docs-address");
+  address.replaceChildren();
+  const row = (term, value, mono) => {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    if (mono) dd.className = "mono";
+    dd.textContent = value;
+    address.append(dt, dd);
+  };
+  row(t("Deployment"), base, true);
+  row(t("Your key"), state.key ? t("the one you signed in with") : t("none yet — enter one above to fill the commands in"), false);
+  row(t("API"), base + "/api/v1", true);
+
+  setText("docs-push-cmd", [
+    "export APPLAB_URL=" + base,
+    "export APPLAB_KEY=" + key,
+    "",
+    "applab push " + appID,
+  ].join("\n"));
+
+  setText("docs-clone-cmd", [
+    "git clone " + base + "/git/" + appID + ".git",
+    "",
+    "# a non-default branch is the same URL with @branch:",
+    "git clone " + base + "/git/" + appID + "@dev.git",
+  ].join("\n"));
+
+  setText("docs-script-cmd", [
+    "cd " + appID,
+    "./applab.sh status      # what is running, and where",
+    "./applab.sh logs -f     # follow the newest pod's log",
+    "./applab.sh push        # upload, build and deploy",
+  ].join("\n"));
+
+  setText("docs-watch-cmd", [
+    "applab logs " + appID + " -f        # follow the newest pod",
+    "applab logs " + appID + " --pod <name>",
+    "applab events " + appID,
+    "applab resources " + appID,
+    "applab builds " + appID + " --logs",
+  ].join("\n"));
+
+  setText("docs-diagnose-cmd", [
+    "applab diagnose " + appID,
+  ].join("\n"));
+
+  setText("docs-api-cmd", [
+    "curl -sS " + base + "/api/v1/describe",
+  ].join("\n"));
+}
+
+// setText writes a block of commands into a <pre>.
+function setText(id, text) {
+  const el = $(id);
+  if (el) el.textContent = text;
+}
+
+// watchDocsNav marks the section the reader is looking at.
+//
+// The same rule as the app page's nav and deliberately the same shape: a
+// separate observer instance, because only one of the two views is ever on
+// screen and a single shared one would be re-observed on every switch. It
+// highlights the topmost visible section rather than whichever was last clicked,
+// which goes wrong the moment someone scrolls instead of clicking — most of the
+// time on a page this long.
+let docsNavObserver = null;
+
+function watchDocsNav() {
+  if (docsNavObserver) {
+    docsNavObserver.disconnect();
+    docsNavObserver = null;
+  }
+
+  const links = [...$("docs-nav").querySelectorAll("a")];
+  if (links.length === 0 || typeof IntersectionObserver === "undefined") return;
+
+  const mark = (id) => {
+    for (const link of links) {
+      if (link.dataset.section === id) link.classList.add("current");
+      else link.classList.remove("current");
+    }
+  };
+
+  // The first section is marked before any scrolling happens, so the list never
+  // shows nothing current on a page that is open at the top.
+  mark(links[0].dataset.section);
+
+  const seen = new Map();
+  docsNavObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) seen.set(entry.target.id, entry.isIntersecting);
+
+    // The topmost visible section, in the order the nav lists them rather than
+    // in the order the entries arrived — the entries carry no order of their own.
+    for (const section of DOC_SECTIONS) {
+      if (seen.get(section.id)) {
+        mark(section.id);
+        return;
+      }
+    }
+  }, {
+    // A section counts as current once its top comes within 80px of the top of
+    // the window, which is where the sticky header ends.
+    rootMargin: "-80px 0px 0px 0px",
+  });
+
+  for (const link of links) {
+    const el = $(link.dataset.section);
+    if (el) docsNavObserver.observe(el);
+  }
 }
 
 // buildRows renders build records as table rows.
@@ -4785,11 +5156,23 @@ function signOut() {
   // The header stays up — its theme and language controls are the whole of what
   // the sign-in screen offers — but everything it carries for a signed-in user
   // goes, along with every view.
+  //
+  // Docs is the exception to "every view": it is the same page whoever is
+  // reading it, so signing out of it lands on the sign-in card beside a nav that
+  // still offers it.
   show($("signout"), false);
-  show($("nav"), false);
   show($("app-key-note"), false);
-  for (const view of ["overview", "apps", "app"]) show($(view + "-view"), false);
+  for (const view of ["overview", "apps", "app", "docs"]) show($(view + "-view"), false);
+  show($("nav"), true);
+  show($("nav-overview"), false);
+  show($("nav-apps"), false);
+  for (const item of ["overview", "apps", "docs"]) $("nav-" + item).removeAttribute("aria-current");
   show($("signin"), true);
+  // The rendered commands name the key that was just discarded, so they are
+  // rebuilt without it rather than left holding a credential the reader no
+  // longer has.
+  state.view = "overview";
+  renderDocs();
 }
 
 // ---------------------------------------------------------------------------
@@ -4813,6 +5196,7 @@ $("home").onclick = goHome;
 
 $("nav-overview").onclick = showOverview;
 $("nav-apps").onclick = showApps;
+$("nav-docs").onclick = showDocs;
 
 $("apps-new").onclick = () => {
   show($("apps-new-modal"), true);
@@ -4983,6 +5367,21 @@ $("log-modal").onkeydown = (e) => {
   // than as the key having gone stale.
   setError("");
   show($("signin"), true);
+
+  // Docs, and nothing else, is reachable without a key. Someone handed an app's
+  // address and no key yet is exactly who needs to read how to use it, and the
+  // sign-in card is a dead end for them otherwise.
+  //
+  // Shown explicitly rather than left to navTo, because no view is current yet:
+  // the page is still on the sign-in card, and a nav with nothing highlighted
+  // beside it would read as a broken control rather than as an offer.
+  show($("nav"), true);
+  show($("nav-overview"), false);
+  show($("nav-apps"), false);
+
+  // Opened on request rather than by default: the sign-in form stays the
+  // landing screen, since a reader with a key should not have to leave a
+  // document to use it. The nav entry is what makes it one click away.
   $("signin-key").focus();
 })();
 </script>
