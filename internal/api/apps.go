@@ -75,6 +75,37 @@ type appResponse struct {
 	// anything answers there yet. `status` is the field that says that.
 	URL string `json:"url,omitempty"`
 
+	// GitURL is where this app's repository is cloned from, without a
+	// credential in it: `https://applab.example.com/git/shop.git`.
+	//
+	// Reported rather than left to each caller to assemble, because assembling
+	// it is three conventions at once — the deployment's own address, the `/git`
+	// mount, and the `@branch` suffix the non-default branches carry — and every
+	// client that built it by hand built it slightly differently. The console
+	// wrote `state.url + "/git/" + app + ".git"` and dropped the branch; the
+	// seeded script wrote the branch only when printing the help. A caller given
+	// this gets the branch it is actually on.
+	//
+	// It carries no key, so it is safe on a listing. GitURLWithKey is the
+	// credential-bearing form, and only where the key is already in hand.
+	GitURL string `json:"git_url,omitempty"`
+
+	// GitURLWithKey is GitURL with the app's own key inserted, ready to paste
+	// into a `git clone`:
+	//
+	//	https://x:<key>@applab.example.com/git/shop.git
+	//
+	// **This is a credential.** It is filled in only where the key has already
+	// been read for another reason — on a single app's response, beside the key
+	// that GET /apps/{app}/key serves — and never on a listing, for the same
+	// reason EnvCount is a count: a listing of N apps would otherwise cost N key
+	// reads, and would hand out N credentials to answer a question about
+	// addresses.
+	//
+	// Any username works; git needs one to send a password at all, and applab
+	// reads only the password. It is written as `x` to say so.
+	GitURLWithKey string `json:"git_url_with_key,omitempty"`
+
 	// Branch is the app's active branch: what a deploy builds from, and the
 	// branch a git clone with no branch named gets. It is always set — an app
 	// with no branch recorded reports the default — because "which branch is
@@ -203,7 +234,66 @@ func (s *Server) toAppResponse(a *model.App, r *http.Request, runtime appRuntime
 	if !addr.Empty() {
 		resp.URL = addr.URL(s.scheme(r))
 	}
+
+	// The clone address, for the same reason and out of the same setting: it is
+	// derived from where this deployment is reached and cannot be worked out by
+	// a caller that only has the app's id.
+	resp.GitURL = s.gitURLWithBranch(r, a.ID, a.ActiveBranch())
+
 	return resp
+}
+
+// gitURLWithBranch builds an app's clone URL for a named branch.
+func (s *Server) gitURLWithBranch(r *http.Request, appID, branch string) string {
+	return gitCloneURL(s.baseURL(r), s.scheme(r), appID, branch)
+}
+
+// gitCloneURL builds the address an app is cloned from.
+//
+// One implementation for every caller that needs it — this response, the key
+// routes, and the describe document — because the shape is three conventions at
+// once and each hand-built copy got one of them wrong.
+//
+// The branch is part of the path — /git/shop@dev.git — and the default branch is
+// the one URL that omits it, so an app's address stays stable as it gains
+// branches. See gitx.Transport for why the branch is joined with "@" rather than
+// as a second path segment.
+//
+// Empty when the deployment does not know its own public address, which is a
+// real configuration: a caller handed "https:///git/shop.git" has been handed
+// something that cannot resolve, and empty at least says so.
+func gitCloneURL(base, scheme, appID, branch string) string {
+	if base == "" {
+		return ""
+	}
+	host := base
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	name := appID
+	if branch != "" && branch != model.DefaultBranch {
+		name += "@" + branch
+	}
+	return scheme + "://" + host + "/git/" + name + ".git"
+}
+
+// gitURLWithKey inserts an app's key into its clone URL.
+//
+// Kept beside gitCloneURL rather than folded into it so the credential is added
+// by a call that says so at the call site. A single function that took a key
+// would be one refactor away from being called with the key of whatever was
+// nearest, which is how a listing starts carrying credentials.
+//
+// Any username works — git needs one to send a password at all, and applab reads
+// only the password — so it is `x`.
+func gitURLWithKey(gitURL, key string) string {
+	if gitURL == "" || key == "" {
+		return ""
+	}
+	if i := strings.Index(gitURL, "://"); i >= 0 {
+		return gitURL[:i+3] + "x:" + key + "@" + gitURL[i+3:]
+	}
+	return gitURL
 }
 
 // appResponseFor renders one app, reading its live state from the cluster.
@@ -404,9 +494,11 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		appKey = key
 	}
 
+	created := s.appResponseFor(r.Context(), r, app)
 	respond(w, http.StatusCreated, createdAppResponse{
-		appResponse: s.appResponseFor(r.Context(), r, app),
-		AppKey:      appKey,
+		appResponse:   created,
+		AppKey:        appKey,
+		GitURLWithKey: gitURLWithKey(created.GitURL, appKey),
 	})
 }
 
@@ -425,6 +517,14 @@ type createdAppResponse struct {
 	// configuration — appKeys is optional — and an empty string would read as a
 	// key that authenticates nothing.
 	AppKey string `json:"app_key,omitempty"`
+
+	// GitURLWithKey is the clone address with that same key already in it, ready
+	// to paste. It is the two fields above joined, and it is here for the reason
+	// this whole type exists: creating an app is the one moment the caller is
+	// entitled to the key and has not yet had a chance to derive anything from
+	// it, and making them splice a URL together by hand is how the console ended
+	// up dropping the branch from it.
+	GitURLWithKey string `json:"git_url_with_key,omitempty"`
 }
 
 // publishApp creates or updates an app's routing, reporting a failure without

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -781,4 +782,144 @@ func getAppField(t *testing.T, h http.Handler, appID string) map[string]any {
 	}
 	t.Fatalf("app %q is not in the listing", appID)
 	return nil
+}
+
+// TestTheClipAddressIsReported covers the git URL a caller clones from.
+//
+// It is derived from three conventions at once — the deployment's own address,
+// the /git mount, and the @branch suffix a non-default branch carries — and
+// every client that assembled it by hand got one of them wrong. The console
+// dropped the branch; the seeded script printed it only in its help. Reporting
+// it is what makes those two agree with the API rather than with each other.
+func TestTheClipAddressIsReported(t *testing.T) {
+	srv, st := newTestServer(t)
+	h := srv.Handler()
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var created map[string]any
+	decodeData(t, rec, &created)
+
+	// The host is the one this deployment answers on, not the app's own base
+	// domain: the git mount is the API's, and an app-level domain points at the
+	// app's own Service rather than at the repository. These differ whenever
+	// apps are served on a subdomain of the deployment or on a domain of their
+	// own, which is the common case.
+	//
+	// The default branch is the one URL that omits the branch, so an app's
+	// address stays stable as it gains branches.
+	if got := created["git_url"]; got != "http://example.com/git/shop.git" {
+		t.Errorf("git_url = %v, want the clone address on the deployment's own host with no branch", got)
+	}
+
+	// And the create response carries the same address with the key already in
+	// it, because that is the one moment the caller is entitled to the key and
+	// has had no chance to derive anything from it.
+	key, _ := created["app_key"].(string)
+	if key == "" {
+		t.Fatal("the create response has no app_key, so the check below cannot mean anything")
+	}
+	want := "http://x:" + key + "@example.com/git/shop.git"
+	if got := created["git_url_with_key"]; got != want {
+		t.Errorf("git_url_with_key = %v, want %v", got, want)
+	}
+
+	// On a non-default branch, the branch is part of the path. Written into the
+	// record rather than driven through PUT /branch, which needs source storage
+	// this server does not have — and which would be testing the branch route
+	// rather than the URL.
+	app, err := st.GetApp(context.Background(), "shop")
+	if err != nil {
+		t.Fatalf("read the app back: %v", err)
+	}
+	app.Branch = "dev"
+	if err := st.UpdateApp(context.Background(), app); err != nil {
+		t.Fatalf("record the branch: %v", err)
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
+	var read map[string]any
+	decodeData(t, rec, &read)
+	if got := read["git_url"]; got != "http://example.com/git/shop@dev.git" {
+		t.Errorf("on branch dev, git_url = %v; the branch belongs in the path", got)
+	}
+}
+
+// TestTheClipAddressOnAListingCarriesNoCredential is the security half.
+//
+// git_url_with_key is a working credential. It belongs on a response about one
+// app, where the key was read for a reason, and never on a listing — which would
+// hand out a credential for every app in the deployment to answer a question
+// about addresses, and would cost one key read per app to do it.
+//
+// The assertion is on the raw body rather than on a decoded field, because the
+// failure this guards against is the field appearing at all. A decoded check
+// would pass if the key arrived under a name the test did not think to look at.
+func TestTheClipAddressOnAListingCarriesNoCredential(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
+	var created map[string]any
+	decodeData(t, rec, &created)
+	key, _ := created["app_key"].(string)
+	if key == "" {
+		t.Fatal("no app_key on the create response; the check below would be vacuous")
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	if strings.Contains(body, key) {
+		t.Error("the app list contains the app's key; a listing must not carry a credential")
+	}
+	if strings.Contains(body, "git_url_with_key") {
+		t.Error("the app list reports git_url_with_key; that field belongs only where the key is already in hand")
+	}
+	// And the credential-free form is there, or the listing is useless for what
+	// the field was added for.
+	if !strings.Contains(body, "/git/shop.git") {
+		t.Errorf("the app list does not report the clone address at all: %s", body)
+	}
+}
+
+// TestTheKeyResponseCarriesAUsableCloneAddress covers the other route that hands
+// out a key.
+//
+// GET /apps/{app}/key is the route whose whole subject is the credential, so a
+// caller who has just fetched one has one thing in mind. Handing them the key
+// and a URL to splice it into is the step this removes.
+func TestTheKeyResponseCarriesAUsableCloneAddress(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
+	var created map[string]any
+	decodeData(t, rec, &created)
+	createdKey, _ := created["app_key"].(string)
+
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop/key", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get key: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var got map[string]any
+	decodeData(t, rec, &got)
+	key, _ := got["key"].(string)
+	if key == "" || key != createdKey {
+		t.Fatalf("key = %q, want the key the app was created with (%q)", key, createdKey)
+	}
+
+	if want := "http://x:" + key + "@example.com/git/shop.git"; got["git_url_with_key"] != want {
+		t.Errorf("git_url_with_key = %v, want %v", got["git_url_with_key"], want)
+	}
+	if got["git_url"] != "http://example.com/git/shop.git" {
+		t.Errorf("git_url = %v, want the same address without the credential", got["git_url"])
+	}
 }

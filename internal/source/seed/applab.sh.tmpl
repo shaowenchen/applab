@@ -211,6 +211,7 @@ Source
 Looking
   status             what is running, and where
   url                just the address the app is served at
+  git                the clone and push commands for the active branch
   show               the app itself: port, replicas, domain, address
   logs [flags]       the app's log; see "logs" below for --pod and --previous
   build-logs [build] a build's output (default: the newest build)
@@ -241,11 +242,15 @@ Branches
   A branch is created by pushing to it — git's own rule. Switching replaces what
   is running: one app runs one branch at a time.
 
-  git push  "https://x:$APPLAB_KEY@<host>/git/<app>@dev.git" HEAD:dev
+  Run "./applab.sh git" for the exact clone and push commands, with this
+  deployment's host and this app's branch already in them. The shape is:
+
   git clone "https://x:$APPLAB_KEY@<host>/git/<app>.git"        the active branch
   git clone "https://x:$APPLAB_KEY@<host>/git/<app>@dev.git"    the branch dev
+  git push  "https://x:$APPLAB_KEY@<host>/git/<app>@dev.git" HEAD:dev
 
-  See AGENT.md for more, and the app's page in the console has both addresses.
+  The active branch is the one the plain address gives you; naming a branch is
+  what clones or pushes a different one. See AGENT.md for more.
 
 Debugging
   logs               the newest pod's log, which is usually the one you want
@@ -594,6 +599,28 @@ case "${1:-help}" in
     ;;
   url)
     where
+    ;;
+  git)
+    # The clone address the API reports, with this app's key already in it — the
+    # same field the console and the CLI read, so the branch is right here too.
+    #
+    # This script used to print the address with a literal <host> in it, and
+    # always with the app's bare name: an app on a non-default branch is cloned
+    # from /git/<app>@<branch>.git, so what it printed was a command that cloned
+    # a different tree than the one running.
+    #
+    # Reported by the deployment rather than assembled here for the same reason:
+    # the host, the /git mount and the branch convention are three things this
+    # script should not be the fourth implementation of.
+    clone=$(api GET "/api/v1/apps/$APP/key" | json_field git_url_with_key)
+
+    if [ -z "$clone" ]; then
+      echo "this deployment does not report a clone address; it may not know" >&2
+      echo "its own public URL, in which case there is no address to print" >&2
+      exit 1
+    fi
+
+    echo "git clone $clone"
     ;;
   show)
     api GET "/api/v1/apps/$APP"

@@ -7,7 +7,6 @@ import (
 
 	"github.com/shaowenchen/applab/internal/auth"
 	"github.com/shaowenchen/applab/internal/config"
-	"github.com/shaowenchen/applab/internal/model"
 )
 
 // describeResponse is what GET /api/v1/describe returns.
@@ -337,26 +336,17 @@ func plural(n int, one, many string) string {
 	return strconv.Itoa(n) + " " + many
 }
 
-// gitURLWithPassword turns a base URL into the form a clone uses, with a
-// placeholder where the credential goes.
+// gitURLWithPassword is the clone address with a placeholder where the
+// credential goes, for the describe document.
 //
-// Built here rather than written as a literal so the scheme is stripped once and
-// the result is right for a deployment reached over https and over http alike:
-// the address is inserted into a `git clone` line, and that line already names
-// the scheme.
-//
-// The branch is part of the path — "/git/shop@dev.git" — and the default branch
-// is the one URL that omits it, so that an app's address stays stable as it
-// gains branches. See gitx.Transport for why the branch is joined with "@"
-// rather than as a second path segment.
+// A thin wrapper over gitCloneURL so the placeholder form and the real one
+// cannot drift: describe is the document a caller reads before they hold a key,
+// and an address that disagreed with the one the API reports would send them
+// somewhere the key does not work.
 func gitURLWithPassword(base, appID, branch string) string {
-	host := base
-	if i := strings.Index(host, "://"); i >= 0 {
-		host = host[i+3:]
+	url := gitCloneURL(base, "https", appID, branch)
+	if url == "" {
+		return ""
 	}
-	name := appID
-	if branch != "" && branch != model.DefaultBranch {
-		name += "@" + branch
-	}
-	return "https://x:<key>@" + host + "/git/" + name + ".git"
+	return "https://x:<key>@" + strings.TrimPrefix(url, "https://")
 }

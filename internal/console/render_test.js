@@ -1040,26 +1040,54 @@ async function render(apps) {
 
   // The app's repository address.
   //
-  // Every app has a git repository from the moment it is created, so this is the
-  // address a caller clones from — and it is derived from where the page was
-  // served, which is the part that goes wrong. The stub's pathname is "/applab/",
-  // so a version that used the bare origin would produce a URL that 404s, and
-  // that is the mistake this checks for rather than the shape of the string.
+  // Every app has a git repository from the moment it is created, and the page
+  // shows the command that clones it. The address is the API's to compose and
+  // the page's to display: an earlier version built it here as
+  // state.url + "/git/" + app + ".git", which silently named the app with no
+  // branch — so an app on `dev` was described everywhere on the page as running
+  // dev while the command in front of it cloned main.
+  //
+  // Driven through loadRepository rather than by calling setCloneHint, so the
+  // check covers the fetch and the field it reads as well as the display.
   {
-    const gitURL = vm.runInContext(
-      'baseURL() + "/git/" + "shop" + ".git"',
-      context
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.fetch = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => "application/json" },
+      text: async () =>
+        JSON.stringify({
+          data: {
+            app_id: "shop",
+            key: "s3cret",
+            git_url: "https://applab.example.com/applab/git/shop@dev.git",
+            git_url_with_key: "https://x:s3cret@applab.example.com/applab/git/shop@dev.git",
+          },
+        }),
+    });
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com/applab"; state.app = "shop"', ctx);
+    await vm.runInContext("loadRepository", ctx)();
+
+    // Read from dataset.value: the element is concealed, so its textContent is
+    // the mask. What is on the clipboard is what the reveal hands over, and that
+    // is this.
+    const shown = vm.runInContext('document.getElementById("app-git-hint").dataset.value', ctx);
+    check(
+      "the clone command is the address the API reported, branch and all",
+      shown,
+      "git clone https://x:s3cret@applab.example.com/applab/git/shop@dev.git"
     );
     check(
-      "the clone URL carries the path the deployment is served under",
-      gitURL,
-      "https://applab.example.com/applab/git/shop.git"
-    );
-    check(
-      "and is not built from the bare origin",
-      gitURL.startsWith("https://applab.example.com/git/"),
+      "and is not reassembled from the page's own address",
+      shown.includes("/git/shop.git"),
       false
     );
+    // And it is the full command, not the bare URL: what a reader pastes has to
+    // run on its own.
+    check("and is a whole git clone command", shown.startsWith("git clone https://"), true);
   }
 
   // The platform log panel.

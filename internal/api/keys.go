@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/shaowenchen/applab/internal/appkey"
+	"github.com/shaowenchen/applab/internal/model"
 )
 
 // appKeyResponse is what the key endpoints return.
@@ -18,6 +19,20 @@ import (
 type appKeyResponse struct {
 	AppID string `json:"app_id"`
 	Key   string `json:"key"`
+
+	// GitURL is the clone address with the key already in it, ready to paste
+	// into a `git clone`. It is here rather than only on the app response
+	// because this is the route whose whole subject is the credential, and a
+	// caller who has just fetched a key has one thing in mind: using it.
+	//
+	// Empty when the deployment does not know its own public address, which is a
+	// real configuration — see gitCloneURL.
+	GitURL string `json:"git_url,omitempty"`
+
+	// GitURLWithKey is GitURL, under the name the app response uses for the
+	// credential-bearing form. Reported under both names so a caller can read
+	// one field name everywhere; see appResponse.GitURLWithKey.
+	GitURLWithKey string `json:"git_url_with_key,omitempty"`
 }
 
 // handleGetAppKey returns an app's key.
@@ -48,7 +63,7 @@ func (s *Server) handleGetAppKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respond(w, http.StatusOK, appKeyResponse{AppID: app.ID, Key: key})
+	respond(w, http.StatusOK, s.appKeyResponseFor(r, app, key))
 }
 
 // handleRotateAppKey mints a new key for an app, invalidating the old one.
@@ -74,10 +89,25 @@ func (s *Server) handleRotateAppKey(w http.ResponseWriter, r *http.Request) {
 	// is the only record of it — the key itself is never logged.
 	slog.InfoContext(r.Context(), "app key rotated", "app", app.ID)
 
-	respond(w, http.StatusOK, appKeyResponse{AppID: app.ID, Key: key})
+	respond(w, http.StatusOK, s.appKeyResponseFor(r, app, key))
 }
 
 // isNoKey reports whether err is the store's "this app has no key" sentinel.
 func isNoKey(err error) bool {
 	return errors.Is(err, appkey.ErrNoKey)
+}
+
+// appKeyResponseFor builds the key response, with the key already in the clone
+// address.
+//
+// One builder for both routes that answer with a key — get and rotate — so the
+// two cannot report different addresses for the same app.
+func (s *Server) appKeyResponseFor(r *http.Request, app *model.App, key string) appKeyResponse {
+	url := s.gitURLWithBranch(r, app.ID, app.ActiveBranch())
+	return appKeyResponse{
+		AppID:         app.ID,
+		Key:           key,
+		GitURL:        url,
+		GitURLWithKey: gitURLWithKey(url, key),
+	}
 }

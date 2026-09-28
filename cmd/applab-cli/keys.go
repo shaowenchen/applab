@@ -43,6 +43,14 @@ An admin key may read any app's; an app key may read its own.`,
 			//
 			//   export APPLAB_KEY="$(applab keys shop)"
 			fmt.Println(key.Key)
+
+			// And the command that uses it, on stderr so the capture above still
+			// works. The address is the API's — it knows the deployment's host and
+			// which branch this app is on, and a caller splicing one together gets
+			// the branch wrong for every app that is not on the default.
+			if key.GitURLWithKey != "" {
+				fmt.Fprintf(os.Stderr, "\nclone it with:\n  git clone %s\n", key.GitURLWithKey)
+			}
 			return nil
 		},
 	}

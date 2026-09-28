@@ -277,6 +277,12 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 type AppKey struct {
 	AppID string `json:"app_id"`
 	Key   string `json:"key"`
+
+	// GitURLWithKey is the clone address with the key already in it, so a caller
+	// that has just fetched a credential has the command to use it rather than
+	// the parts to assemble. Empty on a deployment that does not know its own
+	// public address.
+	GitURLWithKey string `json:"git_url_with_key"`
 }
 
 // GetAppKey reads an app's key.
@@ -440,6 +446,22 @@ type App struct {
 	// as a hostname and a path beside each other, and neither was the address
 	// whenever a path prefix was in use.
 	URL string `json:"url"`
+
+	// GitURL is where this app's repository is cloned from, without a credential
+	// in it. The branch is part of the path for a non-default branch, so this is
+	// the address the app is *on* rather than one that always means the default.
+	//
+	// Reported by the API rather than assembled here for the reason every client
+	// that assembled it got it wrong: it is the deployment's address, the /git
+	// mount and the branch convention at once, and the console's hand-built
+	// version dropped the branch.
+	GitURL string `json:"git_url"`
+
+	// GitURLWithKey is GitURL with the app's key inserted, ready to paste. Set
+	// wherever the key was already in hand — the create response and the key
+	// route — and deliberately empty on a listing, which must not hand out a
+	// credential per app.
+	GitURLWithKey string `json:"git_url_with_key"`
 
 	// Branch is the app's active branch: what a deploy builds from, and the
 	// branch a clone with no branch named gets.

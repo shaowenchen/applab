@@ -2006,6 +2006,21 @@ function setLang(value) {
   // before that the page is the static sign-in form, and switching the language
   // on it is entirely covered by the two calls above.
   if (!state.signedIn) return;
+
+  // A dialog is not redrawn from here, and must not be. Both paths below go
+  // through a view function, and both of those call stopLogs() — which is right
+  // for a navigation and wrong for a language switch: the reader asked to
+  // change the language, not to close the log they were following. The platform
+  // log is opened from the overview, so switching the language with it open
+  // ended the stream and dismissed the dialog.
+  //
+  // Everything inside a dialog was rendered by t() at the moment it was
+  // written, so it stays in the previous language until it refreshes — which
+  // for a log that is still streaming is the next line, and for the app's
+  // static panels is the next tick of the refresh timer. Leaving it is the
+  // honest trade: stale wording for a moment, against losing the stream.
+  if (isShown($("log-modal")) || isShown($("apps-new-modal")) || isShown($("metrics-modal"))) return;
+
   const view = state.view;
   if (view === "overview") showOverview();
   else if (view === "apps") showApps();
@@ -2014,8 +2029,21 @@ function setLang(value) {
 
 // translateStaticText applies t() to every element that carries a data-i18n key,
 // and to the placeholders, which are not text nodes.
+//
+// Only elements still showing their seed text are touched. Several carry a
+// data-i18n key as their *initial* content and are then written over by live
+// content — the three log panels start as "(not started)" and become a
+// container's output, the events panel becomes a list of events. Assigning
+// unconditionally replaced that output with the translated placeholder, which
+// turned a followed log into "（未开始）" the moment someone switched language.
+//
+// The test is that the text still equals the key it was seeded with. That is
+// exactly "nobody has written here yet", and it is safe for the rest: an
+// element whose content the script never touches still holds its key, so it is
+// still translated.
 function translateStaticText() {
   for (const el of document.querySelectorAll("[data-i18n]")) {
+    if (el.textContent !== el.dataset.i18n) continue;
     el.textContent = t(el.dataset.i18n);
   }
   for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
@@ -2200,9 +2228,25 @@ function tile(label, value, note, kind) {
 // sections are visible, so a view added later cannot be reachable from one path
 // and not another.
 function navTo(name) {
-  // The detail view is not a nav destination, so the remembered view stays on
-  // whatever was showing underneath it.
-  if (name !== "app") state.view = name;
+  // The detail view is a nav destination like any other, and it has to be
+  // recorded as one. It used to be left out on the reasoning that "the
+  // remembered view stays on whatever was showing underneath it" — which
+  // quietly broke the thing that read it. `refreshCurrent` and `setLang` both
+  // switch on `state.view` and both have a `"app"` branch, and neither could
+  // ever be reached: opening an app from the apps list left `state.view` as
+  // "apps", so the 15-second refresh called loadApps and left every card on
+  // the app page frozen at whatever it said when the page opened.
+  //
+  // Worse for an app key: that console reaches its app without going through
+  // the nav at all, so `state.view` kept its initial "overview" and the timer
+  // asked for /overview, /platform/pods and /platform/resources every fifteen
+  // seconds — three routes that tier is refused — putting an error about the
+  // platform overview on the screen of someone who cannot read it and never
+  // asked.
+  //
+  // What the original comment was protecting is "where does Back go", and that
+  // is already its own field: `cameFrom`, set by openApp before it gets here.
+  state.view = name;
 
   for (const view of ["overview", "apps", "app"]) {
     show($(view + "-view"), view === name);
@@ -2966,7 +3010,7 @@ async function createApp() {
 async function loadRepository() {
   try {
     const key = await api("/api/v1/apps/" + state.app + "/key");
-    setCloneHint(key.key);
+    setCloneHint(key.git_url_with_key || "");
   } catch (err) {
     // The common failure is a deployment with no cluster, where keys are kept
     // and this endpoint answers 501. That is a fact about the deployment rather
@@ -2976,10 +3020,20 @@ async function loadRepository() {
   }
 }
 
-// setCloneHint fills in the clone command with the app's key.
-function setCloneHint(key) {
-  const base = state.url + "/git/" + state.app + ".git";
-  appGitReveal.set("git clone https://x:" + key + "@" + base.replace(/^https?:\/\//, ""));
+// setCloneHint fills in the clone command from the address the API reported.
+//
+// The page used to build it — state.url + "/git/" + app + ".git" — and got the
+// branch wrong: an app on a non-default branch is cloned from
+// /git/shop@dev.git, and the hand-built URL named the app with no branch at all,
+// so it silently cloned a different tree than the one the page was describing.
+// The address is the API's to report for exactly this reason; the console's job
+// is to put it in the box.
+//
+// cloneURL is what /apps/{app}/key returns as git_url_with_key. There is
+// deliberately no fallback that reassembles it here: a second implementation is
+// the thing that was wrong, and the API always has a host to answer with.
+function setCloneHint(cloneURL) {
+  appGitReveal.set(cloneURL ? "git clone " + cloneURL : "");
 }
 
 // loadBranches fills the branch control with the branches the app has, marking
@@ -3166,7 +3220,13 @@ async function openApp(id) {
   // Where the app was opened from, so "← Back" returns there. An app is
   // reachable from the apps list and from a build row, and sending someone to
   // the apps list after they clicked a build would lose their place.
-  state.cameFrom = state.view || "apps";
+  //
+  // Not overwritten when this app is already the open one. openApp is called
+  // again on a language switch and by goHome, and by then `state.view` is
+  // "app" — so re-reading it here would set cameFrom to "app", which is not a
+  // view anyone came from, and the Back button would lose the destination it
+  // was holding.
+  if (state.view !== "app") state.cameFrom = state.view || "apps";
 
   state.app = id;
   navTo("app");
