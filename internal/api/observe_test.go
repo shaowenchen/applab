@@ -572,6 +572,7 @@ func TestObservabilityRequiresAKey(t *testing.T) {
 		"/api/v1/apps/shop/events",
 		"/api/v1/apps/shop/diagnose",
 		"/api/v1/platform/resources",
+		"/api/v1/platform/events",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
@@ -600,6 +601,7 @@ func TestObservabilityWithoutClusterIs501(t *testing.T) {
 		"/api/v1/platform/pods",
 		"/api/v1/platform/logs",
 		"/api/v1/platform/resources",
+		"/api/v1/platform/events",
 	} {
 		rec := doRequest(t, h, http.MethodGet, path, nil)
 		if rec.Code != http.StatusNotImplemented {
@@ -885,4 +887,118 @@ func firstLines(s string, n int) string {
 		lines = lines[:n]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// TestPlatformEventsEndpointReportsAppLabsOwn is the same property the pods
+// endpoint has, for the route that was missing: AppLab's own events, and not an
+// app's — the fake cluster holds both in one namespace, as a real one does.
+//
+// Events are attributed by label rather than by a name prefix, so this also
+// pins the thing a prefix match gets wrong: an app's pod whose name happens to
+// start with the control plane's is not AppLab's.
+func TestPlatformEventsEndpointReportsAppLabsOwn(t *testing.T) {
+	srv, client, _ := newObserveServer(t)
+	h := srv.Handler()
+	createAppForObserve(t, h, "shop")
+
+	ctx := context.Background()
+	createNamespaceForTest(t, client, "ops-system")
+
+	// The control plane's own pod, an app's pod, and — the case a prefix match
+	// would confuse — an app's pod named as though it were AppLab's.
+	for _, pod := range []*corev1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "applab-6b9f7-abc",
+				Namespace: "ops-system",
+				Labels:    map[string]string{"app.kubernetes.io/part-of": "applab"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "applab", Image: "applab:abc"}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "app-shop-1",
+				Namespace: "ops-system",
+				Labels:    map[string]string{"applab.io/app": "shop"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "shop:abc"}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "applab-shop-1",
+				Namespace: "ops-system",
+				Labels:    map[string]string{"applab.io/app": "shop"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "shop:abc"}}},
+		},
+	} {
+		if _, err := client.CoreV1().Pods("ops-system").Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create pod %s: %v", pod.Name, err)
+		}
+	}
+
+	for _, event := range []*corev1.Event{
+		{
+			ObjectMeta:     metav1.ObjectMeta{Name: "e-mine", Namespace: "ops-system"},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "applab-6b9f7-abc"},
+			Type:           corev1.EventTypeWarning,
+			Reason:         "FailedScheduling",
+			Message:        "no nodes available",
+		},
+		{
+			ObjectMeta:     metav1.ObjectMeta{Name: "e-app", Namespace: "ops-system"},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "app-shop-1"},
+			Type:           corev1.EventTypeWarning,
+			Reason:         "FailedMount",
+			Message:        "an app's problem, not the platform's",
+		},
+		{
+			// Named as though it were the control plane's, and it is not: the
+			// label is the only thing that says whose it is.
+			ObjectMeta:     metav1.ObjectMeta{Name: "e-lookalike", Namespace: "ops-system"},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "applab-shop-1"},
+			Type:           corev1.EventTypeWarning,
+			Reason:         "FailedMount",
+			Message:        "an app's pod with a confusing name",
+		},
+	} {
+		if _, err := client.CoreV1().Events("ops-system").Create(ctx, event, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create event %s: %v", event.Name, err)
+		}
+	}
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/platform/events", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("platform events: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		Namespace string `json:"namespace"`
+		Count     int    `json:"count"`
+		Warnings  int    `json:"warnings"`
+		Events    []struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+			Object  string `json:"object"`
+		} `json:"events"`
+	}
+	decodeData(t, rec, &result)
+
+	if result.Namespace != "ops-system" {
+		t.Errorf("namespace = %q, want the one it looked in", result.Namespace)
+	}
+	if result.Count != 1 {
+		t.Fatalf("count = %d, want only AppLab's own event (%s)", result.Count, rec.Body.String())
+	}
+	if result.Events[0].Reason != "FailedScheduling" {
+		t.Errorf("reason = %q, want the control plane's event", result.Events[0].Reason)
+	}
+	if result.Warnings != 1 {
+		t.Errorf("warnings = %d, want 1", result.Warnings)
+	}
+	for _, e := range result.Events {
+		if strings.Contains(e.Message, "an app's") {
+			t.Errorf("an app's event was reported as the platform's: %s", e.Message)
+		}
+	}
 }

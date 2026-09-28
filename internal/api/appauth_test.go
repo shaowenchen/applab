@@ -278,6 +278,7 @@ func TestAppKeyIsRefusedTheAdminSurface(t *testing.T) {
 		{http.MethodGet, "/api/v1/platform/pods"},
 		{http.MethodGet, "/api/v1/platform/logs"},
 		{http.MethodGet, "/api/v1/platform/resources"},
+		{http.MethodGet, "/api/v1/platform/events"},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			rec := withKey(t, h, tc.method, tc.path, key, map[string]any{"id": "sneaky"})

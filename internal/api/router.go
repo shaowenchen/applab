@@ -474,6 +474,11 @@ type Observer interface {
 
 	// StreamSelfLogs follows one of AppLab's own containers' logs.
 	StreamSelfLogs(ctx context.Context, namespace string, opts observe.LogOptions, w io.Writer, flush func()) error
+
+	// SelfEvents returns recent Kubernetes events concerning AppLab's own
+	// objects — the platform's counterpart to Events, which is scoped to one
+	// app and selects on that app's label.
+	SelfEvents(ctx context.Context, namespace string, limit int) ([]observe.Event, error)
 }
 
 // WithObserver attaches the observability half.
@@ -530,11 +535,24 @@ func (s *Server) streamPodLogs(ctx context.Context, namespace, appID string, opt
 // The app is named as well as the namespace because every app shares a
 // namespace: without it this would report another app's failures, which is
 // worse than reporting nothing.
+// listEvents reads recent Kubernetes events concerning an app.
 func (s *Server) listEvents(ctx context.Context, namespace, appID string, limit int) ([]observe.Event, error) {
 	if s.observer == nil {
 		return nil, fmt.Errorf("this deployment cannot observe")
 	}
 	return s.observer.Events(ctx, namespace, appID, limit)
+}
+
+// listSelfEvents reads recent Kubernetes events concerning AppLab's own objects.
+//
+// The platform twin of listEvents. It takes no app id because there is none:
+// the objects it reports on are the ones the chart installs, selected by
+// AppLab's own label rather than by an app's.
+func (s *Server) listSelfEvents(ctx context.Context, limit int) ([]observe.Event, error) {
+	if s.observer == nil {
+		return nil, fmt.Errorf("this deployment cannot observe")
+	}
+	return s.observer.SelfEvents(ctx, s.cfg.Namespace, limit)
 }
 
 // listSelfPods reads AppLab's own pods.
@@ -730,6 +748,22 @@ func (s *Server) routes() []route {
 			Auth:    true,
 			Doc:     "AppLab's own log as `text/plain`, following by default; `?follow=false` returns what exists and closes. `?pod=` and `?container=` narrow it (default: the newest AppLab pod). `?previous=true` reads the previous container instance, which is where a crash loop's reason is written. `?tail=` (default 500, max 10000), `?since=` a duration such as `5m`. Admin key only.",
 			Handler: s.handleSelfLogs,
+		},
+		{
+			// The platform's counterpart to
+			// GET /api/v1/apps/{app}/events, and the third of the three reads the
+			// console does on an app's instances. Without it, a control plane
+			// that will not start could be read through the console's own log
+			// route and its pods, but not through the events that explain a
+			// scheduling or image-pull failure — which is the one thing the
+			// console could not otherwise answer for AppLab itself.
+			//
+			// Admin key only, like its siblings: the events in this namespace are
+			// the deployment's business, and an app key reaches one app.
+			Pattern: "GET /api/v1/platform/events",
+			Auth:    true,
+			Doc:     "Kubernetes events concerning AppLab's own objects, warnings first, with `count` and `warnings`. `?limit=` (default 50, max 500). Admin key only.",
+			Handler: s.handleListSelfEvents,
 		},
 		{
 			// The orientation call, and the only one an agent needs to be given:

@@ -111,3 +111,55 @@ func (s *Server) handleSelfLogs(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 }
+
+// handleListSelfEvents reports recent Kubernetes events for AppLab's own objects.
+//
+// The platform's counterpart to GET /api/v1/apps/{app}/events, and the last of
+// the three reads the console performs on an app's instances that had no
+// equivalent for the control plane. Pods and logs were served; events were not,
+// so "why will AppLab not start" was answerable from a kubectl session and from
+// nowhere else — including from the console, which is where someone who cannot
+// run kubectl goes.
+//
+// Admin key only, like the platform's pods and log and for the same reason: the
+// control plane is not any app, and a namespace full of scheduling failures and
+// image-pull errors is the deployment's business rather than any one app's.
+//
+// The events are attributed by AppLab's own label rather than by a name prefix —
+// see observe.SelfEvents — so another app's pod called applab-something is not
+// reported here.
+func (s *Server) handleListSelfEvents(w http.ResponseWriter, r *http.Request) {
+	if s.observer == nil || !s.observer.Ready() {
+		fail(w, r, Errorf(http.StatusNotImplemented, "this deployment cannot observe: no cluster is configured"))
+		return
+	}
+
+	limit, apiErr := boundedIntQuery(r, "limit", 50, 500)
+	if apiErr != nil {
+		fail(w, r, apiErr)
+		return
+	}
+
+	events, err := s.listSelfEvents(r.Context(), limit)
+	if err != nil {
+		fail(w, r, Errorf(http.StatusInternalServerError, "list applab's events").Wrap(err))
+		return
+	}
+
+	// The warning count is reported for the same reason the app route reports
+	// it: "are there any warnings" is the question being asked, and a caller
+	// should not have to scan the list to answer it.
+	warnings := 0
+	for _, e := range events {
+		if e.Type == "Warning" {
+			warnings++
+		}
+	}
+
+	respond(w, http.StatusOK, map[string]any{
+		"namespace": s.cfg.Namespace,
+		"events":    events,
+		"count":     len(events),
+		"warnings":  warnings,
+	})
+}

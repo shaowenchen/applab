@@ -558,7 +558,31 @@ type Event struct {
 // names are collected from the objects themselves, so each app's events are
 // matched to it by the label it carries rather than by a guess about its name.
 func (o *Observer) Events(ctx context.Context, namespace, appID string, limit int) ([]Event, error) {
-	names, err := o.appObjectNames(ctx, namespace, appID)
+	return o.eventsFor(ctx, namespace, "applab.io/app="+appID, limit)
+}
+
+// SelfEvents returns recent Kubernetes events concerning AppLab's own objects.
+//
+// The platform twin of Events, and a separate method rather than a flag on it
+// because the two select different things: an app's events are the objects
+// carrying that app's label, and these are the objects carrying AppLab's own.
+// Passing an app id that means "the control plane" would be a sentinel, and the
+// callers that read it would each have to know which one it was.
+//
+// It exists for the same reason the platform's pods and log do: diagnosing
+// AppLab itself is otherwise a kubectl session, and an event is how a control
+// plane that will not start explains itself.
+func (o *Observer) SelfEvents(ctx context.Context, namespace string, limit int) ([]Event, error) {
+	return o.eventsFor(ctx, namespace, selfSelector, limit)
+}
+
+// eventsFor is the shared body of the two above.
+//
+// The selector is the only difference between them, and it is the whole of the
+// attribution question — see appObjectNames for why it is a label selector
+// rather than a name prefix.
+func (o *Observer) eventsFor(ctx context.Context, namespace, selector string, limit int) ([]Event, error) {
+	names, err := o.objectNames(ctx, namespace, selector)
 	if err != nil {
 		return nil, err
 	}
@@ -572,9 +596,9 @@ func (o *Observer) Events(ctx context.Context, namespace, appID string, limit in
 	for i := range events.Items {
 		e := &events.Items[i]
 
-		// An event about something in this namespace that this app did not
-		// create — another app's pod, AppLab's own Deployment — is not this
-		// app's to report.
+		// An event about something in this namespace that these objects did not
+		// create — another app's pod, an unrelated Deployment — is not theirs to
+		// report.
 		if _, mine := names[e.InvolvedObject.Name]; !mine {
 			continue
 		}
@@ -630,23 +654,28 @@ func (o *Observer) Events(ctx context.Context, namespace, appID string, limit in
 
 // appObjectNames returns every object name in the namespace that carries the
 // app's label.
+func (o *Observer) appObjectNames(ctx context.Context, namespace, appID string) (map[string]struct{}, error) {
+	return o.objectNames(ctx, namespace, "applab.io/app="+appID)
+}
+
+// objectNames returns every object name in the namespace carrying a label
+// selector, across the kinds an event can be reported against.
 //
-// It is how an event is attributed to an app. The alternative — matching the
-// event's object name against a prefix built from the app id — looks simpler and
-// is wrong: apps "shop" and "shop-2" share the prefix "applab-shop-", so a prefix
-// match reports one app's pod failures under another app's name. Asking each
-// kind for its labeled objects costs a few list calls and cannot confuse two
-// apps.
+// It is how an event is attributed to its owner. The alternative — matching the
+// event's object name against a prefix — looks simpler and is wrong: apps "shop"
+// and "shop-2" share the prefix "applab-shop-", so a prefix match reports one
+// app's pod failures under another app's name. Asking each kind for its labeled
+// objects costs a few list calls and cannot confuse two owners.
 //
 // A kind that cannot be listed is skipped rather than failing the whole read:
-// the pod list is the part that matters, and a caller asking why an app is
+// the pod list is the part that matters, and a caller asking why something is
 // unwell should still get the events that can be found.
-func (o *Observer) appObjectNames(ctx context.Context, namespace, appID string) (map[string]struct{}, error) {
-	selector := metav1.ListOptions{LabelSelector: "applab.io/app=" + appID}
+func (o *Observer) objectNames(ctx context.Context, namespace, selector string) (map[string]struct{}, error) {
+	opts := metav1.ListOptions{LabelSelector: selector}
 
 	names := map[string]struct{}{}
 
-	pods, err := o.client.CoreV1().Pods(namespace).List(ctx, selector)
+	pods, err := o.client.CoreV1().Pods(namespace).List(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list pods in %s: %w", namespace, err)
 	}
@@ -656,27 +685,27 @@ func (o *Observer) appObjectNames(ctx context.Context, namespace, appID string) 
 
 	// A pod's owner is named here too because Kubernetes reports a failed
 	// scheduling against the ReplicaSet or the Job as often as against the pod.
-	if deployments, err := o.client.AppsV1().Deployments(namespace).List(ctx, selector); err == nil {
+	if deployments, err := o.client.AppsV1().Deployments(namespace).List(ctx, opts); err == nil {
 		for i := range deployments.Items {
 			names[deployments.Items[i].Name] = struct{}{}
 		}
 	}
-	if replicaSets, err := o.client.AppsV1().ReplicaSets(namespace).List(ctx, selector); err == nil {
+	if replicaSets, err := o.client.AppsV1().ReplicaSets(namespace).List(ctx, opts); err == nil {
 		for i := range replicaSets.Items {
 			names[replicaSets.Items[i].Name] = struct{}{}
 		}
 	}
-	if services, err := o.client.CoreV1().Services(namespace).List(ctx, selector); err == nil {
+	if services, err := o.client.CoreV1().Services(namespace).List(ctx, opts); err == nil {
 		for i := range services.Items {
 			names[services.Items[i].Name] = struct{}{}
 		}
 	}
-	if ingresses, err := o.client.NetworkingV1().Ingresses(namespace).List(ctx, selector); err == nil {
+	if ingresses, err := o.client.NetworkingV1().Ingresses(namespace).List(ctx, opts); err == nil {
 		for i := range ingresses.Items {
 			names[ingresses.Items[i].Name] = struct{}{}
 		}
 	}
-	if jobs, err := o.client.BatchV1().Jobs(namespace).List(ctx, selector); err == nil {
+	if jobs, err := o.client.BatchV1().Jobs(namespace).List(ctx, opts); err == nil {
 		for i := range jobs.Items {
 			names[jobs.Items[i].Name] = struct{}{}
 		}
