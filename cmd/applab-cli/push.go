@@ -372,7 +372,9 @@ func shipCommit(ctx context.Context, c *client.Client, opts *pushOptions) error 
 
 	fmt.Fprintf(os.Stderr, "AppLab: building %s\n", shortSHA(commitSHA))
 
-	build, err := c.StartBuild(ctx, opts.app, commitSHA)
+	// No branch: push uploads to the app's active branch and ships what it
+	// uploaded, so there is no other branch in the picture — see uploadDirectory.
+	build, err := c.StartBuild(ctx, opts.app, commitSHA, "")
 	if err != nil {
 		return fmt.Errorf("start build: %w", err)
 	}
@@ -386,7 +388,7 @@ func shipCommit(ctx context.Context, c *client.Client, opts *pushOptions) error 
 		return nil
 	}
 
-	deployed, err := c.Deploy(ctx, opts.app, commitSHA, false)
+	deployed, err := c.Deploy(ctx, opts.app, commitSHA, "", false)
 	if err != nil {
 		return fmt.Errorf("deploy: %w", err)
 	}

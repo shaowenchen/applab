@@ -656,7 +656,7 @@ func TestDeployReportsAnUnavailableCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	if _, deployErr := c.Deploy(context.Background(), "shop", "", false); deployErr == nil {
+	if _, deployErr := c.Deploy(context.Background(), "shop", "", "", false); deployErr == nil {
 		t.Fatal("Deploy succeeded against a deployment that cannot build")
 	} else if !strings.Contains(deployErr.Error(), message) {
 		t.Errorf("error = %q, want it to carry the server's explanation", deployErr)

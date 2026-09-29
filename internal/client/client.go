@@ -876,12 +876,13 @@ type Build struct {
 	Pod *Pod `json:"pod"`
 }
 
-// StartBuild starts a build of a commit. An empty commit builds the current tip.
-func (c *Client) StartBuild(ctx context.Context, appID, commitSHA string) (*Build, error) {
+// StartBuild starts a build of a commit on a branch. An empty commit builds the
+// branch's current tip; an empty branch means the app's active one.
+func (c *Client) StartBuild(ctx context.Context, appID, commitSHA, branch string) (*Build, error) {
 	body, _ := json.Marshal(map[string]any{"commit_sha": commitSHA})
 
 	var out Build
-	if err := c.do(ctx, http.MethodPost, "/api/v1/apps/"+appID+"/builds",
+	if err := c.do(ctx, http.MethodPost, "/api/v1/apps/"+appID+"/builds"+branchQuery(branch),
 		bytes.NewReader(body), "application/json", &out); err != nil {
 		return nil, err
 	}
@@ -994,18 +995,30 @@ type DeployResult struct {
 
 // Deploy deploys a commit. An empty commit deploys the current tip; withBuild
 // starts a build when no image exists yet.
-func (c *Client) Deploy(ctx context.Context, appID, commitSHA string, withBuild bool) (*DeployResult, error) {
+func (c *Client) Deploy(ctx context.Context, appID, commitSHA, branch string, withBuild bool) (*DeployResult, error) {
 	body, _ := json.Marshal(map[string]any{
 		"commit_sha": commitSHA,
 		"build":      withBuild,
 	})
 
 	var out DeployResult
-	if err := c.do(ctx, http.MethodPost, "/api/v1/apps/"+appID+"/deploy",
+	if err := c.do(ctx, http.MethodPost, "/api/v1/apps/"+appID+"/deploy"+branchQuery(branch),
 		bytes.NewReader(body), "application/json", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// branchQuery renders the branch half of a query string.
+//
+// Empty when no branch was named, which is not the same as naming one: the API
+// reads an absent parameter as "the app's active branch", so a call with no
+// branch does what it always did rather than naming a branch called "".
+func branchQuery(branch string) string {
+	if branch == "" {
+		return ""
+	}
+	return "?branch=" + url.QueryEscape(branch)
 }
 
 // Rollback deploys an earlier commit.

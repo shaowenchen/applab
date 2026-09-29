@@ -267,8 +267,10 @@ Source
   push [message]     upload this directory, build it and deploy it
   upload [message]   upload this directory without building
   build [commit]     build a commit (default: the newest)
+                     --branch <name> builds another branch, without switching
   cancel [build]     stop a build (default: the one in flight)
   deploy [commit]    deploy a commit (default: the newest), building it if needed
+                     --branch <name> deploys another branch and switches to it
   rollback <commit>  deploy an earlier commit, reusing its image
 
 Looking
@@ -360,6 +362,16 @@ EOF
 # at it, and this is the command that says which.
 where() {
   api GET "/api/v1/apps/$APP" | json_field url
+}
+
+# branch_query renders the branch half of a query string.
+#
+# Empty when no branch was named, which is not the same as naming one: the API
+# reads an absent parameter as "the app's active branch", so a command with no
+# --branch does what it always did rather than failing on a branch named "".
+branch_query() {
+  [ -n "${1:-}" ] || return 0
+  printf '?branch=%s' "$(urlencode "$1")"
 }
 
 # push packages this directory the way AppLab expects.
@@ -713,7 +725,27 @@ case "${1:-help}" in
     ;;
   build)
     shift
-    api POST "/api/v1/apps/$APP/builds" "{\"commit_sha\":\"${1:-}\"}"
+    # Flags rather than a positional, because the argument is a commit and
+    # --branch is not one. The branch is what the picker on the console's State
+    # card sends, and leaving it out builds the app's active branch — which is
+    # what most callers mean and what this did before there was a choice.
+    build_branch=""
+    build_commit=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --branch)
+          shift
+          [ -n "${1:-}" ] || { echo "--branch needs a name; see ./applab.sh branch" >&2; exit 2; }
+          build_branch="$1"
+          ;;
+        *)
+          build_commit="$1"
+          ;;
+      esac
+      shift
+    done
+    api POST "/api/v1/apps/$APP/builds$(branch_query "$build_branch")" \
+      "{\"commit_sha\":\"$(json_escape "$build_commit")\"}"
     ;;
   cancel)
     shift
@@ -744,7 +776,39 @@ case "${1:-help}" in
     # useless — a commit uploaded but not yet built. A commit that already has an
     # image reuses it, so the common case is not a rebuild. This is what the
     # console's "Deploy latest" does, and the two have to agree.
-    api POST "/api/v1/apps/$APP/deploy" "{\"commit_sha\":\"${1:-}\",\"build\":true}"
+    deploy_branch=""
+    deploy_commit=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --branch)
+          shift
+          [ -n "${1:-}" ] || { echo "--branch needs a name; see ./applab.sh branch" >&2; exit 2; }
+          deploy_branch="$1"
+          ;;
+        *)
+          deploy_commit="$1"
+          ;;
+      esac
+      shift
+    done
+
+    # Another branch is a switch, not a deploy: an app runs one branch, and
+    # POST /deploy?branch= deliberately deploys a branch *without* recording it.
+    # That is right for a caller checking one out and wrong here, where choosing
+    # a branch and pressing deploy means "run this one" — the app would otherwise
+    # serve dev while reporting main, and the clone address, the history and the
+    # branch auto-deploy builds would all name the other one. The console does
+    # the same thing for the same reason.
+    if [ -n "$deploy_branch" ]; then
+      active=$(api GET "/api/v1/apps/$APP/branches" | json_field active)
+      if [ "$deploy_branch" != "$active" ]; then
+        api PUT "/api/v1/apps/$APP/branch" "{\"branch\":\"$(json_escape "$deploy_branch")\"}"
+        exit 0
+      fi
+    fi
+
+    api POST "/api/v1/apps/$APP/deploy$(branch_query "$deploy_branch")" \
+      "{\"commit_sha\":\"$(json_escape "$deploy_commit")\",\"build\":true}"
     ;;
   rollback)
     shift

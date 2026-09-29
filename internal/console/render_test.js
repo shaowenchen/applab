@@ -972,10 +972,15 @@ async function render(apps) {
   // controls belong next to the thing they act on, so this asserts they are in
   // the right card rather than only that they exist somewhere.
   //
-  // Branch and Port moved from State to Instances. They were rows among facts
-  // that are only read, and both are what someone comes to set when the
-  // instances are the problem: the wrong branch is the wrong code running, and
-  // the wrong port leaves every copy unreachable.
+  // Port sits with the instances it affects; the branch picker sits with the
+  // buttons that act on it.
+  //
+  // Both have moved twice, so the placement is asserted rather than assumed:
+  // Port went State -> Instances because the wrong port leaves every copy
+  // unreachable, which is a fact about the instances. The branch picker went the
+  // other way — Instances -> State — when it stopped being a switch of its own
+  // and became what Build latest and Deploy latest act on. A control belongs
+  // beside the buttons that use it, and those buttons are on State.
   {
     const state = markup.match(/<h2 data-i18n="State"[\s\S]*?<h2 data-i18n="Instances"/);
     const instances = markup.match(/<h2 data-i18n="Instances"[\s\S]*?<h2 data-i18n="Configuration"/);
@@ -983,16 +988,21 @@ async function render(apps) {
     check("and the Instances card", instances !== null, true);
 
     if (state && instances) {
-      for (const id of ["app-build", "app-deploy", "app-auto-deploy"]) {
+      for (const id of ["app-build", "app-deploy", "app-auto-deploy", "app-build-branch"]) {
         check(`the State card carries ${id}`, state[0].includes(`id="${id}"`), true);
       }
-      for (const id of ["app-replicas", "app-branch", "app-branch-use", "app-port", "app-port-set"]) {
+      for (const id of ["app-replicas", "app-port", "app-port-set"]) {
         check(`the Instances card carries ${id}`, instances[0].includes(`id="${id}"`), true);
       }
       // And they are not in both, which is how a move becomes a copy.
       for (const id of ["app-branch", "app-port"]) {
         check(`and the State card no longer carries ${id}`, state[0].includes(`id="${id}"`), false);
       }
+      check(
+        "nor does the Instances card carry the branch picker",
+        instances[0].includes('id="app-branch"'),
+        false
+      );
 
       // Auto-deploy is a setting like the others — and unlike them it applies
       // immediately, which is why it must not sit under the note about the next
@@ -1077,66 +1087,166 @@ async function render(apps) {
     if (instances) {
       check("the Instances card carries app-replicas", instances[0].includes('id="app-replicas"'), true);
       check("and app-replicas-set", instances[0].includes('id="app-replicas-set"'), true);
+      // And not a branch control: the picker that decides what to build lives on
+      // the State card, where the buttons that use it are. Two pickers for the
+      // one choice is what this replaced.
+      check("and no branch picker, which moved to the State card", instances[0].includes('id="app-branch"'), false);
     }
   }
 
-  // The branch control, driven through the app's real loader against a stubbed
-  // API. What matters is what the reader ends up able to do: with several
-  // branches the control is usable, and with one it reports which is running
-  // without offering a switch that cannot change anything.
+  // The branch picker on the State card, driven through the app's real loader
+  // against a stubbed API.
+  //
+  // One picker, not two. There used to be a second one under Instances with its
+  // own Switch button, and the two were the same question asked in two places:
+  // an app runs one branch, so "which branch do I build" and "which branch is
+  // active" are one choice. The picker here is that choice, and the buttons
+  // beside it act on what it says.
+  //
+  // Which makes what it *sends* the thing worth asserting. A picker that
+  // changed nothing would look identical on screen, so the checks below read
+  // the URLs the buttons asked for.
   {
     const branchesContext = async (payload) => {
       const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
       ctx.globalThis = ctx;
-      ctx.fetch = async () => ({
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        headers: { get: () => "application/json" },
-        text: async () => JSON.stringify({ data: payload }),
-      });
+      ctx.requests = [];
+      ctx.fetch = async (url) => {
+        ctx.requests.push(String(url));
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ data: payload }),
+        };
+      };
       vm.runInContext(source, ctx, { filename: "console.js" });
       await vm.runInContext("loadBranches", ctx)();
       return ctx;
     };
 
     {
-      await branchesContext({ app_id: "shop", branches: ["main", "dev"], active: "dev" });
-      const select = elements.get("app-branch");
+      const ctx = await branchesContext({ app_id: "shop", branches: ["main", "dev"], active: "dev" });
+      const select = elements.get("app-build-branch");
       const options = select.children.map((o) => o.value);
-      check("the branch control lists every branch", options.join(","), "main,dev");
+      check("the branch picker lists every branch", options.join(","), "main,dev");
       check(
         "and selects the one that is running",
         select.children.filter((o) => o.selected).map((o) => o.value).join(","),
         "dev"
       );
-      check("several branches make the switch usable", select.disabled, false);
-      check("and the button with it", elements.get("app-branch-use").disabled, false);
+      check("several branches make it usable", select.disabled, false);
+      check("and it sits on the State card", markup.includes('id="app-build-branch"'), true);
+      check("while the Instances card no longer carries one", markup.includes('id="app-branch"'), false);
+      check("and the app records which branch is active", vm.runInContext("state.activeBranch", ctx), "dev");
     }
 
     {
-      await branchesContext({ app_id: "shop", branches: ["main"], active: "main" });
-      const select = elements.get("app-branch");
+      const ctx = await branchesContext({ app_id: "shop", branches: ["main"], active: "main" });
+      const select = elements.get("app-build-branch");
       check("a single branch still reports which one", select.children.map((o) => o.value).join(","), "main");
-      check("but there is nothing to switch to", select.disabled, true);
-      check("so the button is disabled too", elements.get("app-branch-use").disabled, true);
+      check("but there is nothing to choose between", select.disabled, true);
     }
 
     {
-      // No source storage: the API answers 501, which api() raises. The control
+      // No source storage: the API answers 501, which api() raises. The picker
       // goes rather than sitting there enabled and failing on every click.
       const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
       ctx.globalThis = ctx;
-      ctx.fetch = async () => ({
-        ok: false,
-        status: 501,
-        statusText: "Not Implemented",
-        headers: { get: () => "application/json" },
-        text: async () => JSON.stringify({ error: "this deployment has no source storage configured" }),
-      });
+      ctx.requests = [];
+      ctx.fetch = async (url) => {
+        ctx.requests.push(String(url));
+        return {
+          ok: false,
+          status: 501,
+          statusText: "Not Implemented",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ error: "this deployment has no source storage configured" }),
+        };
+      };
       vm.runInContext(source, ctx, { filename: "console.js" });
       await vm.runInContext("loadBranches", ctx)();
-      check("no source storage hides the branch control", elements.get("app-branch").classList.contains("hidden"), true);
+
+      check("no source storage hides the branch picker", elements.get("app-build-branch").classList.contains("hidden"), true);
+      // And the buttons still work: with no picker to read, they fall back to
+      // the app's active branch, which the API reads from an absent parameter.
+      check("and the buttons fall back to the app's own branch", vm.runInContext("currentBranch()", ctx), "");
+    }
+
+    // What the buttons do with the picker's value. This is the point of the
+    // change: before it, choosing another branch and pressing Build did nothing
+    // different, because neither button sent a branch at all.
+    {
+      const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+      ctx.globalThis = ctx;
+      ctx.requests = [];
+      ctx.methods = [];
+      ctx.fetch = async (url, options) => {
+        ctx.requests.push(String(url));
+        ctx.methods.push((options && options.method) || "GET");
+        const target = String(url);
+        // Each reload the buttons make, answered in its own shape: the history
+        // is a list with a head, builds are a list, and everything else is the
+        // app. A single shape for all of them makes loadAppBuilds iterate a
+        // non-list and throw from a promise nobody awaits.
+        let body = { id: "shop" };
+        if (target.includes("/commits")) body = { commits: [], head: "abc123", count: 0 };
+        // A bare array, which is what that endpoint actually returns — the
+        // history is a list with a head, builds are not.
+        else if (target.includes("/builds")) body = [];
+        return {
+          ok: true, status: 200, statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ data: body }),
+        };
+      };
+      vm.runInContext(source, ctx, { filename: "console.js" });
+      vm.runInContext('state.url = "https://applab.example.com"; state.key = "k"; state.app = "shop";', ctx);
+      vm.runInContext('state.activeBranch = "main";', ctx);
+      elements.get("app-build-branch").value = "dev";
+      elements.get("app-build-branch").classList.remove("hidden");
+
+      await vm.runInContext("buildLatest", ctx)();
+      check(
+        "building a chosen branch asks for that branch",
+        ctx.requests.some((u) => u.includes("/builds?branch=dev")),
+        true
+      );
+      check(
+        "and reads its history, not the active branch's",
+        ctx.requests.some((u) => u.includes("/commits?branch=dev")),
+        true
+      );
+
+      // Deploying another branch moves the app to it — one app runs one branch,
+      // so this is PUT /branch rather than a deploy that would leave the app
+      // serving dev while reporting main.
+      ctx.requests.length = 0;
+      ctx.methods.length = 0;
+      await vm.runInContext("deployLatest", ctx)();
+      check(
+        "deploying another branch switches the app to it",
+        ctx.requests.some((u) => u.includes("/branch")) && ctx.methods.includes("PUT"),
+        true
+      );
+      check(
+        "rather than deploying while leaving the branch recorded as the old one",
+        ctx.requests.some((u) => u.includes("/deploy")),
+        false
+      );
+
+      // And the branch that is already active is a plain deploy: switching to
+      // where you already are would redeploy for no reason.
+      ctx.requests.length = 0;
+      ctx.methods.length = 0;
+      elements.get("app-build-branch").value = "main";
+      await vm.runInContext("deployLatest", ctx)();
+      check(
+        "deploying the branch that is already active is a plain deploy",
+        ctx.requests.some((u) => u.includes("/deploy")) && !ctx.methods.includes("PUT"),
+        true
+      );
     }
   }
 

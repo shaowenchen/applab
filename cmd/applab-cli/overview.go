@@ -294,8 +294,9 @@ func eventsCommand(urlFlag, keyFlag *string) *cobra.Command {
 // impossible from the CLI.
 func buildCommand(urlFlag, keyFlag *string) *cobra.Command {
 	var (
-		watch bool
-		logs  bool
+		watch  bool
+		logs   bool
+		branch string
 	)
 
 	cmd := &cobra.Command{
@@ -304,7 +305,11 @@ func buildCommand(urlFlag, keyFlag *string) *cobra.Command {
 		Long: `Build an image from a commit, without deploying it.
 
 With no commit, the app's current tip is built. The build runs as a Job in the
-cluster; --watch waits for it and --logs follows its output.`,
+cluster; --watch waits for it and --logs follows its output.
+
+--branch builds another branch's tip without switching the app to it. The
+console's State card offers the same choice; there the branch is also the one
+the app is moved to, because that is what its Deploy button means.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := newClient(*urlFlag, *keyFlag)
@@ -318,7 +323,7 @@ cluster; --watch waits for it and --logs follows its output.`,
 				commit = args[1]
 			}
 
-			b, err := c.StartBuild(cmd.Context(), appID, commit)
+			b, err := c.StartBuild(cmd.Context(), appID, commit, branch)
 			if err != nil {
 				return err
 			}
@@ -334,6 +339,7 @@ cluster; --watch waits for it and --logs follows its output.`,
 
 	cmd.Flags().BoolVar(&watch, "watch", false, "wait for the build to finish")
 	cmd.Flags().BoolVar(&logs, "logs", false, "follow the build's output (implies --watch)")
+	cmd.Flags().StringVar(&branch, "branch", "", "build this branch instead of the app's active one")
 	return cmd
 }
 

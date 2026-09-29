@@ -1043,8 +1043,12 @@
         <h2 data-i18n="State">State</h2>
         <!-- The card's own actions, at the top right with every other card's.
              They act on the app rather than on one commit: a build or a deploy
-             here means the latest commit, and the History card below is where
-             one specific commit is chosen. -->
+             here means the newest commit of the chosen branch, and the History
+             card below is where one specific commit is chosen. -->
+        <label class="field">
+          <span data-i18n="Branch">Branch</span>
+          <select id="app-build-branch"></select>
+        </label>
         <button id="app-build" data-i18n="Build latest">Build latest</button>
         <button id="app-deploy" class="primary" data-i18n="Deploy latest">Deploy latest</button>
       </div>
@@ -1135,13 +1139,6 @@
           <span data-i18n="Port">Port</span>
           <input id="app-port" type="number" min="1" max="65535" size="5" style="width:88px">
           <button id="app-port-set" data-i18n="Set">Set</button>
-        </label>
-        <label class="field">
-          <span data-i18n="Branch">Branch</span>
-          <select id="app-branch"></select>
-          <!-- Switching replaces what is serving, so it is not a filter: the
-               button says Switch rather than anything that sounds like a view. -->
-          <button id="app-branch-use" data-i18n="Switch">Switch</button>
         </label>
       </div>
 
@@ -1510,6 +1507,11 @@ const state = {
   metricsSamples: { cpu: [], memory: [] },
   // What the pod may use, from the same response. Null until the first read.
   metricsLimit: null,
+  // The open app's active branch, as /branches reported it. Held so a deploy can
+  // tell "rebuild what is running" from "move the app to another branch": the
+  // first is a deploy, the second is a switch, and only one of them changes the
+  // branch the app is on.
+  activeBranch: "",
   // The open app's clone address, reported by the API when its key is read —
   // git_url, with no credential in it, so it can go in a command on screen.
   //
@@ -1738,9 +1740,6 @@ const ZH = {
   "Build latest": "构建最新",
   "Deploy latest": "部署最新",
   "Branch": "分支",
-  "Switch": "切换",
-  "Switch {app} to {branch}? This replaces what is running.": "将 {app} 切换到 {branch}？这会替换当前运行的版本。",
-  "Could not switch branch: {error}": "切换分支失败：{error}",
   "This app has no source yet. Upload some before building it.": "该应用还没有代码，请先上传。",
   "Could not set replicas: {error}": "设置副本数失败：{error}",
   "Port": "端口",
@@ -2753,6 +2752,7 @@ async function showApps() {
   stopLogs();
   state.app = "";
   state.gitURL = "";
+  state.activeBranch = "";
   // The create dialog is dismissed here rather than left open behind the view:
   // leaving the apps list and coming back is not a reason to still be asked for
   // an app id, and whatever was half-typed would be sitting there.
@@ -2899,6 +2899,7 @@ function renderDocs() {
 
   // Changing the running app without touching its source.
   setText("docs-configure-cmd", [
+    "./applab.sh branch use dev                        # which branch runs here",
     "./applab.sh replicas 3                            # how many copies to run",
     "./applab.sh env set LOG_LEVEL=debug               # environment",
     "./applab.sh secret set DATABASE_URL=postgres://…  # secrets, write-only",
@@ -3616,19 +3617,27 @@ function setCloneHint(cloneURL) {
 // The whole control is hidden when the deployment has no source storage, which
 // answers 501 — the same treatment the clone command gets, and a fact about the
 // deployment rather than a fault.
+// loadBranches fills the branch picker on the State card.
+//
+// One picker, not two. There used to be a second one under Instances, with a
+// Switch button, and the two were the same choice made in two places: an app
+// runs one branch, so "which branch do I build" and "which branch is active" are
+// one question. The picker here is that question, and the buttons beside it act
+// on what it says — see buildLatest and deployLatest, which send the branch and
+// let the server make it active in the same call.
+//
+// The whole body is guarded, not just the request: a deployment behind a proxy
+// that answers HTML would parse to something without a branches array, and
+// iterating that is a TypeError thrown out of a promise nobody awaits — an
+// error the reader never sees and cannot act on. Hiding the control is the
+// honest answer either way.
+//
+// The options are cleared on that path too. They belong to the app that was
+// open, and this runs for the next one — leaving them would put another app's
+// branch names behind a hidden control, one class away from being offered.
 async function loadBranches() {
-  const select = $("app-branch");
-  const button = $("app-branch-use");
+  const select = $("app-build-branch");
 
-  // The whole body is guarded, not just the request: a deployment behind a proxy
-  // that answers HTML would parse to something without a branches array, and
-  // iterating that is a TypeError thrown out of a promise nobody awaits — an
-  // error the reader never sees and cannot act on. Hiding the control is the
-  // honest answer either way.
-  //
-  // The options are cleared on this path too. They belong to the app that was
-  // open, and this runs for the next one — leaving them would put another app's
-  // branch names behind a hidden control, one class away from being offered.
   let branches = [];
   let active = "";
   try {
@@ -3638,9 +3647,13 @@ async function loadBranches() {
   } catch {
     select.replaceChildren();
     show(select, false);
-    show(button, false);
     return;
   }
+
+  // Kept for deployLatest, which has to tell "build what is already running" from
+  // "move the app to another branch" — the two are different calls, because only
+  // one of them changes which branch the app is on.
+  state.activeBranch = active;
 
   select.replaceChildren();
   for (const branch of branches) {
@@ -3651,45 +3664,34 @@ async function loadBranches() {
     select.appendChild(option);
   }
 
-  // Disabled rather than hidden at one branch: the row still says which branch
-  // is running, which is worth knowing, and the button being present but
-  // disabled says "there is nothing to switch to" rather than leaving the reader
-  // to wonder where the control went. With no branches at all there is nothing
-  // to say either, so both go.
-  const many = branches.length > 1;
+  // Shown even at one branch, and disabled: the control's other job is to *say*
+  // which branch these buttons act on, which is worth knowing even when there is
+  // nothing to choose. With no branches at all there is nothing to say, so it
+  // goes.
   show(select, branches.length > 0);
-  show(button, branches.length > 0);
-  select.disabled = !many;
-  button.disabled = !many;
+  select.disabled = branches.length <= 1;
 }
 
-// switchBranch makes the chosen branch active and deploys it.
+// currentBranch is the branch the build and deploy buttons should act on.
 //
-// It replaces what is running — one app runs one branch — which is what the note
-// beside the button says, and why this confirms rather than acting silently.
-async function switchBranch() {
-  const branch = $("app-branch").value;
-  if (!branch) return;
+// The picker's value, or the app's active branch when the picker is not there to
+// ask — a deployment with no source storage answers no branches, and the buttons
+// still have to do something sensible. Falls back to the empty string, which the
+// API reads as "the app's active branch", so an app with nothing configured
+// still builds and deploys what it has.
+function currentBranch() {
+  const select = $("app-build-branch");
+  if (select && !isHidden(select) && select.value) return select.value;
+  return "";
+}
 
-  if (!confirm(tf("Switch {app} to {branch}? This replaces what is running.", {
-    app: state.app, branch: branch,
-  }))) return;
-
-  setError("");
-  try {
-    await api("/api/v1/apps/" + state.app + "/branch", {
-      method: "PUT",
-      body: JSON.stringify({ branch: branch }),
-    });
-  } catch (err) {
-    setError(tf("Could not switch branch: {error}", { error: err.message }));
-    return;
-  }
-
-  // The deploy may still be building, so what comes back is worth re-reading
-  // rather than assuming: the state card shows the commit that is running, and
-  // after a switch that is a different one.
-  await Promise.all([loadAppState(), loadPods(), loadBranches(), loadCommits()]);
+// isHidden reports whether an element is off screen.
+//
+// isShown is the same question asked the other way round, and both exist because
+// the callers read better that way: a guard reads "is this shown" and a fallback
+// reads "is this hidden".
+function isHidden(el) {
+  return !isShown(el);
 }
 
 // The sections of the app page, in the order they appear, as the nav lists them.
@@ -5014,10 +5016,26 @@ async function setAutoDeploy() {
 //
 // The newest commit and not the deployed one: the two differ when someone has
 // uploaded without deploying, and that difference is the reason to press this.
+// buildLatest builds the newest commit of the branch the picker names.
+//
+// The branch goes with the request, which is what makes the picker mean
+// something: without it the server builds the app's active branch, and choosing
+// another one in the picker would do nothing at all.
+// branchQuery renders the branch half of a query string.
+//
+// Empty when no branch was chosen, which is not the same as naming one: the API
+// reads an absent parameter as "the app's active branch", so an app whose
+// picker is hidden still builds and deploys what it has rather than failing on
+// a branch named "".
+function branchQuery(branch) {
+  return branch ? "?branch=" + encodeURIComponent(branch) : "";
+}
+
 async function buildLatest() {
-  const head = await headCommit();
+  const branch = currentBranch();
+  const head = await headCommit(branch);
   if (!head) return;
-  await buildCommit(head);
+  await buildCommit(head, branch);
 }
 
 // buildCommit starts a build of one named commit.
@@ -5030,10 +5048,10 @@ async function buildLatest() {
 // the server stops the build in flight to make way for the new one, because the
 // second was asked for after the first and is therefore what someone wants. It
 // is not an error to press this twice.
-async function buildCommit(sha) {
+async function buildCommit(sha, branch) {
   setError("");
   try {
-    await api("/api/v1/apps/" + state.app + "/builds", {
+    await api("/api/v1/apps/" + state.app + "/builds" + branchQuery(branch), {
       method: "POST",
       body: JSON.stringify({ commit_sha: sha }),
     });
@@ -5056,15 +5074,34 @@ async function buildCommit(sha) {
 // a commit uploaded and not yet built. A commit that already has an image reuses
 // it, so this is not a rebuild in the common case.
 async function deployLatest() {
-  const head = await headCommit();
+  const branch = currentBranch();
+  const head = await headCommit(branch);
   if (!head) return;
 
   setError("");
   try {
-    await api("/api/v1/apps/" + state.app + "/deploy", {
-      method: "POST",
-      body: JSON.stringify({ commit_sha: head, build: true }),
-    });
+    // Two calls, because "deploy what is running" and "move the app to another
+    // branch" are different operations and only the second changes which branch
+    // the app is on. POST /deploy?branch= deliberately does not: it deploys a
+    // branch without recording it, which is what a caller wants when they are
+    // checking one out, and the opposite of what this button means. An app one
+    // branch behind the picker — serving dev while reporting main — is the state
+    // this avoids: the clone address, the history and the branch that auto-deploy
+    // builds would all name the other one.
+    //
+    // PUT /branch is exactly the operation wanted: it records the branch and
+    // deploys its head, which is what "Deploy latest" of a branch is.
+    if (branch && branch !== state.activeBranch) {
+      await api("/api/v1/apps/" + state.app + "/branch", {
+        method: "PUT",
+        body: JSON.stringify({ branch: branch }),
+      });
+    } else {
+      await api("/api/v1/apps/" + state.app + "/deploy" + branchQuery(branch), {
+        method: "POST",
+        body: JSON.stringify({ commit_sha: head, build: true }),
+      });
+    }
   } catch (err) {
     setError(tf("Could not deploy: {error}", { error: err.message }));
     return;
@@ -5073,11 +5110,11 @@ async function deployLatest() {
 }
 
 // headCommit returns the app's newest commit, or "" after reporting why not.
-async function headCommit() {
+async function headCommit(branch) {
   setError("");
   let history;
   try {
-    history = await api("/api/v1/apps/" + state.app + "/commits");
+    history = await api("/api/v1/apps/" + state.app + "/commits" + branchQuery(branch));
   } catch (err) {
     setError(tf("Could not read history: {error}", { error: err.message }));
     return "";
@@ -5580,7 +5617,6 @@ for (const id of ["app-cpu-request", "app-cpu-limit", "app-memory-request", "app
 $("app-build").onclick = buildLatest;
 $("app-builds-build").onclick = buildLatest;
 $("app-deploy").onclick = deployLatest;
-$("app-branch-use").onclick = switchBranch;
 $("app-stop").onclick = stop;
 $("metrics-close").onclick = closePodMetrics;
 $("metrics-scrim").onclick = closePodMetrics;

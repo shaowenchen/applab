@@ -736,7 +736,10 @@ func TestTheScriptsRequestsCarryTheSameFields(t *testing.T) {
 		// was never built does not make the button useless; the script has to ask
 		// for the same thing or the command that is supposed to do what the button
 		// does will fail where the button succeeds.
-		{"deploy", `commit_sha: head, build: true`, `commit_sha\":\"${1:-}\",\"build\":true`},
+		// The commit is escaped rather than interpolated bare, because the same
+		// variable now carries whatever the caller typed after --branch. The
+		// fields are what this compares, and they are unchanged.
+		{"deploy", `commit_sha: head, build: true`, `commit_sha\":\"$(json_escape "$deploy_commit")\",\"build\":true`},
 		{"replicas", `JSON.stringify({ replicas: wanted })`, `{\"replicas\":$1}`},
 		{"env set", `JSON.stringify({ env: {`, `json_pairs env`},
 	}
@@ -752,6 +755,141 @@ func TestTheScriptsRequestsCarryTheSameFields(t *testing.T) {
 				"The two are the same operation, so a request that works from one must work from the other.",
 				tc.op, tc.console, tc.script)
 		}
+	}
+}
+
+// TestTheScriptCanBuildAndDeployAnotherBranch drives the shipped shell, which is
+// the only thing that catches a bug in the script itself.
+//
+// The console's State card gained a branch picker, and the parity rule means the
+// script has to offer the same choice. What makes that worth testing rather than
+// reading is the deploy half: an app runs one branch, so deploying another one
+// has to *switch* the app to it. A script that sent POST /deploy?branch= would
+// look right and leave the app serving one branch while reporting another — the
+// clone address, the history and the branch auto-deploy builds would all name
+// the wrong one.
+//
+// Run rather than grepped, because the two forms differ only in which request
+// they end up making, and the shell is where the argument parsing happens.
+func TestTheScriptCanBuildAndDeployAnotherBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		// wantMethod and wantPath are the request the command must end with.
+		wantMethod string
+		wantPath   string
+		// wantBody is a substring the request body must contain, when the command
+		// sends one at all.
+		wantBody string
+	}{
+		{
+			name:       "building another branch names it",
+			argv:       []string{"build", "--branch", "dev"},
+			wantMethod: "POST",
+			wantPath:   "/api/v1/apps/shop/builds?branch=dev",
+			wantBody:   "",
+		},
+		{
+			name:       "deploying the active branch is a plain deploy",
+			argv:       []string{"deploy"},
+			wantMethod: "POST",
+			wantPath:   "/api/v1/apps/shop/deploy",
+			wantBody:   `"build":true`,
+		},
+		{
+			// The case the feature is for, and the one a naive implementation gets
+			// wrong: another branch is a switch.
+			name:       "deploying another branch switches the app to it",
+			argv:       []string{"deploy", "--branch", "dev"},
+			wantMethod: "PUT",
+			wantPath:   "/api/v1/apps/shop/branch",
+			wantBody:   `{"branch":"dev"}`,
+		},
+		{
+			name:       "deploying an explicitly named active branch is still a plain deploy",
+			argv:       []string{"deploy", "--branch", "main"},
+			wantMethod: "POST",
+			wantPath:   "/api/v1/apps/shop/deploy?branch=main",
+			wantBody:   `"build":true`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shBin, err := exec.LookPath("sh")
+			if err != nil {
+				t.Skip("sh is not on PATH")
+			}
+
+			type call struct {
+				method, path, body string
+			}
+			var mu sync.Mutex
+			var calls []call
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				calls = append(calls, call{r.Method, r.URL.RequestURI(), string(body)})
+				mu.Unlock()
+
+				w.Header().Set("Content-Type", "application/json")
+				// The one read the deploy arm makes before it decides: which branch
+				// the app is on. main is active, so "dev" is a switch and "main" is
+				// not.
+				if strings.HasSuffix(r.URL.Path, "/branches") {
+					_, _ = io.WriteString(w, `{"data":{"app_id":"shop","branches":["main","dev"],"active":"main"}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"data":{"id":"b1","commit_sha":"abc123","status":"running"}}`)
+			}))
+			defer server.Close()
+
+			script := ""
+			for _, f := range seedFor(SeedValues{App: "shop"}) {
+				if strings.HasSuffix(f.Name, ".sh") {
+					script = f.Body
+				}
+			}
+			if script == "" {
+				t.Fatal("no seeded script")
+			}
+
+			dir := t.TempDir()
+			path := filepath.Join(dir, "applab.sh")
+			if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+				t.Fatalf("write the script: %v", err)
+			}
+
+			cmd := exec.Command(shBin, append([]string{path}, tc.argv...)...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
+				"APPLAB_URL="+server.URL,
+				"APPLAB_KEY=k",
+				// The refresh would fetch a script this stub does not serve.
+				"APPLAB_NO_REFRESH=1",
+			)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if _, err := cmd.Output(); err != nil {
+				t.Fatalf("run %v: %v\nstderr: %s", tc.argv, err, stderr.String())
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			// The last call is the one that decides what happened: each command may
+			// read first (the branches, to tell a switch from a deploy).
+			if len(calls) == 0 {
+				t.Fatal("the script made no request at all")
+			}
+			last := calls[len(calls)-1]
+			if last.method != tc.wantMethod || last.path != tc.wantPath {
+				t.Errorf("last request was %s %s, want %s %s",
+					last.method, last.path, tc.wantMethod, tc.wantPath)
+			}
+			if tc.wantBody != "" && !strings.Contains(last.body, tc.wantBody) {
+				t.Errorf("body was %s, want it to contain %s", last.body, tc.wantBody)
+			}
+		})
 	}
 }
 

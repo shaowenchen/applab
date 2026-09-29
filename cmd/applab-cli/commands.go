@@ -256,8 +256,9 @@ func statusCommand(urlFlag, keyFlag *string) *cobra.Command {
 // deployCommand deploys without uploading, for redeploying what is already there.
 func deployCommand(urlFlag, keyFlag *string) *cobra.Command {
 	var (
-		build bool
-		watch bool
+		build  bool
+		watch  bool
+		branch string
 	)
 
 	cmd := &cobra.Command{
@@ -266,7 +267,12 @@ func deployCommand(urlFlag, keyFlag *string) *cobra.Command {
 		Long: `Deploy a commit, building it first if it has never been built.
 
 With no commit, the app's current tip is deployed. A commit that already has an
-image is deployed as-is; --build starts a build for one that does not.`,
+image is deployed as-is; --build starts a build for one that does not.
+
+--branch deploys another branch's tip. An app runs one branch, so naming a
+branch other than the active one switches the app to it — the same thing the
+console's Deploy button does when its picker is on another branch. See
+"applab branch use" for the switch on its own.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := newClient(*urlFlag, *keyFlag)
@@ -280,7 +286,27 @@ image is deployed as-is; --build starts a build for one that does not.`,
 				commit = args[1]
 			}
 
-			result, err := c.Deploy(cmd.Context(), appID, commit, build)
+			// Another branch is a switch, not a deploy: an app runs one branch,
+			// and POST /deploy?branch= deploys a branch *without* recording it.
+			// Choosing a branch and deploying means "run this one", so the app
+			// follows — otherwise it would serve one branch while reporting
+			// another, and the clone address, the history and the branch
+			// auto-deploy builds would all name the wrong one.
+			if branch != "" {
+				branches, err := c.ListBranches(cmd.Context(), appID)
+				if err != nil {
+					return err
+				}
+				if branch != branches.Active {
+					if _, err := c.UseBranch(cmd.Context(), appID, branch); err != nil {
+						return err
+					}
+					fmt.Printf("switched %s to %s\n", appID, branch)
+					return nil
+				}
+			}
+
+			result, err := c.Deploy(cmd.Context(), appID, commit, branch, build)
 			if err != nil {
 				return err
 			}
@@ -293,7 +319,7 @@ image is deployed as-is; --build starts a build for one that does not.`,
 					if err := watchBuild(cmd.Context(), c, appID, result.Build.ID); err != nil {
 						return err
 					}
-					return deployAfterBuild(cmd, c, appID, result.Commit, watch)
+					return deployAfterBuild(cmd, c, appID, result.Commit, branch, watch)
 				}
 				fmt.Printf("build %s started\n", result.Build.ID)
 				return nil
@@ -311,13 +337,13 @@ image is deployed as-is; --build starts a build for one that does not.`,
 
 	cmd.Flags().BoolVar(&build, "build", false, "build the commit if it has no image yet")
 	cmd.Flags().BoolVar(&watch, "watch", true, "wait for the rollout to finish")
-
+	cmd.Flags().StringVar(&branch, "branch", "", "deploy this branch instead of the app's active one")
 	return cmd
 }
 
 // deployAfterBuild deploys a commit whose build just finished.
-func deployAfterBuild(cmd *cobra.Command, c *client.Client, appID, commit string, watch bool) error {
-	result, err := c.Deploy(cmd.Context(), appID, commit, false)
+func deployAfterBuild(cmd *cobra.Command, c *client.Client, appID, commit, branch string, watch bool) error {
+	result, err := c.Deploy(cmd.Context(), appID, commit, branch, false)
 	if err != nil {
 		return fmt.Errorf("deploy after build: %w", err)
 	}
