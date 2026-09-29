@@ -849,56 +849,47 @@
       <div class="app-body">
         <div class="card" id="doc-start">
           <h2 data-i18n="Where you are">Where you are</h2>
-          <p data-i18n="This console is served by one AppLab installation. Everything below is done against that same address, so no command needs to name it.">This console is served by one AppLab installation. Everything below is done against that same address, so no command needs to name it.</p>
           <dl id="docs-address"></dl>
+        </div>
+
+        <!-- The two role cards, shown to an admin only.
+
+             An admin is the one who makes an app and hands it over, so the two
+             roles are both their business. A developer holding an app key sees
+             neither: they have their app, and the sections below are what they
+             came for. -->
+        <div class="card admin-only" id="doc-admin">
+          <h2 data-i18n="Make an app, hand it over">Make an app, hand it over</h2>
+          <p id="docs-admin-lead" data-i18n="You have an admin key. Get the script, create the app, give the developer its address and key.">You have an admin key. Get the script, create the app, give the developer its address and key.</p>
+          <pre id="docs-admin-cmd"></pre>
+        </div>
+
+        <div class="card admin-only" id="doc-developer">
+          <h2 data-i18n="What the developer needs">What the developer needs</h2>
+          <p id="docs-developer-lead" data-i18n="Hand them these two things. The key reaches that app and nothing else.">Hand them these two things. The key reaches that app and nothing else.</p>
+          <pre id="docs-developer-cmd"></pre>
         </div>
 
         <div class="card" id="doc-push">
           <h2 data-i18n="Ship a change">Ship a change</h2>
-          <p data-i18n="An app is one source repository, one image and one Deployment. Uploading source is what puts code in; what is committed is what can be deployed.">An app is one source repository, one image and one Deployment. Uploading source is what puts code in; what is committed is what can be deployed.</p>
           <pre id="docs-push-cmd"></pre>
-          <p data-i18n="That packages the current directory, uploads it, builds it and deploys it — and creates the app first if it does not exist, so the first run on a new project needs nothing set up beforehand.">That packages the current directory, uploads it, builds it and deploys it — and creates the app first if it does not exist, so the first run on a new project needs nothing set up beforehand.</p>
-          <p data-i18n="A Dockerfile is required. Build output and dependency directories are left out of the upload by default.">A Dockerfile is required. Build output and dependency directories are left out of the upload by default.</p>
+          <p data-i18n="Needs a Dockerfile. Build output and dependencies are not uploaded.">Needs a Dockerfile. Build output and dependencies are not uploaded.</p>
         </div>
 
         <div class="card" id="doc-clone">
           <h2 data-i18n="Work over git instead">Work over git instead</h2>
-          <p data-i18n="Every app is a git repository from the moment it is created, so a checkout and a push work the way they always do. This is what a repository clone gets, and it is the same source the upload path commits to.">Every app is a git repository from the moment it is created, so a checkout and a push work the way they always do. This is what a repository clone gets, and it is the same source the upload path commits to.</p>
           <pre id="docs-clone-cmd"></pre>
-          <p data-i18n="The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.">The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.</p>
-        </div>
-
-        <div class="card" id="doc-admin">
-          <h2 data-i18n="Admin: make an app and hand it over">Admin: make an app and hand it over</h2>
-          <p data-i18n="You are the one with an admin key. Making an app takes two commands and no prior setup: fetch the tool, then create the app. The tool is served by the deployment with no app and no key in it, so fetching it needs no credential — that route is what makes a first app possible from nothing.">You are the one with an admin key. Making an app takes two commands and no prior setup: fetch the tool, then create the app. The tool is served by the deployment with no app and no key in it, so fetching it needs no credential — that route is what makes a first app possible from nothing.</p>
-          <pre id="docs-admin-cmd"></pre>
-          <p data-i18n="create prints the new app's key and its clone address. Give the developer both: the address is where they clone from, and the key is what that clone authenticates with. The key can be read again at any time, so it is not the only chance to write it down.">create prints the new app's key and its clone address. Give the developer both: the address is where they clone from, and the key is what that clone authenticates with. The key can be read again at any time, so it is not the only chance to write it down.</p>
-          <pre id="docs-admin-handover-cmd"></pre>
-          <p data-i18n="An app key reaches that one app and nothing else. That is the whole point of handing it over: the developer can ship, roll back and read logs without being able to see or delete anything of anyone else's.">An app key reaches that one app and nothing else. That is the whole point of handing it over: the developer can ship, roll back and read logs without being able to see or delete anything of anyone else's.</p>
-        </div>
-
-        <div class="card" id="doc-developer">
-          <h2 data-i18n="Developer: get the script">Developer: get the script</h2>
-          <p data-i18n="You have been given an app's address and key. Cloning that address gets you the source and applab.sh with it — the script is committed into every app's repository, written with that app's id, key and address already in it, so a fresh clone runs with nothing exported. This is the shortest path from being handed an app to shipping to it.">You have been given an app's address and key. Cloning that address gets you the source and applab.sh with it — the script is committed into every app's repository, written with that app's id, key and address already in it, so a fresh clone runs with nothing exported. This is the shortest path from being handed an app to shipping to it.</p>
-          <pre id="docs-developer-clone-cmd"></pre>
-          <p data-i18n="If you would rather not clone — or you have a project of your own to push — fetch the same script from the deployment and point it at the app. Nothing is exported here either: the deployment's address is written in, and use remembers the app.">If you would rather not clone — or you have a project of your own to push — fetch the same script from the deployment and point it at the app. Nothing is exported here either: the deployment's address is written in, and use remembers the app.</p>
-          <pre id="docs-developer-script-cmd"></pre>
-          <p data-i18n="Either way, the script refreshes itself from the deployment before each command, so a checkout that has not been pushed in a while still talks to the current API. From inside the project:" >Either way, the script refreshes itself from the deployment before each command, so a checkout that has not been pushed in a while still talks to the current API. From inside the project:</p>
-          <pre id="docs-developer-use-cmd"></pre>
-          <p><code>./applab.sh help</code> <span data-i18n="lists everything it can do.">lists everything it can do.</span></p>
+          <p data-i18n="The key is the password, so any username works.">The key is the password, so any username works.</p>
         </div>
 
         <div class="card" id="doc-configure">
           <h2 data-i18n="Configure the app">Configure the app</h2>
-          <p data-i18n="These change the running app without touching its source, and each takes effect immediately — the pods are replaced, not patched in place. The app's page in this console does all of it by hand.">These change the running app without touching its source, and each takes effect immediately — the pods are replaced, not patched in place. The app's page in this console does all of it by hand.</p>
           <pre id="docs-configure-cmd"></pre>
-          <p data-i18n="Environment variables and secrets are set the same way and differ in one respect that matters: a secret's value cannot be read back, so a value set and forgotten is one you re-set rather than look up. config lists the names either way.">Environment variables and secrets are set the same way and differ in one respect that matters: a secret's value cannot be read back, so a value set and forgotten is one you re-set rather than look up. config lists the names either way.</p>
-          <p data-i18n="The app must listen on its port for anything to reach it — the Service and the route both target that number. Changing it here changes what they point at; the code has to agree.">The app must listen on its port for anything to reach it — the Service and the route both target that number. Changing it here changes what they point at; the code has to agree.</p>
+          <p data-i18n="Each takes effect at once — the pods are replaced, not patched. A secret's value cannot be read back.">Each takes effect at once — the pods are replaced, not patched. A secret's value cannot be read back.</p>
         </div>
 
         <div class="card" id="doc-keys">
           <h2 data-i18n="Two kinds of key">Two kinds of key</h2>
-          <p data-i18n="Which one you hold decides what you can do, and they are not interchangeable.">Which one you hold decides what you can do, and they are not interchangeable.</p>
           <table>
             <thead><tr><th data-i18n="Kind of key">Kind of key</th><th data-i18n="Reaches">Reaches</th><th data-i18n="Can also">Can also</th></tr></thead>
             <tbody>
@@ -914,27 +905,23 @@
               </tr>
             </tbody>
           </table>
-          <p data-i18n="Both go in the same variable: APPLAB_KEY is whichever key you are using. An app's own key is printed when the app is created, and can be read again at any time from the app's page.">Both go in the same variable: APPLAB_KEY is whichever key you are using. An app's own key is printed when the app is created, and can be read again at any time from the app's page.</p>
         </div>
 
         <div class="card" id="doc-watch">
           <h2 data-i18n="Watch it running">Watch it running</h2>
           <pre id="docs-watch-cmd"></pre>
-          <p data-i18n="Each of these is on the app's own page too, and each names one pod rather than the app: a pod with a problem is usually not the newest one.">Each of these is on the app's own page too, and each names one pod rather than the app: a pod with a problem is usually not the newest one.</p>
         </div>
 
         <div class="card" id="doc-diagnose">
           <h2 data-i18n="When it is not working">When it is not working</h2>
           <pre id="docs-diagnose-cmd"></pre>
-          <p data-i18n="That reports pods, events and the relevant log in one answer, ordered so the most likely cause comes first. Start there rather than with the individual reads.">That reports pods, events and the relevant log in one answer, ordered so the most likely cause comes first. Start there rather than with the individual reads.</p>
-          <p data-i18n="A build that failed keeps its log and its pod for as long as the deployment keeps build history, so a failure is diagnosable after the fact.">A build that failed keeps its log and its pod for as long as the deployment keeps build history, so a failure is diagnosable after the fact.</p>
+          <p data-i18n="Reports pods, events and the relevant log in one answer, most likely cause first.">Reports pods, events and the relevant log in one answer, most likely cause first.</p>
         </div>
 
         <div class="card" id="doc-api">
           <h2 data-i18n="For an agent, or a script">For an agent, or a script</h2>
-          <p data-i18n="Every route this deployment serves is listed by one call, with the key each one needs — no key required to read it.">Every route this deployment serves is listed by one call, with the key each one needs — no key required to read it.</p>
           <pre id="docs-api-cmd"></pre>
-          <p data-i18n="Everything the console does is one of those routes, so anything done here can be done from a script against the same key.">Everything the console does is one of those routes, so anything done here can be done from a script against the same key.</p>
+          <p data-i18n="Everything the console does is one of those routes.">Everything the console does is one of those routes.</p>
         </div>
       </div>
     </div>
@@ -1738,50 +1725,27 @@ const ZH = {
   // -- Docs -----------------------------------------------------------------
   "Using AppLab": "使用 AppLab",
   "Where you are": "你所在的位置",
-  "This console is served by one AppLab installation. Everything below is done against that same address, so no command needs to name it.":
-    "这个控制台由某一套 AppLab 提供。下面所有操作都对同一个地址进行，所以命令里不需要再写地址。",
   "Deployment": "部署地址",
   "Your key": "你的 key",
   "the one you signed in with": "你登录时使用的那把",
   "none yet — enter one above to fill the commands in": "还没有——在上方登录后，命令会自动填上你的 key",
   "API": "API 地址",
+  "Make an app, hand it over": "创建应用并交给开发者",
+  "You have an admin key. Get the script, create the app, give the developer its address and key.":
+    "你手里是管理员 key。取脚本、建应用，然后把地址和 key 交给开发者。",
+  "What the developer needs": "开发者需要什么",
+  "Hand them these two things. The key reaches that app and nothing else.":
+    "把这两样给他。这把 key 只能访问这一个应用。",
   "Ship a change": "发布一次变更",
-  "An app is one source repository, one image and one Deployment. Uploading source is what puts code in; what is committed is what can be deployed.":
-    "一个应用对应一个源码仓库、一个镜像和一个 Deployment。上传源码就是写入代码的方式；已提交的内容才是可以被部署的内容。",
-  "That packages the current directory, uploads it, builds it and deploys it — and creates the app first if it does not exist, so the first run on a new project needs nothing set up beforehand.":
-    "这条命令会打包当前目录、上传、构建并部署；应用不存在时会先创建，所以新项目第一次运行不需要任何预先配置。",
-  "A Dockerfile is required. Build output and dependency directories are left out of the upload by default.":
-    "必须要有 Dockerfile。构建产物和依赖目录默认不会被上传。",
+  "Needs a Dockerfile. Build output and dependencies are not uploaded.":
+    "需要有 Dockerfile。构建产物和依赖目录不会上传。",
   "Work over git instead": "改用 git 方式",
-  "Every app is a git repository from the moment it is created, so a checkout and a push work the way they always do. This is what a repository clone gets, and it is the same source the upload path commits to.":
-    "每个应用从创建那一刻起就是一个 git 仓库，所以 clone 和 push 跟平时完全一样。这就是仓库的 clone 地址，它和上传方式提交的是同一份源码。",
-  "The key goes in the URL as the password, so any username works. A branch is the same address with @branch after the app name.":
-    "key 作为密码写在 URL 里，所以用户名随便填。分支就是在应用名后面加 @分支名，地址其余部分不变。",
-  "Admin: make an app and hand it over": "管理员：创建应用并交给开发者",
-  "You are the one with an admin key. Making an app takes two commands and no prior setup: fetch the tool, then create the app. The tool is served by the deployment with no app and no key in it, so fetching it needs no credential — that route is what makes a first app possible from nothing.":
-    "你手里是管理员 key。创建应用只需要两条命令，不需要任何预先准备：先取工具，再创建应用。部署提供的这个脚本里不写应用、也不带 key，所以取它不需要任何凭据——正是这个接口让「从零开始建第一个应用」成为可能。",
-  "create prints the new app's key and its clone address. Give the developer both: the address is where they clone from, and the key is what that clone authenticates with. The key can be read again at any time, so it is not the only chance to write it down.":
-    "create 会打印新应用的 key 和 clone 地址。这两样都要给开发者：地址是他们 clone 的来源，key 是那次 clone 用来认证的凭据。key 随时都能再查，所以不是只有这一次记录的机会。",
-  "An app key reaches that one app and nothing else. That is the whole point of handing it over: the developer can ship, roll back and read logs without being able to see or delete anything of anyone else's.":
-    "应用 key 只能访问那一个应用，别的都碰不到。这正是把它交出去的意义：开发者可以发布、回滚、看日志，但看不到也删不掉别人的任何东西。",
-  "Developer: get the script": "开发者：拿到脚本",
-  "You have been given an app's address and key. Cloning that address gets you the source and applab.sh with it — the script is committed into every app's repository, written with that app's id, key and address already in it, so a fresh clone runs with nothing exported. This is the shortest path from being handed an app to shipping to it.":
-    "你拿到了某个应用的地址和 key。clone 这个地址，就同时得到源码和 applab.sh——这个脚本被提交在每个应用的仓库里，里面已经写好该应用的 ID、key 和地址，所以刚 clone 下来不需要 export 任何变量就能直接用。这是从「拿到一个应用」到「发布」的最短路径。",
-  "If you would rather not clone — or you have a project of your own to push — fetch the same script from the deployment and point it at the app. Nothing is exported here either: the deployment's address is written in, and use remembers the app.":
-    "如果你不想 clone——或者你本来就有自己的项目要推——也可以直接从部署取同一个脚本，再让它指向那个应用。同样不需要 export 什么：部署地址已经写在脚本里，应用用 use 记住。",
-  "Either way, the script refreshes itself from the deployment before each command, so a checkout that has not been pushed in a while still talks to the current API. From inside the project:":
-    "两种方式都一样：脚本每次执行命令前会先从部署拉取最新版本，所以一个很久没推过的 checkout 也仍然对接当前的 API。在项目目录里：",
+  "The key is the password, so any username works.":
+    "key 作为密码，用户名随便填。",
   "Configure the app": "配置应用",
-  "These change the running app without touching its source, and each takes effect immediately — the pods are replaced, not patched in place. The app's page in this console does all of it by hand.":
-    "这些命令改动的是正在运行的应用，不涉及源码，而且立即生效——pod 会被替换，而不是原地打补丁。控制台的应用页面也能手工完成这些操作。",
-  "Environment variables and secrets are set the same way and differ in one respect that matters: a secret's value cannot be read back, so a value set and forgotten is one you re-set rather than look up. config lists the names either way.":
-    "环境变量和密钥的设置方式相同，但有一点关键区别：密钥的值无法读回，所以设过又忘了的值只能重新设，查不回来。两边的名字都能用 config 列出。",
-  "The app must listen on its port for anything to reach it — the Service and the route both target that number. Changing it here changes what they point at; the code has to agree.":
-    "应用必须监听它自己的端口，外部才访问得到——Service 和路由都指向这个端口号。在这里改动它，改的是它们指向哪里；代码必须与之保持一致。",
-  "lists everything it can do.": "会列出它支持的全部命令。",
+  "Each takes effect at once — the pods are replaced, not patched. A secret's value cannot be read back.":
+    "改动立即生效——pod 会被替换，而不是原地打补丁。密钥的值读不回来。",
   "Two kinds of key": "两种 key",
-  "Which one you hold decides what you can do, and they are not interchangeable.":
-    "你手里是哪一种，决定了你能做什么，两者不能混用。",
   "Kind of key": "key 种类",
   "Reaches": "能访问",
   "Can also": "除此之外",
@@ -1793,21 +1757,13 @@ const ZH = {
   "One app only": "仅限一个应用",
   "Push, build, deploy, roll back, read logs, change its configuration — but not delete it and not see any other app":
     "上传、构建、部署、回滚、看日志、改配置——但不能删除该应用，也看不到其他应用",
-  "Both go in the same variable: APPLAB_KEY is whichever key you are using. An app's own key is printed when the app is created, and can be read again at any time from the app's page.":
-    "两种 key 都放在同一个变量里：APPLAB_KEY 就是你正在用的那把。应用自己的 key 在创建时会打印出来，之后也可以在应用页面上随时查看。",
   "Watch it running": "观察运行状态",
-  "Each of these is on the app's own page too, and each names one pod rather than the app: a pod with a problem is usually not the newest one.":
-    "这些在应用详情页上也都有，而且都是针对某个具体 Pod 而不是整个应用：出问题的 Pod 通常不是最新的那个。",
   "When it is not working": "出问题时",
-  "That reports pods, events and the relevant log in one answer, ordered so the most likely cause comes first. Start there rather than with the individual reads.":
-    "这一条会一次性给出 Pod、事件和相关的日志，并按最可能的原因排序。排查时先看它，而不是逐个去查。",
-  "A build that failed keeps its log and its pod for as long as the deployment keeps build history, so a failure is diagnosable after the fact.":
-    "构建失败后，只要部署还保留构建历史，它的日志和 Pod 就还在，所以事后仍然可以排查。",
+  "Reports pods, events and the relevant log in one answer, most likely cause first.":
+    "一条命令同时给出 pod、事件和相关日志，最可能的原因排在前面。",
   "For an agent, or a script": "给 agent 或脚本用",
-  "Every route this deployment serves is listed by one call, with the key each one needs — no key required to read it.":
-    "这一个接口会列出该部署提供的所有路由，以及每条路由需要哪种 key——读取它本身不需要 key。",
-  "Everything the console does is one of those routes, so anything done here can be done from a script against the same key.":
-    "控制台做的每一件事都是这些路由之一，所以在这里能做的，用同一把 key 写脚本也都能做。",
+  "Everything the console does is one of those routes.":
+    "控制台做的每一件事都是这些路由之一。",
 };
 
 // lang is the current language. Set by setLang and read by t().
@@ -2702,19 +2658,18 @@ async function showApps() {
 
 // DOC_SECTIONS is the docs page's table of contents, in reading order.
 //
-// The same idea as APP_SECTIONS and for the same reason: the page is longer than
-// a screenful, and a link to a section is how someone gets to the one they came
-// for. Named by the card's own heading so the nav and the page cannot disagree
-// about what a section is called.
+// The first two are the roles, and they are shown to an admin only: an admin is
+// the one who makes an app and hands it over, so both are their business. A
+// developer holding an app key has their app already and does not need either —
+// everything below is the same for both readers, which is the point of putting
+// the roles first and keeping them out of the way.
 //
-// Ordered by role rather than by system. There are two people here — whoever
-// runs the platform and can make an app, and whoever is developing one — and
-// each arrives with a different question. The first two sections answer those,
-// and what follows is the task-oriented part both of them use.
+// Named by the card's own heading so the nav and the page cannot disagree about
+// what a section is called.
 const DOC_SECTIONS = [
   { id: "doc-start", label: "Where you are" },
-  { id: "doc-admin", label: "Admin: make an app and hand it over" },
-  { id: "doc-developer", label: "Developer: get the script" },
+  { id: "doc-admin", label: "Make an app, hand it over", admin: true },
+  { id: "doc-developer", label: "What the developer needs", admin: true },
   { id: "doc-push", label: "Ship a change" },
   { id: "doc-clone", label: "Work over git instead" },
   { id: "doc-configure", label: "Configure the app" },
@@ -2723,6 +2678,17 @@ const DOC_SECTIONS = [
   { id: "doc-diagnose", label: "When it is not working" },
   { id: "doc-api", label: "For an agent, or a script" },
 ];
+
+// isAdminReader reports whether the reader sees the two role sections.
+//
+// True for an admin key, and also for a signed-out reader: someone who has not
+// signed in has no app either, so the sections that explain how one comes to
+// exist are the ones they need. Only an app key is a reader who already has
+// their app. Not signed in and signed in as an app key are different questions,
+// which is why the scope is what decides rather than the presence of a key.
+function isAdminReader() {
+  return state.scope !== "app";
+}
 
 async function showDocs() {
   stopLogs();
@@ -2753,8 +2719,17 @@ async function showDocs() {
 function renderDocs() {
   const nav = $("docs-nav");
   nav.replaceChildren();
+  // The role cards go with the reader's role, in the page and in the nav
+  // together: a link to a section that is not there would scroll nowhere, and a
+  // card with no link would be one nobody finds.
+  const admin = isAdminReader();
+  for (const card of document.querySelectorAll(".admin-only")) {
+    show(card, admin);
+  }
+
   for (const section of DOC_SECTIONS) {
     if (!$(section.id)) continue;
+    if (section.admin && !admin) continue;
     const link = document.createElement("a");
     link.href = "#" + section.id;
     link.textContent = t(section.label);
@@ -2769,11 +2744,6 @@ function renderDocs() {
   // one. An admin has no single app, and a signed-out reader has none either —
   // both get the placeholder.
   const appID = state.scope === "app" && state.app ? state.app : "<app>";
-  // Whether the reader is an app key holder, which is what picks between the two
-  // roles the page is arranged by. Not derived from `appID` against "<app>":
-  // that compares a value to the placeholder standing in for its absence, and
-  // would misread a reader whose own app happens to be named anything at all.
-  const hasApp = state.scope === "app" && state.app !== "";
 
   // Where you are. The address and what a key reaches, which is the two things
   // someone needs before any of the commands below make sense.
@@ -2805,44 +2775,20 @@ function renderDocs() {
     "git clone " + base + "/git/" + appID + "@dev.git",
   ].join("\n"));
 
-  // The admin's path: make an app, then hand it over.
-  //
-  // This is the one section that reads differently depending on who is looking.
-  // An admin key is what the commands need, and this is where someone without
-  // one finds out that they are in the other section.
+  // The admin's path: get the tool, make an app. Shown to an admin only — see
+  // DOC_SECTIONS.
   setText("docs-admin-cmd", [
     "curl -fsS " + base + "/bootstrap/applab.sh -o applab.sh && chmod +x applab.sh",
     "export APPLAB_KEY=" + key,
     "",
-    "./applab.sh create " + (hasApp ? state.app : "<app>"),
+    "./applab.sh create <app>",
   ].join("\n"));
 
-  const handoverApp = hasApp ? state.app : "<app>";
-  setText("docs-admin-handover-cmd", [
-    "./applab.sh url                  # the address the app is served at",
-    "applab keys " + handoverApp + "              # the app's own key, to hand over",
-    "",
-    "# what the developer needs, and nothing else:",
-    "#   the clone address, and that key",
-  ].join("\n"));
-
-  // The developer's path. Two ways in, and the clone is the shorter one: the
-  // script is already in the repository, with this app's id and key written in.
-  setText("docs-developer-clone-cmd", [
-    "git clone " + base + "/git/" + appID + ".git",
-    "cd " + appID,
-  ].join("\n"));
-
-  setText("docs-developer-script-cmd", [
-    "curl -fsS " + base + "/bootstrap/applab.sh -o applab.sh && chmod +x applab.sh",
-    "export APPLAB_KEY=" + key,
-    "./applab.sh use " + (hasApp ? state.app : "<app>"),
-  ].join("\n"));
-
-  setText("docs-developer-use-cmd", [
-    "./applab.sh status      # what is running, and where",
-    "./applab.sh logs -f     # follow the newest pod's log",
-    "./applab.sh push        # upload, build and deploy",
+  // What to hand the developer. Named after the app this admin last looked at
+  // when there is one, because that is the app they are handing over.
+  setText("docs-developer-cmd", [
+    "git clone " + base + "/git/" + appID + ".git   # the source",
+    "applab keys " + appID + "                      # the key, printed for them",
   ].join("\n"));
 
   // Changing the running app without touching its source.

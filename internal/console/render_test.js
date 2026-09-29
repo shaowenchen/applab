@@ -192,7 +192,20 @@ const sandbox = {
     // query, so this returns nothing and the static-text half is a no-op here —
     // the JS-produced strings, which are what the rendering checks assert on,
     // go through t() directly and are covered.
-    querySelectorAll: () => [],
+    //
+    // A class selector is answered, because the document's role cards are
+    // hidden that way: `renderDocs` shows or hides every `.admin-only` by class,
+    // and a stub that returned nothing would leave the two cards in whatever
+    // state the markup gave them — so a console that showed the admin's card to
+    // an app key would pass. Answered from the same class list the markup
+    // seeded, which is what a browser would match on.
+    querySelectorAll: (selector) => {
+      if (typeof selector === "string" && selector.startsWith(".")) {
+        const want = selector.slice(1);
+        return [...elements.values()].filter((el) => el.classList.contains(want));
+      }
+      return [];
+    },
     // The console reads the deployment's base path from the meta tag the server
     // injects, and this is that tag. Answered rather than left null because a
     // null here is the "not served by applab" case, which has its own check —
@@ -1998,58 +2011,44 @@ async function render(apps) {
 
     // Signed in as an admin: the real key goes in, and the examples still name
     // no app, because an admin has none in particular.
-    vm.runInContext('state.key = "sk-secret"; state.signedIn = true;', ctx);
+    vm.runInContext('state.key = "sk-secret"; state.signedIn = true; state.scope = "admin"; state.app = "";', ctx);
     await docs();
     check("signed in, the commands carry the key", read("docs-push-cmd").includes("APPLAB_KEY=sk-secret"), true);
     check("and an admin's examples name no single app", read("docs-push-cmd").includes("applab push <app>"), true);
+    // Both role cards are for this reader, and they have to actually be on
+    // screen: the checks below read their commands out of the elements, which
+    // is true whether or not the card is hidden. Paired with the app-key case
+    // further down, so neither "always show" nor "always hide" passes.
+    check("an admin is shown the make-an-app card", elements.get("doc-admin").classList.contains("hidden"), false);
+    check("and the handover card", elements.get("doc-developer").classList.contains("hidden"), false);
 
-    // Signed in with an app key: one app, so the examples name it.
+    // How to get applab.sh in the first place, which is the admin's section and
+    // the thing this page was missing: it opened with `cd <app> && ./applab.sh
+    // status`, assuming a script the reader may have no way to obtain — it lives
+    // in the repository, and someone who has not cloned has no repository.
+    {
+      const admin = read("docs-admin-cmd");
+      check("the admin section says where to fetch applab.sh from", admin.includes("https://applab.example.com/bootstrap/applab.sh"), true);
+      check("and makes it executable", admin.includes("chmod +x applab.sh"), true);
+      check("and carries the reader's key", admin.includes("APPLAB_KEY=sk-secret"), true);
+      check("and makes an app with create", admin.includes("./applab.sh create <app>"), true);
+      check("and not a use of an app they did not name", admin.includes("./applab.sh use"), false);
+      // What the admin actually does next is hand the app over, so the second
+      // role card says what to give the developer — and reading the key back is
+      // what makes the handover possible, since it is not shown anywhere else.
+      const developer = read("docs-developer-cmd");
+      check("the developer section hands over the clone address", developer.includes("git clone https://applab.example.com/git/<app>.git"), true);
+      check("and says how to read the app's key back for handover", developer.includes("applab keys <app>"), true);
+    }
+
+    // Signed in with an app key: one app, so the examples name it, and the two
+    // role cards step aside — this reader has their app already.
     vm.runInContext('state.key = "app-secret"; state.scope = "app"; state.app = "shop";', ctx);
     await docs();
     check("an app key's examples name its own app", read("docs-push-cmd").includes("applab push shop"), true);
     check("and its clone command does too", read("docs-clone-cmd").includes("/git/shop.git"), true);
-
-    // How to get applab.sh in the first place, which is the developer's section
-    // and the thing this page was missing: it opened with `cd <app> &&
-    // ./applab.sh status`, assuming a script the reader may have no way to
-    // obtain — it lives in the repository, and someone who has not cloned has
-    // no repository.
-    {
-      const developer = read("docs-developer-script-cmd");
-      check(
-        "the developer section says where to fetch applab.sh from",
-        developer.includes("/bootstrap/applab.sh"),
-        true
-      );
-      check("and makes it executable", developer.includes("chmod +x applab.sh"), true);
-      check("and carries the reader's key", developer.includes("APPLAB_KEY=app-secret"), true);
-      // An app key reaches exactly one app and cannot create one, so pointing
-      // the fetched script at it is `use`. Offering `create` would be a command
-      // that fails for this reader.
-      check("and points it at their app with use", developer.includes("./applab.sh use shop"), true);
-      check("not with create, which that key cannot do", developer.includes("./applab.sh create"), false);
-      // And the shorter path is offered too: the clone, which brings the script
-      // with it already filled in.
-      const clone = read("docs-developer-clone-cmd");
-      check("the developer section leads with the clone", clone.includes("git clone https://applab.example.com/git/shop.git"), true);
-      check("and cds into it", clone.includes("cd shop"), true);
-    }
-
-    // The admin's section is the other role, and it is the one that makes an
-    // app. An admin has no single app, so it falls back to a placeholder — and
-    // to `create`, the verb that makes one.
-    vm.runInContext('state.key = "sk-secret"; state.scope = "admin"; state.app = "";', ctx);
-    await docs();
-    {
-      const admin = read("docs-admin-cmd");
-      check("the admin section fetches the script too", admin.includes("/bootstrap/applab.sh"), true);
-      check("an admin is offered create, not use", admin.includes("./applab.sh create <app>"), true);
-      check("and not a use of an app they did not name", admin.includes("./applab.sh use"), false);
-      check("with the deployment's own address", admin.includes("https://applab.example.com/bootstrap/applab.sh"), true);
-      // The handover is what an admin is actually doing, so the section says
-      // how the developer gets the key — reading it back, not remembering it.
-      check("and says how to read the app's key back for handover", read("docs-admin-handover-cmd").includes("applab keys <app>"), true);
-    }
+    check("an app key is not shown the admin's make-an-app card", elements.get("doc-admin").classList.contains("hidden"), true);
+    check("nor the handover card", elements.get("doc-developer").classList.contains("hidden"), true);
 
     // Configure: the running app's environment, secrets, bounds and count.
     {
