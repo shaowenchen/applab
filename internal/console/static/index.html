@@ -135,6 +135,8 @@
     padding: 4px 8px;
     font-size: 13px;
     line-height: 1.2;
+    min-width: 34px;
+    min-height: 30px;
     border-color: transparent;
     background: transparent;
     color: var(--text-muted);
@@ -279,7 +281,7 @@
     line-height: 1.1;
   }
 
-  input {
+  input, select {
     font: inherit;
     padding: 6px 10px;
     border-radius: 6px;
@@ -288,7 +290,24 @@
     color: var(--text);
     min-width: 0;
   }
-  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  /* A select is listed here and not left to the browser's own drawing because
+     the platform's dropdowns — the pod pickers and the branch picker — were
+     rendering as the OS's default widget: a white box with black text on a dark
+     page, which is the one colour on the console that does not come from the
+     palette. `color-scheme` alone answers this for the popup list, and it is
+     set on :root, but the closed control is a page element and has to be styled
+     like one. `max-width` so a long pod name shortens the control rather than
+     pushing the row it sits in off the card. */
+  select { max-width: 100%; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  /* The keyboard's focus ring, which the pointer's does not cover: a button is
+     not given an outline on click — that would draw a box around whatever was
+     last pressed — but it has to be given one for the tab key, or the console is
+     unusable without a mouse. `:focus-visible` is exactly that distinction. */
+  button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
 
   .card {
     background: var(--bg-raised);
@@ -430,11 +449,14 @@
     white-space: nowrap;
   }
 
-  /* A row's own buttons, kept on one line.
+  /* A row's own buttons, kept on one line and pushed to the far end of the row.
      A row that wraps its actions has a taller height than its neighbours, which
-     makes the table look broken rather than full — and the two buttons here
-     ("Log", "Events") will not both fit a narrow column otherwise. */
-  td.actions { white-space: nowrap; }
+     makes the table look broken rather than full, and the three buttons here
+     ("Log", "Metrics", "Events") will not all fit a narrow column otherwise.
+     Right-aligned rather than left: the column before it is a count of
+     restarts, and a control against the table's edge is where a reader looks
+     for one — left-aligned they read as a fourth column of data. */
+  td.actions { white-space: nowrap; text-align: right; }
   td.actions button + button { margin-left: 6px; }
 
   .pill {
@@ -606,14 +628,93 @@
   .tile.attention .value { color: var(--bad); }
   .tile.ok .value { color: var(--ok); }
 
-  /* A phone. The header is a single row of controls carrying the theme and
-     language switches, the nav, and sign-out; squeezed to a phone width the
-     theme control is the first thing to go over the edge, and it is half of the
-     only preference a signed-out visitor has. So the header wraps, and the
-     endpoint — a long address with nothing to say on a small screen — goes. */
+  /* ---------------------------------------------------------------------
+     Small screens.
+
+     Three things break on a phone, and each is answered where it happens
+     rather than by a separate mobile stylesheet:
+
+       1. The header is one row holding the name, three nav buttons, two
+          preference buttons and sign-out. It wraps, and the name loses the
+          letter-spacing that only reads at a display size.
+       2. A table is wider than the screen. Each card scrolls the table it
+          holds sideways, so the cells keep their natural widths and nothing
+          is squeezed into a column of two letters per line — `min-width` on
+          the table is what makes the scroll happen rather than the browser
+          crushing the columns instead.
+       3. A dialog with a row of controls in its head has the same problem as
+          the header, and the same answer.
+
+     Touch targets grow with it. 32px is a reasonable button on a mouse and a
+     miss on a thumb, and the console's rows — Log, Metrics, Events — are
+     small dense buttons exactly where a thumb is least accurate. This is
+     applied at every width and not only under the media query, because a
+     tablet gets the same thumb and is not a "small screen" by any width rule
+     worth writing. */
+  @media (hover: none) {
+    /* The eye is excluded and not an oversight: it is positioned inside a text
+       field and sized to it, so growing it would grow the field around it. It
+       is also the one control whose target is already the whole of the input's
+       right edge, since clicking anywhere near it is a click on it. */
+    button:not(.reveal) { min-height: 34px; }
+  }
   @media (max-width: 640px) {
     header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px; }
+    header h1 { letter-spacing: 0; }
     main { padding: 14px; }
+    .tiles { gap: 10px; }
+    .tile .value { font-size: 24px; }
+    .signin-card { padding: 20px; }
+    .log-modal { padding: 10px; }
+    .log-modal-panel { padding: 12px; }
+
+    /* The column of section links is the first thing to go. It is 150px of a
+       390px screen, and it is a navigation aid for a page that is being read by
+       scrolling — on a phone the page is one column either way, so it moves
+       above the content as a row that scrolls sideways rather than
+       disappearing. Removing it would leave a reader with no way to reach the
+       lower cards except by scrolling past everything.
+
+       Not sticky, unlike the wide-screen column. The header above it is sticky
+       at the same edge, and a second sticky bar would either hide under it or
+       need the header's height — which changes as the header wraps, so any
+       offset written here would be wrong at some width. A bar that scrolls away
+       costs one swipe to get back and is never wrong. */
+    .app-layout { flex-direction: column; gap: 16px; }
+    .app-nav {
+      width: 100%;
+      flex-direction: row;
+      gap: 4px;
+      overflow-x: auto;
+      /* The rule that marks the current section is the left border on a wide
+         screen; here the links run sideways, so it moves to the bottom edge. */
+      scrollbar-width: none;
+    }
+    .app-nav a {
+      border-left: none;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+      padding: 5px 8px;
+    }
+    .app-nav a.current { border-left-color: transparent; border-bottom-color: var(--accent); }
+
+    /* A table is wider than a phone, and there are two ways to fit it: crush the
+       columns until they fit, or scroll. Crushing puts a pod name one character
+       per line and wraps every button label; so the table keeps its natural
+       widths and the card scrolls sideways under it, which leaves the page
+       itself scrolling only downwards.
+       The scroll is on the card and not the page so the header and everything
+       below stay where they are while one table is read across. */
+    .card:has(> table) { overflow-x: auto; }
+    .card > table { min-width: 480px; }
+
+    /* The dialog's head is the header's problem in miniature: a title, a pod
+       picker, a checkbox, Follow and Close on one line. The title takes the
+       first line on its own and the controls share the second. */
+    .log-modal-head { gap: 8px; }
+    .log-modal-head h2 { flex: 1 0 100%; }
+    .log-modal-head .field { flex: 1; }
+    .log-modal-head select { width: 100%; }
   }
 </style>
 </head>

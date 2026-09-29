@@ -1401,6 +1401,60 @@ async function render(apps) {
     );
   }
 
+  // The layout, checked as rules rather than as pixels — there is no browser in
+  // this harness, so what can be asserted is that the decision is written down
+  // and that the selector it is written against is the one the markup uses. A
+  // rule for a class nobody carries is the failure these are for: it reads as
+  // done and does nothing.
+  {
+    // The console stylesheets' own guard: every rule below is read out of the
+    // <style> block, and a check against the whole document would pass on a rule
+    // written in a comment.
+    const style = markup.slice(markup.indexOf("<style>"), markup.indexOf("</style>"));
+
+    // A row's buttons sit at the right end of the row, against the table's edge.
+    // The class has to be the one the rows actually carry — `td.actions` is set
+    // by instanceRow.
+    check(
+      "a row's action buttons are right-aligned",
+      /td\.actions\s*\{[^}]*text-align:\s*right/.test(style),
+      true
+    );
+    check(
+      "and it is the class the rows are given",
+      /actions\.className\s*=\s*"actions"/.test(source),
+      true
+    );
+
+    // The dropdowns are drawn from the palette rather than by the OS. Left
+    // unstyled, a <select> is a white box on the dark theme — the platform's pod
+    // and branch pickers were the only parts of the console not following the
+    // theme, and none of them is reachable by a check on their own value.
+    check(
+      "selects are styled rather than left to the browser",
+      /input,\s*select\s*\{[^}]*background:\s*var\(--bg\)/.test(style),
+      true
+    );
+
+    // A phone lays the section nav out as a row above the content instead of a
+    // column beside it, and the two rules that do it are in the same media
+    // query as the rest of the narrow-screen layout.
+    const small = style.slice(style.indexOf("@media (max-width: 640px)"));
+    check(
+      "a narrow screen lays the section list out as a row",
+      /\.app-nav\s*\{[^}]*flex-direction:\s*row/.test(small),
+      true
+    );
+    // And the page does not scroll sideways to do it: a table keeps its natural
+    // width and its card scrolls instead.
+    check(
+      "and a table scrolls inside its card rather than widening the page",
+      /\.card:has\(> table\)\s*\{[^}]*overflow-x:\s*auto/.test(small) &&
+        /\.card > table\s*\{[^}]*min-width/.test(small),
+      true
+    );
+  }
+
   // The resource units.
   //
   // A reading is shown in cores and GiB while the API reports Kubernetes
