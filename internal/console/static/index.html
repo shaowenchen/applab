@@ -1253,8 +1253,11 @@
          is asked for and then watched, and a card on the page would be a box
          that is empty almost always and that nobody asked to open.
 
-         Opened from an instance row, which names the pod — every reading here is
-         about that pod and not about the newest one.
+         Opened from an instance row, and the pod is a control rather than a
+         label: a row names the pod it opened on, but the question being asked —
+         which replica is the one misbehaving — is answered by looking at the
+         others, and closing and reopening to do that loses the history already
+         drawn. The picker carries the pods of the table the row came from.
 
          CPU and memory only, because only those two exist: the Kubernetes
          metrics API carries usage.cpu and usage.memory and nothing else. The API
@@ -1262,24 +1265,20 @@
          sample every few seconds, drawn as a line, which is the shape of a
          reading that moves.
 
-         The scale switch is the one control that changes what the picture says.
-         "Of the limit" answers "is this about to hit its ceiling", which is the
-         question a limit exists to make answerable; "auto" follows the data,
-         which is what shows the shape of a workload that is nowhere near its
-         limit and would otherwise be a flat line at the bottom. Neither is right
-         for both, so the reader picks. -->
+         Scaled against the pod's limit, always. There was a switch here that
+         could follow the data instead, and it is gone: the limit is the
+         question a limit exists to make answerable, it is what makes two pods
+         comparable, and a chart whose axis the reader has to remember the state
+         of is one more thing to hold in mind for a picture that is one glance
+         long. -->
     <div id="metrics-modal" class="log-modal hidden" role="dialog" aria-modal="true" aria-labelledby="metrics-title">
       <div class="log-modal-scrim" id="metrics-scrim"></div>
       <div class="log-modal-panel">
         <div class="log-modal-head">
           <h2 id="metrics-title" data-i18n="Metrics">Metrics</h2>
-          <span class="mono muted" id="metrics-pod"></span>
           <label class="field">
-            <span data-i18n="Scale">Scale</span>
-            <select id="metrics-scale">
-              <option value="limit" data-i18n="of the limit">of the limit</option>
-              <option value="auto" data-i18n="auto">auto</option>
-            </select>
+            <span data-i18n="Pod">Pod</span>
+            <select id="metrics-pod-select"></select>
           </label>
           <button id="metrics-close" data-i18n="Close">Close</button>
         </div>
@@ -1313,6 +1312,17 @@
         <div class="log-modal-head">
           <h2 id="log-modal-title">Log</h2>
           <span class="mono muted" id="build-logs-label"></span>
+          <!-- The pod the log or the events belong to, as a control rather than
+               a label. A row names the pod it opened on, and the reason to open
+               a second one is usually that the first is fine — moving between
+               them should not mean closing and finding the row again.
+
+               Hidden for a build's log, which belongs to no pod, and shown for
+               the app's and the platform's, which do. -->
+          <label class="field" id="log-modal-pod-wrap">
+            <span data-i18n="Pod">Pod</span>
+            <select id="log-modal-pod"></select>
+          </label>
           <label class="muted" style="font-size:13px" id="log-modal-previous-wrap">
             <input type="checkbox" id="log-modal-previous"> <span data-i18n="previous instance">previous instance</span>
           </label>
@@ -1568,11 +1578,9 @@ const ZH = {
   "Resource usage is not available: this cluster reports no metrics.": "无法获取资源用量：该集群未上报指标。",
   "Could not read resource usage: {error}": "无法读取资源用量：{error}",
   "Metrics": "指标",
-  "Scale": "比例",
-  "of the limit": "按上限",
-  "auto": "自动",
   "peak {peak}": "峰值 {peak}",
   "limit {limit}": "上限 {limit}",
+  "Pod": "Pod",
   "Could not read metrics: {error}": "无法读取指标：{error}",
   "This pod is no longer reporting. It may have been replaced by a newer one.": "该实例已不再上报数据，可能已被新实例替换。",
   "Name": "名称",
@@ -2996,6 +3004,7 @@ function buildRows(builds) {
 //              endpoint each row's dialogs read — see podUsagePath and
 //              podEventsPath
 //   onLog      called with a pod name to open that pod's log
+//   pods       passed to each row so its dialogs can offer the other replicas
 //
 // The usage note distinguishes two things that used to be one message: a cluster
 // that reports no metrics (a fact about the installation, and the remedy is
@@ -3033,7 +3042,7 @@ function renderInstances({ body, empty, note, pods, usage, failure, scope, onLog
   }
 
   for (const pod of pods) {
-    body.appendChild(instanceRow(pod, scope, onLog));
+    body.appendChild(instanceRow(pod, scope, onLog, pods));
   }
 }
 
@@ -3064,7 +3073,7 @@ function podStatus(pod) {
 // cell's title: it is the most useful single thing about a pod that will not run,
 // and a column for it squeezed every other cell to make room for a string that is
 // usually short and sometimes a paragraph.
-function instanceRow(pod, scope, onLog) {
+function instanceRow(pod, scope, onLog, pods) {
   const tr = document.createElement("tr");
 
   const name = document.createElement("td");
@@ -3105,7 +3114,7 @@ function instanceRow(pod, scope, onLog) {
 
   const logs = document.createElement("button");
   logs.textContent = t("Log");
-  logs.onclick = () => openPodLog(pod.name, scope);
+  logs.onclick = () => openPodLog(pod.name, scope, pods);
   actions.appendChild(logs);
 
   // And the readings, on the row it is about. A reading is per pod — which copy
@@ -3117,7 +3126,7 @@ function instanceRow(pod, scope, onLog) {
   // because the two tables read different endpoints — see podUsagePath.
   const metrics = document.createElement("button");
   metrics.textContent = t("Metrics");
-  metrics.onclick = () => openPodMetrics(pod.name, scope);
+  metrics.onclick = () => openPodMetrics(pod.name, scope, pods);
   actions.appendChild(metrics);
 
   // Events, likewise. This used to be conditional, because an app's events route
@@ -3126,7 +3135,7 @@ function instanceRow(pod, scope, onLog) {
   // that, and the scope picks between the two.
   const events = document.createElement("button");
   events.textContent = t("Events");
-  events.onclick = () => showPodEvents(pod.name, scope);
+  events.onclick = () => showPodEvents(pod.name, scope, pods);
   actions.appendChild(events);
 
   tr.appendChild(actions);
@@ -4158,10 +4167,13 @@ async function loadPods() {
 // app-key console reaching the platform route would be refused — so one opener
 // with the scope held in hand is the same division with one fewer place to
 // forget it.
-function openPodLog(podName, scope) {
+//
+// `pods` is the table's own list, for the picker: the dialog can move to another
+// replica without being closed and reopened.
+function openPodLog(podName, scope, pods) {
   const panel = scope === "platform" ? "platform" : "app";
   state.logPod = podName;
-  openLogDialog(panel);
+  openLogDialog(panel, pods);
   startLogs(panel);
 }
 
@@ -4201,7 +4213,7 @@ const METRICS_FALLBACK_LIMIT = { cpu: "2", memory: "2Gi" };
 // dialog is that pod's. Sampling rather than streaming, because the metrics API
 // is a poll: there is no watch on it, so a "live" chart is a timer and a series
 // kept here.
-async function openPodMetrics(podName, scope) {
+async function openPodMetrics(podName, scope, pods) {
   // Whatever was sampling stops here, before the pod is set: stopMetrics clears
   // the name and the samples, and running it after would wipe the ones just
   // established. It is the previous dialog's timer this is after.
@@ -4215,7 +4227,7 @@ async function openPodMetrics(podName, scope) {
   state.metricsSamples = { cpu: [], memory: [] };
   state.metricsLimit = null;
 
-  $("metrics-pod").textContent = podName;
+  fillPodPicker($("metrics-pod-select"), podName, pods);
   $("metrics-note").textContent = "";
   show($("metrics-note"), false);
   show($("metrics-modal"), true);
@@ -4266,6 +4278,38 @@ function stopMetrics() {
   state.metricsScope = "app";
   state.metricsSamples = { cpu: [], memory: [] };
   state.metricsLimit = null;
+}
+
+// fillPodPicker fills a dialog's pod control with the table's pods.
+//
+// Shared by the three dialogs that are about a pod, because they are opened from
+// the same rows and the same list answers all three: a reader who switched pod
+// in the log expects the same names in the metrics dialog, and two
+// implementations would be two chances for that to drift apart.
+//
+// The list comes from the row rather than a fresh read. The row holds the table
+// that was on screen when it was clicked, which is what the reader is looking
+// at; a new read could return a different set, and offering a pod the table
+// beneath does not show is its own confusion.
+//
+// The pod the dialog was opened on is always an option, even if that list no
+// longer carries it — a replacement during a rollout is the ordinary case, and a
+// picker that cannot show what is on screen is showing nothing.
+function fillPodPicker(select, podName, pods) {
+  select.replaceChildren();
+
+  const names = (pods || [])
+    .map((pod) => (typeof pod === "string" ? pod : pod && pod.name))
+    .filter(Boolean);
+  if (podName && !names.includes(podName)) names.unshift(podName);
+
+  for (const name of names) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+  select.value = podName || "";
 }
 
 // samplePodMetrics reads one pod's usage and appends its reading.
@@ -4362,6 +4406,13 @@ function quantityToNumber(quantity) {
 }
 
 // renderMetrics draws both charts from the samples in hand.
+//
+// Scaled against the pod's limit, with no switch. The limit is what makes the
+// line's height mean "how much of the allowance is in use" and what makes two
+// pods comparable; a chart that followed the data instead would show the shape
+// of a workload nowhere near its ceiling, which is a question the value already
+// answers — and it would be the one control on the page whose effect a reader
+// has to remember.
 function renderMetrics() {
   const limit = state.metricsLimit || METRICS_FALLBACK_LIMIT;
 
@@ -4370,17 +4421,12 @@ function renderMetrics() {
     ["memory", "metrics-memory-plot", "metrics-memory-value", "metrics-memory-range", "GiB", formatGiB, limit.memory],
   ]) {
     const samples = state.metricsSamples[key] || [];
-    const ceil = quantityToNumber(limitQuantity);
     drawChart({
       plot: $(plotID),
       valueEl: $(valueID),
       rangeEl: $(rangeID),
       samples,
-      // "auto" is the only way to ask for the data-driven scale; anything else,
-      // including the empty string a select reports before it has settled, means
-      // the limit. The limit is the more informative of the two, so it is the
-      // one an unread value falls back to.
-      ceiling: $("metrics-scale").value === "auto" ? null : ceil,
+      ceiling: quantityToNumber(limitQuantity),
       unit,
       format,
       limitLabel: limitQuantity,
@@ -4497,9 +4543,9 @@ const EVENTS_INTERVAL_MS = 5000;
 //
 // `scope` is whose pod it is — "app" or "platform" — and it picks the endpoint,
 // because there are two and they are not interchangeable. See podEventsPath.
-async function showPodEvents(podName, scope) {
+async function showPodEvents(podName, scope, pods) {
   state.logPod = podName;
-  openLogDialog("events");
+  openLogDialog("events", pods);
 
   const el = $("events-output");
   el.textContent = t("(loading)");
@@ -4994,7 +5040,7 @@ const LOG_PANELS = {
 //
 // The <pre> elements are siblings in one dialog and exactly one is shown, so
 // what a reader writes into is what is on screen.
-function openLogDialog(name) {
+function openLogDialog(name, pods) {
   const panel = LOG_PANELS[name];
   if (!panel) return;
 
@@ -5027,6 +5073,17 @@ function openLogDialog(name) {
   } else {
     $("build-logs-label").textContent = "";
   }
+
+  // The pod picker, for the panels that are about one pod. A build's log is
+  // about a Job, so it gets none — and neither does a viewer whose caller did
+  // not pass a list, which is every path that is not an instance row.
+  //
+  // Shown rather than hidden when the list is empty, as long as there is a pod:
+  // a select holding one option still says which pod this is, and that is the
+  // label this dialog used to carry as text.
+  const hasPods = name === "app" || name === "platform" || name === "events";
+  show($("log-modal-pod-wrap"), hasPods && !!state.logPod);
+  if (hasPods && state.logPod) fillPodPicker($("log-modal-pod"), state.logPod, pods);
 
   show($("log-modal"), true);
   $("log-modal-close").focus();
@@ -5350,7 +5407,32 @@ $("app-branch-use").onclick = switchBranch;
 $("app-stop").onclick = stop;
 $("metrics-close").onclick = closePodMetrics;
 $("metrics-scrim").onclick = closePodMetrics;
-$("metrics-scale").onchange = renderMetrics;
+$("metrics-pod-select").onchange = () => {
+  // Reopening rather than re-pointing: the samples are one pod's history, and
+  // the dialog has to start a new one for the pod it is moving to. Closing and
+  // reopening would do the same thing and lose the picker's own options, which
+  // are what the reader is choosing from.
+  const scope = state.metricsScope;
+  const pods = [...$("metrics-pod-select").options].map((o) => o.value);
+  openPodMetrics($("metrics-pod-select").value, scope, pods);
+};
+$("log-modal-pod").onchange = () => {
+  // The pod the log or the events are about. Both panels share this control, so
+  // what it does depends on which one is showing — and a log restarts its stream
+  // while the events panel restarts its timer. Reopening through the same
+  // functions the rows use is what keeps the two in step with a click from the
+  // table.
+  const pod = $("log-modal-pod").value;
+  if (!pod) return;
+  const scope = state.logPanel === "platform" ? "platform" : "app";
+  const pods = [...$("log-modal-pod").options].map((o) => o.value);
+
+  // The dialog is already up, so the opener's own show() is a no-op. What it
+  // does that matters is stop the previous stream or timer and start the new
+  // one against the pod just chosen.
+  if (state.logPanel === "events") showPodEvents(pod, scope, pods);
+  else openPodLog(pod, scope, pods);
+};
 $("app-delete").onclick = remove;
 
 // Reloading as the selector is typed would fire a request per keystroke; on

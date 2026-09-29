@@ -1979,6 +1979,13 @@ async function render(apps) {
     const read = (id) => elements.get(id).textContent;
 
     // Signed out: no key, no app, so the commands have placeholders in both.
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = ""; state.scope = ""; state.app = "";', ctx);
+    await docs();
+    // Signed out is the case the document exists for, and someone who has not
+    // signed in has no app either — so the role cards are exactly what they
+    // need. Only an app key is a reader who already has their app.
+    check("a signed-out reader is shown the role cards", elements.get("doc-admin").classList.contains("hidden"), false);
+
     vm.runInContext('state.url = "https://applab.example.com"; state.key = ""; state.scope = "admin"; state.app = "";', ctx);
     await docs();
     check("the document names the deployment", read("docs-push-cmd").includes("APPLAB_URL=https://applab.example.com"), true);
@@ -2063,6 +2070,7 @@ async function render(apps) {
     check("and leaves the placeholder", read("docs-push-cmd").includes("APPLAB_KEY=<your key>"), true);
     check("while the sign-in card comes back", elements.get("signin").classList.contains("hidden"), false);
   }
+
 
   // The document is the one view reachable without a key, and it is a view like
   // any other: it has a table of contents, every entry in it points at a section
@@ -2714,7 +2722,10 @@ async function render(apps) {
     await vm.runInContext("openPodMetrics", ctx)("applab-shop-abc");
 
     // It names the pod, and reads that app's endpoint.
-    check("the dialog names the pod it was opened on", elements.get("metrics-pod").textContent, "applab-shop-abc");
+    // The pod is a control now rather than a label, so what it names is its
+    // value — and the options are the table's pods, which is what lets the
+    // dialog move to another replica without being closed.
+    check("the dialog names the pod it was opened on", elements.get("metrics-pod-select").value, "applab-shop-abc");
     check("and it is shown", elements.get("metrics-modal").classList.contains("hidden"), false);
     check(
       "reading the app's usage",
@@ -2789,6 +2800,28 @@ async function render(apps) {
     // The history goes with it: one pod's samples under another's name would be
     // a line that is wrong for as long as the next reading takes.
     check("and forgets the samples", vm.runInContext("state.metricsSamples.cpu.length", ctx), 0);
+
+    // The pod is a control: the dialog moves to another replica without being
+    // closed. The list is the table's, so the names offered are the ones the
+    // reader was looking at.
+    {
+      const pods = [{ name: "applab-shop-abc" }, { name: "applab-shop-def" }];
+      const select = elements.get("metrics-pod-select");
+      await vm.runInContext("openPodMetrics", ctx)("applab-shop-abc", "app", pods);
+      // The stub has no real <select>, so the options are whatever was appended.
+      check("the picker offers the table's pods", select.children.length, 2);
+      check("starting on the one that was clicked", select.value, "applab-shop-abc");
+
+      // And the pod it was opened on is always there, even when the list has
+      // moved on — a replacement during a rollout is the ordinary case.
+      await vm.runInContext("openPodMetrics", ctx)("applab-shop-gone", "app", pods);
+      check(
+        "and carries the opened pod even when the list no longer has it",
+        select.children.length,
+        3
+      );
+      check("selected rather than lost", select.value, "applab-shop-gone");
+    }
   }
 
   // What the chart does with the awkward answers.
