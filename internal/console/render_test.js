@@ -1967,6 +1967,158 @@ async function render(apps) {
     check("while the box goes back to what the app is set to", elements.get("app-auto-deploy").checked, true);
   }
 
+  // The bounds each container runs under: four boxes and one button.
+  //
+  // They were a card of their own, removed because it put the two settings a
+  // container cannot start without behind a card a reader had to scroll to and
+  // know about. They belong on the Instances card, which is what they are about
+  // — and the dialog behind each row shows what they resolve to beside what the
+  // pod is using.
+  //
+  // Two things have to hold. The boxes show the app's *own* settings rather than
+  // the bound its running container resolved to, because a form showing the
+  // resolved value would turn the deployment's default into an explicit setting
+  // the first time anyone pressed Set. And all four are sent together, because
+  // an empty string clears a field and an absent one leaves it alone — a form of
+  // four boxes cannot say "change only this one".
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    let patched = null;
+    ctx.fetch = async (url, options) => {
+      const target = String(url);
+      ctx.requests.push(target);
+      if (options && options.method === "PATCH") {
+        patched = JSON.parse(options.body);
+        return {
+          ok: true, status: 200, statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ data: { id: "shop" } }),
+        };
+      }
+      return {
+        ok: true, status: 200, statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({
+          data: {
+            id: "shop", port: 80, replicas: 1,
+            resources: { cpu_request: "100m", cpu_limit: "2", memory_request: "128Mi", memory_limit: "2Gi" },
+          },
+        }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = "k"; state.app = "shop";', ctx);
+
+    await vm.runInContext("loadAppState", ctx)();
+    check("the CPU request box shows the app's own setting", elements.get("app-cpu-request").value, "100m");
+    check("and the memory limit box", elements.get("app-memory-limit").value, "2Gi");
+
+    // A bound the app never set is an empty box, not the deployment's default:
+    // filling it in would make the next Set pin the app to that number.
+    vm.runInContext('state.app = "plain";', ctx);
+    let plainPatched = null;
+    ctx.fetch = async (url, options) => {
+      const target = String(url);
+      ctx.requests.push(target);
+      if (options && options.method === "PATCH") {
+        plainPatched = JSON.parse(options.body);
+        return {
+          ok: true, status: 200, statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ data: { id: "plain" } }),
+        };
+      }
+      return {
+        ok: true, status: 200, statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { id: "plain", port: 80, replicas: 1, resources: {} } }),
+      };
+    };
+    await vm.runInContext("loadAppState", ctx)();
+    // All four, not one: a loader that filled a single box with a default is
+    // exactly the bug this guards against, and checking one field let that
+    // through when it was written.
+    check(
+      "an app with no bounds set has four empty boxes",
+      ["app-cpu-request", "app-cpu-limit", "app-memory-request", "app-memory-limit"]
+        .map((id) => elements.get(id).value)
+        .join("|"),
+      "|||"
+    );
+
+    // Setting them sends all four, and the empty ones go as empty strings —
+    // which is what clears a field. Omitting them would leave them alone.
+    vm.runInContext('state.app = "shop";', ctx);
+    elements.get("app-cpu-request").value = "250m";
+    elements.get("app-cpu-limit").value = "1";
+    elements.get("app-memory-request").value = "";
+    elements.get("app-memory-limit").value = "";
+    await vm.runInContext("setResources", ctx)();
+
+    check("setting the bounds patches the app", plainPatched !== null, true);
+    check("with all four fields, not only the ones that changed", Object.keys(plainPatched.resources).sort().join(","),
+      "cpu_limit,cpu_request,memory_limit,memory_request");
+    check("and an emptied box goes as an empty string, which clears it", plainPatched.resources.memory_request, "");
+    check("while a filled one carries what was typed", plainPatched.resources.cpu_request, "250m");
+    check("and the other filled one too", plainPatched.resources.cpu_limit, "1");
+  }
+
+  // A quantity the API would refuse is caught here, naming the box.
+  //
+  // The point is the message rather than the refusal — the server refuses it
+  // either way. "abc" is a typo, and the reader should be told which field is
+  // wrong rather than shown a 400 about the request body.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    ctx.requests = [];
+    ctx.fetch = async (url, options) => {
+      ctx.requests.push(String(url));
+      if (options && options.method === "PATCH") throw new Error("must not be sent");
+      return {
+        ok: true, status: 200, statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: { id: "shop", port: 80, replicas: 1, resources: {} } }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.url = "https://applab.example.com"; state.key = "k"; state.app = "shop";', ctx);
+
+    elements.get("app-cpu-request").value = "abc";
+    await vm.runInContext("setResources", ctx)();
+    check(
+      "a bound that is not a quantity is refused, naming the field",
+      elements.get("error").textContent.includes("CPU request") &&
+        elements.get("error").textContent.includes("abc"),
+      true
+    );
+
+    // A limit under its request is refused before the round trip too: the
+    // cluster would reject it at deploy time, which reaches the reader as a
+    // failed rollout rather than as a field to fix.
+    elements.get("app-cpu-request").value = "2";
+    elements.get("app-cpu-limit").value = "1";
+    await vm.runInContext("setResources", ctx)();
+    check(
+      "a limit below its request is refused",
+      elements.get("error").textContent.includes("below its request"),
+      true
+    );
+
+    // And a well-formed pair goes through, so the checks above are not refusing
+    // everything.
+    elements.get("app-cpu-request").value = "500m";
+    elements.get("app-cpu-limit").value = "2";
+    await vm.runInContext("setResources", ctx)();
+    check(
+      "a well-formed pair is accepted",
+      ctx.requests.some((u) => u.includes("/api/v1/apps/shop")),
+      true
+    );
+  }
+
   // The log dialog is opened by a button, and it is the only thing that starts a
   // stream.
   //

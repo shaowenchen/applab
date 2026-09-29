@@ -13,6 +13,7 @@ import (
 
 	"github.com/shaowenchen/applab/internal/api"
 	"github.com/shaowenchen/applab/internal/auth"
+	"github.com/shaowenchen/applab/internal/client"
 	"github.com/shaowenchen/applab/internal/config"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/objectstore"
@@ -845,6 +846,61 @@ func TestTheClipAddressIsReported(t *testing.T) {
 	decodeData(t, rec, &read)
 	if got := read["git_url"]; got != "http://apps.example.com/git/shop@dev.git" {
 		t.Errorf("on branch dev, git_url = %v; the branch belongs in the path", got)
+	}
+}
+
+// TestTheBoundsAreReportedUnderTheNamesClientsRead covers the shape of the
+// resources half of an app response.
+//
+// It went out as "CPURequest" and "MemoryRequest" — the Go field names of the
+// type the store persists, which carries no JSON tags because they would change
+// what is written to the bucket. Marshalling it straight into the response
+// therefore emitted a shape no client reads: the console's four bounds boxes
+// filled empty, the CLI's `resources` line printed a dash for every field, and
+// the Go client decoded zeroes. The request side has always been snake_case, so
+// the response was the one that disagreed with it.
+//
+// Asserted through the client the CLI uses rather than on a decoded map, because
+// that is what was actually broken: a map check with the right keys would have
+// passed while the thing that reads the API saw nothing.
+func TestTheBoundsAreReportedUnderTheNamesClientsRead(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+
+	doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop"})
+	rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{
+		"resources": map[string]any{
+			"cpu_request":    "100m",
+			"cpu_limit":      "2",
+			"memory_request": "128Mi",
+			"memory_limit":   "2Gi",
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
+	var wrapper struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &wrapper); err != nil {
+		t.Fatalf("unmarshal the envelope: %v", err)
+	}
+	var app client.App
+	if err := json.Unmarshal(wrapper.Data, &app); err != nil {
+		t.Fatalf("unmarshal the app: %v", err)
+	}
+
+	got := app.Resources
+	if got.CPURequest != "100m" || got.CPULimit != "2" || got.MemoryRequest != "128Mi" || got.MemoryLimit != "2Gi" {
+		t.Errorf("the client read %+v; the response does not use the names it decodes", got)
+	}
+
+	// And the raw spelling, so a future tag change that happens to keep the
+	// client working by other means still fails here.
+	if strings.Contains(string(wrapper.Data), "CPURequest") {
+		t.Errorf("the response carries Go field names: %s", wrapper.Data)
 	}
 }
 

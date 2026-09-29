@@ -133,7 +133,17 @@ type appResponse struct {
 	// It is here rather than on a route of its own because it is app state, like
 	// port and replicas, and a listing that carries it costs nothing — it is
 	// already in the record.
-	Resources model.Resources `json:"resources"`
+	//
+	// Rendered through appResources rather than by marshalling model.Resources
+	// directly. That type is also what the store writes to the bucket, so it
+	// carries no JSON tags — adding them would change the stored shape and drop
+	// the bounds from every app already saved. Without them the fields went out as
+	// "CPURequest", "MemoryRequest" and so on, which no client reads: the console
+	// filled empty boxes, the CLI printed the same, and only a caller who had
+	// guessed the Go spelling saw anything. The request side has always been
+	// snake_case — that is what the PATCH above accepts — so the response was the
+	// odd one out.
+	Resources appResources `json:"resources"`
 
 	// Status is the one-word summary shown on the app's own page and by
 	// `applab status`: the running state, or "building" while a build is in
@@ -212,7 +222,7 @@ func (s *Server) toAppResponse(a *model.App, r *http.Request, runtime appRuntime
 		Domain:      a.Domain,
 		Branch:      a.ActiveBranch(),
 		AutoDeploy:  a.AutoDeploys(),
-		Resources:   a.Resources,
+		Resources:   appResourcesFrom(a.Resources),
 		Status:      string(runtime.Status),
 		RunStatus:   string(runtime.RunStatus),
 		BuildStatus: string(runtime.BuildStatus),
@@ -651,6 +661,34 @@ type updateAppRequest struct {
 	// rather than strings — an absent field leaves the setting alone, and an
 	// empty one says "back to the default".
 	Resources *resourcesRequest `json:"resources"`
+}
+
+// appResources is the resources half of an app response.
+//
+// A separate type from model.Resources, which is what the store persists, and
+// separate from resourcesRequest, which is what a PATCH sends. The three carry
+// the same four values, and they are three types because they are three
+// formats: the store's is Go field names, the request's is snake_case, and
+// without this the response's was Go field names too — which is the bug this
+// exists to prevent, because snake_case is what every client of the API reads.
+//
+// The same shape as resourcesRequest, deliberately: a caller that reads these
+// four fields and writes them back sends requests that match what it read.
+type appResources struct {
+	CPURequest    string `json:"cpu_request"`
+	MemoryRequest string `json:"memory_request"`
+	CPULimit      string `json:"cpu_limit"`
+	MemoryLimit   string `json:"memory_limit"`
+}
+
+// appResourcesFrom renders an app's stored bounds for a response.
+func appResourcesFrom(r model.Resources) appResources {
+	return appResources{
+		CPURequest:    r.CPURequest,
+		MemoryRequest: r.MemoryRequest,
+		CPULimit:      r.CPULimit,
+		MemoryLimit:   r.MemoryLimit,
+	}
 }
 
 // resourcesRequest is the resources half of a PATCH.

@@ -1092,15 +1092,20 @@
       </div>
     </div>
 
-    <!-- The bounds the app runs under are not editable here any more.
+    <!-- The bounds the app runs under.
 
-         They were four inputs in a card of their own, which put the two
-         settings a container cannot start without behind a card a reader had to
-         scroll to and know about. They are set through the API and the CLI —
-         `applab update <app> --cpu-limit 1`, PATCH /api/v1/apps/{app} — and the
-         metrics dialog shows what they currently resolve to, beside what the pod
-         is actually using. A bound with no reading next to it was a number
-         nobody could judge; this way the number and its context are together. -->
+         They were four inputs in a card of their own, which was removed because
+         it put the two settings a container cannot start without behind a card a
+         reader had to scroll to and know about. They belong here instead: a
+         bound is about the instances, which is what this card is about, and the
+         dialog behind each row shows what it resolves to beside what the pod is
+         using. A bound with no reading next to it is a number nobody can judge.
+
+         Submitted together rather than one at a time, which is how the API takes
+         them and what the CLI does: an empty box clears that field back to the
+         deployment's default. An absent field would mean the opposite — leave it
+         alone — so a form of four boxes cannot express "change one", and should
+         not try. -->
     <div class="card" id="card-instances">
       <div class="card-head">
         <h2 data-i18n="Instances">Instances</h2>
@@ -1139,6 +1144,37 @@
           <button id="app-branch-use" data-i18n="Switch">Switch</button>
         </label>
       </div>
+
+      <!-- What each container may use, as the app's own settings rather than the
+           bound a running pod resolved to. Empty means the deployment's default,
+           which is why these start empty on an app that has never been told
+           otherwise — a field showing the resolved value would turn a default
+           into an explicit setting the first time anyone pressed Set. -->
+      <div class="card-head">
+        <label class="field">
+          <span data-i18n="CPU request">CPU request</span>
+          <input id="app-cpu-request" placeholder="100m" size="6" style="width:84px"
+                 autocomplete="off" spellcheck="false" data-i18n-placeholder="100m">
+        </label>
+        <label class="field">
+          <span data-i18n="CPU limit">CPU limit</span>
+          <input id="app-cpu-limit" placeholder="2" size="6" style="width:84px"
+                 autocomplete="off" spellcheck="false" data-i18n-placeholder="2">
+        </label>
+        <label class="field">
+          <span data-i18n="Memory request">Memory request</span>
+          <input id="app-memory-request" placeholder="128Mi" size="8" style="width:96px"
+                 autocomplete="off" spellcheck="false" data-i18n-placeholder="128Mi">
+        </label>
+        <label class="field">
+          <span data-i18n="Memory limit">Memory limit</span>
+          <input id="app-memory-limit" placeholder="2Gi" size="8" style="width:96px"
+                 autocomplete="off" spellcheck="false" data-i18n-placeholder="2Gi">
+        </label>
+        <button id="app-resources-set" data-i18n="Set">Set</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:0 0 12px"
+         data-i18n="Kubernetes quantities: 100m is a tenth of a core, 128Mi is 128 mebibytes. An empty box uses the deployment's default.">Kubernetes quantities: 100m is a tenth of a core, 128Mi is 128 mebibytes. An empty box uses the deployment's default.</p>
 
       <!-- Instances, with what each one is using on its own row.
            The usage columns are here rather than on the Resources card because
@@ -1643,6 +1679,24 @@ const ZH = {
   "Resource usage is not available: this cluster reports no metrics.": "无法获取资源用量：该集群未上报指标。",
   "Could not read resource usage: {error}": "无法读取资源用量：{error}",
   "Metrics": "指标",
+  // The unit examples in the bounds boxes. Written as values rather than as
+  // prose, because they are the literal text of what to type — the same
+  // reasoning as "API key" above, which is also its own translation.
+  "100m": "100m",
+  "2": "2",
+  "128Mi": "128Mi",
+  "2Gi": "2Gi",
+  "CPU request": "CPU 预留",
+  "CPU limit": "CPU 上限",
+  "Memory request": "内存预留",
+  "Memory limit": "内存上限",
+  "Kubernetes quantities: 100m is a tenth of a core, 128Mi is 128 mebibytes. An empty box uses the deployment's default.":
+    "Kubernetes 用量写法：100m 是 0.1 核，128Mi 是 128 MiB。留空表示使用部署默认值。",
+  "{label} {value} is not a Kubernetes quantity; use a number with an optional unit, such as 500m for CPU or 256Mi for memory":
+    "{label} {value} 不是合法的 Kubernetes 用量；请写数字加可选单位，例如 CPU 用 500m、内存用 256Mi。",
+  "{label} limit is below its request: {limit} < {request}":
+    "{label} 上限小于预留值：{limit} < {request}",
+  "Could not set resources: {error}": "无法设置资源用量：{error}",
   "peak {peak}": "峰值 {peak}",
   "limit {limit}": "上限 {limit}",
   "Pod": "Pod",
@@ -2848,7 +2902,7 @@ function renderDocs() {
     "./applab.sh replicas 3                            # how many copies to run",
     "./applab.sh env set LOG_LEVEL=debug               # environment",
     "./applab.sh secret set DATABASE_URL=postgres://…  # secrets, write-only",
-    "./applab.sh resources set memory_limit=512Mi      # cpu/memory bounds",
+    "./applab.sh resources set cpu_limit=1 memory_limit=512Mi   # bounds; = clears",
     "./applab.sh config                                # what is set now",
   ].join("\n"));
 
@@ -3971,6 +4025,17 @@ async function loadAppState() {
   if (app && typeof app.port === "number") {
     $("app-port").value = String(app.port);
   }
+  // And the bounds, which are the app's own settings rather than what its
+  // running container resolved to — the app response reports the settings, which
+  // is what a form has to show. A field showing the resolved value would turn
+  // the deployment's default into an explicit setting the first time anyone
+  // pressed Set, pinning the app to whatever the default happened to be.
+  if (app && app.resources && typeof app.resources === "object") {
+    $("app-cpu-request").value = app.resources.cpu_request || "";
+    $("app-cpu-limit").value = app.resources.cpu_limit || "";
+    $("app-memory-request").value = app.resources.memory_request || "";
+    $("app-memory-limit").value = app.resources.memory_limit || "";
+  }
   // The API reports the resolved setting, so this is the app's real behaviour
   // rather than a stored preference that might be unset.
   if (app && typeof app.auto_deploy === "boolean") {
@@ -4385,6 +4450,70 @@ function showMetricsNote(message) {
 // resources do differ in what the number *means*, but that is the formatter's
 // business — formatCores appends "cores" and formatGiB divides by 2^30 — not
 // this function's, which only ever produces the base-unit count.
+// parseResources checks the four bounds before they are sent.
+//
+// The server validates them too, and that check is the one that counts — this is
+// here so the answer names the box that is wrong instead of arriving as a 400
+// about the request body. The message is the API's own wording, kept close to it
+// because a reader who sees one form here and the other from the CLI should not
+// have to work out that they are the same complaint.
+//
+// The grammar is the loose half of Kubernetes': a number, optionally with a
+// suffix. That is deliberately more permissive than the API — the API knows
+// which suffixes are legal for which resource, and refuses "256Mi" of CPU, which
+// would be a nonsense bound — and deliberately stricter than nothing, because
+// "abc" is a typo rather than a quantity and can be caught before a round trip.
+// What is not checked here is whether the quantity makes sense for the resource,
+// which is the server's business and its answer is the better one.
+//
+// An empty value is allowed and means "the deployment's default", which is what
+// the field starting empty says.
+function parseResources(values) {
+  const fields = [
+    ["cpu_request", "CPU request"],
+    ["memory_request", "Memory request"],
+    ["cpu_limit", "CPU limit"],
+    ["memory_limit", "Memory limit"],
+  ];
+
+  // A number with an optional unit: the suffixes Kubernetes accepts, which are
+  // the decimal ones — n, u, m, k, M, G, T, P, E — and the binary ones, Ki
+  // through Ei. Spelled out rather than approximated with a character class,
+  // because "K" is not one of them: the binary kilo is "Ki" and the decimal one
+  // is lowercase "k", and a class covering both cases would accept "Ki" and "K"
+  // while rejecting neither.
+  const quantity = /^\d+(\.\d+)?(n|u|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$/;
+
+  for (const [field, label] of fields) {
+    const value = values[field];
+    if (value === "") continue;
+    if (!quantity.test(value)) {
+      return {
+        problem: tf("{label} {value} is not a Kubernetes quantity; use a number with an optional unit, such as 500m for CPU or 256Mi for memory", { label: t(label), value: value }),
+      };
+    }
+  }
+
+  // A limit below its request is refused by Kubernetes at deploy time, which
+  // reaches the reader as a failed rollout rather than as a refused field. The
+  // comparison is only made when both sides are set and both are bare numbers —
+  // comparing "1" against "512Mi" would need the unit table this file has no
+  // business holding, and a wrong guess here would refuse a valid pair.
+  for (const [req, lim, label] of [["cpu_request", "cpu_limit", "CPU"], ["memory_request", "memory_limit", "Memory"]]) {
+    const r = values[req];
+    const l = values[lim];
+    if (!r || !l) continue;
+    if (!/^\d+(\.\d+)?$/.test(r) || !/^\d+(\.\d+)?$/.test(l)) continue;
+    if (Number(l) < Number(r)) {
+      return {
+        problem: tf("{label} limit is below its request: {limit} < {request}", { label: t(label), limit: l, request: r }),
+      };
+    }
+  }
+
+  return { problem: "" };
+}
+
 function quantityToNumber(quantity) {
   const raw = String(quantity || "").trim();
   if (!raw) return null;
@@ -4811,8 +4940,48 @@ async function setPort() {
   await loadAppState();
 }
 
-// setAutoDeploy turns building and deploying on a push on or off.
+// setResources changes what each container may use.
 //
+// All four are sent together, which is how the API takes them: an empty string
+// clears a field back to the deployment's default, and an absent one would leave
+// it alone. A form of four boxes cannot say "change only this one" — an empty box
+// is indistinguishable from a deliberaaately cleared one — so it sends what it
+// shows, and what it shows is what the app has.
+//
+// A bound the reader typed is checked here as well as on the server. The server
+// refuses a bad quantity either way; checking here means the answer names the
+// field that is wrong rather than arriving as a 400 about the request body.
+async function setResources() {
+  const box = (id) => $(id).value.trim();
+  const wanted = {
+    cpu_request: box("app-cpu-request"),
+    cpu_limit: box("app-cpu-limit"),
+    memory_request: box("app-memory-request"),
+    memory_limit: box("app-memory-limit"),
+  };
+
+  const parsed = parseResources(wanted);
+  if (parsed.problem) {
+    setError(parsed.problem);
+    return;
+  }
+
+  setError("");
+  try {
+    await api("/api/v1/apps/" + state.app, {
+      method: "PATCH",
+      body: JSON.stringify({ resources: wanted }),
+    });
+  } catch (err) {
+    setError(tf("Could not set resources: {error}", { error: err.message }));
+    return;
+  }
+  // The app state, because the bounds are part of it; the pods, because a
+  // changed bound replaces them.
+  await Promise.all([loadAppState(), loadPods()]);
+}
+
+// setAutoDeploy turns building and deploying on a push on or off.
 // Sent on the change event rather than behind a Set button: a checkbox that
 // needs confirming is a control people leave half-applied, and the value it
 // carries is unambiguous where a text field's is not.
@@ -5401,6 +5570,13 @@ $("app-port-set").onclick = setPort;
 $("app-port").onkeydown = (e) => { if (e.key === "Enter") setPort(); };
 $("app-replicas-set").onclick = setReplicas;
 $("app-replicas").onkeydown = (e) => { if (e.key === "Enter") setReplicas(); };
+// One button for the four bounds, and Enter in any of them runs it: they are one
+// setting submitted together, so a per-field button would be four controls for
+// one action and would leave the other three boxes unsent.
+$("app-resources-set").onclick = setResources;
+for (const id of ["app-cpu-request", "app-cpu-limit", "app-memory-request", "app-memory-limit"]) {
+  $(id).onkeydown = (e) => { if (e.key === "Enter") setResources(); };
+}
 $("app-build").onclick = buildLatest;
 $("app-builds-build").onclick = buildLatest;
 $("app-deploy").onclick = deployLatest;
