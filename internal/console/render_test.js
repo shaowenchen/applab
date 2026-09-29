@@ -193,7 +193,7 @@ const sandbox = {
     // the JS-produced strings, which are what the rendering checks assert on,
     // go through t() directly and are covered.
     //
-    // A class selector is answered, because the document's role cards are
+    // A class selector is answered, because the document's admin card is
     // hidden that way: `renderDocs` shows or hides every `.admin-only` by class,
     // and a stub that returned nothing would leave the two cards in whatever
     // state the markup gave them — so a console that showed the admin's card to
@@ -2049,9 +2049,9 @@ async function render(apps) {
     vm.runInContext('state.url = "https://applab.example.com"; state.key = ""; state.scope = ""; state.app = "";', ctx);
     await docs();
     // Signed out is the case the document exists for, and someone who has not
-    // signed in has no app either — so the role cards are exactly what they
-    // need. Only an app key is a reader who already has their app.
-    check("a signed-out reader is shown the role cards", elements.get("doc-admin").classList.contains("hidden"), false);
+    // signed in has no app either — so the admin card is exactly what they need.
+    // Only an app key is a reader who already has their app.
+    check("a signed-out reader is shown the admin card", elements.get("doc-admin").classList.contains("hidden"), false);
 
     vm.runInContext('state.url = "https://applab.example.com"; state.key = ""; state.scope = "admin"; state.app = "";', ctx);
     await docs();
@@ -2069,17 +2069,22 @@ async function render(apps) {
     await docs();
     check("signed in, the commands carry the key", read("docs-push-cmd").includes("APPLAB_KEY=sk-secret"), true);
     check("and an admin's examples name no single app", read("docs-push-cmd").includes("applab push <app>"), true);
-    // Both role cards are for this reader, and they have to actually be on
-    // screen: the checks below read their commands out of the elements, which
-    // is true whether or not the card is hidden. Paired with the app-key case
-    // further down, so neither "always show" nor "always hide" passes.
-    check("an admin is shown the make-an-app card", elements.get("doc-admin").classList.contains("hidden"), false);
-    check("and the handover card", elements.get("doc-developer").classList.contains("hidden"), false);
+    // The admin's card has to actually be on screen, not merely filled in: the
+    // checks below read its commands out of the element, which is true whether
+    // or not the card is hidden. Paired with the app-key case further down, so
+    // neither "always show" nor "always hide" passes.
+    check("an admin is shown the admin card", elements.get("doc-admin").classList.contains("hidden"), false);
 
-    // How to get applab.sh in the first place, which is the admin's section and
+    // How to get applab.sh in the first place, which is the admin's card and
     // the thing this page was missing: it opened with `cd <app> && ./applab.sh
     // status`, assuming a script the reader may have no way to obtain — it lives
     // in the repository, and someone who has not cloned has no repository.
+    //
+    // The card carries all three of the admin's commands, which is the admin's
+    // whole view: make an app, see what exists, remove one. The last two go
+    // through the CLI rather than the fetched script, because the script refuses
+    // `delete` until it knows which app it is about — and a bootstrap copy,
+    // which is the copy this card tells the reader to fetch, never does.
     {
       const admin = read("docs-admin-cmd");
       check("the admin section says where to fetch applab.sh from", admin.includes("https://applab.example.com/bootstrap/applab.sh"), true);
@@ -2087,22 +2092,38 @@ async function render(apps) {
       check("and carries the reader's key", admin.includes("APPLAB_KEY=sk-secret"), true);
       check("and makes an app with create", admin.includes("./applab.sh create <app>"), true);
       check("and not a use of an app they did not name", admin.includes("./applab.sh use"), false);
-      // What the admin actually does next is hand the app over, so the second
-      // role card says what to give the developer — and reading the key back is
-      // what makes the handover possible, since it is not shown anywhere else.
-      const developer = read("docs-developer-cmd");
-      check("the developer section hands over the clone address", developer.includes("git clone https://applab.example.com/git/<app>.git"), true);
-      check("and says how to read the app's key back for handover", developer.includes("applab keys <app>"), true);
+      check("and lists what exists", admin.includes("applab list"), true);
+      check("and removes one", admin.includes("applab delete <app>"), true);
     }
 
-    // Signed in with an app key: one app, so the examples name it, and the two
-    // role cards step aside — this reader has their app already.
+    // Signed in with an app key: one app, so the examples name it, and the
+    // admin's card steps aside — this reader cannot create or delete anything.
     vm.runInContext('state.key = "app-secret"; state.scope = "app"; state.app = "shop";', ctx);
     await docs();
     check("an app key's examples name its own app", read("docs-push-cmd").includes("applab push shop"), true);
-    check("and its clone command does too", read("docs-clone-cmd").includes("/git/shop.git"), true);
-    check("an app key is not shown the admin's make-an-app card", elements.get("doc-admin").classList.contains("hidden"), true);
-    check("nor the handover card", elements.get("doc-developer").classList.contains("hidden"), true);
+    check("an app key is not shown the admin's card", elements.get("doc-admin").classList.contains("hidden"), true);
+    // App development is for every reader, admin or not: it is the clone, and
+    // whoever holds an app needs it.
+    check("but is shown the clone", elements.get("doc-developer").classList.contains("hidden"), false);
+
+    // The clone command: with no address loaded, the reader gets the
+    // deployment's own convention written out, branch included — the default
+    // branch is the one URL that omits it, which is the part nobody guesses.
+    check("the clone section names the app's repository", read("docs-clone-cmd").includes("git clone https://applab.example.com/git/shop.git"), true);
+    check("and shows the branch form", read("docs-clone-cmd").includes("/git/shop@dev.git"), true);
+
+    // With the address the API reported, that is what goes in — so the branch is
+    // the app's real one rather than one the page assumed. This is the same
+    // field the app page's own clone command uses.
+    vm.runInContext('state.gitURL = "https://applab.example.com/git/shop@release.git";', ctx);
+    await docs();
+    check(
+      "an address the API reported is used as it stands",
+      read("docs-clone-cmd"),
+      "git clone https://applab.example.com/git/shop@release.git"
+    );
+    vm.runInContext('state.gitURL = "";', ctx);
+    await docs();
 
     // Configure: the running app's environment, secrets, bounds and count.
     {

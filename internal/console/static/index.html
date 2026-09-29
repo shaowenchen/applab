@@ -948,27 +948,26 @@
     <div class="app-layout">
       <nav class="app-nav" id="docs-nav" aria-label="Sections"></nav>
       <div class="app-body">
-        <div class="card" id="doc-start">
-          <h2 data-i18n="Where you are">Where you are</h2>
-          <dl id="docs-address"></dl>
-        </div>
+        <!-- The admin's card, shown to an admin only.
 
-        <!-- The two role cards, shown to an admin only.
-
-             An admin is the one who makes an app and hands it over, so the two
-             roles are both their business. A developer holding an app key sees
-             neither: they have their app, and the sections below are what they
-             came for. -->
+             Three commands, which is the whole of the admin's view: make an app,
+             see what exists, remove one. An admin is the only reader who can do
+             all three — an app key reaches one app and cannot delete anything —
+             so a developer is not shown a section they could only half act on. -->
         <div class="card admin-only" id="doc-admin">
-          <h2 data-i18n="Make an app, hand it over">Make an app, hand it over</h2>
-          <p id="docs-admin-lead" data-i18n="You have an admin key. Get the script, create the app, give the developer its address and key.">You have an admin key. Get the script, create the app, give the developer its address and key.</p>
+          <h2 data-i18n="Create an app">Create an app</h2>
+          <p id="docs-admin-lead" data-i18n="Fetch the script, create the app, then hand the developer its address and key.">Fetch the script, create the app, then hand the developer its address and key.</p>
           <pre id="docs-admin-cmd"></pre>
         </div>
 
-        <div class="card admin-only" id="doc-developer">
-          <h2 data-i18n="What the developer needs">What the developer needs</h2>
-          <p id="docs-developer-lead" data-i18n="Hand them these two things. The key reaches that app and nothing else.">Hand them these two things. The key reaches that app and nothing else.</p>
-          <pre id="docs-developer-cmd"></pre>
+        <!-- Developing one. The clone is how source gets in over git, and the
+             section every reader needs — whoever holds an app, admin or not.
+             This is what "Work over git instead" became: not an alternative to
+             pushing but the ordinary way to work on an app. -->
+        <div class="card" id="doc-developer">
+          <h2 data-i18n="App development">App development</h2>
+          <pre id="docs-clone-cmd"></pre>
+          <p data-i18n="The key is the password, so any username works.">The key is the password, so any username works.</p>
         </div>
 
         <div class="card" id="doc-push">
@@ -977,35 +976,10 @@
           <p data-i18n="Needs a Dockerfile. Build output and dependencies are not uploaded.">Needs a Dockerfile. Build output and dependencies are not uploaded.</p>
         </div>
 
-        <div class="card" id="doc-clone">
-          <h2 data-i18n="Work over git instead">Work over git instead</h2>
-          <pre id="docs-clone-cmd"></pre>
-          <p data-i18n="The key is the password, so any username works.">The key is the password, so any username works.</p>
-        </div>
-
         <div class="card" id="doc-configure">
           <h2 data-i18n="Configure the app">Configure the app</h2>
           <pre id="docs-configure-cmd"></pre>
           <p data-i18n="Each takes effect at once — the pods are replaced, not patched. A secret's value cannot be read back.">Each takes effect at once — the pods are replaced, not patched. A secret's value cannot be read back.</p>
-        </div>
-
-        <div class="card" id="doc-keys">
-          <h2 data-i18n="Two kinds of key">Two kinds of key</h2>
-          <table>
-            <thead><tr><th data-i18n="Kind of key">Kind of key</th><th data-i18n="Reaches">Reaches</th><th data-i18n="Can also">Can also</th></tr></thead>
-            <tbody>
-              <tr>
-                <td data-i18n="Admin key">Admin key</td>
-                <td data-i18n="Every app, and the platform itself">Every app, and the platform itself</td>
-                <td data-i18n="Create and delete apps, rotate any key, read the platform's own log and events">Create and delete apps, rotate any key, read the platform's own log and events</td>
-              </tr>
-              <tr>
-                <td data-i18n="App key">App key</td>
-                <td data-i18n="One app only">One app only</td>
-                <td data-i18n="Push, build, deploy, roll back, read logs, change its configuration — but not delete it and not see any other app">Push, build, deploy, roll back, read logs, change its configuration — but not delete it and not see any other app</td>
-              </tr>
-            </tbody>
-          </table>
         </div>
 
         <div class="card" id="doc-watch">
@@ -1017,12 +991,6 @@
           <h2 data-i18n="When it is not working">When it is not working</h2>
           <pre id="docs-diagnose-cmd"></pre>
           <p data-i18n="Reports pods, events and the relevant log in one answer, most likely cause first.">Reports pods, events and the relevant log in one answer, most likely cause first.</p>
-        </div>
-
-        <div class="card" id="doc-api">
-          <h2 data-i18n="For an agent, or a script">For an agent, or a script</h2>
-          <pre id="docs-api-cmd"></pre>
-          <p data-i18n="Everything the console does is one of those routes.">Everything the console does is one of those routes.</p>
         </div>
       </div>
     </div>
@@ -1506,6 +1474,15 @@ const state = {
   metricsSamples: { cpu: [], memory: [] },
   // What the pod may use, from the same response. Null until the first read.
   metricsLimit: null,
+  // The open app's clone address, reported by the API when its key is read —
+  // git_url, with no credential in it, so it can go in a command on screen.
+  //
+  // Held rather than reassembled for the document's clone command, for the
+  // reason that command is worth having at all: the host, the /git mount and
+  // the branch convention are three things to get right, and the copy the page
+  // builds itself is the copy that gets them wrong. Empty for an admin, who has
+  // no app in hand; the document falls back to the deployment's convention then.
+  gitURL: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1825,46 +1802,23 @@ const ZH = {
 
   // -- Docs -----------------------------------------------------------------
   "Using AppLab": "使用 AppLab",
-  "Where you are": "你所在的位置",
-  "Deployment": "部署地址",
-  "Your key": "你的 key",
-  "the one you signed in with": "你登录时使用的那把",
-  "none yet — enter one above to fill the commands in": "还没有——在上方登录后，命令会自动填上你的 key",
-  "API": "API 地址",
-  "Make an app, hand it over": "创建应用并交给开发者",
-  "You have an admin key. Get the script, create the app, give the developer its address and key.":
-    "你手里是管理员 key。取脚本、建应用，然后把地址和 key 交给开发者。",
-  "What the developer needs": "开发者需要什么",
-  "Hand them these two things. The key reaches that app and nothing else.":
-    "把这两样给他。这把 key 只能访问这一个应用。",
-  "Ship a change": "发布一次变更",
-  "Needs a Dockerfile. Build output and dependencies are not uploaded.":
-    "需要有 Dockerfile。构建产物和依赖目录不会上传。",
-  "Work over git instead": "改用 git 方式",
+  "Create an app": "创建应用",
+  "Fetch the script, create the app, then hand the developer its address and key.":
+    "取脚本、建应用，然后把地址和 key 交给开发者。",
+  "App development": "应用开发",
   "The key is the password, so any username works.":
     "key 作为密码，用户名随便填。",
+  "Ship a change": "发布变更",
+  "Needs a Dockerfile. Build output and dependencies are not uploaded.":
+    "需要有 Dockerfile。构建产物和依赖目录不会上传。",
   "Configure the app": "配置应用",
   "Each takes effect at once — the pods are replaced, not patched. A secret's value cannot be read back.":
     "改动立即生效——pod 会被替换，而不是原地打补丁。密钥的值读不回来。",
-  "Two kinds of key": "两种 key",
-  "Kind of key": "key 种类",
-  "Reaches": "能访问",
-  "Can also": "除此之外",
-  "Admin key": "管理员 key",
-  "Every app, and the platform itself": "所有应用，以及平台本身",
-  "Create and delete apps, rotate any key, read the platform's own log and events":
-    "创建和删除应用、轮换任意 key、查看平台自身的日志和事件",
-  "App key": "应用 key",
-  "One app only": "仅限一个应用",
-  "Push, build, deploy, roll back, read logs, change its configuration — but not delete it and not see any other app":
-    "上传、构建、部署、回滚、看日志、改配置——但不能删除该应用，也看不到其他应用",
-  "Watch it running": "观察运行状态",
+  "Watch it running": "查看运行状态",
   "When it is not working": "出问题时",
   "Reports pods, events and the relevant log in one answer, most likely cause first.":
     "一条命令同时给出 pod、事件和相关日志，最可能的原因排在前面。",
-  "For an agent, or a script": "给 agent 或脚本用",
-  "Everything the console does is one of those routes.":
-    "控制台做的每一件事都是这些路由之一。",
+
 };
 
 // lang is the current language. Set by setLang and read by t().
@@ -2744,6 +2698,7 @@ async function showOverview() {
 async function showApps() {
   stopLogs();
   state.app = "";
+  state.gitURL = "";
   // The create dialog is dismissed here rather than left open behind the view:
   // leaving the apps list and coming back is not a reason to still be asked for
   // an app id, and whatever was half-typed would be sitting there.
@@ -2759,25 +2714,20 @@ async function showApps() {
 
 // DOC_SECTIONS is the docs page's table of contents, in reading order.
 //
-// The first two are the roles, and they are shown to an admin only: an admin is
-// the one who makes an app and hands it over, so both are their business. A
-// developer holding an app key has their app already and does not need either —
-// everything below is the same for both readers, which is the point of putting
-// the roles first and keeping them out of the way.
+// The first is the admin's, and is shown to an admin only: making an app, seeing
+// what exists and removing one are not things a holder of an app key can do —
+// their key reaches one app and deletes nothing. Everything below it is the same
+// for both readers, which is why only that one is gated.
 //
 // Named by the card's own heading so the nav and the page cannot disagree about
 // what a section is called.
 const DOC_SECTIONS = [
-  { id: "doc-start", label: "Where you are" },
-  { id: "doc-admin", label: "Make an app, hand it over", admin: true },
-  { id: "doc-developer", label: "What the developer needs", admin: true },
+  { id: "doc-admin", label: "Create an app", admin: true },
+  { id: "doc-developer", label: "App development" },
   { id: "doc-push", label: "Ship a change" },
-  { id: "doc-clone", label: "Work over git instead" },
   { id: "doc-configure", label: "Configure the app" },
-  { id: "doc-keys", label: "Two kinds of key" },
   { id: "doc-watch", label: "Watch it running" },
   { id: "doc-diagnose", label: "When it is not working" },
-  { id: "doc-api", label: "For an agent, or a script" },
 ];
 
 // isAdminReader reports whether the reader sees the two role sections.
@@ -2820,7 +2770,7 @@ async function showDocs() {
 function renderDocs() {
   const nav = $("docs-nav");
   nav.replaceChildren();
-  // The role cards go with the reader's role, in the page and in the nav
+  // The admin's card goes with the reader's role, in the page and in the nav
   // together: a link to a section that is not there would scroll nowhere, and a
   // card with no link would be one nobody finds.
   const admin = isAdminReader();
@@ -2846,22 +2796,6 @@ function renderDocs() {
   // both get the placeholder.
   const appID = state.scope === "app" && state.app ? state.app : "<app>";
 
-  // Where you are. The address and what a key reaches, which is the two things
-  // someone needs before any of the commands below make sense.
-  const address = $("docs-address");
-  address.replaceChildren();
-  const row = (term, value, mono) => {
-    const dt = document.createElement("dt");
-    dt.textContent = term;
-    const dd = document.createElement("dd");
-    if (mono) dd.className = "mono";
-    dd.textContent = value;
-    address.append(dt, dd);
-  };
-  row(t("Deployment"), base, true);
-  row(t("Your key"), state.key ? t("the one you signed in with") : t("none yet — enter one above to fill the commands in"), false);
-  row(t("API"), base + "/api/v1", true);
-
   setText("docs-push-cmd", [
     "export APPLAB_URL=" + base,
     "export APPLAB_KEY=" + key,
@@ -2869,27 +2803,44 @@ function renderDocs() {
     "applab push " + appID,
   ].join("\n"));
 
-  setText("docs-clone-cmd", [
-    "git clone " + base + "/git/" + appID + ".git",
-    "",
-    "# a non-default branch is the same URL with @branch:",
-    "git clone " + base + "/git/" + appID + "@dev.git",
-  ].join("\n"));
+  // App development: the clone.
+  //
+  // For a reader holding one app the address is the one the API reported for
+  // that app — the same field the app page's own clone command uses — so the
+  // branch is right and nothing here reassembles what the server already knows.
+  // An admin has no app in hand and a signed-out reader has none either, so both
+  // get the deployment's own convention written out instead.
+  //
+  // The placeholder form names the branch because that is the part nobody
+  // guesses: the default branch is the one URL that omits it, and an app on any
+  // other is cloned from /git/<app>@<branch>.git.
+  if (state.gitURL) {
+    setText("docs-clone-cmd", ["git clone " + state.gitURL].join("\n"));
+  } else {
+    setText("docs-clone-cmd", [
+      "git clone " + base + "/git/" + appID + ".git",
+      "",
+      "# a non-default branch is the same URL with @branch:",
+      "git clone " + base + "/git/" + appID + "@dev.git",
+    ].join("\n"));
+  }
 
-  // The admin's path: get the tool, make an app. Shown to an admin only — see
-  // DOC_SECTIONS.
+  // The admin's three commands: make an app, see what exists, remove one. Shown
+  // to an admin only — see DOC_SECTIONS.
+  //
+  // The last two go through the `applab` CLI rather than the fetched script,
+  // which is not the inconsistency it looks like: the script refuses `delete`
+  // until it knows which app it is about, so a bootstrap copy — the copy this
+  // section tells the reader to fetch — cannot run it at all. The CLI takes the
+  // app as an argument and has no such state.
   setText("docs-admin-cmd", [
     "curl -fsS " + base + "/bootstrap/applab.sh -o applab.sh && chmod +x applab.sh",
+    "export APPLAB_URL=" + base,
     "export APPLAB_KEY=" + key,
     "",
-    "./applab.sh create <app>",
-  ].join("\n"));
-
-  // What to hand the developer. Named after the app this admin last looked at
-  // when there is one, because that is the app they are handing over.
-  setText("docs-developer-cmd", [
-    "git clone " + base + "/git/" + appID + ".git   # the source",
-    "applab keys " + appID + "                      # the key, printed for them",
+    "./applab.sh create <app>   # make one; prints its key and clone address",
+    "applab list                # everything that exists here",
+    "applab delete <app>        # remove one, its source and its history",
   ].join("\n"));
 
   // Changing the running app without touching its source.
@@ -2911,10 +2862,6 @@ function renderDocs() {
 
   setText("docs-diagnose-cmd", [
     "applab diagnose " + appID,
-  ].join("\n"));
-
-  setText("docs-api-cmd", [
-    "curl -sS " + base + "/api/v1/describe",
   ].join("\n"));
 }
 
@@ -3575,6 +3522,10 @@ async function loadRepository() {
   try {
     const key = await api("/api/v1/apps/" + state.app + "/key");
     setCloneHint(key.git_url_with_key || "");
+    // Kept for the document's clone command, which is on another view and would
+    // otherwise have to fetch the key again — or rebuild the address, which is
+    // the mistake this field exists to avoid.
+    state.gitURL = key.git_url || "";
   } catch (err) {
     // The common failure is a deployment with no cluster, where keys are kept
     // and this endpoint answers 501. That is a fact about the deployment rather
@@ -5373,6 +5324,9 @@ function signOut() {
   clearCredentials();
   state.scope = "admin";
   state.app = "";
+  // The clone address goes with it: it carries no credential, but it names an
+  // app, and the next reader of the document may be someone else at this browser.
+  state.gitURL = "";
   // The header stays up — its theme and language controls are the whole of what
   // the sign-in screen offers — but everything it carries for a signed-in user
   // goes, along with every view.
