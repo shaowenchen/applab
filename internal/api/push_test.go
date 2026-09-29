@@ -412,9 +412,14 @@ func TestUploadingSourcePublishesIt(t *testing.T) {
 
 	// auto_deploy off so the create does not publish, then on: this test is about
 	// the upload, and a build from the create would be counted here.
+	//
+	// Drained between the two, because the create's own publish reads the switch
+	// when it runs rather than when it was asked — see drainCreatePublish.
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop", "auto_deploy": false}); rec.Code != http.StatusCreated {
 		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
 	}
+	drainCreatePublish(t, srv)
+
 	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"auto_deploy": true}); rec.Code != http.StatusOK {
 		t.Fatalf("turn auto-deploy on: %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -436,6 +441,11 @@ func TestUploadingSourceSaysWhenNotToPublish(t *testing.T) {
 	if rec := doRequest(t, h, http.MethodPost, "/api/v1/apps", map[string]any{"id": "shop", "auto_deploy": false}); rec.Code != http.StatusCreated {
 		t.Fatalf("create app: %d (%s)", rec.Code, rec.Body.String())
 	}
+	// The publish the create started has to finish before the switch is turned
+	// on, or it may run afterwards, find auto-deploy on and build the seeded
+	// commit — which this test would then count as a publish it did not ask for.
+	drainCreatePublish(t, srv)
+
 	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"auto_deploy": true}); rec.Code != http.StatusOK {
 		t.Fatalf("turn auto-deploy on: %d (%s)", rec.Code, rec.Body.String())
 	}

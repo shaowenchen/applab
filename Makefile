@@ -65,6 +65,19 @@ test:
 test-race:
 	CGO_ENABLED=1 go test ./... -count=1 -race
 
+# test-race-single is test-race with the scheduler constrained to one processor.
+#
+# Not a slower CI run for its own sake: every app creation hands a background job
+# to goRun, and that job reads the app when it runs rather than capturing
+# anything at the call site. A test that creates an app and then changes a
+# setting the job reads is racing it, and on a machine with cores to spare the
+# goroutine usually gets there first — so the test passes locally and fails on
+# CI. Under GOMAXPROCS=1 that interleaving is deterministic rather than likely,
+# which turns "flaky on the runner" into "fails here every time".
+.PHONY: test-race-single
+test-race-single:
+	GOMAXPROCS=1 $(MAKE) test-race
+
 .PHONY: coverage
 coverage:
 	go test ./... -coverprofile=coverage.out -count=1

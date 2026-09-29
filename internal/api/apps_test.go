@@ -69,6 +69,30 @@ func drainBackgroundWork(t *testing.T, srv *api.Server) {
 	})
 }
 
+// drainCreatePublish waits for the publish a create starts.
+//
+// Creating an app writes a repository, and a repository change publishes — so
+// every create hands a background job to goRun, and that job reads the app *when
+// it runs* rather than capturing anything from the request. A test that creates
+// an app and then changes a setting the job reads is racing it.
+//
+// The failure this prevents is subtle enough to be worth naming: a test creates
+// with auto_deploy off, turns it on, and uploads. If the create's job runs after
+// that PATCH it finds the switch on and builds the seeded commit, and the test
+// counts a build it did not start. Whether it runs before or after is a race, so
+// it passed for a long time and failed on CI — where the runner has fewer cores
+// than a developer's machine, so the goroutine is scheduled later. It is
+// deterministic under GOMAXPROCS=1.
+//
+// Waiting is enough rather than necessary: with the switch off the job reads the
+// app, finds nothing to do and returns, so this waits for one store read.
+func drainCreatePublish(t *testing.T, srv *api.Server) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv.WaitForBackgroundWork(ctx)
+}
+
 func doRequest(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 

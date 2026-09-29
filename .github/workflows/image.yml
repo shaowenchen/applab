@@ -81,6 +81,23 @@ jobs:
       - name: make test-race
         run: make test-race
 
+      # The same tests again with the scheduler constrained, because a whole
+      # class of bug is invisible without it.
+      #
+      # Every app creation hands a background job to goRun, and that job reads
+      # the app when it runs rather than capturing anything at the call site. A
+      # test that creates an app and then changes a setting the job reads is
+      # racing it — and on a machine with cores to spare the goroutine usually
+      # gets there first, so the test passes locally and fails here. That is what
+      # happened: TestUploadingSourceSaysWhenNotToPublish passed for months and
+      # failed on CI, and it reproduces every time under GOMAXPROCS=1.
+      #
+      # GOMAXPROCS=1 rather than fewer runners: it makes the interleaving
+      # deterministic instead of merely more likely, so the failure is the same
+      # one every time rather than a coin toss.
+      - name: make test-race, one processor
+        run: make test-race-single
+
       # Renders the chart and asserts what it has to contain. Skipped by the
       # script itself if helm were missing, which is why helm is installed above.
       - name: check the chart

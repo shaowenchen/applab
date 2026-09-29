@@ -387,9 +387,7 @@ func sortAppWithCommit(t *testing.T, srv *api.Server, h http.Handler, appID stri
 	// Draining is enough rather than necessary: with the switch off the job
 	// reads the app, decides there is nothing to do and returns, so this waits
 	// for one store read rather than for a build.
-	settleCtx, cancelSettle := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelSettle()
-	srv.WaitForBackgroundWork(settleCtx)
+	drainCreatePublish(t, srv)
 
 	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/"+appID, map[string]any{"auto_deploy": true}); rec.Code != http.StatusOK {
 		t.Fatalf("turn auto-deploy on: %d (%s)", rec.Code, rec.Body.String())
