@@ -811,8 +811,8 @@ func TestTheClipAddressIsReported(t *testing.T) {
 	//
 	// The default branch is the one URL that omits the branch, so an app's
 	// address stays stable as it gains branches.
-	if got := created["git_url"]; got != "http://example.com/git/shop.git" {
-		t.Errorf("git_url = %v, want the clone address on the deployment's own host with no branch", got)
+	if got := created["git_url"]; got != "http://apps.example.com/git/shop.git" {
+		t.Errorf("git_url = %v, want the clone address on the public host with no branch", got)
 	}
 
 	// And the create response carries the same address with the key already in
@@ -822,7 +822,7 @@ func TestTheClipAddressIsReported(t *testing.T) {
 	if key == "" {
 		t.Fatal("the create response has no app_key, so the check below cannot mean anything")
 	}
-	want := "http://x:" + key + "@example.com/git/shop.git"
+	want := "http://x:" + key + "@apps.example.com/git/shop.git"
 	if got := created["git_url_with_key"]; got != want {
 		t.Errorf("git_url_with_key = %v, want %v", got, want)
 	}
@@ -843,7 +843,7 @@ func TestTheClipAddressIsReported(t *testing.T) {
 	rec = doRequest(t, h, http.MethodGet, "/api/v1/apps/shop", nil)
 	var read map[string]any
 	decodeData(t, rec, &read)
-	if got := read["git_url"]; got != "http://example.com/git/shop@dev.git" {
+	if got := read["git_url"]; got != "http://apps.example.com/git/shop@dev.git" {
 		t.Errorf("on branch dev, git_url = %v; the branch belongs in the path", got)
 	}
 }
@@ -916,10 +916,10 @@ func TestTheKeyResponseCarriesAUsableCloneAddress(t *testing.T) {
 		t.Fatalf("key = %q, want the key the app was created with (%q)", key, createdKey)
 	}
 
-	if want := "http://x:" + key + "@example.com/git/shop.git"; got["git_url_with_key"] != want {
+	if want := "http://x:" + key + "@apps.example.com/git/shop.git"; got["git_url_with_key"] != want {
 		t.Errorf("git_url_with_key = %v, want %v", got["git_url_with_key"], want)
 	}
-	if got["git_url"] != "http://example.com/git/shop.git" {
+	if got["git_url"] != "http://apps.example.com/git/shop.git" {
 		t.Errorf("git_url = %v, want the same address without the credential", got["git_url"])
 	}
 }

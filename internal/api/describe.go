@@ -154,7 +154,10 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identity := identityFrom(r.Context())
-	base := s.baseURL(r)
+	// The public address, not the in-cluster one: this document exists for a
+	// caller outside the cluster, and every command in it is built from this
+	// string. See publicURL for why the two differ.
+	base := s.publicURL(r)
 
 	out := make([]appResponse, 0, len(apps))
 	live := s.liveStatus(r.Context())

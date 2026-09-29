@@ -200,11 +200,17 @@ func TestTheSeededAddressFollowsTheDeployment(t *testing.T) {
 			want:     "http://apps.example.com/applab",
 		},
 		{
-			name:     "the path prefix is part of it, since the console lives under it too",
+			// The prefix is where *apps* are routed and deliberately not part of
+			// this address. The API's own routes are mounted under the base path
+			// alone, so "/applab/apps/api/v1/config" is a 404 while
+			// "/applab/api/v1/config" is not — a script whose APPLAB_URL carried
+			// the prefix would ask for everything under a path this server does
+			// not serve.
+			name:     "the apps' path prefix is not part of the installation's own address",
 			basePath: "/applab",
 			prefix:   "/apps",
 			host:     "applab.ops-system.svc",
-			want:     "http://apps.example.com/applab/apps",
+			want:     "http://apps.example.com/applab",
 		},
 		{
 			name: "a request carrying TLS is https when nothing is configured",

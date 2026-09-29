@@ -76,9 +76,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 // place is what keeps those two from describing the same deployment differently.
 func (s *Server) configResponse(r *http.Request) configResponse {
 	return configResponse{
-		APIVersion:      APIVersion,
-		Version:         buildinfo.Version,
-		APIBaseURL:      s.baseURL(r),
+		APIVersion: APIVersion,
+		Version:    buildinfo.Version,
+		// The public address: this is what a client is told to build its own
+		// requests from, and a client is by definition outside the cluster. It
+		// used to be baseURL, which is the in-cluster Service — every client was
+		// pointed at a host that resolves only from inside. See publicURL.
+		APIBaseURL:      s.publicURL(r),
 		BaseDomain:      s.cfg.BaseDomain,
 		PathPrefix:      s.cfg.PathPrefix,
 		DomainTemplate:  s.domainTemplate(),

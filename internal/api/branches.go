@@ -102,7 +102,7 @@ func (s *Server) handleSwitchBranch(w http.ResponseWriter, r *http.Request) {
 	}
 	if !exists {
 		fail(w, r, NotFound("app %q has no branch %q; push to %s to create it",
-			app.ID, branch, gitURLWithPassword(s.cfg.BaseURL, app.ID, branch)))
+			app.ID, branch, gitURLWithPassword(s.publicURL(r), app.ID, branch)))
 		return
 	}
 

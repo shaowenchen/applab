@@ -51,7 +51,9 @@ func (s *Server) handleBootstrapFiles(w http.ResponseWriter, r *http.Request) {
 		"files": []map[string]string{
 			{
 				"name": "applab.sh",
-				"url":  s.baseURL(r) + "/bootstrap/applab.sh",
+				// A person fetches this, so it is the public address: the
+				// in-cluster one resolves only inside the cluster. See publicURL.
+				"url":  s.publicURL(r) + "/bootstrap/applab.sh",
 				"note": "The same script AppLab writes into every app's repository, with no app and no key in it. Fetch it, export an admin key, and run `./applab.sh create <app>`.",
 			},
 		},

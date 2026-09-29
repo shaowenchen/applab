@@ -244,8 +244,17 @@ func (s *Server) toAppResponse(a *model.App, r *http.Request, runtime appRuntime
 }
 
 // gitURLWithBranch builds an app's clone URL for a named branch.
+//
+// From the public address and not the base URL, which is the distinction this
+// got wrong: APPLAB_BASE_URL is where a *build pod* reaches the API
+// ("http://applab.ops-system.svc:80/applab") and the chart sets it to the
+// in-cluster Service deliberately. Every clone address the API handed out was
+// therefore a host that resolves only inside the cluster — unusable by the
+// person the address is for, who is by definition outside it.
+//
+// See publicURL for the other end of the same distinction.
 func (s *Server) gitURLWithBranch(r *http.Request, appID, branch string) string {
-	return gitCloneURL(s.baseURL(r), s.scheme(r), appID, branch)
+	return gitCloneURL(s.publicURL(r), s.scheme(r), appID, branch)
 }
 
 // gitCloneURL builds the address an app is cloned from.
@@ -993,11 +1002,27 @@ func (s *Server) scheme(r *http.Request) string {
 // publicURL is the address this deployment is reached at as a whole — the
 // console's address, with no app in it and no trailing slash.
 //
+// It is the public counterpart of baseURL, and the difference between them is
+// the whole reason both exist. baseURL is APPLAB_BASE_URL, which the chart sets
+// to the in-cluster Service — "http://applab.ops-system.svc:80/applab" — because
+// that is what a *build pod* clones from and a build pod cannot resolve whatever
+// DNS a person uses. Every address handed to a person has to come from here
+// instead, or it names a host that resolves only inside the cluster.
+//
 // It is what a client is handed as the base to build its own requests from, and
 // what the seeded applab.sh carries as its default APPLAB_URL. When the operator
 // has configured the public address, that is the answer; otherwise it is derived
 // from the request, which is right when AppLab is reached directly and an
 // assumption behind a proxy that rewrites nothing.
+//
+// The path prefix apps share is deliberately NOT part of it, though it used to
+// be. That prefix is where *apps* are routed — "/applab/apps/shop" — and it is
+// not where this API answers: the routes are mounted under the base path alone,
+// so "/applab/apps/api/v1/config" is a 404 and "/applab/api/v1/config" is not.
+// A caller building requests from an address with the prefix in it asks for
+// everything under a path this server does not serve. The confusion is
+// understandable — the console and the apps are one installation under one
+// ingress.host — but they are different paths on it.
 //
 // It falls back to the host this deployment would give an app, then to the bare
 // request host, so a deployment with no domain configured — one reachable only
@@ -1008,15 +1033,8 @@ func (s *Server) publicURL(r *http.Request) string {
 	}
 	scheme := s.scheme(r)
 
-	// With a base domain the installation's address is the domain and its base
-	// path, plus the path prefix when the apps share one host — the console and
-	// the API live under the prefix too, so it belongs in the address even though
-	// nothing here is an app.
 	basePath := strings.TrimSuffix(s.cfg.BasePath, "/")
 	if s.cfg.BaseDomain != "" {
-		if s.cfg.PathPrefix != "" {
-			return scheme + "://" + s.cfg.BaseDomain + basePath + s.cfg.PathPrefix
-		}
 		return scheme + "://" + s.cfg.BaseDomain + basePath
 	}
 	// No domain: there is no app address to derive anything from, so the request

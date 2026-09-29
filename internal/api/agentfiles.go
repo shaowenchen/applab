@@ -103,7 +103,10 @@ func (s *Server) handleAgentFiles(w http.ResponseWriter, r *http.Request) {
 	for _, name := range names {
 		files = append(files, map[string]string{
 			"name": name,
-			"url":  s.baseURL(r) + "/api/v1/apps/" + appID + "/agent/files/" + name,
+			// From the public address: this URL is fetched by whoever is holding
+			// the app, to refresh their copy of the script, and that is a person
+			// on the outside. See publicURL.
+			"url": s.publicURL(r) + "/api/v1/apps/" + appID + "/agent/files/" + name,
 		})
 	}
 	respond(w, http.StatusOK, map[string]any{"files": files})
