@@ -175,17 +175,11 @@ jobs:
           # infrastructure the script owns, or a knob someone would want. The
           # second is an input, and putting it here instead is how a launch form
           # quietly stops being able to configure the thing it launches.
-          #
-          # APPLAB_OBJECT_STORE_PREFIX is here for that second reason, with a
-          # sharper edge than the rest: it is what keeps the environment's two
-          # installations out of each other's objects in the one shared bucket, so
-          # a release that dropped it would come up healthy and then let each
-          # installation's apps appear in the other's console.
           internal = {'APPLAB_RUNTIME_DIR', 'APPLAB_NAMESPACE', 'APPLAB_PATH_PREFIX',
                       'APPLAB_IMAGE_REPOSITORY', 'APPLAB_CLUSTER_NAME',
                       'APPLAB_REGISTRY', 'APPLAB_GATEWAY_NODEPORT',
                       'APPLAB_PUBLIC_HOST', 'APPLAB_INSTALL_TIMEOUT_SECONDS',
-                      'APPLAB_VERSION', 'APPLAB_OBJECT_STORE_PREFIX',
+                      'APPLAB_VERSION',
                       # How the environment addresses itself: the path the whole
                       # installation is served under, which is also where the
                       # apps are nested, and the name of the Secret the script
@@ -203,43 +197,6 @@ jobs:
           unreachable = read - supplied - internal
           if unreachable:
               problems.append(f'environment.sh reads variables no input can set: {sorted(unreachable)}')
-
-          # The per-installation variables are outside the regex above by
-          # construction — it matches `[A-Z_]+`, so a trailing digit stops it —
-          # and that is the one hole in this check. APPLAB_DOMAIN_1 and
-          # APPLAB_API_KEY_2 are read by the action and passed from it, so they
-          # are covered by the input check; anything else numbered is not checked
-          # anywhere, and a typo in one of those is silent.
-          #
-          # Guarded by name rather than by widening the regex, because widening it
-          # would make the set above need a per-installation variable listed by
-          # hand for each one — which is how a check stops being read. This
-          # asserts the actual invariant instead: the only numbered variables are
-          # the hostnames and the keys, and each of those is forwarded from an
-          # input.
-          numbered = set(re.findall(r': "\$\{(APPLAB_[A-Z_]+_\d):=', script))
-          expected_numbered = {'APPLAB_DOMAIN_1', 'APPLAB_DOMAIN_2',
-                               'APPLAB_PUBLIC_HOST_1', 'APPLAB_PUBLIC_HOST_2',
-                               'APPLAB_API_KEY_2'}
-          unexpected = numbered - expected_numbered
-          if unexpected:
-              problems.append(f'numbered APPLAB_ variables that no input can set: {sorted(unexpected)}')
-
-          # And the action has to forward the ones that are its to forward.
-          # `passed` above holds input names, so it is spelled the way the script
-          # reads them before comparing.
-          #
-          # APPLAB_PUBLIC_HOST_1 and _2 are excluded, and it is not an oversight:
-          # they skip the tunnel and serve a hostname the caller already has, which
-          # is what CI does when it drives the gateway over the node port without
-          # a public tunnel. Whoever sets them runs the script themselves, so
-          # there is nothing for this action to forward them from — an input would
-          # be a form field for the one case that never fills it in.
-          must_be_forwarded = {'APPLAB_DOMAIN_1', 'APPLAB_DOMAIN_2', 'APPLAB_API_KEY_2'}
-          forwarded = {f'APPLAB_{name.upper()}' for name in passed}
-          not_forwarded = must_be_forwarded - forwarded
-          if not_forwarded:
-              problems.append(f'numbered variables the action never forwards: {sorted(not_forwarded)}')
 
           if problems:
               print('\n'.join(problems), file=sys.stderr)

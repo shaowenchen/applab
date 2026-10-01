@@ -12,16 +12,8 @@ branding:
 inputs:
   api_key:
     description: >-
-      API key for the first installation. Generated when empty, and printed in
-      the summary either way.
-    required: false
-    default: ''
-  api_key_2:
-    description: >-
-      API key for the second installation. Generated when empty, printed in the
-      summary either way, and deliberately never filled in from api_key: the two
-      installations are separate on purpose, and the environment checks that
-      neither key opens the other.
+      API key for this environment. Generated when empty, and printed in the
+      summary either way.
     required: false
     default: ''
   session_hours:
@@ -40,30 +32,25 @@ inputs:
       random trycloudflare.com hostname with no account behind it.
     required: false
     default: ''
-  domain_1:
+  domain:
     description: >-
-      The domain the first installation is served under, without a scheme. Not
-      tunnel configuration: a named Cloudflare tunnel keeps its hostname in its
-      ingress and cannot report it, and this is what applab needs — it becomes
+      The domain apps are served under, without a scheme. Not tunnel
+      configuration: a named Cloudflare tunnel keeps its hostname in its ingress
+      and cannot report it, and this is what applab needs — it becomes
       ingress.host, which is both where the apps are served and the host the
       console's own route matches. Point the ingress at the tunnel first;
       nothing here can create it.
     required: false
-    # Named by default, so a run serves domains you chose rather than hostnames
-    # minted for that one connection. That makes the named tunnel the expected
-    # path — a quick tunnel cannot be given these names, so a run with
+    # Named by default, so a run serves a domain you chose rather than a
+    # hostname minted for that one connection. That makes the named tunnel the
+    # expected path — a quick tunnel cannot be given this name, so a run with
     # cloudflare_token unset stops and says so rather than quietly publishing
-    # somewhere else. Set both empty to go back to a quick tunnel's own
-    # hostnames.
+    # somewhere else. Set it empty to go back to a quick tunnel's own hostname.
+    #
+    # The caller decides this one, and the caller's list has the two names this
+    # environment is set up for; the default here is only what a direct call
+    # with nothing passed gets.
     default: 'applab-1.chenshaowen.com'
-  domain_2:
-    description: >-
-      The domain the second installation is served under. Set with domain_1 or
-      not at all: the two installations are separate addresses by design, so
-      there is no arrangement in which one of them is named and the other is
-      left to whatever the tunnel happens to report.
-    required: false
-    default: 'applab-2.chenshaowen.com'
   registry_username:
     description: >-
       Username for the registry the built images are pushed to and pulled from.
@@ -101,10 +88,7 @@ runs:
         CLOUDFLARE_TOKEN: ${{ inputs.cloudflare_token }}
         REGISTRY_USERNAME: ${{ inputs.registry_username }}
         REGISTRY_PASSWORD: ${{ inputs.registry_password }}
-        DOMAIN_1: ${{ inputs.domain_1 }}
-        DOMAIN_2: ${{ inputs.domain_2 }}
-        API_KEY_1: ${{ inputs.api_key }}
-        API_KEY_2: ${{ inputs.api_key_2 }}
+        DOMAIN: ${{ inputs.domain }}
       run: |
         set -euo pipefail
         case "$APPLAB_TUNNEL" in
@@ -124,37 +108,17 @@ runs:
           echo "::error::registry_username and registry_password are required: the built images are pushed to a real registry"
           exit 1
         fi
-        # The two installations are separate on purpose, and this is the setting
-        # whose absence is silent: an admin key can delete every app its
-        # installation manages, so one key reaching both Secrets gives each
-        # installation's owner the other's data. The script refuses it too, and
-        # re-checks it from the outside once both are up — this just fails in
-        # seconds instead of after ten minutes of install.
-        if [ -n "$API_KEY_1" ] && [ "$API_KEY_1" = "$API_KEY_2" ]; then
-          echo "::error::api_key and api_key_2 are the same value; each installation has to have its own, or either key can destroy both"
-          exit 1
-        fi
         # A domain can only be named for a tunnel whose ingress was arranged in
         # advance, which only a named Cloudflare tunnel has. Checked here rather
         # than in the script so a run that cannot work fails in seconds instead
         # of after a three-minute wait for a hostname that was never coming.
-        #
-        # Both domains are one decision, because the two installations are two
-        # addresses by design: one named and one left to the tunnel would be an
-        # installation served under a name Cloudflare does not answer for. The
-        # check for that is repeated in the script, which is also reachable
-        # without this action — see resolve_hosts.
-        if [ -n "$DOMAIN_1" ] || [ -n "$DOMAIN_2" ]; then
-          if [ -z "$DOMAIN_1" ] || [ -z "$DOMAIN_2" ]; then
-            echo "::error::domain_1 and domain_2 must be set together; one named tunnel cannot serve the other installation's random hostname"
-            exit 1
-          fi
+        if [ -n "$DOMAIN" ]; then
           if [ "$APPLAB_TUNNEL" != "cloudflare" ]; then
-            echo "::error::domain_1/domain_2 are only for a named Cloudflare tunnel, not '$APPLAB_TUNNEL'"
+            echo "::error::domain is only for a named Cloudflare tunnel, not '$APPLAB_TUNNEL'"
             exit 1
           fi
           if [ -z "$CLOUDFLARE_TOKEN" ]; then
-            echo "::error::a domain needs cloudflare_token: a quick tunnel is assigned a random hostname by Cloudflare, so apps could not be served under the one given"
+            echo "::error::domain needs cloudflare_token: a quick tunnel is assigned a random hostname by Cloudflare, so apps could not be served under the one given"
             exit 1
           fi
         fi
@@ -215,43 +179,15 @@ runs:
           ngrok --version
         fi
 
-    # On masking, deliberately not done for the two API keys, and this is the one
-    # place it is worth saying why.
-    #
-    # `::add-mask::` would be the reflex here, and it is the wrong tool for these
-    # two values. The runner applies the secret masker to the step summary as well
-    # as to the log — FileCommandManager.cs reads the GITHUB_STEP_SUMMARY file line
-    # by line and runs each through SecretMasker.MaskSecrets before attaching it —
-    # so masking a key redacts it from the very summary the key exists to be
-    # delivered in. The run would end with two asterisks where the credential
-    # should be, and the environment would be unreachable in practice: the console
-    # asks for that key and nothing else ever shows it.
-    #
-    # What is left is not unmasked by accident. The other credentials this action
-    # handles — registry_password, cloudflare_token, ngrok_token — arrive from
-    # `secrets.*` in the calling workflow, and GitHub masks those automatically.
-    # The registry password is the only one of them the script ever uses in a
-    # command, and it goes to `docker login` on stdin rather than on the command
-    # line.
-    #
-    # The two keys are the deliverable and are printed on purpose. What keeps them
-    # out of the log by accident is not masking but how environment.sh builds
-    # commands: it reads each key into a variable and refers to the variable,
-    # because the ERR trap prints BASH_COMMAND — the *unexpanded* text of the
-    # command that failed — so a key that reached a command as a variable
-    # reference stays a reference in the failure message, while one built into the
-    # command by concatenation would be printed in full. See verify_instance.
     - name: Start the environment
       shell: bash
       env:
         # APPLAB_VERSION is deliberately not set here, so the script falls
         # through to its own default: the published `latest`.
         APPLAB_API_KEY: ${{ inputs.api_key }}
-        APPLAB_API_KEY_2: ${{ inputs.api_key_2 }}
         APPLAB_SESSION_HOURS: ${{ inputs.session_hours }}
         APPLAB_TUNNEL: ${{ inputs.tunnel }}
-        APPLAB_DOMAIN_1: ${{ inputs.domain_1 }}
-        APPLAB_DOMAIN_2: ${{ inputs.domain_2 }}
+        APPLAB_DOMAIN: ${{ inputs.domain }}
         CLOUDFLARE_TOKEN: ${{ inputs.cloudflare_token }}
         NGROK_TOKEN: ${{ inputs.ngrok_token }}
         # The registry, forwarded under the names the script reads. These three

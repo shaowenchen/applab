@@ -35,22 +35,22 @@ on:
         options:
           - 'cloudflare'
           - 'ngrok'
-      domain_1:
-        description: 'Domain (installation 1)'
-        type: string
-        # The same default the action declares. Named rather than empty so a run
-        # serves a domain that was chosen, not a hostname minted for that one
-        # connection — which means the named tunnel is the expected path, and a
-        # run without CLOUDFLARE_TOKEN stops rather than quietly publishing a
-        # quick tunnel's address instead.
+      domain:
+        description: 'Domain'
+        type: choice
+        # A choice rather than free text, because each name is tied to one
+        # credential: the secret read below is not the same for both, and a
+        # typed hostname would have no secret behind it. Two domains, two keys,
+        # one environment per run — run it again to stand the other one up.
+        #
+        # Named rather than empty so a run serves a domain that was chosen, not
+        # a hostname minted for that one connection — which means the named
+        # tunnel is the expected path, and a run without CLOUDFLARE_TOKEN stops
+        # rather than quietly publishing a quick tunnel's address instead.
         default: 'applab-1.chenshaowen.com'
-      domain_2:
-        description: 'Domain (installation 2)'
-        type: string
-        # A second domain rather than one, because the run now starts two
-        # installations and they are separate addresses by design. Both are set
-        # or neither: see the action's validation.
-        default: 'applab-2.chenshaowen.com'
+        options:
+          - 'applab-1.chenshaowen.com'
+          - 'applab-2.chenshaowen.com'
 
 permissions:
   contents: read
@@ -92,20 +92,21 @@ jobs:
           # run can see, and these are credentials.
           cloudflare_token: ${{ secrets.CLOUDFLARE_TOKEN }}
           ngrok_token: ${{ secrets.NGROK_TOKEN }}
-          # One admin key per installation, from two separate secrets. They are
-          # never the same value: a key can delete every app its installation
-          # manages, so one key for both would be one credential over both
-          # environments — which the script also refuses, and re-checks from the
-          # outside once both are up. Leave either unset and the run generates
-          # one and prints it in the summary.
-          api_key: ${{ secrets.APPLAB_API_KEY }}
-          api_key_2: ${{ secrets.APPLAB_API_KEY_2 }}
           # The registry the built apps are pushed to and pulled from. The same
           # token authenticates both, which is why there is one and not two.
           registry_username: ${{ secrets.DOCKERHUB_USERNAME }}
           registry_password: ${{ secrets.DOCKERHUB_TOKEN }}
-          # Inputs, not secrets: a domain is not sensitive, and it is the thing a
-          # person has to look up before running a named tunnel.
-          domain_1: ${{ inputs.domain_1 }}
-          domain_2: ${{ inputs.domain_2 }}
+          # The domain is an input — it is not sensitive, and it is the thing a
+          # person picks — while the key is read from a secret, because the two
+          # are the same decision: each domain has one credential behind it, and
+          # picking the domain is picking which secret the run gets.
+          #
+          # A picked domain whose secret is unset leaves api_key empty, which the
+          # action reads as "generate one and print it" — the same as any other
+          # run without a key configured.
+          domain: ${{ inputs.domain }}
+          api_key: >-
+            ${{ inputs.domain == 'applab-2.chenshaowen.com'
+                && secrets.APPLAB_API_KEY_2
+                || secrets.APPLAB_API_KEY }}
 

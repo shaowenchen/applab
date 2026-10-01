@@ -9,46 +9,34 @@
 #
 # What comes up:
 #
-#   kind cluster
+#   kind cluster (ns ops-system)
 #     AppLab         the published image, installed with this repository's chart
-#                    — twice, as two independent installations in two namespaces
 #     istio-ingress  the gateway everything is published through (NodePort 30080)
 #     metrics-server the resource metrics API, which the console reads usage from
 #                    (ns kube-system; optional, and the console says so without it)
 #
 #   on the runner
-#     minio          the object store both installations keep everything in
+#     minio          the object store AppLab keeps everything in
 #     cloudflared    a tunnel, so the environment is reachable from anywhere
 #
-# Two installations rather than one, because the things worth testing here are
-# the things that only happen when there are two: two releases in different
-# namespaces, two consoles on one gateway, two key sets, and one bucket shared
-# between them. Everything they must not share is separated by an ordinary
-# Kubernetes boundary — a namespace, a release name, a Secret — except the object
-# store, which is not per installation and cannot be. APPLAB_OBJECT_STORE_PREFIX
-# is what keeps those two out of each other's keys, and it is the one setting in
-# here whose absence is silent: without it both installations come up perfectly
-# and then quietly overwrite one another.
+# Built images do not come up here: they are pushed to a real registry, which is
+# the point — the push and the pull are both exercised, credential and all. See
+# APPLAB_REGISTRY.
 #
-# The domain and the key differ per installation; the address shape is shared,
-# because it is the rig's shape and not an installation's. One gateway serves
-# both halves of each installation, and that is the whole of the routing: each
-# console and API at its base path (a VirtualService the chart installs), each
-# app under "/apps/<app>" (a VirtualService AppLab writes at deploy time).
-# Nothing sits in front of the gateway to tell any of them apart, because the
-# hosts and the paths already do: Istio sorts a virtual host's catch-all route to
-# the end and keeps the rest in order, "/apps/<app>/" is not a prefix any
-# console's own paths share, and the two consoles are on two different hosts.
-# See debugger/README.md.
+# One gateway serves both halves, and that is the whole of the routing: the
+# console and the API at "/" (a VirtualService the chart installs), each app
+# under "/apps/<app>/" (a VirtualService AppLab writes at deploy time). Nothing
+# sits in front of the gateway to tell the two apart, because the paths already
+# do: Istio sorts a virtual host's catch-all route to the end and keeps the rest
+# in order, and "/apps/<app>/" is not a prefix any of the console's own paths
+# share. See debugger/README.md.
 #
 # The order below is load-bearing and the reason it is a script rather than a
-# list of workflow steps. Each hostname has to be settled first, because it
+# list of workflow steps. The hostname has to be settled first, because it
 # becomes ingress.host and that cannot be set after AppLab is installed — but
 # settling it is not the same as starting a tunnel, and the tunnel only has to be
 # started early when it is the one thing that knows the name. Otherwise it comes
-# up last, once there is something behind it to publish. The cluster and the
-# gateway are the other half of the order: they are shared, so they are built
-# once, before either installation exists.
+# up last, once there is something behind it to publish.
 
 # -E so the ERR trap below also fires for a failure inside a function. Without
 # it the trap only sees failures at the top level, which is not where they
@@ -70,37 +58,11 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 # every start rather than being served from a node's cache.
 : "${APPLAB_VERSION:=latest}"
 
-# Two installations, one cluster, and one key each. Every per-installation
-# variable below is numbered for exactly that reason: one number is the whole of
-# what tells the two apart, so there is one code path and nothing that can be
-# changed for one installation and forgotten for the other.
-#
-# The two keys are separate on purpose, and the environments verify it — an
-# installation whose key is not its own is an installation anyone with the other
-# one can delete apps from. See verify_instance.
 : "${APPLAB_API_KEY:=}"
-: "${APPLAB_API_KEY_2:=}"
-: "${APPLAB_DOMAIN_1:=}"
-: "${APPLAB_DOMAIN_2:=}"
-: "${APPLAB_PUBLIC_HOST_1:=}"
-: "${APPLAB_PUBLIC_HOST_2:=}"
 : "${APPLAB_SESSION_HOURS:=0}"
 : "${APPLAB_TUNNEL:=cloudflare}"
+: "${APPLAB_NAMESPACE:=ops-system}"
 : "${APPLAB_GATEWAY_NODEPORT:=30080}"
-# The object store's key prefix, one name per installation.
-#
-# This is the variable the two installations live or die by, and its absence was
-# the trap: the object store is shared — the bucket, the endpoint and the
-# credential are the runner's, not an installation's — so without a prefix both
-# installations read and write the same "apps/<id>" keys and each one's apps,
-# keys and build history collide with the other's. The prefix is AppLab's own
-# answer to that (see objectstore.Prefixed); this is the rig supplying it.
-#
-# The bucket is deliberately *not* split in two. It is infrastructure, it is
-# created once below, and a prefix already separates the two installations
-# inside it — a second bucket would be a second thing to create, name and
-# grant, for no separation the prefix does not already give.
-: "${APPLAB_OBJECT_STORE_PREFIX:=applab}"
 : "${APPLAB_CLUSTER_NAME:=applab-debugger}"
 # Where the apps are served, nested under the installation's own base path:
 # with the defaults below, an app called "myshop" is at "/applab/apps/myshop/".
@@ -146,10 +108,8 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 : "${APPLAB_REGISTRY_USERNAME:=${DOCKERHUB_USERNAME:-}}"
 : "${APPLAB_REGISTRY_PASSWORD:=${DOCKERHUB_TOKEN:-}}"
 # The Secret both halves read: the build Job mounts it to push, and every app's
-# Deployment names it to pull. One registry, one credential, one name — one per
-# installation, which is why the name is derived in install_instance rather than
-# defaulted here: two installations in one cluster cannot share it, because a
-# Secret belongs to a namespace and names nothing outside its own.
+# Deployment names it to pull. One registry, one credential, one name.
+: "${APPLAB_REGISTRY_SECRET:=applab-registry}"
 
 # The object store, in the same shape and for the same reason as the registry:
 # a container on this host that the cluster reaches by name.
@@ -222,264 +182,43 @@ RUNTIME_DIR="${APPLAB_RUNTIME_DIR:-$PWD/.applab-debugger}"
 mkdir -p "$RUNTIME_DIR"
 PUBLIC_URL_FILE="$RUNTIME_DIR/url.txt"
 TUNNEL_LOG="$RUNTIME_DIR/tunnel.log"
-# Kept as "one URL per line, in installation order" because it is the only thing
-# a later reader has: the tunnel and the script both only ever write, and
-# anything that wants to know where the environment ended up — a person, a
-# script after the run — reads this rather than the log.
 : > "$PUBLIC_URL_FILE"
 
-# Every tunnel this environment ever starts, in one list. The record is kept
-# because the wait loop at the bottom has to watch all of them: a dead tunnel is
-# the only thing that makes the environment unreachable, and with two of them the
-# second one dying is exactly as fatal as the first — and would otherwise only be
-# noticed at the deadline.
-tunnel_pids=()
+# ── 1. the API key ──────────────────────────────────────────────────────────
 
-# Set by resolve_hosts, below: the hostname and the URL each installation is
-# served under, indexed 1 and 2. Bash has no portable way to return two values
-# from a function, and these are read from a dozen places, so they are globals.
-TUNNEL_HOST_1=""
-TUNNEL_HOST_2=""
-public_url_1=""
-public_url_2=""
-
-# The installations, as the loop variable n. Named here rather than written as
-# "1 2" in the one loop that uses it, so a third installation is a change in one
-# place — and so the check in .github/workflows/image.yml, which stats the files
-# on disk, matches what this script means. The registry Secret is what makes a
-# second set of files necessary: a Secret belongs to a namespace, so neither
-# installation can hold the other's, and every hardcoded name here is one the
-# second installation would otherwise have shared with the first.
-APPLAB_INSTANCES="1 2"
-
-# The registry Secret each installation creates, indexed the same way. Named
-# after the first installation rather than numbered, because installation 1 is
-# the one that used to be called just "applab" and there is no reason to make a
-# new name for it.
-registry_secret_name() { if [ "$1" = "1" ]; then printf 'applab-registry'; else printf 'applab-registry-%s' "$1"; fi; }
-# Same for the auth Secret: installation 1 keeps the name it already had.
-auth_secret_name() { if [ "$1" = "1" ]; then printf 'applab-keys'; else printf 'applab-keys-%s' "$1"; fi; }
-
-# registry_host_of reads the registry's *address* out of APPLAB_REGISTRY, which is
-# a description of where an image goes rather than an address on its own.
-#
-# The first segment is the host only if it reads like one — the same rule applab
-# applies to the value itself (see pathSegments): a dot, a colon, or "localhost".
-# A bare account name is Docker Hub, whose Secret server and login address are
-# Docker's own fixed URL rather than the account.
-#
-# A function because it is needed in two places — the docker-registry Secret each
-# installation creates, and the one login that checks the credential — and a rule
-# this easy to get subtly wrong is one to have in one place.
-registry_host_of() {
-  local host
-  host="$(printf '%s' "$APPLAB_REGISTRY" | cut -d/ -f1)"
-  case "$host" in
-    *.*|*:*|localhost) printf '%s' "$host" ;;
-    *) printf '%s' "https://index.docker.io/v1/" ;;
-  esac
-}
-
-# instance_number is the loop variable an installation is running as, which the
-# functions below read from the environment rather than taking as an argument.
-# It exists because the ERR trap interpolates BASH_COMMAND, and BASH_COMMAND is
-# the *unexpanded* text of the command that failed — so "${APPLAB_API_KEY}" would
-# reach the log as a variable reference and not as a key, while a value passed in
-# as an argument would reach it expanded. Everything that touches a key reads
-# this instead. See verify_instance.
-instance_number() { printf '%s' "${APPLAB_INSTANCE_N:-}"; }
-# Same, for the two settings that differ per installation and cannot be derived
-# from the number.
-instance_host() { if [ "$(instance_number)" = "2" ]; then printf '%s' "$TUNNEL_HOST_2"; else printf '%s' "$TUNNEL_HOST_1"; fi; }
-instance_key()  { if [ "$(instance_number)" = "2" ]; then printf '%s' "$APPLAB_API_KEY_2"; else printf '%s' "$APPLAB_API_KEY"; fi; }
-# The prefix this installation writes under in the shared bucket. Name-slugified
-# rather than left as the bare number so a bucket listing says which rig it came
-# from: several of these environments can share one bucket over time.
-instance_slug() { printf '%s-%s' "$APPLAB_OBJECT_STORE_PREFIX" "$(instance_number)"; }
-
-# ── 1. the API keys ─────────────────────────────────────────────────────────
-
-# One per installation, generated when not supplied, and printed at the end. They
-# are deliberately not masked: they are the deliverable, and a masked value could
-# not be shown in the summary that exists to show it.
-#
-# And they are deliberately different from each other. Filling the second one in
-# from the first when it is empty would be the friendlier default and the wrong
-# one: it would make the check in verify_instance — that installation 1's key does
-# not open installation 2 — pass for the wrong reason, and it would give two
-# installations one credential while looking like two.
+# Generated when not supplied, and printed at the end. It is deliberately not
+# masked: it is the deliverable, and a masked value could not be shown in the
+# summary that exists to show it.
 if [ -z "$APPLAB_API_KEY" ]; then
   APPLAB_API_KEY=$(openssl rand -hex 32)
 fi
-if [ -z "$APPLAB_API_KEY_2" ]; then
-  APPLAB_API_KEY_2=$(openssl rand -hex 32)
-fi
-[ "$APPLAB_API_KEY" != "$APPLAB_API_KEY_2" ] \
-  || die "both installations were given the same key; each one has to have its own, or a key that can destroy one installation's apps also destroys the other's"
 
-# ── 2. the hostnames, before anything that needs them ───────────────────────
+# ── 2. the hostname, before anything that needs it ──────────────────────────
 
-# Each installation is served on its own hostname — that is the whole point of
-# naming two instead of one — so each gets its own tunnel. Everything below is
-# per host: one agent, one log, one URL. What is *not* per host is the origin they
-# all point at, which is the one gateway on the gateway's own node port.
-#
-# The URLs are recorded in installation order as they are settled, because the
-# order is what makes the file readable: line 1 is installation 1.
-record_url() {
-  printf '%s\n' "$2" >> "$PUBLIC_URL_FILE"
-  case "$1" in
-    1) public_url_1="$2" ;;
-    2) public_url_2="$2" ;;
-  esac
-}
+tunnel_pid=""
 
-tunnel_log() { printf '%s.%s.log' "$TUNNEL_LOG" "$(instance_number)"; }
-
-# open_tunnel starts one agent, for the installation named by instance_number.
-#
-# One agent per installation, and not one agent with two hostnames: the two are
-# separate public addresses by design, and a tunnel is what makes an address
-# public. What they share is only the origin — both agents forward to the same
-# gateway on the same node port, which is why the second one is a tunnel and not
-# a second gateway.
-#
-# The pid is recorded in a list rather than a single variable, because both have
-# to be watched afterwards: the environment is as unreachable as its deadest
-# tunnel, and a monitor that watched only the last one started would sleep
-# through the other's death.
 open_tunnel() {
   case "$APPLAB_TUNNEL" in
     cloudflare) open_cloudflare_tunnel ;;
     ngrok)      open_ngrok_tunnel ;;
     *)          die "unknown APPLAB_TUNNEL '$APPLAB_TUNNEL'; expected 'cloudflare' or 'ngrok'" ;;
   esac
-  local pid="${tunnel_pids[$(( $(instance_number) - 1 ))]:-}"
 
   # The agent's output is mirrored into the job log: when a tunnel fails, its own
   # words are the only thing that explains why, and a log nobody prints hides
   # exactly that. `-u` because the job log is not a tty and sed would
   # block-buffer, so the output would arrive in bursts instead of as it happens.
-  #
-  # Prefixed with the installation number, because two agents' logs interleaved
-  # without a label is a log nobody can attribute a failure to.
-  for _ in $(seq 1 50); do [ -f "$(tunnel_log)" ] && break; sleep 0.1; done
-  tail -f "$(tunnel_log)" 2>/dev/null | sed -u "s/^/[${APPLAB_TUNNEL}-$(instance_number)] /" &
-  printf '%s\n' "$!" >> "$RUNTIME_DIR/tail.pid"
+  for _ in $(seq 1 50); do [ -f "$TUNNEL_LOG" ] && break; sleep 0.1; done
+  tail -f "$TUNNEL_LOG" 2>/dev/null | sed -u "s/^/[${APPLAB_TUNNEL}] /" &
+  echo $! > "$RUNTIME_DIR/tail.pid"
 
   # A usage or credential error makes an agent exit instantly, and without this
   # check the only symptom is a missing link minutes later.
   sleep 3
-  kill -0 "$pid" 2>/dev/null || {
-    sed 's/^/    /' "$(tunnel_log)" 2>/dev/null || true
-    die "tunnel $(instance_number): the ${APPLAB_TUNNEL} agent exited during startup; its output is above"
+  kill -0 "$tunnel_pid" 2>/dev/null || {
+    sed 's/^/    /' "$TUNNEL_LOG" 2>/dev/null || true
+    die "the ${APPLAB_TUNNEL} agent exited during startup; its output is above"
   }
-}
-
-# resolve_hosts settles the hostname each installation is served under.
-#
-# It does not start anything for the two cases that know their own name. A
-# hostname has to be known before AppLab is installed, because it becomes
-# ingress.host — but knowing it is not the same as publishing it, and for every
-# case except a quick tunnel the name is settled without a tunnel running at all.
-# The agents are started later, by publish().
-#
-# APPLAB_PUBLIC_HOST_1 / _2 skip the tunnel entirely and use the given hostname.
-# They exist for CI, which must not depend on a public tunnel being granted: a
-# quick tunnel's hostname is minted per connection, is rate-limited, and is aimed
-# at trying things rather than at being a test dependency. CI sets them and
-# drives the gateway over the node port; the tunnel itself is exercised by the
-# debugger workflow, where a flaky link is a person's problem to re-run rather
-# than a red build.
-#
-# APPLAB_DOMAIN_1 / _2 name the domain each installation is served under. They
-# are not tunnel configuration — a named Cloudflare tunnel keeps its hostname in
-# its ingress, and the connector is never told it, and nothing has to be passed
-# to cloudflared. They are what AppLab needs: ingress.host, which is both where
-# the apps are served and the host the console's own route matches.
-resolve_hosts() {
-  # The one case with nothing to publish: the caller has names, and there is no
-  # tunnel to start. Returned to by publish(), which starts nothing when these are
-  # set. Checked once here rather than per installation because it is one decision
-  # about the whole environment.
-  if [ -n "$APPLAB_PUBLIC_HOST_1" ] || [ -n "$APPLAB_PUBLIC_HOST_2" ]; then
-    [ -n "$APPLAB_PUBLIC_HOST_1" ] && [ -n "$APPLAB_PUBLIC_HOST_2" ] \
-      || die "APPLAB_PUBLIC_HOST_1 and APPLAB_PUBLIC_HOST_2 must be set together: the two installations are served on two hostnames, and supplying one leaves the other with nothing to answer on"
-    TUNNEL_HOST_1="$APPLAB_PUBLIC_HOST_1"
-    TUNNEL_HOST_2="$APPLAB_PUBLIC_HOST_2"
-    record_url 1 "http://${TUNNEL_HOST_1}${APPLAB_BASE_PATH}"
-    record_url 2 "http://${TUNNEL_HOST_2}${APPLAB_BASE_PATH}"
-    log "using the supplied hostnames ${TUNNEL_HOST_1} and ${TUNNEL_HOST_2}; no tunnel will be started"
-    return 0
-  fi
-
-  # A domain can only be named for a tunnel whose ingress was configured in
-  # advance, which a quick tunnel's is not: Cloudflare assigns it a random name
-  # and it cannot be given another, so a domain chosen here would not resolve.
-  # The ngrok path does not pass the flag a reserved domain needs either. Both
-  # are refused rather than silently ignored, which would publish a link to a
-  # domain that serves nothing.
-  #
-  # Both domains are checked before either is used, because the failure is a
-  # property of the run rather than of one installation, and a run that refused
-  # after installing one installation and before the other would have spent five
-  # minutes to say the same thing.
-  local n domain
-  for n in $APPLAB_INSTANCES; do
-    if [ "$n" = "1" ]; then domain="$APPLAB_DOMAIN_1"; else domain="$APPLAB_DOMAIN_2"; fi
-    if [ -n "$domain" ] && [ "$APPLAB_TUNNEL" != "cloudflare" ]; then
-      die "APPLAB_DOMAIN_${n} is only supported with a named Cloudflare tunnel, not '${APPLAB_TUNNEL}'"
-    fi
-    if [ -n "$domain" ] && [ -z "$CLOUDFLARE_TOKEN" ]; then
-      die "APPLAB_DOMAIN_${n} needs CLOUDFLARE_TOKEN: a quick tunnel is assigned a random hostname by Cloudflare, so apps could not be served under the one given here"
-    fi
-  done
-
-  # A quick tunnel, or ngrok: the names are whatever the agents are given, and
-  # the only way to learn them is to start the agents and ask. So this is the one
-  # path that has to run early — and it does, here, before AppLab is installed.
-  #
-  # Both or neither, and refused rather than mixed: a named tunnel serves the
-  # hostname in its own ingress, so it cannot also report the random one the other
-  # installation would need, and one installation served under a name Cloudflare
-  # does not answer for is a link that does not resolve.
-  if [ -z "$APPLAB_DOMAIN_1" ] || [ -z "$APPLAB_DOMAIN_2" ]; then
-    [ -z "$APPLAB_DOMAIN_1" ] && [ -z "$APPLAB_DOMAIN_2" ] \
-      || die "APPLAB_DOMAIN_1 and APPLAB_DOMAIN_2 must be set together: the two installations are separate addresses by design, and one named tunnel cannot serve the other's random hostname"
-    log "starting ${APPLAB_TUNNEL} twice, to find out which hostnames they will be given"
-    for n in $APPLAB_INSTANCES; do
-      APPLAB_INSTANCE_N="$n"
-      open_tunnel
-    done
-    local found
-    for n in $APPLAB_INSTANCES; do
-      APPLAB_INSTANCE_N="$n"
-      log "waiting for tunnel ${n} to report its public hostname"
-      if ! found=$(find_public_host); then
-        warn "this is a named tunnel: Cloudflare does not tell the connector its own"
-        warn "hostname, so it cannot be discovered here. Name the domains instead:"
-        warn "  APPLAB_DOMAIN_1=<your domain> APPLAB_DOMAIN_2=<other> ... hack/environment.sh"
-        die "tunnel ${n} never reported a public hostname; see $(tunnel_log)"
-      fi
-      found="${found#https://}"; found="${found#http://}"; found="${found%%/*}"
-      if [ "$n" = "1" ]; then TUNNEL_HOST_1="$found"; else TUNNEL_HOST_2="$found"; fi
-      record_url "$n" "https://${found}${APPLAB_BASE_PATH}"
-      log "installation ${n} will be published at https://${found}${APPLAB_BASE_PATH}"
-    done
-    return 0
-  fi
-
-  # Named tunnels: the names are taken as given rather than discovered, because a
-  # named tunnel's hostname is not discoverable — see above. Each tunnel's
-  # ingress has to already point here; nothing in this script can create or check
-  # it.
-  TUNNEL_HOST_1="$APPLAB_DOMAIN_1"
-  TUNNEL_HOST_2="$APPLAB_DOMAIN_2"
-  record_url 1 "https://${TUNNEL_HOST_1}${APPLAB_BASE_PATH}"
-  record_url 2 "https://${TUNNEL_HOST_2}${APPLAB_BASE_PATH}"
-  log "installation 1 will be served at https://${TUNNEL_HOST_1}${APPLAB_BASE_PATH}"
-  log "installation 2 will be served at https://${TUNNEL_HOST_2}${APPLAB_BASE_PATH}"
-  log "  (both hostnames must already point at the tunnel in Cloudflare's dashboard; that is not configured here)"
 }
 
 # find_public_host polls the agent for the hostname it was given.
@@ -522,61 +261,145 @@ find_public_host() {
     # fallback when its metrics endpoint is unreachable.
     local from_log
     case "$APPLAB_TUNNEL" in
-      cloudflare) from_log=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$(tunnel_log)" 2>/dev/null | head -1 || true) ;;
-      ngrok)      from_log=$(grep -oE 'https://[a-z0-9-]+\.ngrok-free\.app' "$(tunnel_log)" 2>/dev/null | head -1 || true) ;;
+      cloudflare) from_log=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -1 || true) ;;
+      ngrok)      from_log=$(grep -oE 'https://[a-z0-9-]+\.ngrok-free\.app' "$TUNNEL_LOG" 2>/dev/null | head -1 || true) ;;
     esac
     [ -n "$from_log" ] && { printf '%s' "$from_log"; return 0; }
 
-    kill -0 "${tunnel_pids[$(( $(instance_number) - 1 ))]:-}" 2>/dev/null || return 1
-    if [ $((attempt % 15)) -eq 0 ]; then log "  still waiting for tunnel $(instance_number)... ${attempt}s"; fi
+    kill -0 "$tunnel_pid" 2>/dev/null || return 1
+    if [ $((attempt % 15)) -eq 0 ]; then log "  still waiting for the tunnel... ${attempt}s"; fi
     sleep 2
   done
   return 1
 }
 
-# publish starts the tunnel for the installation named by instance_number, if one
-# is needed and is not already up.
+# resolve_host settles on the hostname the environment is served under.
 #
-# It runs last, after the environment answers, so a tunnel that fails does so
-# with both installations already proven good — the failure is then the tunnel's
-# alone and cannot be mistaken for the platform not coming up. resolve_hosts has
-# already started the agents for the only case that needed the names in advance
-# (a quick tunnel or ngrok), and this returns immediately then.
-publish() {
-  local n; n="$(instance_number)"
-
-  if [ -n "$APPLAB_PUBLIC_HOST_1" ]; then
+# It does not start anything. The hostname has to be known before AppLab is
+# installed, because it becomes ingress.host — but knowing it is not the same
+# as publishing it, and for every case except a quick tunnel the name is settled
+# without a tunnel running at all. The agent is started later, by publish().
+#
+# APPLAB_PUBLIC_HOST skips the tunnel entirely and uses the given hostname. It
+# exists for CI, which must not depend on a public tunnel being granted: a quick
+# tunnel's hostname is minted per connection, is rate-limited, and is aimed at
+# trying things rather than at being a test dependency. CI sets it and drives the
+# gateway over the node port; the tunnel itself is exercised by the debugger
+# workflow, where a flaky link is a person's problem to re-run rather than a red
+# build.
+#
+# APPLAB_DOMAIN names the domain apps are served under. It is not tunnel
+# configuration — a named Cloudflare tunnel keeps its hostname in its ingress, and
+# the connector is never told it, and nothing has to be passed to cloudflared. It
+# is what AppLab needs: ingress.host, which is both where the apps are served
+# and the host the console's own route matches.
+resolve_host() {
+  # The one case with nothing to publish: the caller has a name, and there is no
+  # tunnel to start. Recorded here and returned to by publish(), which does
+  # nothing when APPLAB_PUBLIC_HOST is set.
+  if [ -n "${APPLAB_PUBLIC_HOST:-}" ]; then
+    TUNNEL_HOST="$APPLAB_PUBLIC_HOST"
+    public_url="http://${TUNNEL_HOST}${APPLAB_BASE_PATH}"
+    log "using the supplied hostname ${TUNNEL_HOST}; no tunnel will be started"
     return 0
   fi
-  [ -z "${tunnel_pids[$((n - 1))]:-}" ] || {
+
+  # A domain can only be named for a tunnel whose ingress was configured in
+  # advance, which a quick tunnel's is not: Cloudflare assigns it a random name
+  # and it cannot be given another, so a domain chosen here would not resolve.
+  # The ngrok path does not pass the flag a reserved domain needs either. Both
+  # are refused rather than silently ignored, which would publish a link to a
+  # domain that serves nothing.
+  if [ -n "${APPLAB_DOMAIN:-}" ]; then
+    case "$APPLAB_TUNNEL" in
+      cloudflare)
+        [ -n "$CLOUDFLARE_TOKEN" ] \
+          || die "APPLAB_DOMAIN needs CLOUDFLARE_TOKEN: a quick tunnel is assigned a random hostname by Cloudflare, so apps could not be served under the one given here"
+        ;;
+      *)
+        die "APPLAB_DOMAIN is only supported with a named Cloudflare tunnel, not '${APPLAB_TUNNEL}'"
+        ;;
+    esac
+
+    # Taken as given rather than discovered, because a named tunnel's hostname is
+    # not discoverable — see above. The tunnel's ingress has to already point
+    # here; nothing in this script can create or check it.
+    TUNNEL_HOST="$APPLAB_DOMAIN"
+    public_url="https://${TUNNEL_HOST}${APPLAB_BASE_PATH}"
+    log "the environment will be served at ${public_url}"
+    log "  (the tunnel's ingress is configured in Cloudflare, not here)"
+    return 0
+  fi
+
+  # A quick tunnel, or ngrok: the name is whatever the agent is given, and the
+  # only way to learn it is to start the agent and ask. So this is the one path
+  # that has to run early — and it does, from here, before AppLab is installed.
+  log "starting ${APPLAB_TUNNEL} to find out which hostname it will be given"
+  open_tunnel
+
+  log "waiting for the tunnel to report its public hostname"
+  local found
+  if ! found=$(find_public_host); then
+    # Reached only by a named tunnel with no domain given: nothing else can
+    # fail to report one. Say what to do about it, because the symptom is
+    # otherwise an environment that looks fine and a link that never appears.
+    if [ -n "$CLOUDFLARE_TOKEN" ]; then
+      warn "this is a named tunnel: Cloudflare does not tell the connector its own"
+      warn "hostname, so it cannot be discovered here. Name the domain instead:"
+      warn "  APPLAB_DOMAIN=<your domain> ... hack/environment.sh"
+    fi
+    die "the tunnel never reported a public hostname; see ${TUNNEL_LOG}"
+  fi
+
+  TUNNEL_HOST="${found#https://}"
+  TUNNEL_HOST="${TUNNEL_HOST#http://}"
+  TUNNEL_HOST="${TUNNEL_HOST%%/*}"
+  public_url="https://${TUNNEL_HOST}${APPLAB_BASE_PATH}"
+  log "the environment will be published at ${public_url}"
+}
+
+# publish starts the tunnel, if one is needed and is not already up.
+#
+# It runs last, after the environment answers, so a tunnel that fails does so
+# with the cluster already proven good — the failure is then the tunnel's alone
+# and cannot be mistaken for the platform not coming up. resolve_host has already
+# started one for the only case that needed the name in advance (a quick tunnel
+# or ngrok), and this returns immediately then.
+publish() {
+  printf '%s\n' "$public_url" > "$PUBLIC_URL_FILE"
+
+  if [ -n "${APPLAB_PUBLIC_HOST:-}" ]; then
+    return 0
+  fi
+  if [ -n "$tunnel_pid" ]; then
     # Already up, because its hostname was what we had to wait for.
     return 0
-  }
+  fi
 
-  log "opening the ${APPLAB_TUNNEL} tunnel for installation ${n}"
+  log "opening the ${APPLAB_TUNNEL} tunnel"
   open_tunnel
 }
 
 open_cloudflare_tunnel() {
   if [ -n "$CLOUDFLARE_TOKEN" ]; then
     log "opening a Cloudflare named tunnel"
-    cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_TOKEN" >"$(tunnel_log)" 2>&1 &
+    cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_TOKEN" >"$TUNNEL_LOG" 2>&1 &
   else
     log "opening a Cloudflare quick tunnel (no account needed)"
-    cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}" >"$(tunnel_log)" 2>&1 &
+    cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}" >"$TUNNEL_LOG" 2>&1 &
   fi
-  tunnel_pids[$(( $(instance_number) - 1 ))]=$!
+  tunnel_pid=$!
 }
 
 open_ngrok_tunnel() {
   [ -n "$NGROK_TOKEN" ] || die "APPLAB_TUNNEL=ngrok needs NGROK_TOKEN"
   log "opening an ngrok tunnel"
-  ngrok config add-authtoken "$NGROK_TOKEN" >"$(tunnel_log)" 2>&1 || die "ngrok rejected the authtoken"
-  ngrok http "$APPLAB_GATEWAY_NODEPORT" >>"$(tunnel_log)" 2>&1 &
-  tunnel_pids[$(( $(instance_number) - 1 ))]=$!
+  ngrok config add-authtoken "$NGROK_TOKEN" >"$TUNNEL_LOG" 2>&1 || die "ngrok rejected the authtoken"
+  ngrok http "$APPLAB_GATEWAY_NODEPORT" >>"$TUNNEL_LOG" 2>&1 &
+  tunnel_pid=$!
 }
 
-resolve_hosts
+resolve_host
 
 # ── 3. cluster, registry, gateway ───────────────────────────────────────────
 
@@ -890,82 +713,45 @@ gateway_https_port=$(kubectl -n istio-system get svc istio-ingressgateway \
 show "the gateway's ports after the patch" \
   kubectl -n istio-system get svc istio-ingressgateway -o wide
 
-# ── 4. AppLab, once per installation ────────────────────────────────────────
+# ── 4. AppLab ───────────────────────────────────────────────────────────────
 
-# install_instance stands one installation up: its namespace, its two Secrets,
-# its release, and the wait for its rollout.
+log "installing AppLab in namespace ${APPLAB_NAMESPACE}"
+
+kubectl create namespace "$APPLAB_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+# The registry credential, which both halves of the build pipeline read: the
+# build Job mounts it to push, and every app's Deployment names it to pull. One
+# registry, one credential, one name — see build.secret in the chart.
 #
-# Everything that differs between the two is derived here from the one thing that
-# does — the installation number — rather than passed in, and deliberately: a
-# parameter is something a call site can get wrong, and the failure that produces
-# is the one this whole arrangement exists to prevent. Two installations that
-# share a namespace, a release name, a Secret or an object store prefix do not
-# fail loudly; they come up and then interfere, which is much harder to see.
+# Created here rather than by the chart because the chart carries no registry
+# credential: it would have to be a value, and a value is plain text in the
+# release's history and in this repository. The environment supplies it.
 #
-# The namespaces are `applab-1` and `applab-2` — not one namespace with two
-# releases in it. A namespace is the boundary that makes the two independent
-# installations rather than two Releases: it is what gives each its own copy of
-# every namespaced object, its own Role, its own Service and its own Secrets, and
-# it is why one installation's apps cannot see the other's. Two releases in one
-# namespace would share the key Secret's name, the registry Secret's name, and
-# every app's objects.
-#
-# The registry Secret is the one that cannot be shared at all, which is why it is
-# the one name that has to differ per installation rather than being a constant
-# here: a Secret lives in a namespace, and both installations use the same
-# registry with the same credential, so each namespace needs its own copy of it.
-install_instance() {
-  local n; n="$(instance_number)"
-  local ns="applab-${n}"
-  # The release name is the namespace name, and fullnameOverride makes it the
-  # resource prefix too. Set explicitly rather than left to the release: the
-  # chart's resources are named after the release only when the release name
-  # contains the chart name, and a namespace-scoped name is what makes an object
-  # in `kubectl get -A` output say which installation it belongs to.
-  local release="applab-${n}"
-  local fullname="applab-${n}"
-  local auth_secret; auth_secret="$(auth_secret_name "$n")"
-  local registry_secret; registry_secret="$(registry_secret_name "$n")"
-  # The object store prefix: one name per installation inside one shared bucket.
-  # This is the line that keeps the two installations from reading and writing
-  # each other's apps — see APPLAB_OBJECT_STORE_PREFIX.
-  local store_prefix; store_prefix="$(instance_slug)"
-  local host; host="$(instance_host)"
-  local key; key="$(instance_key)"
+# The server is the registry's host, which is what a docker-registry Secret
+# stores: Docker Hub's own address, or whatever the value names. A tag on the
+# registry is part of the image path and not part of its address, so it is not
+# what goes here.
+# The first segment is the host only if it reads like one — the same rule
+# applab applies to the value itself (see pathSegments): a dot, a colon, or
+# "localhost". A bare account name is Docker Hub, whose Secret server is
+# Docker's own fixed address rather than the account.
+registry_host="$(printf '%s' "$APPLAB_REGISTRY" | cut -d/ -f1)"
+case "$registry_host" in
+  *.*|*:*|localhost) ;;
+  *) registry_host="https://index.docker.io/v1/" ;;
+esac
+kubectl -n "$APPLAB_NAMESPACE" create secret docker-registry "$APPLAB_REGISTRY_SECRET" \
+  --docker-server="$registry_host" \
+  --docker-username="$APPLAB_REGISTRY_USERNAME" \
+  --docker-password="$APPLAB_REGISTRY_PASSWORD" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-  log "installing AppLab ${n} in namespace ${ns}, served at ${host}${APPLAB_BASE_PATH}"
-
-  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-
-  # The registry credential, which both halves of the build pipeline read: the
-  # build Job mounts it to push, and every app's Deployment names it to pull. One
-  # registry, one credential, one name — see build.secret in the chart.
-  #
-  # Created here rather than by the chart because the chart carries no registry
-  # credential: it would have to be a value, and a value is plain text in the
-  # release's history and in this repository. The environment supplies it.
-  #
-  # Created per installation rather than once, because a Secret belongs to a
-  # namespace and the two installations are in two of them. Both copies hold the
-  # same credential; the duplication is the API's, not a choice.
-  local registry_host
-  registry_host="$(registry_host_of)"
-  kubectl -n "$ns" create secret docker-registry "$registry_secret" \
-    --docker-server="$registry_host" \
-    --docker-username="$APPLAB_REGISTRY_USERNAME" \
-    --docker-password="$APPLAB_REGISTRY_PASSWORD" \
-    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-
-  # The key goes in through a Secret rather than --set auth.key=..., which
-  # would write it into the release's stored values where anyone with read on the
-  # namespace can recover it.
-  #
-  # One key per installation, and this is where that becomes true: the Secret is
-  # per namespace, and each carries only its own installation's key. The
-  # cross-installation check in verify_instance is what proves it stayed true.
-  kubectl -n "$ns" create secret generic "$auth_secret" \
-    --from-literal=APPLAB_KEYS="$key" \
-    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+# The key goes in through a Secret rather than --set auth.key=..., which
+# would write it into the release's stored values where anyone with read on the
+# namespace can recover it.
+kubectl -n "$APPLAB_NAMESPACE" create secret generic applab-keys \
+  --from-literal=APPLAB_KEYS="$APPLAB_API_KEY" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 # install, not upgrade: this script assumes a fresh cluster, and an upgrade
 # against a half-installed release would hide a first-install failure.
@@ -996,418 +782,117 @@ install_instance() {
 # because this script builds URLs from it: the console, the API and every app
 # live under this path, and a chart default that drifted would leave the printed
 # links pointing at nothing.
-  # The object store prefix is the one setting that keeps the two installations
-  # out of each other's way inside the one bucket, and leaving it unset is silent:
-  # the release comes up, serves, and then shares its apps with the other one. Set
-  # from the same slug the check later asserts against.
-  if ! helm install "$release" "$REPO_ROOT/charts/applab" \
-    --namespace "$ns" \
-    --set "fullnameOverride=${fullname}" \
-    --set auth.existingSecret="$auth_secret" \
-    --set "ingress.host=${host}" \
-    --set "ingress.path=${APPLAB_BASE_PATH}" \
-    --set "apps.pathPrefix=${APPLAB_PATH_PREFIX}" \
-    --set deploy.gateway=istio-system/istio-ingressgateway \
-    --set "build.registry=${APPLAB_REGISTRY}" \
-    --set "build.secret=${registry_secret}" \
-    --set ingress.enabled=false \
-    --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \
-    --set "image.tag=${APPLAB_VERSION}" \
-    --set "objectStore.endpoint=http://${APPLAB_OBJECT_STORE_ENDPOINT}" \
-    --set "objectStore.bucket=${APPLAB_OBJECT_STORE_BUCKET}" \
-    --set "objectStore.prefix=${store_prefix}" \
-    --set "objectStore.accessKey=${APPLAB_OBJECT_STORE_ACCESS_KEY}" \
-    --set "objectStore.secretKey=${APPLAB_OBJECT_STORE_SECRET_KEY}" \
-    --set objectStore.pathStyle=true \
-    --set objectStore.insecure=true
-  then
-    warn "AppLab ${n} could not be installed at all; the state it left behind follows"
-    kubectl -n "$ns" get pods,deployment,replicaset,service 2>&1 | sed 's/^/    /' || true
-    helm -n "$ns" status "$release" 2>&1 | sed 's/^/    /' || true
-    die "helm rejected release ${release}: the message above is helm's, the rest is the cluster's"
-  fi
-
-  # The rollout, waited for here rather than by helm.
-  #
-  # The deadline is generous, because the first pull of an image on a cold runner
-  # is genuinely slow. What matters is that it is bounded and that the wait is
-  # visible: the pod's own state is printed as it changes, so a stuck install shows
-  # ImagePullBackOff or a CrashLoopBackOff in the log while it is stuck, rather
-  # than ten minutes later as a timeout.
-  #
-  # `rollout status` is not used for the same reason `--wait` is not: it blocks
-  # silently and reports a condition, where the interesting thing is the reason.
-  # It is only polled with a one-second timeout to ask whether the wait is over.
-  #
-  # The two installations are waited for one at a time rather than together, and
-  # that is fine rather than wasteful: the image is pulled on the first one and is
-  # in the node's cache by the time the second asks for it, so the second's wait
-  # is a few seconds. It is also the honest one — a failure is reported against
-  # the installation it happened to.
-  local applab_wait_seconds="$APPLAB_INSTALL_TIMEOUT_SECONDS"
-  log "waiting up to ${applab_wait_seconds}s for AppLab ${n} to roll out"
-  local last_state="" rolled_out="" crash_grabbed=""
-  local attempt state
-  for attempt in $(seq 1 "$applab_wait_seconds"); do
-    # A single line per pod, in a stable order, so the same state does not print
-    # every second: only a change is worth a line.
-    state=$(kubectl -n "$ns" get pods \
-      -o 'custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.waiting.reason' \
-      --no-headers 2>/dev/null | sort || true)
-    if [ "$state" != "$last_state" ]; then
-      printf '%s\n' "$state" | sed 's/^/    /'
-      last_state="$state"
-    fi
-
-    # Some states will not resolve by waiting. A container that cannot start — a
-    # crash loop, an image that cannot be pulled — is already failing, and the
-    # remaining minutes add nothing but a delay before the same answer. Grab the
-    # container's own last words while it is still there to ask, and stop.
-    #
-    # ImagePullBackOff is excluded deliberately: a first pull on a cold runner is
-    # slow, and pulling is not failing. It is ErrImagePull's settled form and it
-    # does eventually resolve.
-    case "$state" in
-      *CrashLoopBackOff*|*CreateContainerConfigError*|*RunContainerError*|*InvalidImageName*)
-        crash_grabbed="yes" ;;
-    esac
-    [ -z "$crash_grabbed" ] || break
-
-    if kubectl -n "$ns" rollout status "deploy/${fullname}" --timeout=1s >/dev/null 2>&1; then
-      rolled_out="yes"
-      break
-    fi
-    sleep 1
-  done
-
-  if [ -z "$rolled_out" ]; then
-    if [ -n "$crash_grabbed" ]; then
-      warn "AppLab ${n} cannot start — its container is not coming up, and waiting would not change that"
-    else
-      warn "AppLab ${n} did not become ready within ${applab_wait_seconds}s; the state it is in follows"
-    fi
-    kubectl -n "$ns" get pods,deployment,replicaset,service 2>&1 | sed 's/^/    /' || true
-    # The reason a container cannot start is in these, and they are the things a
-    # person would otherwise have to guess at: an image that cannot be pulled, a
-    # volume that cannot be mounted, an AppLab that started and refused its own
-    # configuration. The log is what the process itself said before it died, which
-    # is the one thing no amount of waiting produces.
-    kubectl -n "$ns" describe pods 2>&1 | tail -n 60 | sed 's/^/    /' || true
-    kubectl -n "$ns" logs "deploy/${fullname}" --all-containers --tail=100 2>&1 | sed 's/^/    /' || true
-    # --previous, because a crash loop's current container may have produced
-    # nothing yet — the reason is in the attempt that already died.
-    kubectl -n "$ns" logs "deploy/${fullname}" --all-containers --previous --tail=100 2>&1 | sed 's/^/    /' || true
-    if [ -n "$crash_grabbed" ]; then
-      die "AppLab ${n} exited on startup: its output is above. Nothing about waiting changes this"
-    fi
-    die "AppLab ${n} never became ready — if this is a slow first pull, raise APPLAB_INSTALL_TIMEOUT_SECONDS"
-  fi
-
-  # Ready is what the Deployment reports. The console's route is a separate object
-  # that AppLab only has if the chart rendered it, and without it the gateway
-  # answers 404 at "/" — so it is checked here rather than discovered at a browser.
-  #
-  # The name carries this installation's fullname, so the check also asserts the
-  # thing the second installation makes easy to get wrong: an object named for the
-  # wrong release would be found here as a missing route and not as a VirtualService
-  # in the other installation's namespace, which is the failure this check is for.
-  kubectl -n "$ns" get virtualservice "${fullname}-console" -o name >/dev/null 2>&1 \
-    || die "AppLab ${n} has no console VirtualService (${fullname}-console), so the gateway would answer 404 at \"/\": the chart rendered one only when ingress.enabled is false, and this install did not produce it"
-
-  # Everything the release made, right after it made it. The VirtualServices are
-  # listed with the rest rather than separately: one is the console's, from the
-  # chart, and an app's appears here too the moment something is deployed — which
-  # is exactly the object to look at when a deploy succeeds and nothing is
-  # reachable.
-  show "AppLab ${n}" \
-    kubectl -n "$ns" get deployment,replicaset,pod,service,secret
-  show "AppLab ${n}'s routes (VirtualServices)" \
-    kubectl -n "$ns" get virtualservices
-}
-
-# ── 5. what came up, and whether it answers ─────────────────────────────────
-
-# Everything below reaches the gateway the way a browser does: over loopback on
-# the node port, with the installation's own hostname as the Host header — which
-# is what a request arriving through the tunnel carries.
-#
-# The port in that header is harmless. Istio sets IgnorePortInHostMatching on the
-# gateway's route configuration (pilot/pkg/networking/core/gateway.go), so Envoy
-# drops it before matching, and the bare hostnames the VirtualServices carry are
-# what match.
-# gateway_code asks the gateway for one path and prints the status it answers.
-#
-# The host is an argument rather than a global because there are two of them now,
-# and this is the function that has to be able to ask about either: the whole
-# isolation story is "the same request with the other Host header", and a
-# function that read one global could not make it. The caller is left holding the
-# names, not the expansion — see verify_instance for why.
-gateway_code() {
-  local host="$1" path="$2"; shift 2
-  # `|| true` so a refused connection reports as 000 rather than killing the
-  # script: `set -e` sees curl's non-zero exit inside the command substitution
-  # and stops with no message at all, which is the least useful way for a
-  # gateway that is not listening to fail.
-  curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-    -H "Host: ${host}" "$@" \
-    "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${path}" 2>/dev/null || true
-}
-
-# verify_instance checks one installation end to end: that the gateway serves it,
-# that every endpoint answers, that the settings reached the server, and that its
-# key is its own.
-#
-# It reads the host and the key through instance_host and instance_key, which is
-# not only for brevity. The ERR trap prints BASH_COMMAND, and BASH_COMMAND is the
-# unexpanded text of the command that failed — so a key written into a command as
-# a variable reference reaches the log as a reference, while one passed as an
-# argument or built by string concatenation would reach it as the key. Every
-# command below that carries the key therefore names a variable, and the
-# functions it calls do the same.
-verify_instance() {
-  local n="$1"; APPLAB_INSTANCE_N="$n"
-  local ns="applab-${n}"
-  local host; host="$(instance_host)"
-  local key; key="$(instance_key)"
-  local failed="" config_problems="" code body attempt
-
-  # The gateway is the only thing the tunnel points at, so it is what has to
-  # answer: a ready Service behind an unprogrammed gateway is still an environment
-  # nobody can open.
-  log "waiting for the gateway to serve AppLab ${n} on ${host}"
-  for attempt in $(seq 1 90); do
-    if [ "$(gateway_code "$host" /health)" = "200" ]; then break; fi
-    if [ $((attempt % 15)) -eq 0 ]; then log "  still waiting... (attempt ${attempt})"; fi
-    sleep 2
-  done
-  if [ "$(gateway_code "$host" /health)" != "200" ]; then
-    kubectl -n "$ns" get pods
-    kubectl -n "$ns" logs "deploy/applab-${n}" --tail=50 2>/dev/null || true
-    kubectl -n "$ns" get virtualservices 2>/dev/null || true
-    die "the gateway is not serving AppLab ${n} at /health (/health and /metrics are the two paths the cluster reaches the pod on; they are served at the root, outside the base path)"
-  fi
-
-  # Every endpoint a person or a client uses, and the status each one answers.
-  #
-  # Reported and asserted in one pass, because they are the same question: these
-  # are all served by one process behind one route, so anything but a 200 is a bug
-  # rather than a slow start, and a table of green is the evidence that the gateway,
-  # the two VirtualServices, the Service and the deployment all line up.
-  #
-  # The paths are written with the base path in front, except for the two the
-  # cluster itself uses. /health and /metrics are reached by the kubelet and by
-  # Prometheus on the container port, neither of which knows what path the
-  # deployment is published under — so the server answers them at the root and
-  # applies its prefix to everything else. Writing both kinds out here is what
-  # makes that exemption visible rather than a rule someone has to know.
-  log "the endpoints of AppLab ${n}, through the gateway on ${APPLAB_GATEWAY_NODEPORT}"
-  printf '  %-32s %s\n' "PATH" "STATUS"
-
-  check_endpoint() {
-    local label="$1" path="$2"; shift 2
-    local code
-    code=$(gateway_code "$host" "$path" "$@")
-    printf '  %-32s %s\n' "$label" "$code"
-    [ "$code" = "200" ] || failed="${failed} ${label}=${code}"
-  }
-
-  # Open by design: a probe cannot hold a key, and the console is a page a browser
-  # fetches before anyone has signed in.
-  #
-  # /api/v1/describe is the one that matters most for an agent: it is where a
-  # caller with no key learns what this deployment is, and it serves the endpoint
-  # list. Asserting it here is what proves the front door opens — it is the route
-  # whose absence nothing else would catch, because everything else a client uses
-  # needs a key first.
-  check_endpoint "/health"                /health
-  check_endpoint "/metrics"               /metrics
-  check_endpoint "/ (the console)"        "${APPLAB_BASE_PATH}"
-  check_endpoint "${APPLAB_BASE_PATH}/api/v1/config"   "${APPLAB_BASE_PATH}/api/v1/config"
-  check_endpoint "${APPLAB_BASE_PATH}/api/v1/version"  "${APPLAB_BASE_PATH}/api/v1/version"
-  check_endpoint "${APPLAB_BASE_PATH}/api/v1/describe" "${APPLAB_BASE_PATH}/api/v1/describe"
-  # The one thing that proves the admin key works through the gateway, not only
-  # that the route exists.
-  check_endpoint "${APPLAB_BASE_PATH}/api/v1/overview (key)" "${APPLAB_BASE_PATH}/api/v1/overview" -H "Authorization: Bearer ${key}"
-  check_endpoint "${APPLAB_BASE_PATH}/api/v1/describe (key)" "${APPLAB_BASE_PATH}/api/v1/describe" -H "Authorization: Bearer ${key}"
-
-  # And the base path is a prefix, not an alias: the same service must not answer
-  # outside it. A server that ignored its own prefix would serve every route twice
-  # and shadow whatever else owns the root — which is the whole reason the setting
-  # exists.
-  code=$(gateway_code "$host" /api/v1/config)
-  printf '  %-32s %s\n' "/api/v1/config (outside the base path)" "$code"
-  [ "$code" != "200" ] || failed="${failed} the-api-answers-outside-its-base-path"
-
-  [ -z "$failed" ] || die "AppLab ${n}: these did not answer as expected through the gateway:${failed}"
-
-  # The chart's settings have to reach the *server*, not only the render.
-  #
-  # This is the check whose absence let a whole class of failure through once
-  # already: the chart passed one thing, the server kept a default, every chart
-  # check passed, and the failure appeared only when someone pushed an app.
-  #
-  # Only what the API reports can be asserted from here, so these are the settings
-  # it does report: the address convention, which decides whether the console and
-  # the apps are reachable at all, and the build capability, which is what this
-  # environment now depends on a real registry for.
-  log "confirming the settings the chart passed to AppLab ${n} actually arrived"
-  body=$(curl -s --max-time 5 -H "Host: ${host}" \
-    "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${APPLAB_BASE_PATH}/api/v1/config" 2>/dev/null || true)
-
-  # jq is not assumed present on a runner; the raw JSON is matched instead.
-  expect_config() {
-    local label="$1" want="$2"
-    printf '%s' "$body" | grep -qF -- "$want" \
-      || config_problems="${config_problems} ${label}"
-  }
-
-  # The host and the path prefix are what this script sets, and a chart default
-  # surviving in either would put the apps somewhere nobody is looking.
-  expect_config "the-host" "${host}"
-  [ -z "$APPLAB_PATH_PREFIX" ] || expect_config "the-path-prefix" "${APPLAB_PATH_PREFIX}"
-  expect_config "the-namespace" "${ns}"
-
-  # The base path reaches the server too. Asserted against the address template
-  # rather than against a bare path, because that is where it is observable: with
-  # the two paths configured the template is "<host>/applab/apps/<app>", and a
-  # server that had taken the prefix but not the installation's own path — or the
-  # other way round — would publish an app at a path the gateway does not serve.
-  #
-  # Matched up to the app id and not through it. Go's JSON encoder escapes angle
-  # brackets into their unicode escape form, because that is what keeps a JSON
-  # document safe to embed in HTML — so the server reports the template correctly
-  # while the raw body holds something other than the characters the template was
-  # built from. A grep for the literal placeholder therefore matches nothing
-  # however right the deployment is, which is what this check did on its first run:
-  # it failed an environment whose every setting had arrived.
-  #
-  # The host and both paths are the part that can be compared, and they are also
-  # the part that distinguishes a server that took the base path from one that did
-  # not.
-  expect_config "the-base-path-in-the-address-template" "\"domain_template\":\"${host}${APPLAB_BASE_PATH}${APPLAB_PATH_PREFIX}/"
-
-  # And the build pipeline has to be usable, since this environment sets a registry
-  # for it. A deployment whose build half silently came up disabled still serves
-  # every endpoint above, and fails only when someone pushes — which is exactly the
-  # class of failure this check exists to move forward.
-  printf '%s' "$body" | grep -q '"build":true' \
-    || config_problems="${config_problems} the-build-pipeline-is-not-enabled"
-
-  [ -z "$config_problems" ] || {
-    printf '%s\n' "$body" | head -40 | sed 's/^/    /' >&2
-    die "AppLab ${n}: the deployment's own settings did not reach the server:${config_problems} — the values above are what it reports, and the chart's defaults are what it should not"
-  }
-}
-
-# verify_isolation is the check the second installation exists for.
-#
-# Each installation has an admin key, and an admin key can do anything its
-# installation can — including delete every app in it. So the one arrangement
-# that must not happen is the two sharing a key set: an installation whose Secret
-# was built from the other's key looks completely healthy from the outside and
-# hands one installation's owner the other's data.
-#
-# Nothing about either installation's own checks would catch that. Every endpoint
-# answers 200 on both, both tables are green, and the two consoles are on two
-# hosts with two keys — one of which simply also opens the other. It is caught
-# here, by asking one installation's question of the other and insisting on a
-# refusal. A 200 means the keys are not separate, which is worse than any single
-# installation being broken.
-verify_isolation() {
-  local code body
-  APPLAB_INSTANCE_N=1
-  local host_1; host_1="$(instance_host)"
-  local key_1;  key_1="$(instance_key)"
-  APPLAB_INSTANCE_N=2
-  local host_2; host_2="$(instance_host)"
-
-  log "confirming the two installations do not share a key"
-  code=$(gateway_code "$host_2" "${APPLAB_BASE_PATH}/api/v1/overview" -H "Authorization: Bearer ${key_1}")
-  printf '  %-32s %s\n' "key 1 on AppLab 2" "$code"
-  [ "$code" != "200" ] \
-    || die "installation 1's key is accepted by installation 2: the two are one installation with two addresses, and either key can destroy both. Check that the two auth Secrets were built from different APPLAB_API_KEY values — the shared thing would be the Secret, since a Secret lives in a namespace and the two Secrets are separate objects"
-
-  # And the reverse, because a one-way check would pass if installation 2's key
-  # set happened to be a superset of installation 1's — which is exactly what a
-  # Secret built from a comma-joined pair would look like.
-  APPLAB_INSTANCE_N=2
-  local key_2; key_2="$(instance_key)"
-  code=$(gateway_code "$host_1" "${APPLAB_BASE_PATH}/api/v1/overview" -H "Authorization: Bearer ${key_2}")
-  printf '  %-32s %s\n' "key 2 on AppLab 1" "$code"
-  [ "$code" != "200" ] \
-    || die "installation 2's key is accepted by installation 1: the two are one installation with two addresses, and either key can destroy both"
-
-  # Each key on its own installation, so that "refused everywhere" cannot pass
-  # this. Without it, two installations with no usable key at all would look
-  # isolated.
-  APPLAB_INSTANCE_N=1
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-    -H "Host: ${host_1}" -H "Authorization: Bearer ${key_1}" \
-    "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${APPLAB_BASE_PATH}/api/v1/overview" 2>/dev/null || true)
-  printf '  %-32s %s\n' "key 1 on AppLab 1" "$code"
-  [ "$code" = "200" ] || die "installation 1's key was refused by installation 1, so the check above proved nothing"
-
-  # The object store prefix, which is the one separation a key check cannot see.
-  #
-  # This is read out of the running configuration rather than asserted against
-  # the helm command line, because the command line is what was asked for and this
-  # is what arrived — and the failure mode is a values file that drops it, which
-  # is exactly the kind of thing that renders fine and changes nothing.
-  #
-  # The two are compared to each other as well as to what was requested. Equal
-  # prefixes are the collision: both installations come up, both serve, and each
-  # one's apps appear in the other's console and overwrite each other's keys.
-  APPLAB_INSTANCE_N=1
-  local prefix_1; prefix_1="$(instance_slug)"
-  APPLAB_INSTANCE_N=2
-  local prefix_2; prefix_2="$(instance_slug)"
-  [ "$prefix_1" != "$prefix_2" ] \
-    || die "both installations were given the object store prefix '${prefix_1}': they share one bucket, so they would read and write each other's apps. Set APPLAB_OBJECT_STORE_PREFIX to something that differs per installation"
-
-  # The configmap is `<fullname>-config` — not the bare fullname, which is the
-  # Service and the Deployment. Read from the rendered name rather than guessed:
-  # a query against a name that does not exist returns empty, and empty is also
-  # what a genuinely unset prefix returns, so a wrong name here would make this
-  # check pass for the wrong reason — the one failure mode a check must not have.
-  local configured
-  configured=$(kubectl -n "applab-1" get configmap "applab-1-config" \
-    -o jsonpath='{.data.APPLAB_OBJECT_STORE_PREFIX}' 2>/dev/null || true)
-  [ "$configured" = "$prefix_1" ] \
-    || die "installation 1's object store prefix is '${configured}', expected '${prefix_1}': with it empty both installations write the same keys in the one bucket, which nothing else here would notice until an app appeared in the wrong console"
-}
-
-# ── 6. both installations, in order ─────────────────────────────────────────
-
-# The registry credential is shared by both installations — one registry, one
-# credential — so it is checked once here rather than once per installation.
-#
-# The credential has to be one the registry accepts, and that is a question only
-# the registry can answer. Checked here rather than left to the first push,
-# because a push is minutes of build before it fails, and the failure it would
-# report — a denied push — names neither the Secret nor which of its fields is
-# wrong. This is one request and it says so directly.
-#
-# It authenticates rather than pushing: a token with read access would pass this
-# and fail the push, so it is not the whole answer, but it catches the failure
-# that is actually likely — a token that is mistyped, expired, or for another
-# account entirely.
-#
-# Created twice above and checked once here, deliberately: the Secret is what is
-# per installation, the credential is not, so two logins would ask the registry
-# the same question twice and report the same answer.
-log "confirming the registry credential is accepted"
-if [ -n "$APPLAB_REGISTRY_USERNAME" ] && [ -n "$APPLAB_REGISTRY_PASSWORD" ]; then
-  printf '%s' "$APPLAB_REGISTRY_PASSWORD" \
-    | docker login "$(registry_host_of)" --username "$APPLAB_REGISTRY_USERNAME" --password-stdin >/dev/null 2>&1 \
-    || die "the registry refused the credential: the build would push with it and every app would fail to pull. Check APPLAB_REGISTRY_USERNAME and APPLAB_REGISTRY_PASSWORD"
-else
-  die "no registry credential was supplied: this environment pushes its images to a real registry, so it needs one. Set APPLAB_REGISTRY_USERNAME and APPLAB_REGISTRY_PASSWORD"
+if ! helm install applab "$REPO_ROOT/charts/applab" \
+  --namespace "$APPLAB_NAMESPACE" \
+  --set auth.existingSecret=applab-keys \
+  --set "ingress.host=${TUNNEL_HOST}" \
+  --set "ingress.path=${APPLAB_BASE_PATH}" \
+  --set "apps.pathPrefix=${APPLAB_PATH_PREFIX}" \
+  --set deploy.gateway=istio-system/istio-ingressgateway \
+  --set "build.registry=${APPLAB_REGISTRY}" \
+  --set "build.secret=${APPLAB_REGISTRY_SECRET}" \
+  --set ingress.enabled=false \
+  --set "image.repository=${APPLAB_IMAGE_REPOSITORY}" \
+  --set "image.tag=${APPLAB_VERSION}" \
+  --set "objectStore.endpoint=http://${APPLAB_OBJECT_STORE_ENDPOINT}" \
+  --set "objectStore.bucket=${APPLAB_OBJECT_STORE_BUCKET}" \
+  --set "objectStore.accessKey=${APPLAB_OBJECT_STORE_ACCESS_KEY}" \
+  --set "objectStore.secretKey=${APPLAB_OBJECT_STORE_SECRET_KEY}" \
+  --set objectStore.pathStyle=true \
+  --set objectStore.insecure=true
+then
+  warn "AppLab could not be installed at all; the state it left behind follows"
+  kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service 2>&1 | sed 's/^/    /' || true
+  helm -n "$APPLAB_NAMESPACE" status applab 2>&1 | sed 's/^/    /' || true
+  die "helm rejected the release: the message above is helm's, the rest is the cluster's"
 fi
 
-for n in $APPLAB_INSTANCES; do
-  APPLAB_INSTANCE_N="$n"
-  install_instance
+# The rollout, waited for here rather than by helm.
+#
+# The deadline is generous, because the first pull of an image on a cold runner
+# is genuinely slow. What matters is that it is bounded and that the wait is
+# visible: the pod's own state is printed as it changes, so a stuck install shows
+# ImagePullBackOff or a CrashLoopBackOff in the log while it is stuck, rather
+# than ten minutes later as a timeout.
+#
+# `rollout status` is not used for the same reason `--wait` is not: it blocks
+# silently and reports a condition, where the interesting thing is the reason.
+# It is only polled with a one-second timeout to ask whether the wait is over.
+applab_wait_seconds="$APPLAB_INSTALL_TIMEOUT_SECONDS"
+log "waiting up to ${applab_wait_seconds}s for applab to roll out"
+last_state=""
+rolled_out=""
+crash_grabbed=""
+for attempt in $(seq 1 "$applab_wait_seconds"); do
+  # A single line per pod, in a stable order, so the same state does not print
+  # every second: only a change is worth a line.
+  state=$(kubectl -n "$APPLAB_NAMESPACE" get pods \
+    -o 'custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.waiting.reason' \
+    --no-headers 2>/dev/null | sort || true)
+  if [ "$state" != "$last_state" ]; then
+    printf '%s\n' "$state" | sed 's/^/    /'
+    last_state="$state"
+  fi
+
+  # Some states will not resolve by waiting. A container that cannot start — a
+  # crash loop, an image that cannot be pulled — is already failing, and the
+  # remaining minutes add nothing but a delay before the same answer. Grab the
+  # container's own last words while it is still there to ask, and stop.
+  #
+  # ImagePullBackOff is excluded deliberately: a first pull on a cold runner is
+  # slow, and pulling is not failing. It is ErrImagePull's settled form and it
+  # does eventually resolve.
+  case "$state" in
+    *CrashLoopBackOff*|*CreateContainerConfigError*|*RunContainerError*|*InvalidImageName*)
+      crash_grabbed="yes" ;;
+  esac
+  [ -z "$crash_grabbed" ] || break
+
+  if kubectl -n "$APPLAB_NAMESPACE" rollout status deploy/applab --timeout=1s >/dev/null 2>&1; then
+    rolled_out="yes"
+    break
+  fi
+  sleep 1
 done
+
+if [ -z "$rolled_out" ]; then
+  if [ -n "$crash_grabbed" ]; then
+    warn "AppLab cannot start — its container is not coming up, and waiting would not change that"
+  else
+    warn "AppLab did not become ready within ${applab_wait_seconds}s; the state it is in follows"
+  fi
+  kubectl -n "$APPLAB_NAMESPACE" get pods,deployment,replicaset,service 2>&1 | sed 's/^/    /' || true
+  # The reason a container cannot start is in these, and they are the things a
+  # person would otherwise have to guess at: an image that cannot be pulled, a
+  # volume that cannot be mounted, an AppLab that started and refused its own
+  # configuration. The log is what the process itself said before it died, which
+  # is the one thing no amount of waiting produces.
+  kubectl -n "$APPLAB_NAMESPACE" describe pods 2>&1 | tail -n 60 | sed 's/^/    /' || true
+  kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --all-containers --tail=100 2>&1 | sed 's/^/    /' || true
+  # --previous, because a crash loop's current container may have produced
+  # nothing yet — the reason is in the attempt that already died.
+  kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --all-containers --previous --tail=100 2>&1 | sed 's/^/    /' || true
+  if [ -n "$crash_grabbed" ]; then
+    die "AppLab exited on startup: its output is above. Nothing about waiting changes this"
+  fi
+  die "AppLab never became ready — if this is a slow first pull, raise APPLAB_INSTALL_TIMEOUT_SECONDS"
+fi
+
+# Ready is what the Deployment reports. The console's route is a separate object
+# that AppLab only has if the chart rendered it, and without it the gateway
+# answers 404 at "/" — so it is checked here rather than discovered at a browser.
+kubectl -n "$APPLAB_NAMESPACE" get virtualservice applab-console -o name >/dev/null 2>&1 \
+  || die "the console has no VirtualService, so the gateway would answer 404 at \"/\": the chart rendered one only when ingress.enabled is false, and this install did not produce it"
+
+# Everything the release made, right after it made it. The VirtualServices are
+# listed with the rest rather than separately: one is the console's, from the
+# chart, and an app's appears here too the moment something is deployed — which
+# is exactly the object to look at when a deploy succeeds and nothing is
+# reachable.
+show "AppLab" \
+  kubectl -n "$APPLAB_NAMESPACE" get deployment,replicaset,pod,service,secret
+show "AppLab's routes (VirtualServices)" \
+  kubectl -n "$APPLAB_NAMESPACE" get virtualservices
 
 # Ask Istio's own analyzer whether the objects above can actually be programmed.
 #
@@ -1434,18 +919,11 @@ done
 # with nothing said about why — which is the failure this whole check exists to
 # replace.
 # Every namespace, not just AppLab's. The reference this check exists for crosses
-# one — a VirtualService in an AppLab namespace naming a Gateway in istio-system —
-# and the analyzer resolves references cluster-wide, so scoping it to one
-# namespace risks missing the very case. The cost is that a problem anywhere fails
-# the environment, which is the right trade on a kind cluster this script created
-# moments ago and has nothing else in.
-#
-# It runs once, after both installations, rather than inside install_instance:
-# it is a question about the cluster's whole configuration, and the answer it
-# would give halfway through installing the second one is not one worth acting
-# on. It is also the check that would catch the two releases interfering — a
-# route bound to a Gateway that is not there is exactly what a second
-# installation typo'd into the first one's namespace would look like.
+# one — a VirtualService in the AppLab namespace naming a Gateway in
+# istio-system — and the analyzer resolves references cluster-wide, so scoping it
+# to one namespace risks missing the very case. The cost is that a problem
+# anywhere fails the environment, which is the right trade on a kind cluster this
+# script created moments ago and has nothing else in.
 analyze_exit=0
 analyze_output=$(istioctl analyze --all-namespaces 2>&1) || analyze_exit=$?
 
@@ -1456,35 +934,192 @@ fi
 show "istioctl analyze (the configuration is programmable)" \
   printf '%s\n' "$analyze_output"
 
-# One installation at a time, and fully, before the next is asked about: the
-# tables of two installations interleaved would be two tables nobody can read, and
-# a failure is worth reporting against the installation that produced it.
-for n in $APPLAB_INSTANCES; do
-  APPLAB_INSTANCE_N="$n"
-  verify_instance "$n"
-done
-verify_isolation
+# ── 5. what came up, and whether it answers ─────────────────────────────────
 
-# ── 7. publish ──────────────────────────────────────────────────────────────
-
-# The tunnels come up now rather than at the start. Everything above is the
-# cluster's own business and is already proven — the pods, the Services, all four
-# VirtualServices and every endpoint answered on both hosts — so a tunnel that
-# fails here fails on its own, and cannot be mistaken for the platform not having
-# come up.
+# Everything below reaches the gateway the way a browser does: over loopback on
+# the node port, with the environment's own hostname as the Host header — which
+# is what a request arriving through the tunnel carries.
 #
-# The exception is a quick tunnel or ngrok, whose hostnames had to be known before
-# AppLab was installed; resolve_hosts started those already, and publish() notices
-# and does nothing for them.
-for n in $APPLAB_INSTANCES; do
-  APPLAB_INSTANCE_N="$n"
-  publish
-done
+# The port in that header is harmless. Istio sets IgnorePortInHostMatching on the
+# gateway's route configuration (pilot/pkg/networking/core/gateway.go), so Envoy
+# drops it before matching, and the bare hostnames the VirtualServices carry are
+# what match.
+gateway_code() {
+  local path="$1"; shift
+  # `|| true` so a refused connection reports as 000 rather than killing the
+  # script: `set -e` sees curl's non-zero exit inside the command substitution
+  # and stops with no message at all, which is the least useful way for a
+  # gateway that is not listening to fail.
+  curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    -H "Host: ${TUNNEL_HOST}" "$@" \
+    "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${path}" 2>/dev/null || true
+}
 
-APPLAB_PUBLIC_URL_SHOWN="$(cat "$PUBLIC_URL_FILE")" \
+# The gateway is the only thing the tunnel points at, so it is what has to
+# answer: a ready Service behind an unprogrammed gateway is still an environment
+# nobody can open.
+log "waiting for the gateway to serve AppLab"
+for attempt in $(seq 1 90); do
+  if [ "$(gateway_code /health)" = "200" ]; then break; fi
+  if [ $((attempt % 15)) -eq 0 ]; then log "  still waiting... (attempt ${attempt})"; fi
+  sleep 2
+done
+if [ "$(gateway_code /health)" != "200" ]; then
+  kubectl -n "$APPLAB_NAMESPACE" get pods
+  kubectl -n "$APPLAB_NAMESPACE" logs deploy/applab --tail=50 2>/dev/null || true
+  kubectl -n "$APPLAB_NAMESPACE" get virtualservices 2>/dev/null || true
+  die "the gateway is not serving AppLab at /health (/health and /metrics are the two paths the cluster reaches the pod on; they are served at the root, outside the base path)"
+fi
+
+# Every endpoint a person or a client uses, and the status each one answers.
+#
+# Reported and asserted in one pass, because they are the same question: these
+# are all served by one process behind one route, so anything but a 200 is a bug
+# rather than a slow start, and a table of green is the evidence that the gateway,
+# the two VirtualServices, the Service and the deployment all line up.
+#
+# The paths are written with the base path in front, except for the two the
+# cluster itself uses. /health and /metrics are reached by the kubelet and by
+# Prometheus on the container port, neither of which knows what path the
+# deployment is published under — so the server answers them at the root and
+# applies its prefix to everything else. Writing both kinds out here is what
+# makes that exemption visible rather than a rule someone has to know.
+log "the endpoints, through the gateway on ${APPLAB_GATEWAY_NODEPORT}"
+printf '  %-32s %s\n' "PATH" "STATUS"
+
+failed=""
+check_endpoint() {
+  local label="$1" path="$2"; shift 2
+  local code
+  code=$(gateway_code "$path" "$@")
+  printf '  %-32s %s\n' "$label" "$code"
+  [ "$code" = "200" ] || failed="${failed} ${label}=${code}"
+}
+
+# Open by design: a probe cannot hold a key, and the console is a page a browser
+# fetches before anyone has signed in.
+#
+# /api/v1/describe is the one that matters most for an agent: it is where a
+# caller with no key learns what this deployment is, and it serves the endpoint
+# list. Asserting it here is what proves the front door opens — it is the route
+# whose absence nothing else would catch, because everything else a client uses
+# needs a key first.
+check_endpoint "/health"                /health
+check_endpoint "/metrics"               /metrics
+check_endpoint "/ (the console)"        "${APPLAB_BASE_PATH}"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/config"   "${APPLAB_BASE_PATH}/api/v1/config"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/version"  "${APPLAB_BASE_PATH}/api/v1/version"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/describe" "${APPLAB_BASE_PATH}/api/v1/describe"
+# The one thing that proves the admin key works through the gateway, not only
+# that the route exists.
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/overview (key)" "${APPLAB_BASE_PATH}/api/v1/overview" -H "Authorization: Bearer ${APPLAB_API_KEY}"
+check_endpoint "${APPLAB_BASE_PATH}/api/v1/describe (key)" "${APPLAB_BASE_PATH}/api/v1/describe" -H "Authorization: Bearer ${APPLAB_API_KEY}"
+
+# And the base path is a prefix, not an alias: the same service must not answer
+# outside it. A server that ignored its own prefix would serve every route twice
+# and shadow whatever else owns the root — which is the whole reason the setting
+# exists.
+root_code=$(gateway_code /api/v1/config)
+printf '  %-32s %s\n' "/api/v1/config (outside the base path)" "$root_code"
+[ "$root_code" != "200" ] || failed="${failed} the-api-answers-outside-its-base-path"
+
+[ -z "$failed" ] || die "these did not answer as expected through the gateway:${failed}"
+
+# The chart's settings have to reach the *server*, not only the render.
+#
+# This is the check whose absence let a whole class of failure through once
+# already: the chart passed one thing, the server kept a default, every chart
+# check passed, and the failure appeared only when someone pushed an app.
+#
+# Only what the API reports can be asserted from here, so these are the settings
+# it does report: the address convention, which decides whether the console and
+# the apps are reachable at all, and the build capability, which is what this
+# environment now depends on a real registry for.
+log "confirming the settings the chart passed actually arrived"
+config_json=$(curl -s --max-time 5 -H "Host: ${TUNNEL_HOST}" \
+  "http://127.0.0.1:${APPLAB_GATEWAY_NODEPORT}${APPLAB_BASE_PATH}/api/v1/config" 2>/dev/null || true)
+
+# jq is not assumed present on a runner; the raw JSON is matched instead.
+config_problems=""
+expect_config() {
+  local label="$1" want="$2"
+  printf '%s' "$config_json" | grep -qF -- "$want" \
+    || config_problems="${config_problems} ${label}"
+}
+
+# The host and the path prefix are what this script sets, and a chart default
+# surviving in either would put the apps somewhere nobody is looking.
+expect_config "the-host" "${TUNNEL_HOST}"
+[ -z "$APPLAB_PATH_PREFIX" ] || expect_config "the-path-prefix" "${APPLAB_PATH_PREFIX}"
+expect_config "the-namespace" "${APPLAB_NAMESPACE}"
+
+# The base path reaches the server too. Asserted against the address template
+# rather than against a bare path, because that is where it is observable: with
+# the two paths configured the template is "<host>/applab/apps/<app>", and a
+# server that had taken the prefix but not the installation's own path — or the
+# other way round — would publish an app at a path the gateway does not serve.
+#
+# Matched up to the app id and not through it. Go's JSON encoder escapes angle
+# brackets into their unicode escape form, because that is what keeps a JSON
+# document safe to embed in HTML — so the server reports the template correctly
+# while the raw body holds something other than the characters the template was
+# built from. A grep for the literal placeholder therefore matches nothing
+# however right the deployment is, which is what this check did on its first run:
+# it failed an environment whose every setting had arrived.
+#
+# The host and both paths are the part that can be compared, and they are also
+# the part that distinguishes a server that took the base path from one that did
+# not.
+expect_config "the-base-path-in-the-address-template" "\"domain_template\":\"${TUNNEL_HOST}${APPLAB_BASE_PATH}${APPLAB_PATH_PREFIX}/"
+
+# And the build pipeline has to be usable, since this environment sets a registry
+# for it. A deployment whose build half silently came up disabled still serves
+# every endpoint above, and fails only when someone pushes — which is exactly the
+# class of failure this check exists to move forward.
+printf '%s' "$config_json" | grep -q '"build":true' \
+  || config_problems="${config_problems} the-build-pipeline-is-not-enabled"
+
+# The credential has to be one the registry accepts, and that is a question only
+# the registry can answer. Checked here rather than left to the first push,
+# because a push is minutes of build before it fails, and the failure it would
+# report — a denied push — names neither the Secret nor which of its fields is
+# wrong. This is one request and it says so directly.
+#
+# It authenticates rather than pushing: a token with read access would pass this
+# and fail the push, so it is not the whole answer, but it catches the failure
+# that is actually likely — a token that is mistyped, expired, or for another
+# account entirely.
+log "confirming the registry credential is accepted"
+if [ -n "$APPLAB_REGISTRY_USERNAME" ] && [ -n "$APPLAB_REGISTRY_PASSWORD" ]; then
+  if ! printf '%s' "$APPLAB_REGISTRY_PASSWORD" \
+    | docker login "$registry_host" --username "$APPLAB_REGISTRY_USERNAME" --password-stdin >/dev/null 2>&1; then
+    config_problems="${config_problems} the-registry-credential-was-refused"
+  fi
+else
+  config_problems="${config_problems} no-registry-credential-was-supplied"
+fi
+
+[ -z "$config_problems" ] || {
+  printf '%s\n' "$config_json" | head -40 | sed 's/^/    /' >&2
+  die "the deployment's own settings did not reach the server:${config_problems} — the values above are what it reports, and the chart's defaults are what it should not"
+}
+
+# ── 6. publish ──────────────────────────────────────────────────────────────
+
+# The tunnel comes up now rather than at the start. Everything above is the
+# cluster's own business and is already proven — the pods, the Service, both
+# VirtualServices and every endpoint answered — so a tunnel that fails here fails
+# on its own, and cannot be mistaken for the platform not having come up.
+#
+# The exception is a quick tunnel or ngrok, whose hostname had to be known before
+# AppLab was installed; resolve_host started that one already, and publish()
+# notices and does nothing.
+publish
+
+APPLAB_PUBLIC_URL="$public_url" \
 APPLAB_API_KEY_SHOWN="$APPLAB_API_KEY" \
-APPLAB_API_KEY_2_SHOWN="$APPLAB_API_KEY_2" \
 APPLAB_VERSION_SHOWN="$APPLAB_VERSION" \
+APPLAB_NAMESPACE_SHOWN="$APPLAB_NAMESPACE" \
 APPLAB_PATH_PREFIX_SHOWN="$APPLAB_PATH_PREFIX" \
 APPLAB_BASE_PATH_SHOWN="$APPLAB_BASE_PATH" \
 APPLAB_TUNNEL_SHOWN="$APPLAB_TUNNEL" \
@@ -1496,51 +1131,29 @@ APPLAB_RUNTIME_DIR_SHOWN="$RUNTIME_DIR" \
 cat <<EOF
 
 =====================================================================
- applab is ready — two installations on one cluster
+ applab is ready
 
-   ── Installation 1 (namespace applab-1) ──
-   Console:  ${public_url_1}
+   Console:  ${public_url}
    API key:  ${APPLAB_API_KEY}
 
-   ── Installation 2 (namespace applab-2) ──
-   Console:  ${public_url_2}
-   API key:  ${APPLAB_API_KEY_2}
-
-   Each console asks for its own address and key; both are kept in your
-   browser. Deployed apps are served under
-   ${public_url_1}${APPLAB_PATH_PREFIX}/<app>/ and
-   ${public_url_2}${APPLAB_PATH_PREFIX}/<app>/.
-
-   The two share nothing but the cluster: separate namespaces, separate
-   releases, separate keys, and separate prefixes in the one object store.
-   An app created in one does not appear in the other.
+   The console asks for this address and key; both are kept in your
+   browser. Deployed apps are served under ${public_url}${APPLAB_PATH_PREFIX}/<app>/.
 
    Push an app from a local directory:
 
-     export APPLAB_URL='${public_url_1}'
+     export APPLAB_URL='${public_url}'
      export APPLAB_KEY='${APPLAB_API_KEY}'
      applab push myshop
-
-   ...and the same against ${public_url_2} with key ${APPLAB_API_KEY_2},
-   which creates a second, independent app of the same name.
 
 =====================================================================
 EOF
 
-# ── 8. stay alive ───────────────────────────────────────────────────────────
+# ── 7. stay alive ───────────────────────────────────────────────────────────
 
 cleanup() {
   log "ending the environment"
-  # Every tail and every agent, not just the last one started: a leaked process
-  # here is a leaked process on a runner that is about to be reclaimed anyway,
-  # but a tunnel agent left running holds its hostname until it is killed and the
-  # next run then argues with it.
-  if [ -f "$RUNTIME_DIR/tail.pid" ]; then
-    while read -r pid; do [ -n "$pid" ] && kill "$pid" 2>/dev/null || true; done < "$RUNTIME_DIR/tail.pid"
-  fi
-  for pid in "${tunnel_pids[@]:-}"; do
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-  done
+  [ -f "$RUNTIME_DIR/tail.pid" ] && kill "$(cat "$RUNTIME_DIR/tail.pid")" 2>/dev/null || true
+  [ -n "$tunnel_pid" ] && kill "$tunnel_pid" 2>/dev/null || true
   kind delete cluster --name "$APPLAB_CLUSTER_NAME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -1557,17 +1170,18 @@ fi
 # cancelled, which is the only kind of no-limit a runner that kills the job
 # anyway can offer.
 while [ "$DEADLINE" -eq 0 ] || [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  # Every tunnel, because with two of them the second one dying is exactly as
-  # fatal as the first: it is one installation's only way in, and a loop that
-  # watched a single agent would sleep through the other's death until the
-  # deadline. Only when there are any: APPLAB_PUBLIC_HOST means no tunnel was
-  # started, and an absent agent is not a stopped one. `kill -0 ""` fails, so
-  # without the emptiness test the loop would end the environment on its first
-  # pass — which is exactly the case CI runs in.
-  for pid in "${tunnel_pids[@]:-}"; do
-    [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null \
-      || { warn "a tunnel agent stopped; one of the installations is no longer reachable from outside"; break 2; }
-  done
+  # A dead tunnel is worth reporting now rather than at the deadline: it is the
+  # only way in, so nobody can reach the environment, which is a fact the person
+  # watching needs before the run ends. Nothing else is watched — everything
+  # after the tunnel is the cluster's own health, which Kubernetes reports.
+  #
+  # Only when there is one: APPLAB_PUBLIC_HOST means no tunnel was started, and
+  # an absent agent is not a stopped one. `kill -0 ""` fails, so without this the
+  # loop would end the environment on its first pass — which is exactly the case
+  # CI runs in.
+  if [ -n "$tunnel_pid" ]; then
+    kill -0 "$tunnel_pid" 2>/dev/null || { warn "the tunnel agent stopped"; break; }
+  fi
   sleep 15
 done
 
