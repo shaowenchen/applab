@@ -1431,3 +1431,113 @@ func (l *lineReader) read() (string, error) {
 	line, err := l.r.ReadString('\n')
 	return line, err
 }
+
+// ---------------------------------------------------------------------------
+// Servers: the other AppLab deployments this one can manage
+// ---------------------------------------------------------------------------
+
+// Server is one AppLab this deployment knows how to reach.
+//
+// It carries no key. The key is stored beside the server and used to build a
+// client; a shape that could hold one is one a response would eventually leak.
+type Server struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+
+	// URL is the remote's base address, path prefix included.
+	URL string `json:"url"`
+
+	// Builtin is true only for the local entry, which stands for this deployment
+	// itself and is never registered.
+	Builtin bool `json:"builtin,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// RegisterServerRequest is the body of a registration.
+type RegisterServerRequest struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	URL  string `json:"url"`
+	Key  string `json:"key"`
+}
+
+// ListServers returns the local entry followed by every registered remote.
+func (c *Client) ListServers(ctx context.Context) ([]Server, error) {
+	var out []Server
+	if err := c.do(ctx, http.MethodGet, "/api/v1/servers", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetServer returns one server, without its key.
+func (c *Client) GetServer(ctx context.Context, id string) (*Server, error) {
+	var out Server
+	if err := c.do(ctx, http.MethodGet, "/api/v1/servers/"+url.PathEscape(id), nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RegisterServer registers a remote AppLab and returns it.
+func (c *Client) RegisterServer(ctx context.Context, req RegisterServerRequest) (*Server, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	var out Server
+	if err := c.do(ctx, http.MethodPost, "/api/v1/servers", bytes.NewReader(body), "application/json", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveServer forgets a registration.
+func (c *Client) RemoveServer(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/servers/"+url.PathEscape(id), nil, "", nil)
+}
+
+// ServerApps lists the apps on one server. Server is "local" for this deployment.
+func (c *Client) ServerApps(ctx context.Context, server string) ([]App, error) {
+	var out []App
+	if err := c.do(ctx, http.MethodGet, "/api/v1/servers/"+url.PathEscape(server)+"/apps", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateServerApp creates an app on one server.
+//
+// The response of a remote create carries the new app's own key, which is the
+// one moment it is handed out — the same answer a local create gives.
+func (c *Client) CreateServerApp(ctx context.Context, server string, req CreateAppRequest) (*App, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	var out App
+	if err := c.do(ctx, http.MethodPost, "/api/v1/servers/"+url.PathEscape(server)+"/apps", bytes.NewReader(body), "application/json", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetServerApp returns one app on one server.
+func (c *Client) GetServerApp(ctx context.Context, server, appID string) (*App, error) {
+	var out App
+	path := "/api/v1/servers/" + url.PathEscape(server) + "/apps/" + url.PathEscape(appID)
+	if err := c.do(ctx, http.MethodGet, path, nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteServerApp deletes an app on one server.
+func (c *Client) DeleteServerApp(ctx context.Context, server, appID string, keepSource bool) error {
+	path := "/api/v1/servers/" + url.PathEscape(server) + "/apps/" + url.PathEscape(appID)
+	if keepSource {
+		path += "?keep_source=true"
+	}
+	return c.do(ctx, http.MethodDelete, path, nil, "", nil)
+}

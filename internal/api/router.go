@@ -109,6 +109,12 @@ type Server struct {
 	// cannot deploy.
 	deployer Deployer
 
+	// servers is the store of remote AppLab deployments an administrator has
+	// registered. Nil means this deployment cannot keep registrations — it came
+	// up without cluster access — which does not stop the built-in local entry
+	// from being listed or managed.
+	servers serverRegistry
+
 	// git is the handler serving repositories over the git smart HTTP protocol.
 	// Nil means this deployment does not serve git.
 	git http.Handler
@@ -844,6 +850,62 @@ func (s *Server) routes() []route {
 			AppAdminOnly: true,
 			Doc:          "Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository. Requires an admin key: an app key may manage its app but not destroy it.",
 			Handler:      s.handleDeleteApp,
+		},
+
+		// -- Servers ------------------------------------------------------
+		//
+		// The other AppLab deployments this one can manage. Every route here is
+		// admin-only: a server is reached with an admin key, and the ability to
+		// act on a whole other platform is not something an app key — scoped to
+		// one app — may borrow. No route returns a registered key; the response
+		// type has no field for one.
+		{
+			Pattern: "GET /api/v1/servers",
+			Auth:    true,
+			Doc:     "Every AppLab this deployment can manage: the built-in `local` entry first — this deployment itself — then each registered remote. The key of a remote is never returned.",
+			Handler: s.handleListServers,
+		},
+		{
+			Pattern: "POST /api/v1/servers",
+			Auth:    true,
+			Doc:     "Register a remote AppLab. Body: `{id, url, key, name?}`. The address and the key are checked against the remote before anything is stored, so a wrong address or a key that is not an admin key is a 400 here rather than a failure later. `url` must include any path prefix the remote is served under. 501 when this deployment has no cluster, where registrations are kept.",
+			Handler: s.handleRegisterServer,
+		},
+		{
+			Pattern: "GET /api/v1/servers/{server}",
+			Auth:    true,
+			Doc:     "One server, without its key. `local` reports this deployment.",
+			Handler: s.handleGetServer,
+		},
+		{
+			Pattern: "DELETE /api/v1/servers/{server}",
+			Auth:    true,
+			Doc:     "Forget a registration. The remote's apps are untouched, and the remote need not be reachable. `local` cannot be removed.",
+			Handler: s.handleRemoveServer,
+		},
+		{
+			Pattern: "GET /api/v1/servers/{server}/apps",
+			Auth:    true,
+			Doc:     "List the apps on one server. On `local` this answers exactly what `GET /api/v1/apps` does; on a remote it relays that remote's list.",
+			Handler: s.handleServerListApps,
+		},
+		{
+			Pattern: "POST /api/v1/servers/{server}/apps",
+			Auth:    true,
+			Doc:     "Create an app on one server. Body as `POST /api/v1/apps`. On `local` this is the same call. On a remote the response is relayed whole, including the new app's key — the one moment it is handed out.",
+			Handler: s.handleServerCreateApp,
+		},
+		{
+			Pattern: "GET /api/v1/servers/{server}/apps/{app}",
+			Auth:    true,
+			Doc:     "One app on one server.",
+			Handler: s.handleServerGetApp,
+		},
+		{
+			Pattern: "DELETE /api/v1/servers/{server}/apps/{app}",
+			Auth:    true,
+			Doc:     "Delete an app on one server. `?keep_source=true` is passed through.",
+			Handler: s.handleServerDeleteApp,
 		},
 
 		// -- App configuration --------------------------------------------

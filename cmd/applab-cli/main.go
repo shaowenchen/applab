@@ -58,8 +58,9 @@ func (e *silentError) Unwrap() error { return e.err }
 
 func rootCommand() *cobra.Command {
 	var (
-		urlFlag string
-		keyFlag string
+		urlFlag    string
+		keyFlag    string
+		serverFlag string
 	)
 
 	root := &cobra.Command{
@@ -96,6 +97,7 @@ with "applab keys <app>".`,
 
 	root.PersistentFlags().StringVar(&urlFlag, "url", "", "applab deployment URL (default $APPLAB_URL)")
 	root.PersistentFlags().StringVar(&keyFlag, "key", "", "API key (default $APPLAB_KEY)")
+	root.PersistentFlags().StringVar(&serverFlag, "server", "", "act on another registered AppLab deployment (default \"local\", this one)")
 
 	// The client is built inside a command rather than here, so that --help and
 	// a usage error work without a deployment configured.
@@ -114,8 +116,9 @@ with "applab keys <app>".`,
 		keysCommand(&urlFlag, &keyFlag),
 		branchCommand(&urlFlag, &keyFlag),
 		envCommand(&urlFlag, &keyFlag),
-		createCommand(&urlFlag, &keyFlag),
-		listCommand(&urlFlag, &keyFlag),
+		createCommand(&urlFlag, &keyFlag, &serverFlag),
+		listCommand(&urlFlag, &keyFlag, &serverFlag),
+		serversCommand(&urlFlag, &keyFlag),
 		statusCommand(&urlFlag, &keyFlag),
 		pushCommand(&urlFlag, &keyFlag),
 		deployCommand(&urlFlag, &keyFlag),
@@ -131,7 +134,7 @@ with "applab keys <app>".`,
 		updateCommand(&urlFlag, &keyFlag),
 		restartCommand(&urlFlag, &keyFlag),
 		stopCommand(&urlFlag, &keyFlag),
-		deleteCommand(&urlFlag, &keyFlag),
+		deleteCommand(&urlFlag, &keyFlag, &serverFlag),
 		diagnoseCommand(&urlFlag, &keyFlag),
 	)
 

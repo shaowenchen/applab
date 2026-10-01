@@ -218,6 +218,13 @@ const sandbox = {
       };
     },
     createRange: () => ({ selectNodeContents() {} }),
+    // The visibility API, which the periodic refresh reads to decide whether
+    // anyone is looking: a background tab is skipped. Modelled rather than left
+    // undefined — undefined is falsy, so the refresh would still run, and a
+    // harness that never reports a hidden tab can only ever exercise one side of
+    // that check. Visible, which is what a real foreground document reports and
+    // what every check below assumes.
+    hidden: false,
   },
   // A browser always has both of these. Modelled here rather than left as
   // origin alone, because the console derives the address it offers from them —
@@ -573,7 +580,7 @@ async function render(apps) {
   // rule that used to read "and neither is the nav" now lives.
   {
     check("signed out, the sign-in card is up", elements.get("signin").classList.contains("hidden"), false);
-    for (const view of ["overview", "apps", "app"]) {
+    for (const view of ["overview", "apps", "app", "servers"]) {
       check(
         `signed out, the ${view} view is not on screen`,
         elements.get(view + "-view").classList.contains("hidden"),
@@ -585,6 +592,7 @@ async function render(apps) {
     check("the nav is up for the document", elements.get("nav").classList.contains("hidden"), false);
     check("with the data views not offered", elements.get("nav-overview").classList.contains("hidden"), true);
     check("nor the app list", elements.get("nav-apps").classList.contains("hidden"), true);
+    check("nor the servers list", elements.get("nav-servers").classList.contains("hidden"), true);
     check("and the document offered", elements.get("nav-docs").classList.contains("hidden"), false);
     // The header itself stays, because the theme and language controls live in
     // it and they are the whole of what this screen offers besides the card.
@@ -946,6 +954,12 @@ async function render(apps) {
       // card's own heading — but "Build log" is only ever a dialog title now
       // that the build's output moved into one.
       "Build log",
+      // The built-in servers row's name, which the API composes — see
+      // localServer in internal/api/servers.go. Reached as t(server.name ||
+      // server.id), an expression the static scan cannot read. Exercised by the
+      // servers-view check below, which asserts the row reads as the translated
+      // name rather than as the raw one.
+      "This deployment",
     ]);
     const unreferenced = Object.keys(zh).filter((k) => !wanted.has(k) && !viaVariable.has(k));
     check(
@@ -2791,7 +2805,21 @@ async function render(apps) {
         status: 200,
         statusText: "OK",
         headers: { get: () => "application/json" },
-        text: async () => JSON.stringify({ data: { apps: {}, builds: {} } }),
+        // The servers routes answer with lists and everything else with the
+        // overview's object, because one of the checks below switches to that
+        // view and the loader reads its answer as an array. A single shape for
+        // every route would make that check fail on the fixture rather than on
+        // the console.
+        //
+        // The list carries the server the check below selects. It has to: the
+        // selection is reconciled against what the list answers with, so a
+        // registration the fixture does not report is one the console correctly
+        // falls back from — and the apps read would then never be made.
+        text: async () => JSON.stringify({
+          data: String(url).endsWith("/api/v1/servers")
+            ? [{ id: "local", name: "This deployment", builtin: true }, { id: "staging", name: "Staging" }]
+            : String(url).includes("/api/v1/servers") ? [] : { apps: {}, builds: {} },
+        }),
       };
     };
 
@@ -2847,6 +2875,29 @@ async function render(apps) {
     ctx.requests.length = 0;
     await refresh();
     check("and with nothing focused the app view is re-read", ctx.requests.some((u) => u.includes("/pods")), true);
+
+    // A background tab. The check above names this case in prose and the sandbox
+    // did not model it until the servers work, so it was the one guard here that
+    // nothing exercised: a document whose `hidden` was undefined read as visible,
+    // and a console that stopped skipping background tabs altogether would have
+    // passed every assertion above.
+    ctx.document.hidden = true;
+    ctx.requests.length = 0;
+    await refresh();
+    check("a background tab is not refreshed", ctx.requests.length, 0);
+    // Restored for the blocks below, which share this document stub.
+    ctx.document.hidden = false;
+
+    // The servers view is its own branch of the switch, and it reads two things:
+    // the registrations, which are the view's subject, and the selected server's
+    // apps, which are what an app created elsewhere would change. Neither is
+    // covered by the other branches above, so a view added to navTo without a
+    // case here would be a view nothing on screen ever updates.
+    vm.runInContext('state.view = "servers"; state.server = "staging";', ctx);
+    ctx.requests.length = 0;
+    await refresh();
+    check("the servers view is re-read", ctx.requests.some((u) => u.endsWith("/api/v1/servers")), true);
+    check("and so is the selected server's apps", ctx.requests.some((u) => u.includes("/servers/staging/apps")), true);
   }
 
   // The events panel is live.
@@ -3236,6 +3287,334 @@ async function render(apps) {
 
     // Masked, not shown. The whole point of the eye.
     check("and the key itself is not on the page", hint.textContent.includes("x"), false);
+  }
+
+  // --- Servers --------------------------------------------------------------
+  //
+  // The servers view: the other AppLab deployments this one can manage, and the
+  // apps on whichever is selected.
+  //
+  // This is the one part of the console that holds another deployment's admin
+  // key, and the check that matters most is the one that says it stays out of
+  // the page: the key is written into no response this console renders, and a
+  // page that leaked it would put an admin credential for a whole other platform
+  // on screen in every screenshot. That is asserted directly below rather than
+  // left to the fact that the markup happens to have no `key` cell.
+  //
+  // The rest is the shape of the view: `local` is present and unremovable, the
+  // remote table does not pretend to link anywhere, and the key from a remote
+  // create is shown once, which is the only moment it can be.
+  {
+    // The API's own shapes: the built-in entry first, then one registration. No
+    // `key` field on either, because the API never sends one.
+    const SERVERS = [
+      { id: "local", name: "This deployment", url: "https://applab.example.com/applab/", builtin: true },
+      { id: "staging", name: "Staging", url: "https://staging.example.com/applab/" },
+    ];
+    const REMOTE_APPS = [
+      { id: "shop", url: "https://staging.example.com/applab/apps/shop" },
+      { id: "blog" },
+    ];
+
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    const calls = [];
+    ctx.fetch = async (url, options) => {
+      const method = (options && options.method) || "GET";
+      calls.push(method + " " + String(url));
+      const path = String(url).replace("https://applab.example.com/applab", "");
+      const data =
+        path === "/api/v1/servers" ? SERVERS :
+        path === "/api/v1/servers/staging/apps" ? REMOTE_APPS :
+        [];
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: data }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.scope = "admin"; state.signedIn = true; state.url = "https://applab.example.com/applab";', ctx);
+
+    const serversEl = elements.get("servers");
+    // Reset, then drive the real loader. The elements are shared with every
+    // other check in this file, so the rows have to be cleared first or an
+    // assertion below could pass on a previous render's leftovers.
+    serversEl.replaceChildren();
+    elements.get("server-apps").replaceChildren();
+    await vm.runInContext("loadServers()", ctx);
+
+    const text = serversEl.allText();
+    check("the built-in deployment is in the list", text.includes("This deployment"), true);
+    check("and so is the registered one", text.includes("Staging"), true);
+    check("with its address", text.includes("https://staging.example.com/applab/"), true);
+
+    // Three columns: the server, where it is, and what can be done to it. There
+    // is no key column, and there cannot be one — the API's own list has no key
+    // in it, so a credential on this page would have to be fetched separately,
+    // and nothing does.
+    //
+    // The `<th` pattern excludes `<thead`, which is the tag that would otherwise
+    // be counted as a fourth column.
+    const headers = markup.match(/<section id="servers-view"[\s\S]*?<\/thead>/)[0];
+    check("the servers table has no key column", (headers.match(/<th[ >]/g) || []).length, 3);
+    check("and no credential is rendered in it", /key|Bearer/i.test(text), false);
+
+    // `local` is this deployment: its row has no Remove button. The API refuses
+    // the call with a 409, and the button is what would make someone try.
+    //
+    // Counted against the buttons the console actually wired rather than against
+    // text, since every row in the fixture carries a Remove *label* in the other
+    // table and a text scan cannot tell the two apart.
+    const rows = serversEl.children.map((tr) => ({
+      label: tr.children[0].textContent,
+      buttons: tr.children[2].children.length,
+    }));
+    check("the local row is the built-in entry", rows.length, 2);
+    check("the local row has no remove control", rows[0].buttons, 0);
+    check("while a registered server has one", rows[1].buttons, 1);
+
+    // Selecting a remote server reads its apps through the proxy.
+    calls.length = 0;
+    await vm.runInContext("loadServerApps()", ctx);
+    vm.runInContext('state.server = "staging";', ctx);
+    await vm.runInContext("loadServerApps()", ctx);
+    check(
+      "the selected server's apps are read from its own route",
+      calls.includes("GET https://applab.example.com/applab/api/v1/servers/staging/apps"),
+      true
+    );
+
+    const appsEl = elements.get("server-apps");
+    const appsText = appsEl.allText();
+    check("and the remote apps are rendered", appsText.includes("shop") && appsText.includes("blog"), true);
+    check("with the address the remote reported", appsText.includes("https://staging.example.com/applab/apps/shop"), true);
+    // Every row has a Remove button, and none of them opens a detail view: the
+    // API proxies only the app-level routes, so a linked row would open a page
+    // whose panels all fail. The apps list's own id cell carries a click
+    // handler; this one must not, which is the difference being asserted.
+    check("each remote app row can be removed", appsEl.children[0].children[2].children.length, 1);
+    check("and its id does not open anything", appsEl.children[0].children[0].onclick, null);
+    // Creating one on that server is the third thing the proxy covers, and the
+    // button is what reaches it.
+    check("and a remote can have an app created on it", elements.get("server-apps-new").classList.contains("hidden"), false);
+
+    // Selecting `local` is a navigation, not a render: this deployment's apps
+    // already have a view with statuses and links into each app, and a second
+    // smaller copy here would be a worse version of it.
+    vm.runInContext('setLang("en")', ctx);
+    vm.runInContext('state.server = "local";', ctx);
+    calls.length = 0;
+    await vm.runInContext("loadServerApps()", ctx);
+    check(
+      "the local selection renders a note rather than a duplicate list",
+      elements.get("server-apps-note").classList.contains("hidden"),
+      false
+    );
+    check("and hides the table the note stands in for", elements.get("server-apps-table").classList.contains("hidden"), true);
+    // And the create button goes with it: this deployment's apps are made in
+    // its own view, one click away, and a button here would open a dialog with
+    // nowhere to create into.
+    check("along with the create control, which has no remote to act on", elements.get("server-apps-new").classList.contains("hidden"), true);
+    check("and asks the API for nothing", calls.length, 0);
+
+    // The highlight follows the click, and it is derived from the state rather
+    // than toggled on the element that was pressed — which is what keeps it
+    // right after a reload rebuilds the rows.
+    const marked = () => serversEl.children.map((tr) => tr.children[0].getAttribute("aria-current")).join(",");
+    vm.runInContext('selectServer("staging")', ctx);
+    await new Promise((r) => setTimeout(r, 0));
+    check("the selected server is marked", marked(), ",true");
+
+    // And selecting `local` leaves for the Apps view rather than rendering a
+    // second, smaller copy of the same list here.
+    vm.runInContext('selectServer("local")', ctx);
+    await new Promise((r) => setTimeout(r, 0));
+    check("selecting this deployment opens the Apps view", elements.get("apps-view").classList.contains("hidden"), false);
+    check("and leaves the servers view", elements.get("servers-view").classList.contains("hidden"), true);
+    check("with the local row marked for the return", marked(), "true,");
+  }
+
+  // Registering a server: the three fields the form collects are the three the
+  // API takes, and the address and the key reach it unaltered.
+  //
+  // Read from the request the console actually sends rather than from the
+  // function's source, because the failure this guards is a body built from the
+  // wrong field — a key read from the address box is a 400 nobody can explain,
+  // and one field silently dropped is a registration that validates against the
+  // wrong thing.
+  //
+  // The refusal is checked too, and in the dialog: the API's message for a wrong
+  // address or a wrong key names which of the two it was, and that is the only
+  // thing that tells the reader what to fix. Reported in the page's banner it
+  // would be detached from the fields it is about.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    let posted = null;
+    ctx.fetch = async (url, options) => {
+      posted = { url: String(url), body: options && options.body };
+      return {
+        ok: false,
+        status: 400,
+        statusText: "Bad Request",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ error: 'could not reach an AppLab at "https://nope": dial tcp: no such host' }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.scope = "admin"; state.signedIn = true; state.url = "https://applab.example.com/applab";', ctx);
+
+    elements.get("server-add-id").value = "staging";
+    elements.get("server-add-url").value = "  https://staging.example.com  ";
+    elements.get("server-add-key").value = "  secret-admin-key  ";
+    elements.get("server-add-problem").classList.add("hidden");
+
+    await vm.runInContext("addServer()", ctx);
+
+    check("registering a server posts to the servers route", posted.url, "https://applab.example.com/applab/api/v1/servers");
+    check(
+      "with the three fields the API takes",
+      posted.body,
+      JSON.stringify({ id: "staging", url: "https://staging.example.com", key: "secret-admin-key" })
+    );
+    check("a refused registration is reported in the dialog", elements.get("server-add-problem").classList.contains("hidden"), false);
+    check(
+      "with the API's own explanation of which field was wrong",
+      elements.get("server-add-problem").textContent.includes("could not reach an AppLab"),
+      true
+    );
+    check("and the dialog stays up to be corrected", elements.get("server-add-modal").classList.contains("hidden"), false);
+
+    // And a good registration closes it and forgets the key that was typed.
+    // Leaving it in the field would put a credential back on screen the next
+    // time the dialog opened, for no reason.
+    //
+    // The POST answers with the new registration; the GET that follows the
+    // reload answers with the list, which is what the dialog closing leaves
+    // behind it.
+    ctx.fetch = async (url, options) => ({
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify(
+        (options && options.method === "POST")
+          ? { data: { id: "staging", name: "staging", url: "https://staging.example.com", builtin: false } }
+          : { data: [] }
+      ),
+    });
+    await vm.runInContext("addServer()", ctx);
+    check("a stored registration closes the dialog", elements.get("server-add-modal").classList.contains("hidden"), true);
+    check("and the key is not left in the field", elements.get("server-add-key").value, "");
+  }
+
+  // Removing a server calls DELETE on it, and asks first.
+  //
+  // The confirmation is the load-bearing part: the button says Remove, and what
+  // it does is forget a registration rather than take a deployment down — which
+  // is the reading someone would otherwise have to be sure about before pressing
+  // it. So the check is that the call does not happen until it is answered.
+  {
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    const calls = [];
+    ctx.fetch = async (url, options) => {
+      calls.push(((options && options.method) || "GET") + " " + String(url));
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.scope = "admin"; state.signedIn = true; state.url = "https://applab.example.com/applab";', ctx);
+    vm.runInContext('setLang("en")', ctx);
+
+    let asked = "";
+    ctx.confirm = (message) => { asked = message; return false; };
+    // Cleared here rather than at the top: setLang above redraws the view it is
+    // on, and those requests would be counted as this call's.
+    calls.length = 0;
+    await vm.runInContext('removeServer({ id: "staging", name: "Staging" })', ctx);
+    check("removing a server asks before it acts", asked.length > 0, true);
+    check("naming the server it is about", asked.includes("Staging"), true);
+    check("and nothing is sent when the answer is no", calls.length, 0);
+
+    ctx.confirm = () => true;
+    await vm.runInContext('removeServer({ id: "staging", name: "Staging" })', ctx);
+    check(
+      "answering yes deletes that registration",
+      calls.includes("DELETE https://applab.example.com/applab/api/v1/servers/staging"),
+      true
+    );
+  }
+
+  // An app created on a remote hands back its key, and the console shows it.
+  //
+  // This is the one place a key reaches the page, and it is deliberate: creating
+  // an app is the only moment its key is handed out, and a remote app has no
+  // detail page here to read it from later — the proxy covers the app-level
+  // routes only. A dialog that closed on success would be a dialog whose app can
+  // never be pushed to.
+  //
+  // Masked on arrival, like every other credential: the check below is that the
+  // value is behind the eye rather than in the text, and that the eye puts it
+  // there.
+  {
+    const created = {
+      data: { id: "shop", url: "https://staging.example.com/applab/apps/shop", app_key: "new-app-key-9f3c" },
+    };
+    const ctx = vm.createContext({ ...sandbox, globalThis: undefined });
+    ctx.globalThis = ctx;
+    const calls = [];
+    ctx.fetch = async (url, options) => {
+      calls.push(((options && options.method) || "GET") + " " + String(url));
+      return {
+        ok: true,
+        status: 201,
+        statusText: "Created",
+        headers: { get: () => "application/json" },
+        // GETs (the list refresh that follows) answer with a list; the create
+        // answers with the new app.
+        text: async () => JSON.stringify((options && options.method === "POST") ? created : { data: [] }),
+      };
+    };
+    vm.runInContext(source, ctx, { filename: "console.js" });
+    vm.runInContext('state.scope = "admin"; state.signedIn = true; state.server = "staging"; state.url = "https://applab.example.com/applab";', ctx);
+    vm.runInContext('setLang("en")', ctx);
+
+    elements.get("server-app-id").value = "shop";
+    elements.get("server-app-key-note").classList.add("hidden");
+    vm.runInContext('serverAppKey.set("")', ctx);
+    await vm.runInContext("createServerApp()", ctx);
+
+    check(
+      "creating a remote app posts to that server's app route",
+      calls.includes("POST https://applab.example.com/applab/api/v1/servers/staging/apps"),
+      true
+    );
+    check("and the key it returns is put on the page", elements.get("server-app-key").dataset.value, "new-app-key-9f3c");
+    check("behind the eye, not in the text", elements.get("server-app-key").textContent.includes("new-app-key"), false);
+    check("with the note that says so", elements.get("server-app-key-note").classList.contains("hidden"), false);
+
+    // The eye is what makes it readable, and it is the same control as the rest
+    // of the console's: the value is on the element's data, so a page nobody
+    // clicked is a page without the credential in it.
+    vm.runInContext("serverAppKey.reveal()", ctx);
+    check("and the eye reveals it", elements.get("server-app-key").textContent, "new-app-key-9f3c");
+
+    // But not in Chinese, where the eye's label has just been rebuilt: the
+    // dictionary is consulted at the moment the row is drawn, and the value is
+    // held rather than re-fetched — so a value that vanished on a language
+    // switch would take the one chance to read this key with it.
+    vm.runInContext('setLang("zh")', ctx);
+    check("a language switch keeps the value", elements.get("server-app-key").dataset.value, "new-app-key-9f3c");
+    vm.runInContext('setLang("en")', ctx);
   }
 
   if (failures > 0) {

@@ -226,6 +226,44 @@ rewritten on every upload for exactly this reason, and the refresh means a
 document that describes an endpoint that no longer exists corrects itself before
 it is acted on.
 
+### Managing more than one deployment
+
+An administrator can register another AppLab deployment — its address and an
+admin key — and then list, create and delete apps on it from this one. The
+registration is called a **server**; `local` is the built-in entry that means
+this deployment itself, so every surface has one list rather than a list plus a
+special case.
+
+    applab servers                  # what this deployment can reach
+    applab servers add lab-2 --url https://applab-2.example.com/applab --key <admin key>
+    applab list   --server lab-2
+    applab create shop --server lab-2
+    applab delete shop --server lab-2 --yes
+
+The console has a **Servers** view for the same thing, and the seeded `applab.sh`
+has `servers`, `servers-add`, `servers-remove` and `--server`.
+
+**The request is relayed, and the key stays here.** The console is same-origin —
+it connects to `'self'` and derives its API base from the page it was served on —
+so a browser can never reach a second deployment directly. It goes through this
+one, which holds the remote's admin key, dials the remote's own API with it, and
+returns what the remote said. `internal/client` is that dial, the same code the
+CLI uses, so the relay cannot drift from the API it calls.
+
+What a relay covers is a deployment's app *collection*: list, create and delete.
+The per-app detail — logs, builds, status, configuration — is reached with that
+app's own key against its own deployment, or through a session on that
+deployment. A server entry is a way to reach another platform's apps, not a merge
+of two platforms into one view.
+
+**Registration is proved before it is stored.** The address is dialled, and the
+key is checked against an admin-only route, before anything is written — so a
+wrong address or a key that is not an admin key is a `400` at the moment of
+registration rather than a failure later with nothing to say which part was
+wrong. The address is refused if it carries a scheme other than http(s), a
+username or password, or points at a link-local address, and this deployment
+refuses to register itself.
+
 ### Source is a git repository
 
 Every app's source lives in its own real git repository, hosted here. An upload
@@ -627,6 +665,13 @@ openly.
   name — while a variable is returned in full. That is structural rather than a
   promise: the store the API holds has no method that returns a value. See
   [Configuring an app](#configuring-an-app).
+- **A registered server's admin key is kept in a Kubernetes Secret**, not in the
+  bucket. That is the opposite choice from an app's key, and deliberate: an app's
+  key reaches one app in one bucket, where a server's key is an admin key to a
+  whole other platform — so a leaked bucket credential should not extend to every
+  platform this one can reach. The key is never returned by any route: the type
+  the API answers with has no field for it, which a test asserts by walking every
+  servers route. Registration is admin-only, and no response hands a key back.
 - **A secret is not hidden from the cluster.** It is in the Deployment's spec in
   the clear, because that is where a container's environment comes from: anyone
   who can run `kubectl get deploy -o yaml` in this namespace can read every app's

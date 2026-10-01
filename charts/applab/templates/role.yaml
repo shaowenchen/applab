@@ -47,16 +47,20 @@ rules:
     verbs: ["create", "get", "list", "watch", "delete"]
 
   # Deleting an app lists and removes everything carrying its label, and that
-  # sweep covers Secrets. applab no longer creates any — the key a build clones
-  # with is an environment variable on the Job, and an app's API key and its
-  # secrets live in the object store — but deletions still name the kind, so an
-  # installation upgraded from a version that did create them has them removed
-  # with the app rather than left behind as live credentials for an app that no
-  # longer exists.
+  # sweep covers Secrets. There are two kinds of Secret here now.
   #
-  # Nothing else here writes a Secret, so this is a permission held for the sake
-  # of cleanup. It is worth removing together with the sweep, in one change, when
-  # no installation predating it is expected to be upgraded.
+  # The sweep's own reason is historical: applab records an app's API key and its
+  # secrets in the object store, not as Secrets, but deletions still name the
+  # kind, so an installation upgraded from a version that did create them has
+  # them removed with the app rather than left behind as live credentials for an
+  # app that no longer exists.
+  #
+  # The forward reason is the registrations of other AppLab deployments an
+  # administrator adds — each one a Secret holding a remote's address and its
+  # admin key. Those deliberately do NOT carry the app label but the label
+  # `applab.io/server` instead, precisely so this sweep does not match them:
+  # without that, uninstalling the release would forget every registered server.
+  # See internal/serverreg and its test asserting the app label is absent.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "get", "list", "watch", "update", "delete"]

@@ -675,6 +675,14 @@ func TestTheScriptCoversWhatTheConsoleDoes(t *testing.T) {
 		{"GET", "/status"},
 		{"POST", "/stop"},
 		{"PATCH", "/api/v1/apps/"},
+		// The servers surface. It is admin-level rather than app-scoped, so the
+		// list above was written without it — but the console offers it, so the
+		// script owes the same reach or "the two front ends do the same things"
+		// stops being true for a whole capability. The routes are the collection
+		// and one member; the relay prefix is what makes them reach a remote.
+		{"GET", "/api/v1/servers"},
+		{"POST", "/api/v1/servers"},
+		{"DELETE", "/api/v1/servers/"},
 	}
 
 	missing := []string{}
@@ -888,6 +896,144 @@ func TestTheScriptCanBuildAndDeployAnotherBranch(t *testing.T) {
 			}
 			if tc.wantBody != "" && !strings.Contains(last.body, tc.wantBody) {
 				t.Errorf("body was %s, want it to contain %s", last.body, tc.wantBody)
+			}
+		})
+	}
+}
+
+// The script's server commands and its --server routing, driven through a real
+// `sh` against a stand-in deployment.
+//
+// This is where the relay's path shape is pinned: `--server lab-2` has to turn
+// `create shop` into a POST to /api/v1/servers/lab-2/apps, and `servers-add` has
+// to send the remote's key in the body and never on a command line. A test that
+// only grepped the script for the routes would pass on a script that built the
+// wrong URL.
+func TestTheScriptReachesAnotherDeployment(t *testing.T) {
+	shBin, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh is not on PATH")
+	}
+
+	type call struct {
+		method, path, body, auth string
+	}
+
+	cases := []struct {
+		name       string
+		argv       []string
+		env        []string
+		wantMethod string
+		wantPath   string
+		wantBody   string
+	}{
+		{
+			name:       "listing servers",
+			argv:       []string{"servers"},
+			wantMethod: "GET",
+			wantPath:   "/api/v1/servers",
+		},
+		{
+			name:       "registering a server",
+			argv:       []string{"servers-add", "lab-2", "https://applab-2.example.com/applab"},
+			env:        []string{"APPLAB_SERVER_KEY=remote-admin"},
+			wantMethod: "POST",
+			wantPath:   "/api/v1/servers",
+			wantBody:   `"key":"remote-admin"`,
+		},
+		{
+			name:       "forgetting a server",
+			argv:       []string{"servers-remove", "lab-2"},
+			wantMethod: "DELETE",
+			wantPath:   "/api/v1/servers/lab-2",
+		},
+		{
+			name:       "listing a remote's apps through the relay",
+			argv:       []string{"list", "--server", "lab-2"},
+			wantMethod: "GET",
+			wantPath:   "/api/v1/servers/lab-2/apps",
+		},
+		{
+			name:       "creating on a remote through the relay",
+			argv:       []string{"create", "--server", "lab-2", "shop"},
+			wantMethod: "POST",
+			wantPath:   "/api/v1/servers/lab-2/apps",
+			wantBody:   `"id":"shop"`,
+		},
+		{
+			name:       "deleting on a remote through the relay",
+			argv:       []string{"delete", "--server", "lab-2", "shop"},
+			wantMethod: "DELETE",
+			wantPath:   "/api/v1/servers/lab-2/apps/shop",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var calls []call
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				calls = append(calls, call{r.Method, r.URL.RequestURI(), string(body), r.Header.Get("Authorization")})
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"data":{"id":"lab-2","url":"https://applab-2.example.com/applab","app_key":"k"}}`)
+			}))
+			defer server.Close()
+
+			script := ""
+			for _, f := range seedFor(SeedValues{App: "shop"}) {
+				if strings.HasSuffix(f.Name, ".sh") {
+					script = f.Body
+				}
+			}
+			if script == "" {
+				t.Fatal("no seeded script")
+			}
+
+			dir := t.TempDir()
+			path := filepath.Join(dir, "applab.sh")
+			if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+				t.Fatalf("write the script: %v", err)
+			}
+
+			cmd := exec.Command(shBin, append([]string{path}, tc.argv...)...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
+				"APPLAB_URL="+server.URL,
+				"APPLAB_KEY=k",
+				"APPLAB_NO_REFRESH=1",
+			)
+			cmd.Env = append(cmd.Env, tc.env...)
+			// A delete reads the app id to confirm; feed it the id so the command
+			// reaches the request rather than failing at the prompt.
+			cmd.Stdin = strings.NewReader("shop\n")
+
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if _, err := cmd.Output(); err != nil {
+				t.Fatalf("run %v: %v\nstderr: %s", tc.argv, err, stderr.String())
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) == 0 {
+				t.Fatal("the script made no request at all")
+			}
+			last := calls[len(calls)-1]
+			if last.method != tc.wantMethod || last.path != tc.wantPath {
+				t.Errorf("last request was %s %s, want %s %s",
+					last.method, last.path, tc.wantMethod, tc.wantPath)
+			}
+			if tc.wantBody != "" && !strings.Contains(last.body, tc.wantBody) {
+				t.Errorf("body was %s, want it to contain %s", last.body, tc.wantBody)
+			}
+			// The key this deployment holds is what authenticates the relay; the
+			// remote's key is in the body of a registration and nowhere else.
+			if last.auth != "Bearer k" {
+				t.Errorf("Authorization was %q, want the deployment's own key", last.auth)
 			}
 		})
 	}

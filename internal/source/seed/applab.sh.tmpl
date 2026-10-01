@@ -97,6 +97,12 @@ fi
 APPLAB_URL="${APPLAB_URL:-{{URL}}}"
 APPLAB_KEY="${APPLAB_KEY:-{{KEY}}}"
 
+# APPLAB_SERVER names another AppLab deployment registered on this one, or is
+# empty for this deployment. It is set by the --server flag on the handful of
+# commands that act on a deployment rather than on this app — see api_root, which
+# is what makes a request go to the relay instead of here.
+APPLAB_SERVER="${APPLAB_SERVER:-}"
+
 : "${APPLAB_URL:?set APPLAB_URL to the deployment, e.g. https://applab.example.com}"
 
 # The key is checked per command rather than here, because two of them do not
@@ -124,6 +130,29 @@ require_app() {
     echo "Make one:    $0 create <app>" >&2
     exit 2
   }
+}
+
+# app_path is where the app collection lives: this deployment's own, or — with
+# --server <id> — the relay that reaches the named remote's, run by this
+# deployment with the key it stored for it. One route, the same shape, so `list`,
+# `create` and `delete` do not care which side of the relay they are on.
+app_path() {
+  if [ -n "$APPLAB_SERVER" ]; then
+    printf '/api/v1/servers/%s/apps' "$APPLAB_SERVER"
+  else
+    printf '/api/v1/apps'
+  fi
+}
+
+# take_server consumes a leading `--server <id>` if one is there, setting
+# APPLAB_SERVER, and returns non-zero when there was none. Commands that take it
+# call it once at the top of their arm, so the flag comes before the command's own
+# argument: `./applab.sh create --server lab-2 shop`.
+take_server() {
+  [ "${1:-}" = "--server" ] || return 1
+  [ -n "${2:-}" ] || { echo "--server needs a name; see ./applab.sh servers" >&2; exit 2; }
+  APPLAB_SERVER="$2"
+  return 0
 }
 
 # Every call is JSON in and JSON out. Success is the payload under "data";
@@ -254,6 +283,7 @@ usage: ./applab.sh <command>
 Start here
   create <app>       make a new app, and print its key and clone address
   use <app>          point this script at an app; remembered for next time
+  list               the apps on this deployment, one "<id> <address>" per line
 
   A copy fetched from the deployment has no app in it, so `use` (or `create`) is
   how it gets one. A copy in an app's repository already knows its app, and these
@@ -299,6 +329,23 @@ Changing
   restart            roll the pods, keeping the same image
   stop               remove the running app, keeping the source
   delete <app>       delete the app and its history (needs an admin key)
+
+Other deployments
+  servers            the AppLab deployments this one can reach (needs an admin key)
+  servers-add <id> <address>
+                     register another deployment; key from APPLAB_SERVER_KEY
+  servers-remove <id>
+                     forget a registration; the remote is untouched
+
+  Once registered, point a command at one with --server, before its own argument:
+
+    ./applab.sh list --server lab-2
+    ./applab.sh create --server lab-2 shop
+    ./applab.sh delete --server lab-2 shop
+
+  The request is relayed by this deployment, which holds the remote's key — the
+  key itself never leaves it. "local" is this deployment, and is always reachable
+  without --server at all.
 
 Branches
   branch             the branches this app has, and which one is running
@@ -346,6 +393,7 @@ Keys and upkeep
 Environment:
   APPLAB_URL   the deployment              (default: built into this script)
   APPLAB_KEY   the key for this app        (default: built into this script)
+  APPLAB_SERVER_KEY   an admin key for a remote, for servers-add
   APPLAB_NO_REFRESH   set to 1 to skip the refresh above
 
   Both are defaults — the values below the APP assignment. Export either to
@@ -695,7 +743,7 @@ esac
 # usage, and so a command added later fails loudly instead of asking the
 # deployment about an app named "".
 case "${1:-help}" in
-  help|-h|--help|self-update|create|use) ;;
+  help|-h|--help|self-update|create|use|list|servers|servers-add|servers-remove) ;;
   *) require_app ;;
 esac
 
@@ -887,16 +935,23 @@ case "${1:-help}" in
     # nothing to build, and the platform's own auto-publish covers the case
     # where one appears. `push` is what ships code.
     shift
-    [ -n "${1:-}" ] || { echo "usage: $0 create <app>" >&2; exit 2; }
+    # --server, if given, must come first: it is how a caller says "create this
+    # on another deployment". Only the id goes to "create" — the server is a
+    # property of the request, not part of the app's name.
+    if take_server "$@"; then
+      shift 2
+    fi
+    [ -n "${1:-}" ] || { echo "usage: $0 create [--server <id>] <app>" >&2; exit 2; }
     require_key
     new="${1}"
 
-    created=$(api POST "/api/v1/apps" "{\"id\":\"$(json_escape "$new")\"}") || exit 1
+    created=$(api POST "$(app_path)" "{\"id\":\"$(json_escape "$new")\"}") || exit 1
 
     echo "created $new" >&2
     # The clone address with the key in it, straight from the API — it knows the
     # deployment's host and the new app's branch, and a caller assembling one
-    # gets the branch wrong for anything but the default.
+    # gets the branch wrong for anything but the default. On a remote this is the
+    # remote's own address, which is exactly where the app is.
     key=$(printf '%s' "$created" | json_field app_key)
     clone=$(printf '%s' "$created" | json_field git_url_with_key)
     where=$(printf '%s' "$created" | json_field url)
@@ -904,6 +959,17 @@ case "${1:-help}" in
     printf '%s\n' "$key"
     [ -n "$clone" ] && echo "git clone $clone" >&2
     [ -n "$where" ] && echo "served at $where" >&2
+
+    # A remote app is not this checkout's app: `push`, `status` and the rest are
+    # about the app this repository is, and the relay reaches a remote only for
+    # listing, creating and deleting. Binding APP here would make the next
+    # command talk about a remote app as though it were local, so the pointer and
+    # the push suggestion are for the local case only.
+    if [ -n "$APPLAB_SERVER" ]; then
+      echo >&2
+      echo "$new lives on $APPLAB_SERVER; manage it with: $0 list --server $APPLAB_SERVER" >&2
+      exit 0
+    fi
 
     # Bound for the rest of this process, and remembered for the next one, so
     # `create shop && push` works in one line.
@@ -1105,17 +1171,87 @@ case "${1:-help}" in
     ;;
   delete)
     shift
-    [ -n "${1:-}" ] || { echo "usage: ./applab.sh delete <app>" >&2; exit 2; }
-    require_app_matches "$1"
+    # --server first, like create: this deletes the named app on the named
+    # deployment, and the self-check below does not apply to a remote — this
+    # script lives in *this* app's repository and has no business knowing
+    # whether a remote app of the same name is the one intended.
+    if take_server "$@"; then
+      shift 2
+    fi
+    [ -n "${1:-}" ] || { echo "usage: ./applab.sh delete [--server <id>] <app>" >&2; exit 2; }
+    if [ -z "$APPLAB_SERVER" ]; then
+      require_app_matches "$1"
+    fi
     # Typed out rather than confirmed, for the same reason the console makes you
     # type it: this removes the source, the history and the running app, and
     # there is nothing to undo it with. A `y` at a prompt is one keystroke from a
     # mistyped command.
-    printf 'This deletes %s, its source and its history, with no undo.\nType the app id to confirm: ' "$APP" >&2
+    printf 'This deletes %s, its source and its history, with no undo.\nType the app id to confirm: ' "$1" >&2
     read -r typed
-    [ "$typed" = "$APP" ] || { echo "not deleted" >&2; exit 1; }
-    api DELETE "/api/v1/apps/$APP" >/dev/null
-    echo "deleted $APP" >&2
+    [ "$typed" = "$1" ] || { echo "not deleted" >&2; exit 1; }
+    api DELETE "$(app_path)/$(json_escape "$1")" >/dev/null
+    echo "deleted $1" >&2
+    ;;
+  list|ls)
+    # The apps on a deployment, or on a remote with --server. The id and address
+    # are the two fields worth a line each; anything more and this becomes the
+    # console, which is not what a shell is for.
+    shift
+    if take_server "$@"; then
+      shift 2
+    fi
+    require_key
+    # One line per app, "id<TAB>address", so a caller can pipe it. Records are
+    # split on "},{" — the boundary between two array elements — rather than on a
+    # lone "}", because an app's own body is nested (resources is an object) and
+    # splitting on every brace would tear a record in half. The address is read
+    # with sed rather than parsed, like everything else here; see json_field.
+    api GET "$(app_path)" | sed 's/},{/}\n{/g' | while IFS= read -r record; do
+      id=$(printf '%s' "$record" | json_field id)
+      [ -n "$id" ] || continue
+      url=$(printf '%s' "$record" | json_field url)
+      printf '%s\t%s\n' "$id" "${url:-}"
+    done
+    ;;
+  servers)
+    # The AppLab deployments this one can reach: the built-in "local" first, then
+    # each registered remote. Needs an admin key — a server is managed with the
+    # platform's own key, not an app's.
+    shift
+    require_key
+    api GET "/api/v1/servers" | sed 's/},{/}\n{/g' | while IFS= read -r record; do
+      id=$(printf '%s' "$record" | json_field id)
+      [ -n "$id" ] || continue
+      url=$(printf '%s' "$record" | json_field url)
+      printf '%s\t%s\n' "$id" "${url:-}"
+    done
+    ;;
+  servers-add)
+    # Register another deployment by its address and an admin key. The address
+    # must include any path prefix that deployment is served under, and the key
+    # comes from APPLAB_SERVER_KEY so it is not left in the shell's history.
+    shift
+    [ -n "${1:-}" ] || { echo "usage: $0 servers-add <id> <address>   (key from APPLAB_SERVER_KEY)" >&2; exit 2; }
+    [ -n "${2:-}" ] || { echo "usage: $0 servers-add <id> <address>   (key from APPLAB_SERVER_KEY)" >&2; exit 2; }
+    require_key
+    [ -n "${APPLAB_SERVER_KEY:-}" ] || {
+      echo "servers-add needs an admin key for the remote: export APPLAB_SERVER_KEY=<key>" >&2
+      exit 2
+    }
+    api POST "/api/v1/servers" \
+      "{\"id\":\"$(json_escape "$1")\",\"url\":\"$(json_escape "$2")\",\"key\":\"$(json_escape "$APPLAB_SERVER_KEY")\"}" >/dev/null
+    echo "registered $1 at $2" >&2
+    echo "manage its apps with: $0 list --server $1" >&2
+    ;;
+  servers-remove)
+    # Forget a registration here. The remote and its apps are untouched, and the
+    # remote does not need to be reachable — so there is no confirmation prompt:
+    # nothing is destroyed and the entry can be added again.
+    shift
+    [ -n "${1:-}" ] || { echo "usage: $0 servers-remove <id>" >&2; exit 2; }
+    require_key
+    api DELETE "/api/v1/servers/$(json_escape "$1")" >/dev/null
+    echo "removed $1" >&2
     ;;
   key)
     api GET "/api/v1/apps/$APP/key" | json_field key

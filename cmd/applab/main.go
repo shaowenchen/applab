@@ -25,6 +25,7 @@ import (
 	"github.com/shaowenchen/applab/internal/k8s"
 	"github.com/shaowenchen/applab/internal/model"
 	"github.com/shaowenchen/applab/internal/observe"
+	"github.com/shaowenchen/applab/internal/serverreg"
 	"github.com/shaowenchen/applab/internal/source"
 	"github.com/shaowenchen/applab/internal/store"
 )
@@ -276,6 +277,11 @@ func run() error {
 		// there is no namespace to drop.
 		srv.WithAppObjectsDeleter(client.DeleteAppObjects)
 		srv.WithClusterStatus(client.Ready)
+
+		// Registrations of other AppLab deployments live in a Secret in this
+		// deployment's namespace, so they need the cluster half. Attached here
+		// beside the rest of it; a console-only install simply has none.
+		srv.WithServerRegistry(serverreg.New(client.Clientset(), cfg.Namespace))
 
 		if cfg.Build.Enabled() {
 			engine := build.New(client.Clientset(), build.Config{

@@ -748,6 +748,12 @@
   <nav id="nav" class="hidden">
     <button id="nav-overview" data-i18n="Overview">Overview</button>
     <button id="nav-apps" data-i18n="Apps">Apps</button>
+    <!-- Servers is the third destination, and it is a data view like the other
+         two: it lists the other AppLab deployments this one can manage, which
+         is the deployment's own inventory rather than a page for a reader with
+         an app key. It sits beside Apps because choosing *where* an app lives
+         is the same kind of question as choosing which app. -->
+    <button id="nav-servers" data-i18n="Servers">Servers</button>
     <button id="nav-docs" class="always" data-i18n="Docs">Docs</button>
   </nav>
   <span class="spacer"></span>
@@ -921,6 +927,144 @@
       <div id="apps-empty" class="empty hidden">
         <span data-i18n="No apps yet. Push one with">No apps yet. Push one with</span>
         <span class="mono">applab push &lt;app&gt;</span><span data-i18n="or create one here.">, or create one here.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Servers. The other AppLab deployments this one can manage, and the apps
+       on whichever one is selected.
+
+       A list and a picker rather than one table per server, because the shape
+       is a tree: there are a handful of deployments, each with its own apps,
+       and only one of them is being looked at at a time.
+
+       The first row is always this deployment itself. It is not a registration
+       and cannot be removed — it is where this page is served from — but it is
+       in the list so that "where does this app live" has one answer rather than
+       one answer plus a special case. Selecting it switches to the Apps view
+       rather than rendering a second copy of the same list: this deployment's
+       apps already have a view, with statuses and links into each app, and a
+       reduced copy here would be a worse version of it.
+
+       Which is also why the remote table is smaller than the Apps view's: the
+       API relays only the app-level routes to a remote, so a remote app can be
+       listed, created and deleted, but not opened. Its row is plain text rather
+       than a link for that reason, not by oversight. -->
+  <section id="servers-view" class="hidden">
+    <div class="page-head">
+      <h1 data-i18n="Servers">Servers</h1>
+      <button id="servers-add" class="primary" data-i18n="Add a server">Add a server</button>
+    </div>
+
+    <div class="card flush">
+      <table>
+        <thead>
+          <tr><th data-i18n="Server">Server</th><th data-i18n="Where">Where</th><th></th></tr>
+        </thead>
+        <tbody id="servers"></tbody>
+      </table>
+      <div id="servers-empty" class="empty hidden" data-i18n="No servers yet.">No servers yet.</div>
+    </div>
+
+    <!-- The selected server's apps. One card for both cases, with the heading
+         naming the server, so switching between them is the same control in the
+         same place rather than two cards taking turns. -->
+    <div class="card flush" id="server-apps-card">
+      <div class="card-head">
+        <h2 id="server-apps-title" data-i18n="Apps">Apps</h2>
+        <!-- Creating an app on a remote is an admin operation reached by the
+             same call the local create is, so the control that opens it is
+             gated the same way — admin only, and only for a server that is not
+             this deployment. The local case has no use for it: its own Apps
+             view, one click away, is where an app is created here. -->
+        <button id="server-apps-new" class="primary" data-i18n="New app">New app</button>
+      </div>
+      <table id="server-apps-table">
+        <thead>
+          <tr><th data-i18n="App">App</th><th data-i18n="Where">Where</th><th></th></tr>
+        </thead>
+        <tbody id="server-apps"></tbody>
+      </table>
+      <p id="server-apps-note" class="muted hidden" data-i18n="This deployment's own apps are managed in the Apps view.">This deployment's own apps are managed in the Apps view.</p>
+      <div id="server-apps-empty" class="empty hidden" data-i18n="No apps yet.">No apps yet.</div>
+      <!-- The problem is reported in the card rather than only in the page's
+           banner: a refusal here is about the server the reader just typed the
+           address of, and the API's own wording for it is the useful part —
+           "could not reach an AppLab at ..." says which of the two fields is
+           wrong. -->
+      <div id="server-problem" class="error hidden" style="margin:12px 16px"></div>
+    </div>
+
+    <!-- Registering a server, as a dialog for the same reason the app create is
+         one: three fields do not earn a form that sits open and empty above the
+         list, and the list is what the reader came to look at. -->
+    <div id="server-add-modal" class="log-modal hidden" role="dialog" aria-modal="true" aria-labelledby="server-add-title">
+      <div class="log-modal-scrim" id="server-add-scrim"></div>
+      <div class="log-modal-panel" style="width:min(520px,100%)">
+        <div class="log-modal-head">
+          <h2 id="server-add-title" data-i18n="Add a server">Add a server</h2>
+        </div>
+        <div class="row">
+          <input id="server-add-id" placeholder="server id, e.g. staging" size="18" data-i18n-placeholder="server id, e.g. staging"
+                 autocomplete="off" spellcheck="false" style="flex:1">
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input id="server-add-url" placeholder="Server address" size="28" data-i18n-placeholder="Server address"
+                 autocomplete="off" spellcheck="false" aria-label="Server address" style="flex:1">
+        </div>
+        <!-- The eye is the same control the sign-in form uses, and wired the
+             same way: an admin key is a credential, and one typed into a
+             dialog nobody else is looking at is still one that ends up in a
+             screenshot. -->
+        <div class="row" style="margin-top:8px">
+          <div class="key-field">
+            <input id="server-add-key" type="password" placeholder="Admin key" autocomplete="off"
+                   spellcheck="false" aria-label="Admin key" data-i18n-placeholder="Admin key">
+            <button id="server-add-reveal" class="reveal" type="button"></button>
+          </div>
+          <button id="server-add-create" class="primary" data-i18n="Create">Create</button>
+          <button id="server-add-cancel" data-i18n="Cancel">Cancel</button>
+        </div>
+        <div id="server-add-problem" class="error hidden" style="margin-top:12px"></div>
+      </div>
+    </div>
+
+    <!-- The field an app is created into, on the server just selected. The same
+         one-field dialog as the local create, because it is the same act on a
+         different store — and, like the local one, it does not ask for a port:
+         every setting has a default that is right for a first deploy and is
+         editable on the app's own page.
+
+         The key the create returns is shown here rather than on an app page,
+         which a remote app does not have. Creating an app is the one moment its
+         key is handed out — it cannot be read back through any route this
+         console can reach — so a create that did not show it would be a create
+         whose app can never be pushed to. -->
+    <div id="server-app-modal" class="log-modal hidden" role="dialog" aria-modal="true" aria-labelledby="server-app-title">
+      <div class="log-modal-scrim" id="server-app-scrim"></div>
+      <div class="log-modal-panel" style="width:min(520px,100%)">
+        <div class="log-modal-head">
+          <h2 id="server-app-title" data-i18n="New app">New app</h2>
+        </div>
+        <div class="row">
+          <input id="server-app-id" placeholder="app id, e.g. shop" size="24" data-i18n-placeholder="app id, e.g. shop"
+                 autocomplete="off" spellcheck="false" style="flex:1">
+          <button id="server-app-create" class="primary" data-i18n="Create">Create</button>
+          <button id="server-app-cancel" data-i18n="Cancel">Cancel</button>
+        </div>
+        <div id="server-app-problem" class="error hidden" style="margin-top:12px"></div>
+        <!-- The new app's key, once there is one. Held on the element's data
+             rather than in its text, like every other credential the console
+             draws, so a page nobody has clicked the eye on does not contain
+             it — see concealed. -->
+        <div id="server-app-key-note" class="hidden" style="margin-top:12px">
+          <p class="muted" data-i18n="This app's key. It is shown once, here, and cannot be read back.">This app's key. It is shown once, here, and cannot be read back.</p>
+          <div class="secret" style="margin-top:8px">
+            <span class="secret-value" id="server-app-key"></span>
+            <button id="server-app-key-reveal" class="reveal hidden" type="button"></button>
+            <button id="server-app-key-copy" class="reveal hidden" type="button"></button>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -1521,6 +1665,16 @@ const state = {
   // builds itself is the copy that gets them wrong. Empty for an admin, who has
   // no app in hand; the document falls back to the deployment's convention then.
   gitURL: "",
+  // The servers this deployment can manage, and which one is selected.
+  //
+  // `server` defaults to "local" and is never empty: this deployment is the
+  // built-in entry, always first in the list, and it is what the console is
+  // looking at until someone picks another. The servers view is the only reader
+  // of either, and both are cleared on sign-out — they are the deployment's own
+  // inventory, which is not something to leave on screen for the next reader of
+  // a shared browser.
+  servers: [],
+  server: "local",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1635,6 +1789,7 @@ const ZH = {
   // -- Header and navigation ------------------------------------------------
   "Overview": "概览",
   "Apps": "应用",
+  "Servers": "服务器",
   "Docs": "使用文档",
   "Sign out": "退出登录",
 
@@ -1671,6 +1826,12 @@ const ZH = {
   "Status": "状态",
   "Age": "时间",
   "Where": "地址",
+  // The column heading of the servers list, and the nav entry above it. Two
+  // keys because one is a plural label and one names a single column's subject;
+  // both read the same in Chinese. Kept apart from "Instance" and "Pod" below,
+  // which name the containers an app runs in — nothing on this page is a
+  // cluster node.
+  "Server": "服务器",
   "Instance": "实例",
   "Instances": "实例",
   "Restarts": "重启",
@@ -1727,6 +1888,42 @@ const ZH = {
   "No apps yet. Push one with": "还没有应用。用",
   "or create one here.": "推送一个，或者在这里创建一个。",
   "Could not list apps: {error}": "无法获取应用列表：{error}",
+
+  // -- Servers --------------------------------------------------------------
+  // "This deployment" is composed by the API for the built-in entry — see
+  // localServer in internal/api/servers.go — and the console translates it
+  // rather than inventing a second name for the same row: the server's own
+  // `name` wins when it has one, so a translation here cannot rename a server
+  // someone named deliberately.
+  "This deployment": "本部署",
+  "Add a server": "添加服务器",
+  // An address rather than a URL, in the label and in the placeholder together:
+  // what is typed here is where the other AppLab answers, which is a scheme and
+  // a host and nothing else, and "URL" reads as "any URL, including this page's".
+  "Server address": "服务器地址",
+  // Not "API key". Both are credentials, and the difference is the whole of
+  // what this field does: an app key reaches one app, and this one reaches a
+  // whole other deployment — everything `POST /api/v1/servers` will do with it.
+  "Admin key": "管理员 Key",
+  "server id, e.g. staging": "服务器 ID，例如 staging",
+  "A server needs an id.": "请填写服务器 ID。",
+  "No servers yet.": "还没有服务器。",
+  "No apps yet.": "还没有应用。",
+  "This deployment's own apps are managed in the Apps view.":
+    "本部署自己的应用在“应用”视图中管理。",
+  "This app's key. It is shown once, here, and cannot be read back.":
+    "该应用的 key 只在这里显示一次，之后无法再次读取。",
+  "Could not list servers: {error}": "无法获取服务器列表：{error}",
+  // The API's refusal here is written for the reader — it names which of the
+  // two fields was wrong — so it is carried through as {error} rather than
+  // replaced with a sentence of the console's own.
+  "Could not add the server: {error}": "无法添加服务器：{error}",
+  "Could not list apps on {server}: {error}": "无法获取 {server} 上的应用列表：{error}",
+  "Could not delete {app}: {error}": "无法删除 {app}：{error}",
+  "Remove {server}? Its apps are left alone; only the registration is forgotten.":
+    "移除 {server}？其上的应用不受影响，只是不再登记在本部署中。",
+  "Remove {app}?": "移除 {app}？",
+  "Could not remove the server: {error}": "无法移除服务器：{error}",
 
   // -- App detail -----------------------------------------------------------
   "State": "状态",
@@ -2228,6 +2425,11 @@ let appGitReveal = null;
 // handles to rows that no longer exist.
 let envReveals = [];
 
+// The eye over the key a remote app create just returned. Registered once in
+// boot like appGitReveal: the elements are in the markup, and what changes is
+// the value behind them — see createServerApp and closeCreateServerApp.
+let serverAppKey = null;
+
 // refreshReveals rebuilds the eyes' labels, which are translated and so change
 // with the language. Called from setLang, after the dictionary has switched.
 //
@@ -2237,6 +2439,7 @@ let envReveals = [];
 // is the one that must not be made a variable to reach it.
 function refreshReveals() {
   if (appGitReveal) appGitReveal.refresh();
+  if (serverAppKey) serverAppKey.refresh();
   for (const r of envReveals) r.refresh();
 }
 
@@ -2304,11 +2507,13 @@ function setLang(value) {
   // for a log that is still streaming is the next line, and for the app's
   // static panels is the next tick of the refresh timer. Leaving it is the
   // honest trade: stale wording for a moment, against losing the stream.
-  if (isShown($("log-modal")) || isShown($("apps-new-modal")) || isShown($("metrics-modal"))) return;
+  if (isShown($("log-modal")) || isShown($("apps-new-modal")) || isShown($("metrics-modal")) ||
+      isShown($("server-add-modal")) || isShown($("server-app-modal"))) return;
 
   const view = state.view;
   if (view === "overview") showOverview();
   else if (view === "apps") showApps();
+  else if (view === "servers") showServers();
   else if (view === "docs") showDocs();
   else if (view === "app" && state.app) openApp(state.app);
 }
@@ -2540,7 +2745,7 @@ function tile(label, value, note, kind) {
 // Views
 // ---------------------------------------------------------------------------
 
-// navTo switches between the four views. It is the one place that decides which
+// navTo switches between the views. It is the one place that decides which
 // sections are visible, so a view added later cannot be reachable from one path
 // and not another.
 function navTo(name) {
@@ -2564,10 +2769,10 @@ function navTo(name) {
   // is already its own field: `cameFrom`, set by openApp before it gets here.
   state.view = name;
 
-  for (const view of ["overview", "apps", "app", "docs"]) {
+  for (const view of ["overview", "apps", "app", "servers", "docs"]) {
     show($(view + "-view"), view === name);
   }
-  for (const item of ["overview", "apps", "docs"]) {
+  for (const item of ["overview", "apps", "servers", "docs"]) {
     const button = $("nav-" + item);
     // aria-current is what a screen reader reads; the styling follows from it
     // rather than being set separately, so the two cannot disagree.
@@ -2575,10 +2780,11 @@ function navTo(name) {
     else button.removeAttribute("aria-current");
   }
 
-  // Which of the nav's entries this console may use. Overview and Apps are the
-  // deployment's own data — a list of every app, the platform's health — and an
-  // app key reaches one app, so for that tier there is nothing to navigate
-  // between and the nav is hidden rather than shown with a single entry.
+  // Which of the nav's entries this console may use. Overview, Apps and Servers
+  // are the deployment's own data — a list of every app, the platform's health,
+  // the other deployments this one can reach — and an app key reaches one app,
+  // so for that tier there is nothing to navigate between and the nav is hidden
+  // rather than shown with a single entry.
   //
   // Docs is not that: it is the same page for everyone, it names no app's data,
   // and it is the one destination worth having before signing in at all. So it
@@ -2586,6 +2792,7 @@ function navTo(name) {
   const scoped = state.scope !== "app";
   show($("nav-overview"), scoped);
   show($("nav-apps"), scoped);
+  show($("nav-servers"), scoped);
   show($("nav"), name !== "app" && (scoped || name === "docs"));
 
   // A view and the sign-in card are alternatives, and Docs is the one view a
@@ -2615,8 +2822,8 @@ function navTo(name) {
 function goHome() {
   if ($("home").disabled) return;
   if (!state.signedIn) {
-    for (const view of ["overview", "apps", "app", "docs"]) show($(view + "-view"), false);
-    for (const item of ["overview", "apps", "docs"]) $("nav-" + item).removeAttribute("aria-current");
+    for (const view of ["overview", "apps", "app", "servers", "docs"]) show($(view + "-view"), false);
+    for (const item of ["overview", "apps", "servers", "docs"]) $("nav-" + item).removeAttribute("aria-current");
     show($("signin"), true);
     $("signin-key").focus();
     return;
@@ -2666,9 +2873,11 @@ async function refreshCurrent() {
   // embedded webviews, which reads as visible, which is the safe way round.
   if (document.hidden) return;
   // A dialog is a deliberate interruption — a log being followed, an app being
-  // created — and re-rendering the page under it would move what the reader is
-  // looking at. The dialog has its own refresh, if it wants one.
-  if (isShown($("log-modal")) || isShown($("apps-new-modal")) || isShown($("metrics-modal"))) return;
+  // created, a server being registered — and re-rendering the page under it
+  // would move what the reader is looking at. The dialog has its own refresh, if
+  // it wants one.
+  if (isShown($("log-modal")) || isShown($("apps-new-modal")) || isShown($("metrics-modal")) ||
+      isShown($("server-add-modal")) || isShown($("server-app-modal"))) return;
   // Nobody is mid-edit. This is the one that would actually lose work: the
   // loaders write form fields from the server — the four resource bounds, the
   // port, the replicas, the environment table — so a tick landing between two
@@ -2686,6 +2895,13 @@ async function refreshCurrent() {
       break;
     case "apps":
       await loadApps();
+      break;
+    case "servers":
+      // The servers list, and the selected server's apps with it. Both are read
+      // because both are on screen: an app created on the remote by someone
+      // else is the change this view exists to show.
+      await loadServers();
+      await loadServerApps();
       break;
     case "app":
       await loadAppView();
@@ -2764,6 +2980,31 @@ async function showApps() {
   // on that, so a view added later cannot expose it by accident.
   show($("apps-new"), state.scope !== "app");
   await loadApps();
+}
+
+// showServers opens the servers view, on whichever server was last selected.
+//
+// The selection survives leaving the view, which is the reason it is state
+// rather than an argument: coming back from the Apps view — which is where
+// selecting `local` goes — should land on the row that was picked, not reset to
+// the top of the list.
+//
+// Both the list and the selected server's apps are loaded here. The list is
+// re-read rather than reused so that a registration made in another tab, or
+// removed in one, is not shown as it was; the apps belong to whatever the
+// selection is now, which may have changed while this view was away.
+async function showServers() {
+  stopLogs();
+  state.app = "";
+  state.gitURL = "";
+  state.activeBranch = "";
+  closeCreateApp();
+  closeAddServer();
+  closeCreateServerApp();
+  navTo("servers");
+  show($("servers-add"), state.scope !== "app");
+  await loadServers();
+  await loadServerApps();
 }
 
 // DOC_SECTIONS is the docs page's table of contents, in reading order.
@@ -3552,6 +3793,353 @@ async function createApp() {
   show($("apps-new-modal"), false);
   await loadApps();
   await openApp(id);
+}
+
+// ---------------------------------------------------------------------------
+// Servers
+//
+// The other AppLab deployments this one can manage, and the apps on them.
+//
+// Everything here is admin-only on the server — a server is reached with an
+// admin key, and being able to reach a whole other platform is not something an
+// app key, scoped to one app, may borrow — so the view is not offered to that
+// tier at all. The gate is in navTo, which hides the nav entry, and the button
+// inside the view is gated the same way as the apps list's, so a view that
+// became reachable some other way still would not offer the controls.
+//
+// The admin key is the one thing that must not leak. No response carries it:
+// the list reports an address and a name, so the key typed into the form is
+// sent and never rendered, and the servers table has no column it could be
+// shown in. The one key that does reach the page is the *new app's*, handed out
+// once by a create — see createServerApp, and the note by its markup.
+// ---------------------------------------------------------------------------
+
+// loadServers fills the servers table and keeps the selection honest.
+//
+// The selection is reconciled against what came back rather than trusted. A
+// server that was removed in another tab, or whose registration failed to load,
+// would otherwise stay selected and leave the card below asking for the apps of
+// something that is not in the list.
+async function loadServers() {
+  const problem = $("server-problem");
+  show(problem, false);
+
+  let servers;
+  try {
+    servers = await api("/api/v1/servers");
+  } catch (err) {
+    setError(tf("Could not list servers: {error}", { error: err.message }));
+    return;
+  }
+
+  state.servers = servers;
+  if (!servers.some((s) => s.id === state.server)) state.server = "local";
+  renderServerRows();
+}
+
+// renderServerRows draws the servers table from state.
+//
+// Split from the fetch so selecting a row can redraw the highlight without a
+// round trip: the row just clicked is already in state, and re-reading the list
+// to move a marker would be a request whose answer could differ from what is on
+// screen — a server removed in another tab vanishing under the pointer that
+// clicked it.
+function renderServerRows() {
+  const body = $("servers");
+  body.replaceChildren();
+  show($("servers-empty"), state.servers.length === 0);
+
+  for (const server of state.servers) {
+    const tr = document.createElement("tr");
+    // Selecting a row is what the row is for, and the id is the thing to click
+    // — the same shape the apps list uses, minus the navigation: this opens a
+    // selection rather than a page.
+    const id = document.createElement("td");
+    id.className = "app-id";
+    id.textContent = serverLabel(server);
+    // The aria-current the nav's buttons use, for the same reason: the selected
+    // row is a state a screen reader should read, and the styling follows from
+    // it rather than being set separately.
+    if (server.id === state.server) id.setAttribute("aria-current", "true");
+    id.onclick = () => selectServer(server.id);
+    tr.appendChild(id);
+
+    const where = document.createElement("td");
+    where.textContent = server.url || "—";
+    if (!server.url) where.className = "muted";
+    tr.appendChild(where);
+
+    // This deployment cannot be removed, so it has no Remove button rather than
+    // a disabled one: a control that cannot ever be pressed is noise, and the
+    // API refuses `local` with a 409 anyway. The column stays because the other
+    // rows have one — an empty cell there is what "no action" looks like in a
+    // table where every other row has an action.
+    const actions = document.createElement("td");
+    if (!server.builtin) {
+      const remove = document.createElement("button");
+      remove.textContent = t("Remove");
+      remove.onclick = () => removeServer(server);
+      actions.appendChild(remove);
+    }
+    tr.appendChild(actions);
+
+    body.appendChild(tr);
+  }
+}
+
+// serverLabel is what a row is called.
+//
+// The server's own name wins when it has one, so a registration made with a
+// name is shown under that name; the built-in entry has no name of its own, so
+// it falls back to the API's, which is translated like any other string the
+// interface shows.
+function serverLabel(server) {
+  return t(server.name || server.id) || server.id;
+}
+
+// selectServer picks which server's apps the card below is showing.
+//
+// `local` is not rendered, it is navigated to: this deployment's apps already
+// have a view, and a second, smaller copy of that list inside this one would be
+// a worse version of it — no statuses, no links into an app. So the selection
+// is still recorded before the switch, which is what makes coming back to this
+// view land on the row that was picked.
+function selectServer(id) {
+  state.server = id;
+  // Redrawn before the switch, which is what makes the highlight follow the
+  // click: `local` navigates away from this view rather than rendering into it,
+  // so the row would otherwise still be unmarked when the reader came back.
+  renderServerRows();
+  if (id === "local") { showApps(); return; }
+  loadServerApps();
+}
+
+// loadServerApps fills the card with the selected server's apps.
+async function loadServerApps() {
+  const problem = $("server-problem");
+  show(problem, false);
+
+  const server = state.servers.find((s) => s.id === state.server);
+  $("server-apps-title").textContent = server ? serverLabel(server) : t("Apps");
+
+  const body = $("server-apps");
+  body.replaceChildren();
+
+  // The local case is a note rather than a table. Selecting it navigates away,
+  // so this is only reached when the view is opened with `local` already
+  // selected — the first visit, or a refresh tick landing while it is.
+  const local = state.server === "local";
+  show($("server-apps-table"), !local);
+  show($("server-apps-note"), local);
+  show($("server-apps-empty"), false);
+  // The create control, gated here rather than once at the view: which server it
+  // creates into is the selection, so it is hidden exactly when there is no
+  // remote to create into — this deployment, or a reader whose key is an app's.
+  show($("server-apps-new"), !local && state.scope !== "app");
+  if (local) return;
+
+  let apps;
+  try {
+    apps = await api("/api/v1/servers/" + encodeURIComponent(state.server) + "/apps");
+  } catch (err) {
+    setError(tf("Could not list apps on {server}: {error}", { server: state.server, error: err.message }));
+    return;
+  }
+
+  show($("server-apps-empty"), apps.length === 0);
+
+  for (const app of apps) {
+    const tr = document.createElement("tr");
+
+    // Plain text, not the apps list's clickable cell. The API relays only the
+    // app-level routes to a remote — list, create, delete — so there is no logs,
+    // builds or config on this side of the proxy, and a row that opened a detail
+    // view would open one with every panel failing. An affordance that leads
+    // somewhere broken is worse than none.
+    const id = document.createElement("td");
+    id.className = "app-id";
+    id.textContent = app.id;
+    tr.appendChild(id);
+
+    const where = document.createElement("td");
+    const address = appURL(app);
+    if (!address) {
+      where.className = "muted";
+      where.textContent = "—";
+    } else {
+      const link = document.createElement("a");
+      link.href = address;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = address;
+      where.appendChild(link);
+    }
+    tr.appendChild(where);
+
+    const actions = document.createElement("td");
+    const remove = document.createElement("button");
+    remove.textContent = t("Remove");
+    remove.onclick = () => deleteServerApp(app.id);
+    actions.appendChild(remove);
+    tr.appendChild(actions);
+
+    body.appendChild(tr);
+  }
+}
+
+// deleteServerApp removes an app from the selected remote.
+//
+// It replaces the app id's route through the proxy, and the source goes with it
+// — the same destructive act the local delete is, which is why it is confirmed
+// by name and why there is no Delete button here that does not ask.
+async function deleteServerApp(appID) {
+  if (!confirm(tf("Remove {app}?", { app: appID }))) return;
+  const problem = $("server-problem");
+  show(problem, false);
+  try {
+    await api("/api/v1/servers/" + encodeURIComponent(state.server) + "/apps/" + encodeURIComponent(appID), { method: "DELETE" });
+  } catch (err) {
+    show(problem, true);
+    problem.textContent = tf("Could not delete {app}: {error}", { app: appID, error: err.message });
+    return;
+  }
+  await loadServerApps();
+}
+
+// removeServer forgets a registration.
+//
+// Only the registration: the remote keeps running and keeps its apps. That is
+// the whole of what the call does and what the confirmation says, because the
+// opposite reading — "remove the server" as "take it down" — is the one someone
+// would need to be sure about.
+async function removeServer(server) {
+  if (!confirm(tf("Remove {server}? Its apps are left alone; only the registration is forgotten.", { server: serverLabel(server) }))) return;
+  const problem = $("server-problem");
+  show(problem, false);
+  try {
+    await api("/api/v1/servers/" + encodeURIComponent(server.id), { method: "DELETE" });
+  } catch (err) {
+    show(problem, true);
+    problem.textContent = tf("Could not remove the server: {error}", { error: err.message });
+    return;
+  }
+  // Moving off the removed server before the reload, so the card below is not
+  // briefly asking for the apps of something that no longer exists.
+  if (state.server === server.id) state.server = "local";
+  await loadServers();
+  await loadServerApps();
+}
+
+// addServer registers another AppLab deployment.
+//
+// The remote is probed before anything is stored — the API does that, so a wrong
+// address and a wrong key are refused here rather than becoming an entry that
+// fails later. Which means the failure is worth showing as it comes: the
+// message names the address or the key, and that is the only thing that tells
+// the reader which of the two fields to fix.
+async function addServer() {
+  const problem = $("server-add-problem");
+  show(problem, false);
+
+  const id = $("server-add-id").value.trim();
+  if (!id) {
+    problem.textContent = t("A server needs an id.");
+    show(problem, true);
+    return;
+  }
+
+  // Disabled for the round trip so a second click cannot register the server
+  // twice. The second would overwrite the first, which is a confusing answer to
+  // a double click rather than a real problem — the same reasoning as the app
+  // create's.
+  $("server-add-create").disabled = true;
+  try {
+    await api("/api/v1/servers", {
+      method: "POST",
+      body: JSON.stringify({
+        id: id,
+        url: $("server-add-url").value.trim(),
+        key: $("server-add-key").value.trim(),
+      }),
+    });
+  } catch (err) {
+    problem.textContent = tf("Could not add the server: {error}", { error: err.message });
+    show(problem, true);
+    // The dialog stays up with what was typed in it, which is the point of
+    // reporting here rather than in the page's banner: the two fields that can
+    // be wrong are still on screen, and the message names which one was.
+    show($("server-add-modal"), true);
+    return;
+  } finally {
+    $("server-add-create").disabled = false;
+  }
+
+  closeAddServer();
+  await loadServers();
+}
+
+function closeAddServer() {
+  show($("server-add-modal"), false);
+  show($("server-add-problem"), false);
+  $("server-add-id").value = "";
+  $("server-add-url").value = "";
+  // The key goes with the rest of the form: leaving one typed in would put a
+  // credential back on screen the next time the dialog opened, for no reason.
+  $("server-add-key").value = "";
+}
+
+// createServerApp creates an app on the selected remote and shows its key.
+//
+// The key is the reason this dialog does not simply close on success. A create
+// is the one moment an app's key is handed out, and a remote app has no page in
+// this console to read it from later — the detail routes are not proxied — so a
+// dialog that closed here would be a dialog whose app can never be pushed to.
+// The local create can rely on the app page because it has one. This shows the
+// key on the spot, masked, with the same eye the rest of the console uses.
+async function createServerApp() {
+  const problem = $("server-app-problem");
+  show(problem, false);
+
+  const id = $("server-app-id").value.trim();
+  if (!id) {
+    problem.textContent = t("An app needs an id.");
+    show(problem, true);
+    return;
+  }
+
+  $("server-app-create").disabled = true;
+  let created;
+  try {
+    created = await api("/api/v1/servers/" + encodeURIComponent(state.server) + "/apps", {
+      method: "POST",
+      body: JSON.stringify({ id: id }),
+    });
+  } catch (err) {
+    problem.textContent = tf("Could not create {id}: {error}", { id: id, error: err.message });
+    show(problem, true);
+    return;
+  } finally {
+    $("server-app-create").disabled = false;
+  }
+
+  // The field is cleared and the dialog stays up, so the key below is the only
+  // thing left on it. Nothing else about the create is worth reading — the app
+  // is in the list behind the dialog, and the list is refreshed next.
+  $("server-app-id").value = "";
+  $("server-app-key-note").classList.remove("hidden");
+  serverAppKey.set((created && created.app_key) || "");
+  await loadServerApps();
+}
+
+function closeCreateServerApp() {
+  show($("server-app-modal"), false);
+  show($("server-app-problem"), false);
+  show($("server-app-key-note"), false);
+  $("server-app-id").value = "";
+  // The key is dropped rather than left in the element's data: it is a
+  // credential the page has no further use for, and one held behind a closed
+  // dialog is one that is still in the document.
+  serverAppKey.set("");
 }
 
 // loadRepository fills in the clone command shown in the state card.
@@ -5533,6 +6121,12 @@ function signOut() {
   // The clone address goes with it: it carries no credential, but it names an
   // app, and the next reader of the document may be someone else at this browser.
   state.gitURL = "";
+  // The servers go with it too. They name other deployments and how to reach
+  // them, which is the deployment's own inventory rather than a fact about the
+  // session — and leaving a selection behind would open the next session's view
+  // on a server that reader may not have registered.
+  state.servers = [];
+  state.server = "local";
   // The header stays up — its theme and language controls are the whole of what
   // the sign-in screen offers — but everything it carries for a signed-in user
   // goes, along with every view.
@@ -5542,11 +6136,13 @@ function signOut() {
   // still offers it.
   show($("signout"), false);
   show($("app-key-note"), false);
-  for (const view of ["overview", "apps", "app", "docs"]) show($(view + "-view"), false);
+  show($("server-app-key-note"), false);
+  for (const view of ["overview", "apps", "app", "servers", "docs"]) show($(view + "-view"), false);
   show($("nav"), true);
   show($("nav-overview"), false);
   show($("nav-apps"), false);
-  for (const item of ["overview", "apps", "docs"]) $("nav-" + item).removeAttribute("aria-current");
+  show($("nav-servers"), false);
+  for (const item of ["overview", "apps", "servers", "docs"]) $("nav-" + item).removeAttribute("aria-current");
   show($("signin"), true);
   // The rendered commands name the key that was just discarded, so they are
   // rebuilt without it rather than left holding a credential the reader no
@@ -5576,6 +6172,7 @@ $("home").onclick = goHome;
 
 $("nav-overview").onclick = showOverview;
 $("nav-apps").onclick = showApps;
+$("nav-servers").onclick = showServers;
 $("nav-docs").onclick = showDocs;
 
 $("apps-new").onclick = () => {
@@ -5599,6 +6196,45 @@ $("apps-new-id").onkeydown = (e) => {
   // nothing else either key could mean.
   if (e.key === "Enter") createApp();
   if (e.key === "Escape") closeCreateApp();
+};
+
+// Servers. Add opens the registration dialog; the row's own controls are built
+// with the rows, since there is one set per server.
+$("servers-add").onclick = () => {
+  show($("server-add-modal"), true);
+  show($("server-add-problem"), false);
+  $("server-add-id").focus();
+};
+$("server-add-cancel").onclick = closeAddServer;
+$("server-add-scrim").onclick = closeAddServer;
+$("server-add-create").onclick = addServer;
+// Enter creates from any of the three fields, which is what a form of this size
+// is expected to do; Escape closes it from any of them too.
+for (const input of ["server-add-id", "server-add-url", "server-add-key"]) {
+  $(input).onkeydown = (e) => {
+    if (e.key === "Enter") addServer();
+    if (e.key === "Escape") closeAddServer();
+  };
+}
+
+// The apps dialog for a selected server. Opened from the card's New app button
+// rather than from the page head, because which server it creates into is the
+// selection above it.
+$("server-apps-new").onclick = () => {
+  show($("server-app-modal"), true);
+  show($("server-app-problem"), false);
+  // The key from a previous create goes with it: the dialog up again is a new
+  // create, and a credential left from the last one would read as this one's.
+  show($("server-app-key-note"), false);
+  serverAppKey.set("");
+  $("server-app-id").focus();
+};
+$("server-app-create").onclick = createServerApp;
+$("server-app-cancel").onclick = closeCreateServerApp;
+$("server-app-scrim").onclick = closeCreateServerApp;
+$("server-app-id").onkeydown = (e) => {
+  if (e.key === "Enter") createServerApp();
+  if (e.key === "Escape") closeCreateServerApp();
 };
 $("back").onclick = closeApp;
 $("app-restart").onclick = restart;
@@ -5725,6 +6361,11 @@ $("log-modal").onkeydown = (e) => {
   // by the time boot runs, and it has one. The sign-in eye is local to boot —
   // refreshReveals reaches the other through the variable above.
   const signinReveal = concealed("signin-key", "signin-reveal");
+  // The registration form's key and the app-create result are wired here for
+  // the same reason: they exist in the markup from the first parse, and both are
+  // reachable by a language switch — refreshReveals rebuilds their eye labels.
+  concealed("server-add-key", "server-add-reveal");
+  serverAppKey = concealed("server-app-key", "server-app-key-reveal", "server-app-key-copy");
   appGitReveal = concealed("app-git-hint", "app-git-hint-reveal", "app-git-hint-copy", {
     // The clone command is masked to the width of the app's address, the row
     // directly above it. Two values in one column, one of them a run of bullets
@@ -5789,6 +6430,9 @@ $("log-modal").onkeydown = (e) => {
   show($("nav"), true);
   show($("nav-overview"), false);
   show($("nav-apps"), false);
+  // Servers is a data view like those two, and stays hidden until there is a
+  // session for the same reason: there is nothing to list without one.
+  show($("nav-servers"), false);
 
   // Opened on request rather than by default: the sign-in form stays the
   // landing screen, since a reader with a key should not have to leave a

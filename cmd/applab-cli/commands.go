@@ -60,7 +60,7 @@ func configCommand(urlFlag, keyFlag *string) *cobra.Command {
 }
 
 // createCommand registers an app without uploading anything.
-func createCommand(urlFlag, keyFlag *string) *cobra.Command {
+func createCommand(urlFlag, keyFlag, serverFlag *string) *cobra.Command {
 	var (
 		port       int32
 		replicas   int32
@@ -102,12 +102,16 @@ directory name.`,
 				req.Replicas = &replicas
 			}
 
-			app, err := c.CreateApp(cmd.Context(), req)
+			app, err := createAppOnServer(cmd.Context(), c, *serverFlag, req)
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("created %s\n", app.ID)
+			if server := remoteServerName(*serverFlag); server != "" {
+				fmt.Printf("created %s on %s\n", app.ID, server)
+			} else {
+				fmt.Printf("created %s\n", app.ID)
+			}
 			if app.URL != "" {
 				fmt.Printf("it will be served at %s\n", app.URL)
 			}
@@ -137,7 +141,7 @@ directory name.`,
 }
 
 // listCommand lists apps.
-func listCommand(urlFlag, keyFlag *string) *cobra.Command {
+func listCommand(urlFlag, keyFlag, serverFlag *string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "list",
@@ -150,7 +154,7 @@ func listCommand(urlFlag, keyFlag *string) *cobra.Command {
 				return err
 			}
 
-			apps, err := c.ListApps(cmd.Context())
+			apps, err := listAppsOnServer(cmd.Context(), c, *serverFlag)
 			if err != nil {
 				return err
 			}
@@ -916,7 +920,7 @@ func stopCommand(urlFlag, keyFlag *string) *cobra.Command {
 }
 
 // deleteCommand deletes an app.
-func deleteCommand(urlFlag, keyFlag *string) *cobra.Command {
+func deleteCommand(urlFlag, keyFlag, serverFlag *string) *cobra.Command {
 	var (
 		yes        bool
 		keepSource bool
@@ -950,18 +954,56 @@ still recoverable.`,
 				}
 			}
 
-			if err := c.DeleteApp(cmd.Context(), appID, keepSource); err != nil {
+			if err := deleteAppOnServer(cmd.Context(), c, *serverFlag, appID, keepSource); err != nil {
 				return err
 			}
-			fmt.Printf("deleted %s\n", appID)
+			if server := remoteServerName(*serverFlag); server != "" {
+				fmt.Printf("deleted %s on %s\n", appID, server)
+			} else {
+				fmt.Printf("deleted %s\n", appID)
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	cmd.Flags().BoolVar(&keepSource, "keep-source", false, "keep the app's source repository")
+	cmd.Flags().StringVar(serverFlag, "server", "", "delete the app on another registered deployment")
 
 	return cmd
+}
+
+// remoteServerName normalises --server: empty and "local" both mean this
+// deployment, so only a genuine remote produces a name to print.
+func remoteServerName(server string) string {
+	if server == "" || server == "local" {
+		return ""
+	}
+	return server
+}
+
+// listAppsOnServer lists an app collection, here or on a registered remote.
+func listAppsOnServer(ctx context.Context, c *client.Client, server string) ([]client.App, error) {
+	if remoteServerName(server) == "" {
+		return c.ListApps(ctx)
+	}
+	return c.ServerApps(ctx, server)
+}
+
+// createAppOnServer creates an app, here or on a registered remote.
+func createAppOnServer(ctx context.Context, c *client.Client, server string, req client.CreateAppRequest) (*client.App, error) {
+	if remoteServerName(server) == "" {
+		return c.CreateApp(ctx, req)
+	}
+	return c.CreateServerApp(ctx, server, req)
+}
+
+// deleteAppOnServer deletes an app, here or on a registered remote.
+func deleteAppOnServer(ctx context.Context, c *client.Client, server, appID string, keepSource bool) error {
+	if remoteServerName(server) == "" {
+		return c.DeleteApp(ctx, appID, keepSource)
+	}
+	return c.DeleteServerApp(ctx, server, appID, keepSource)
 }
 
 // humanAge renders how long ago something happened, at a scale a person reads.
