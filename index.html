@@ -315,14 +315,6 @@ the quick start:</p>
 registry — the build pushes with it and the app pulls with it. It lives in the
 release namespace, where apps run too, so there is no boundary for the credential
 to cross and nothing is copied.</p>
-<p><strong>A member cluster needs this Secret too.</strong> AppLab can deploy into clusters
-other than this one — registered through the API rather than here, so there is
-nothing in this chart for them. A member builds in its own cluster and pulls
-there, so the same registry credential has to exist in its namespace under the
-same name. See <a href="https://github.com/shaowenchen/applab#more-than-one-cluster">More than one
-cluster</a>, and
-<code>hack/member-kubeconfig.sh</code> for a credential with the least privilege AppLab can
-work with.</p>
 <p>A Secret named here and <strong>missing</strong> is refused before anything is created: the
 build or the deploy fails and says which Secret and namespace it looked in,
 rather than starting a pod that cannot come up. The reason that matters is what
