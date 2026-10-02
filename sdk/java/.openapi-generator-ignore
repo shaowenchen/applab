@@ -1,0 +1,29 @@
+# What the Java generator writes that this repository does not want.
+#
+# See the Python ignore file for the reasoning; the same two kinds of line appear
+# here.
+#
+# The hand-written helper — src/main/java/com/applab/sdk/AppLabExt.java — is
+# listed so regeneration never touches it. The generator does not produce it, but
+# listing it is what keeps it safe if a future generator version decides to, and
+# it records that the file is ours rather than the tool's.
+#
+# pom.xml and the generated runtime (ApiClient.java, apis/, models/) are NOT
+# listed: they are what makes the SDK compile, which is the point of shipping it.
+
+# Ours, protected from regeneration.
+src/main/java/com/applab/sdk/AppLabExt.java
+
+# CI and publishing for a standalone project; this SDK lives inside AppLab.
+.github/
+git_push.sh
+.travis.yml
+.gitlab-ci.yml
+
+# Documentation and tests the generator emits alongside the code.
+docs/
+src/test/
+
+# The repository's own ignore rules are managed at the root.
+# The generator's copy would be a second set that silently disagrees.
+.gitignore

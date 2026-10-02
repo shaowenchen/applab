@@ -1,0 +1,36 @@
+# What the Go generator writes that this repository does not want.
+#
+# applabext/ is ours, protected from regeneration: it is the hand-written helper
+# layer — the chunked upload, the followed log, the archive and the build-id
+# lookup the generator cannot write.
+#
+# go.mod is deliberately NOT listed, so the generator's own module file is kept.
+# The generated client's runtime imports third-party packages, and folding those
+# into this repository's go.mod would add a SDK's dependencies to the server's
+# dependency graph — the server builds none of this and should not carry it. A
+# module here means `sdk/golang` is built on its own, which is also why
+# hack/sdk-compile.sh runs its tests separately.
+#
+# Everything else is noise this repository has its own answer for: CI for services
+# AppLab does not use, a push script for a repository layout that is not this one,
+# per-operation Markdown that duplicates the specification, and a test file per
+# model that nothing runs.
+
+# Ours, protected from regeneration.
+applabext/
+
+# The generator's own tests, which this repository does not run.
+*_test.go
+test/
+
+# CI and publishing for a standalone project; this SDK lives inside AppLab.
+.gitlab-ci.yml
+.travis.yml
+git_push.sh
+.github/
+
+# Documentation the generator emits alongside the code.
+docs/
+
+# The repository's own ignore rules are managed at the root.
+.gitignore

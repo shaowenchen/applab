@@ -1,0 +1,31 @@
+# What the Rust generator writes that this repository does not want.
+#
+# See the Python ignore file for the reasoning; the same two kinds of line appear
+# here.
+#
+# The hand-written helper — src/applab_ext.rs — is listed so regeneration never
+# touches it. The generator does not produce it, but listing it is what keeps it
+# safe if a future generator version decides to, and it records that the file is
+# ours rather than the tool's.
+#
+# Cargo.toml and the generated runtime (src/apis/, src/models/) are NOT listed:
+# Cargo.toml is what makes the crate build, and the generator rewrites it when the
+# API changes. Its dependency list is maintained by the `cargo add` commands in
+# the header comment of src/applab_ext.rs, not by this file — this file cannot
+# protect it.
+
+# Ours, protected from regeneration.
+src/applab_ext.rs
+
+# CI and publishing for a standalone project; this SDK lives inside AppLab.
+.github/
+git_push.sh
+.travis.yml
+.gitlab-ci.yml
+
+# Documentation the generator emits alongside the code.
+docs/
+
+# The repository's own ignore rules are managed at the root.
+# The generator's copy would be a second set that silently disagrees.
+.gitignore

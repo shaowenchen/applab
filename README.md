@@ -183,7 +183,7 @@ git -c http.extraHeader="Authorization: Bearer $APPLAB_KEY" \
 
 Everything AppLab can do is reachable four ways: the console, `applab-cli`, the
 `applab.sh` script that is written into every app's repository, and the generated
-[SDKs](sdk/README.md) for Python and TypeScript.
+[SDKs](sdk/README.md) for Go, Python, TypeScript, Java and Rust.
 
 They are deliberately the same surface. The API is the substance — every one of
 them is a caller of it and nothing else — and every route is listed with the
