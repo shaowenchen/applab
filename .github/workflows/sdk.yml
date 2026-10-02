@@ -25,6 +25,10 @@ on:
       - api/openapi.yaml
       - sdk/*/config.yaml
       - sdk/*/.openapi-generator-ignore
+      # The compile step is part of this job, so a change to what it runs has to
+      # run it. Without this a broken compile check waits for an unrelated API
+      # change to be noticed.
+      - hack/sdk-compile.sh
       - .github/workflows/sdk.yml
   pull_request:
     paths:
@@ -32,6 +36,7 @@ on:
       - sdk/**
       - internal/openapi/**
       - cmd/genopenapi/**
+      - hack/sdk-compile.sh
       - .github/workflows/sdk.yml
   workflow_dispatch:
 

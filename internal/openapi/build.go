@@ -3,7 +3,6 @@ package openapi
 import (
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 )
 
@@ -261,27 +260,4 @@ func (p *PathItem) set(method string, op *Operation) error {
 		return fmt.Errorf("unsupported method %q", method)
 	}
 	return nil
-}
-
-// SortedSchemaNames returns the component schema names in order, for a test that
-// reports what the document contains.
-func SortedSchemaNames(doc *Document) []string {
-	names := make([]string, 0, len(doc.Components.Schemas))
-	for name := range doc.Components.Schemas {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// clientSchemas is the set of component names reflection is expected to produce,
-// so a test can assert both directions: every type becomes a schema, and nothing
-// unexpected appears.
-func clientSchemas() []string {
-	out := make([]string, 0, len(clientSchemaTypes))
-	for _, v := range clientSchemaTypes {
-		out = append(out, componentName(v))
-	}
-	sort.Strings(out)
-	return out
 }

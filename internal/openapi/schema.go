@@ -1,7 +1,6 @@
 package openapi
 
 import (
-	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -352,20 +351,4 @@ var clientSchemaTypes = []any{
 	client.UpdateAppRequest{},
 	client.ResourcesRequest{},
 	client.RegisterServerRequest{},
-}
-
-// componentName is the schema name a Go value's type maps to, so a caller can
-// reference it without repeating the type name.
-func componentName(v any) string {
-	t := reflect.TypeOf(v)
-	if t == nil {
-		panic("openapi: componentName of a nil value")
-	}
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if t.Name() == "" {
-		panic(fmt.Sprintf("openapi: %s has no name and cannot be a component", t))
-	}
-	return t.Name()
 }

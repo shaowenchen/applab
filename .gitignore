@@ -28,3 +28,13 @@ coverage.html
 # Python bytecode from running the SDK helpers locally.
 __pycache__/
 *.pyc
+
+# Build output of the SDK trees, written when hack/sdk-compile.sh checks that
+# they compile. The workflow that commits sdk/ runs that script first, so
+# without these the dependency tree and the compiled output would be committed
+# alongside the code — the one thing worse than no lockfile is a 26MB one.
+# Unanchored on purpose: these live under sdk/<language>/, not at the root.
+node_modules/
+package-lock.json
+dist/
+target/

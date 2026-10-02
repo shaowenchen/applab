@@ -58,8 +58,46 @@ fi
 
 # TypeScript: type-check the generated tree. tsc is installed from the SDK's own
 # package.json when it has one; without it there is nothing to run.
+#
+# --ignore-scripts is load-bearing, not hygiene: the generated package.json
+# declares `"prepare": "npm run build"`, and npm runs `prepare` as part of
+# `npm install`. Without it the install builds the tree before this script ever
+# reaches tsc, and the build exits non-zero on its own, so the failure surfaces
+# as a failed install with no type errors in sight.
+#
+# The flags widen what the generated tsconfig.json does not set, and both halves
+# are needed by the hand-written helper:
+#
+#   lib es2020  — target es6 supplies a bare lib, which has neither the ES2017
+#                 padStart/trimEnd the tar writer uses nor the AsyncGenerator the
+#                 log stream is declared as. es2020 also carries the iterator
+#                 types tsc otherwise reports missing.
+#   types node  — the helper reaches for node:fs, node:zlib and Buffer, which are
+#                 the Node runtime's, not the DOM's. @types/node is installed
+#                 here rather than declared in the SDK's package.json because
+#                 that file is a generator deliverable: it is listed in
+#                 .openapi-generator/FILES and regeneration rewrites it, so an
+#                 edit there would be silently discarded and then reported as
+#                 drift. It is --no-save for the same reason — package-lock.json
+#                 is not committed.
+#
+# esModuleInterop is what lets the generated runtime's `import * as` default
+# imports resolve, and leaves nothing in the tree to check in. `tsc --noEmit`
+# touches neither outDir, so the script does not depend on tsc's behavior when
+# it has type errors.
+#
+# Only the helper depends on all of this: the generated runtime (apis/, models/,
+# runtime.ts) type-checks against the DOM lib alone, which is the default.
 if have npx --version && [ -f sdk/typescript/package.json ]; then
-  (cd sdk/typescript && npm install --silent --no-audit --no-fund && npx --no-install tsc --noEmit)
+  (
+    cd sdk/typescript
+    npm install --ignore-scripts --silent --no-audit --no-fund >/dev/null
+    npm install --ignore-scripts --silent --no-audit --no-fund --no-save @types/node >/dev/null
+    npx --no-install tsc --noEmit \
+      --lib es2020,dom \
+      --types node \
+      --esModuleInterop
+  )
   compiled+=("typescript")
 else
   skipped+=("typescript (no package.json yet, or no npx)")
@@ -80,6 +118,10 @@ fi
 
 # Rust: cargo check is the fastest way to know a crate builds. The generated
 # crate's own manifest names its dependencies, so no extra setup is needed.
+#
+# The Cargo.lock it writes is left alone: it is outside the ignore file the
+# generator reads, so it is not a generator deliverable, and it is ignored at
+# the repository root rather than carried back as a commit.
 if have cargo --version && [ -f sdk/rust/Cargo.toml ]; then
   (cd sdk/rust && cargo check --quiet)
   compiled+=("rust")

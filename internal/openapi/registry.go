@@ -1,7 +1,6 @@
 package openapi
 
 import (
-	"sort"
 	"strings"
 )
 
@@ -414,15 +413,4 @@ func pathParams(path string) []Parameter {
 		})
 	}
 	return out
-}
-
-// sortedOperationKeys returns the registry's keys in a stable order, so a test
-// reporting a diff is readable.
-func sortedOperationKeys(ops map[string]OpSpec) []string {
-	keys := make([]string, 0, len(ops))
-	for k := range ops {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

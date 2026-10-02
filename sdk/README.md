@@ -63,6 +63,11 @@ the standard library in every language, the tar writer included: Go, Java and Ru
 each write the format out rather than taking a library for it, so that a
 regenerated tree needs no dependency added by hand.
 
+The one thing installed anywhere is `@types/node` for the TypeScript compile
+check. It is types only — nothing reaches a user's runtime — and it is installed
+by `hack/sdk-compile.sh` rather than declared in the SDK's `package.json`, because
+that file is a generator deliverable that regeneration rewrites.
+
 ## Using one
 
 The helper functions below are verified against a stub deployment; the generated
