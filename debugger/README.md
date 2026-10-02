@@ -88,16 +88,22 @@ of the console's own routes claim.
 
 | Input | Default | Description |
 |---|---|---|
-| `api_key` | generated | API key. Printed in the summary either way, because it is the deliverable. |
+| `api_key` | the `APPLAB_API_KEY` secret, else generated | API key. Empty uses the repository's `APPLAB_API_KEY` secret if it has one, and generates a key with `openssl` if it does not; fill it in to override for one run. Printed in the summary either way, because it is the deliverable. |
 | `session_hours` | `4` | How long the environment may run. `0` means no self-imposed limit, bounded by the job's timeout. |
 | `tunnel` | `cloudflare` | `cloudflare` (no account needed) or `ngrok`. |
 | `cloudflare_token` | — | Token of a named Cloudflare tunnel; empty starts a quick tunnel. |
-| `domain` | `applab.chenshaowen.com` | The domain apps are served under. Named by default, and explained below. |
+| `domain` | `applab-1.chenshaowen.com` | The domain apps are served under; free text, so any hostname with a tunnel behind it works. Set it empty for a quick tunnel. Explained below. |
 | `ngrok_token` | — | ngrok authtoken; required when `tunnel` is `ngrok`. |
 
-Only `api_key` and `cloudflare_token` are worth passing from a secret: the key is
-generated when left empty, so it needs no configuration unless you want a
-particular one, and the token is a credential and never a plain input.
+`api_key` is a plain input rather than a secret name, on purpose: the key is what
+the run hands back, and it is printed in the summary whether it was generated or
+supplied. Naming a secret in the input would therefore hide nothing a reader of
+the run could not already see. `cloudflare_token` is the opposite case — a
+credential that is never printed — and it belongs in a secret.
+
+There is one key secret, not one per domain. A key is not tied to a hostname: it
+is a value in the installation's own Secret, so the same one works for whatever
+domain a run serves.
 
 The AppLab image tag is not an input. It is the published `latest`, so the
 environment runs the newest AppLab — the same tag the release workflow publishes
@@ -106,9 +112,11 @@ with `imagePullPolicy: Always`.
 
 ### The domain, and the named tunnel it needs
 
-`domain` defaults to `applab.chenshaowen.com`, and it is used as given: it becomes
+`domain` defaults to `applab-1.chenshaowen.com`, and it is used as given: it becomes
 `ingress.host`, so the apps are served under it and the console's own route
-matches it too.
+matches it too. Any free-text hostname works — set it to whatever name you have a
+Cloudflare tunnel for — and it is refused rather than half-accepted when it
+carries a scheme or a path, or when the tunnel could not serve it at all.
 
 This is app configuration, not tunnel configuration. Nothing is passed to
 `cloudflared` — a named tunnel already knows its ingress, because you configured

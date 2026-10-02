@@ -36,21 +36,40 @@ on:
           - 'cloudflare'
           - 'ngrok'
       domain:
-        description: 'Domain'
-        type: choice
-        # A choice rather than free text, because each name is tied to one
-        # credential: the secret read below is not the same for both, and a
-        # typed hostname would have no secret behind it. Two domains, two keys,
-        # one environment per run — run it again to stand the other one up.
+        description: 'Domain (empty = a quick tunnel''s own hostname)'
+        type: string
+        # Free text, so a run can serve any hostname the caller has a Cloudflare
+        # tunnel for, rather than only the two this repository happens to be set
+        # up with. It becomes ingress.host and is used as given; the ingress
+        # that points the name at the tunnel is arranged in Cloudflare, and
+        # nothing here can create or check it.
         #
         # Named rather than empty so a run serves a domain that was chosen, not
         # a hostname minted for that one connection — which means the named
-        # tunnel is the expected path, and a run without CLOUDFLARE_TOKEN stops
-        # rather than quietly publishing a quick tunnel's address instead.
+        # tunnel is the expected path, and a run with this set and no
+        # CLOUDFLARE_TOKEN stops rather than quietly publishing a quick
+        # tunnel's address instead. Set it empty on purpose to take that quick
+        # tunnel.
         default: 'applab-1.chenshaowen.com'
-        options:
-          - 'applab-1.chenshaowen.com'
-          - 'applab-2.chenshaowen.com'
+      api_key:
+        description: 'API key (empty = the APPLAB_API_KEY secret, then a random one)'
+        type: string
+        # An override, not the usual way in. Left empty — the normal case — the
+        # run takes the APPLAB_API_KEY secret if the repository has one, and
+        # generates a key with openssl if it does not. Fill it in to use a
+        # particular key for this one run instead.
+        #
+        # Plain text rather than a secret name, and that is deliberate: the key
+        # is the thing the run hands back, and hack/environment.sh prints it in
+        # the summary whether it generated it or was given it — so hiding the
+        # input that chooses it would hide nothing a reader of the run could not
+        # already see.
+        #
+        # There is one secret, not one per domain. A key is not tied to a
+        # hostname: it is a value in the installation's own Secret, so the same
+        # one works for whatever domain this run serves. Two of them existed
+        # only because the domain used to pick which to read.
+        default: ''
 
 permissions:
   contents: read
@@ -97,16 +116,11 @@ jobs:
           registry_username: ${{ secrets.DOCKERHUB_USERNAME }}
           registry_password: ${{ secrets.DOCKERHUB_TOKEN }}
           # The domain is an input — it is not sensitive, and it is the thing a
-          # person picks — while the key is read from a secret, because the two
-          # are the same decision: each domain has one credential behind it, and
-          # picking the domain is picking which secret the run gets.
-          #
-          # A picked domain whose secret is unset leaves api_key empty, which the
-          # action reads as "generate one and print it" — the same as any other
-          # run without a key configured.
+          # person picks.
           domain: ${{ inputs.domain }}
-          api_key: >-
-            ${{ inputs.domain == 'applab-2.chenshaowen.com'
-                && secrets.APPLAB_API_KEY_2
-                || secrets.APPLAB_API_KEY }}
+          # Empty falls through to the APPLAB_API_KEY secret, and from there to
+          # a generated key — see where the input is declared. The secret is
+          # what makes a run land on the same key every time without anyone
+          # retyping it; the input is the one-run override.
+          api_key: ${{ inputs.api_key || secrets.APPLAB_API_KEY }}
 

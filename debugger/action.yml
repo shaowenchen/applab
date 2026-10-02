@@ -12,8 +12,10 @@ branding:
 inputs:
   api_key:
     description: >-
-      API key for this environment. Generated when empty, and printed in the
-      summary either way.
+      API key for this environment. Empty takes whatever the caller passes as
+      its default — the workflow passes the APPLAB_API_KEY secret when the
+      repository has one — and generates a key when nothing is supplied at all.
+      Printed in the summary either way.
     required: false
     default: ''
   session_hours:
@@ -41,15 +43,14 @@ inputs:
       console's own route matches. Point the ingress at the tunnel first;
       nothing here can create it.
     required: false
+    # Free text, so any hostname with a Cloudflare tunnel behind it works, not
+    # only the two this repository happens to be set up with.
+    #
     # Named by default, so a run serves a domain you chose rather than a
     # hostname minted for that one connection. That makes the named tunnel the
     # expected path — a quick tunnel cannot be given this name, so a run with
     # cloudflare_token unset stops and says so rather than quietly publishing
     # somewhere else. Set it empty to go back to a quick tunnel's own hostname.
-    #
-    # The caller decides this one, and the caller's list has the two names this
-    # environment is set up for; the default here is only what a direct call
-    # with nothing passed gets.
     default: 'applab-1.chenshaowen.com'
   registry_username:
     description: >-
@@ -113,6 +114,20 @@ runs:
         # than in the script so a run that cannot work fails in seconds instead
         # of after a three-minute wait for a hostname that was never coming.
         if [ -n "$DOMAIN" ]; then
+          # The domain is free text, so a typo is now possible where a list of
+          # names made it impossible — and the symptom of one is an address that
+          # resolves to nothing, which looks like the environment failing rather
+          # than like the value being wrong. Checked here because this is where
+          # the other input mistakes are caught.
+          case "$DOMAIN" in
+            *://*|*/*|*' '*)
+              echo "::error::domain must be a bare hostname without a scheme, a path or spaces, got '$DOMAIN'"
+              exit 1 ;;
+          esac
+          case "$DOMAIN" in
+            *.*) ;;
+            *) echo "::error::domain looks incomplete, got '$DOMAIN' (expected something like applab.example.com)"; exit 1 ;;
+          esac
           if [ "$APPLAB_TUNNEL" != "cloudflare" ]; then
             echo "::error::domain is only for a named Cloudflare tunnel, not '$APPLAB_TUNNEL'"
             exit 1
