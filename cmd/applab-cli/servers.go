@@ -50,6 +50,7 @@ Then point any command at one of them with --server:
 
 	cmd.AddCommand(
 		serversListCommand(urlFlag, keyFlag),
+		serversShowCommand(urlFlag, keyFlag),
 		serversAddCommand(urlFlag, keyFlag),
 		serversRemoveCommand(urlFlag, keyFlag),
 	)
@@ -98,6 +99,55 @@ func runServersList(cmd *cobra.Command, urlFlag, keyFlag string) error {
 		fmt.Println("\nno other servers are registered; add one with: applab servers add <id> --url <address> --key <admin key>")
 	}
 	return nil
+}
+
+// serversShowCommand prints one registration in full.
+//
+// The listing prints the same three fields in a row, so this exists for the two
+// it cannot show and the one it should not: a server's registration time, its
+// label when it has one, and whether it is the local entry — which the listing
+// marks by replacing the name with "(this deployment)" and a scripted reader
+// would have to pattern-match.
+func serversShowCommand(urlFlag, keyFlag *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <id>",
+		Short: "Show one registered deployment",
+		Long: `Show one registered deployment.
+
+The same facts "applab servers" lists, one per line, plus when the registration
+was made. The remote is not contacted: everything here is what this deployment
+recorded, so it works whether or not the remote is reachable.
+
+"local" is this deployment, and is always present.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newClient(*urlFlag, *keyFlag)
+			if err != nil {
+				return err
+			}
+
+			server, err := c.GetServer(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("id           %s\n", server.ID)
+			// Named only when the registration carries one, because the id is
+			// always the fallback and printing it twice reads as two facts.
+			if server.Name != "" {
+				fmt.Printf("name         %s\n", server.Name)
+			}
+			fmt.Printf("url          %s\n", server.URL)
+			fmt.Printf("builtin      %t\n", server.Builtin)
+			if server.Builtin {
+				// The false case needs no note; the true one is the answer to
+				// "why is this one always in the list", which the row cannot say.
+				fmt.Printf("             this deployment itself, not a remote\n")
+			}
+			fmt.Printf("created      %s\n", humanAge(server.CreatedAt))
+			return nil
+		},
+	}
 }
 
 func serversAddCommand(urlFlag, keyFlag *string) *cobra.Command {

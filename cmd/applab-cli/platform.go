@@ -12,7 +12,7 @@ import (
 	"github.com/shaowenchen/applab/internal/client"
 )
 
-// platformCommand reads AppLab's own pods, log and resource usage — the
+// platformCommand reads AppLab's own pods, events, log and resource usage — the
 // deployment the client is pointed at, not the apps it manages.
 //
 // The commands beside it answer "why is this app broken"; these answer "why is
@@ -27,18 +27,20 @@ import (
 func platformCommand(urlFlag, keyFlag *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "platform",
-		Short: "Show AppLab's own pods, log and resource usage",
-		Long: `Show AppLab's own pods, log and resource usage.
+		Short: "Show AppLab's own pods, events, log and resource usage",
+		Long: `Show AppLab's own pods, events, log and resource usage.
 
 These describe the deployment serving you rather than any app it manages:
-` + "`platform pods`" + ` lists the control plane's instances, ` + "`platform logs`" + `
-reads its log, and ` + "`platform resources`" + ` reports what those instances are
-using. All three are admin-key only — the control plane runs alongside every
-app, and its log names them.`,
+` + "`platform pods`" + ` lists the control plane's instances, ` + "`platform events`" + `
+reads the cluster's events about them, ` + "`platform logs`" + ` reads their log,
+and ` + "`platform resources`" + ` reports what those instances are using. All of
+them are admin-key only — the control plane runs alongside every app, and its log
+names them.`,
 	}
 
 	cmd.AddCommand(
 		platformPodsCommand(urlFlag, keyFlag),
+		platformEventsCommand(urlFlag, keyFlag),
 		platformLogsCommand(urlFlag, keyFlag),
 		platformResourcesCommand(urlFlag, keyFlag),
 	)
@@ -87,6 +89,71 @@ func platformPodsCommand(urlFlag, keyFlag *string) *cobra.Command {
 			return nil
 		},
 	}
+	return cmd
+}
+
+// platformEventsCommand lists the Kubernetes events concerning AppLab's own
+// objects.
+//
+// The counterpart of `applab events <app>`, and the one read that was missing
+// when the console gained its AppLab card: pods and a log were served, so "why
+// will AppLab not start" was answerable here and there, and the event that
+// explains a pending pod was not. Warnings are printed first, exactly as the app
+// version prints them — a namespace's events are mostly image pulls and
+// scheduling notes, and the one that explains a failure is the reason this
+// exists.
+func platformEventsCommand(urlFlag, keyFlag *string) *cobra.Command {
+	var limit int
+
+	cmd := &cobra.Command{
+		Use:   "events",
+		Short: "List the events about AppLab's own objects, warnings first",
+		Long: `List the Kubernetes events about AppLab's own objects, warnings first.
+
+The counterpart of ` + "`applab events <app>`" + `, for the deployment serving you
+rather than for one of its apps. The events are read from the namespace AppLab
+runs in, which is named above them — see "applab config" for the rest of what
+this deployment says about itself.
+
+The limit is passed through to the API, which caps it server-side. Admin key
+only: the deployment's namespace is not any app's, and an app key reaches one
+app.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newClient(*urlFlag, *keyFlag)
+			if err != nil {
+				return err
+			}
+
+			result, err := c.SelfEvents(cmd.Context(), limit)
+			if err != nil {
+				return err
+			}
+			if len(result.Events) == 0 {
+				fmt.Println("no events")
+				return nil
+			}
+
+			if result.Namespace != "" {
+				fmt.Printf("namespace %s\n\n", result.Namespace)
+			}
+			if result.Warnings > 0 {
+				fmt.Printf("%d warning(s)\n\n", result.Warnings)
+			}
+
+			for _, e := range result.Events {
+				fmt.Printf("[%s] %s: %s", e.Type, e.Reason, e.Message)
+				if e.Count > 1 {
+					fmt.Printf(" (%d times)", e.Count)
+				}
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+
+	// The limit is passed through to the API, which caps it server-side.
+	cmd.Flags().IntVar(&limit, "limit", 50, "how many events to fetch")
 	return cmd
 }
 

@@ -1,0 +1,28 @@
+# What the TypeScript generator writes that this repository does not want.
+#
+# See the Python ignore file for the reasoning; the two are the same except for
+# the language's own files.
+#
+# The hand-written helper — src/applabExt.ts — is listed so regeneration never
+# touches it. The generator does not produce it, but listing it is what keeps it
+# safe if a future generator version decides to, and it records that the file is
+# ours rather than the tool's.
+#
+# package.json, tsconfig.json and the generated runtime (runtime.ts, apis/,
+# models/) are NOT listed: they are the SDK.
+
+# Ours, protected from regeneration.
+src/applabExt.ts
+
+# CI and publishing for a standalone project; this SDK lives inside AppLab.
+.gitlab-ci.yml
+.travis.yml
+git_push.sh
+.github/
+
+# Documentation and tests the generator emits alongside the code.
+docs/
+test/
+
+# The repository's own ignore rules are managed at the root.
+.gitignore

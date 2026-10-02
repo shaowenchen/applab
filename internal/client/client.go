@@ -1161,6 +1161,32 @@ func (c *Client) SelfLogs(ctx context.Context, opts LogOptions, w io.Writer, fol
 	return c.streamLogs(ctx, "/api/v1/platform/logs", opts, w, follow)
 }
 
+// SelfEvents lists Kubernetes events concerning AppLab's own objects, warnings
+// first.
+//
+// The platform's counterpart to Events, and the third of the three reads the
+// console makes on an app's instances. Pods and a log were served for the
+// control plane; events were not, so a control plane that will not start was
+// answerable from a kubectl session and nowhere else — including from the
+// console, which is where someone who cannot run kubectl goes.
+//
+// The response is an EventList, like an app's, because a caller reading events
+// does the same thing with either. What it does not carry is an app: the
+// namespace's events are the deployment's, and Namespace says which one was
+// read.
+func (c *Client) SelfEvents(ctx context.Context, limit int) (*EventList, error) {
+	path := "/api/v1/platform/events"
+	if limit > 0 {
+		path += fmt.Sprintf("?limit=%d", limit)
+	}
+
+	var out EventList
+	if err := c.do(ctx, http.MethodGet, path, nil, "", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // streamLogs reads a log endpoint, which is one of two by path and identical
 // otherwise — same query, same streaming, same text/plain body.
 //
@@ -1224,12 +1250,19 @@ type Event struct {
 	LastSeen  time.Time `json:"last_seen"`
 }
 
-// EventList is an app's events.
+// EventList is an app's events — or AppLab's own, from the platform route.
 type EventList struct {
 	AppID    string  `json:"app_id"`
 	Events   []Event `json:"events"`
 	Count    int     `json:"count"`
 	Warnings int     `json:"warnings"`
+
+	// Namespace is which namespace the events were read from, and is set only
+	// by the platform route: an app's events are in the app's own namespace,
+	// which the app id already names, while AppLab's are in the deployment's,
+	// which the caller cannot otherwise know. Omitted rather than blank so the
+	// app route's answer is unchanged.
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // Events lists an app's events, warnings first. A limit of zero uses the

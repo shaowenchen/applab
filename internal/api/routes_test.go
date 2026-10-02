@@ -55,7 +55,7 @@ func newRealBuildEngine(t *testing.T, client *fake.Clientset, namespace string) 
 	})
 }
 
-// TestRouteReferenceCoversEveryDocumentedRoute is the guard that keeps the
+// TestEndpointReferenceCoversEveryDocumentedRoute is the guard that keeps the
 // endpoint list honest.
 //
 // The list GET /api/v1/describe returns is what an agent acts on, and it is
@@ -68,10 +68,10 @@ func newRealBuildEngine(t *testing.T, client *fake.Clientset, namespace string) 
 // generated document. That document is gone — the list is served rather than
 // served-and-also-committed — so there is no copy left to go stale, and the
 // thing worth guarding is now that the served list is complete.
-func TestRouteReferenceCoversEveryDocumentedRoute(t *testing.T) {
+func TestEndpointReferenceCoversEveryDocumentedRoute(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	ref := srv.RouteReference()
+	ref := srv.EndpointReference()
 	if len(ref) < 5 {
 		t.Fatalf("only %d routes are described; the endpoint list is too thin to be useful", len(ref))
 	}
@@ -89,18 +89,18 @@ func TestRouteReferenceCoversEveryDocumentedRoute(t *testing.T) {
 	}
 }
 
-// TestRouteReferenceNeverClaimsAnUnknownCredential guards the one field of the
+// TestEndpointReferenceNeverClaimsAnUnknownCredential guards the one field of the
 // endpoint list that is not copied from the route table.
 //
 // The tier is derived from the route's auth flags, and a route that set no flag
 // at all would be reported as needing nothing — which is the answer that gets a
 // caller a 401 it cannot explain. An empty Doc is the documented way to keep a
 // route out of the list, so a route that is in the list has to name a real tier.
-func TestRouteReferenceNeverClaimsAnUnknownCredential(t *testing.T) {
+func TestEndpointReferenceNeverClaimsAnUnknownCredential(t *testing.T) {
 	srv, _ := newTestServer(t)
 
 	known := map[string]bool{"none": true, "admin": true, "app": true, "token": true}
-	for _, e := range srv.RouteReference() {
+	for _, e := range srv.EndpointReference() {
 		if !known[e.Key] {
 			t.Errorf("route %s %s reports credential %q, which is not one of the four tiers",
 				e.Method, e.Path, e.Key)

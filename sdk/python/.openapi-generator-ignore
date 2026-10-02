@@ -1,0 +1,36 @@
+# What the Python generator writes that this repository does not want.
+#
+# Two kinds of line here, for two different reasons:
+#
+# The hand-written helper — applab_ext.py — is listed so regeneration never
+# touches it. The generator does not produce it, but listing it is what keeps it
+# safe if a future generator version decides to: the file is ours, not the
+# tool's, and this is where that is recorded.
+#
+# Everything else is noise this repository has its own answer for: CI
+# configuration for services AppLab does not use, a push script for a repository
+# layout that is not this one, per-operation Markdown that duplicates the
+# specification, and a test suite for the generated code that nothing runs.
+#
+# The packaging files (setup.py, pyproject.toml, requirements.txt) are NOT
+# listed: they are what makes the SDK installable, which is the point of
+# shipping it.
+
+# Ours, protected from regeneration.
+applab_ext.py
+
+# CI and publishing for a standalone project; this SDK lives inside AppLab.
+.gitlab-ci.yml
+.travis.yml
+git_push.sh
+.github/
+tox.ini
+test-requirements.txt
+
+# Documentation and tests the generator emits alongside the code.
+docs/
+test/
+
+# The repository's own ignore rules are managed at the root.
+# The generator's copy would be a second set that silently disagrees.
+.gitignore

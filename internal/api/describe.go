@@ -74,20 +74,25 @@ type describeAPI struct {
 	// Endpoints is every route this deployment serves, with the credential each
 	// requires. Generated from the route table, so it cannot describe a route
 	// that does not exist or miss one that does.
-	Endpoints []describeEndpoint `json:"endpoints"`
+	Endpoints []Endpoint `json:"endpoints"`
 }
 
-// describeEndpoint is one route, as an agent needs it: what to call, and with
-// what.
-type describeEndpoint struct {
+// Endpoint is one route, as an agent needs it: what to call, and with what.
+//
+// It is exported because more than the describe document is built from the route
+// table: the OpenAPI specification in internal/openapi is generated from the same
+// list, and a generator in another package cannot name an unexported type. The
+// JSON field names are unchanged by the export — this is the same value on the
+// wire, reachable from one more package.
+type Endpoint struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
 
-	// Key is the credential the route requires: "none", "admin", "app" or
-	// "token". Reported per route rather than as one note at the top, because
-	// the tiers are not interchangeable — an app key on an admin route is a 403
-	// the caller cannot explain, and a wrong guess about which routes its key
-	// reaches is the most likely way for an agent to waste a call.
+	// Key is the credential the route requires: "none", "admin" or "app".
+	// Reported per route rather than as one note at the top, because the tiers
+	// are not interchangeable — an app key on an admin route is a 403 the caller
+	// cannot explain, and a wrong guess about which routes its key reaches is the
+	// most likely way for an agent to waste a call.
 	Key string `json:"key"`
 
 	// Doc is what the route does, in one line, from the route table.
@@ -226,7 +231,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			APIVersion: cfg.APIVersion,
 			BaseURL:    base,
 			AuthHeader: "Authorization: Bearer <key>",
-			Endpoints:  s.RouteReference(),
+			Endpoints:  s.EndpointReference(),
 		},
 		Build: describeBuild{
 			Enabled:  cfg.Capabilities["build"],

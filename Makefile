@@ -100,6 +100,16 @@ fmt-check:
 .PHONY: check
 check: fmt-check vet test
 
+# Regenerate the OpenAPI specification from the route table.
+#
+# Run this after adding or changing a route: it rewrites api/openapi.yaml, which
+# is the file the SDKs are generated from and which a test requires to match the
+# table. It needs Go only — no Java — because the generator is a Go program; the
+# language SDKs built from the result are regenerated in CI.
+.PHONY: gen-openapi
+gen-openapi:
+	go run ./cmd/genopenapi -out api/openapi.yaml
+
 .PHONY: tidy
 tidy:
 	go mod tidy

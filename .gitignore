@@ -24,3 +24,7 @@ coverage.html
 .idea/
 .vscode/
 *.swp
+
+# Python bytecode from running the SDK helpers locally.
+__pycache__/
+*.pyc

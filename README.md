@@ -179,38 +179,46 @@ git -c http.extraHeader="Authorization: Bearer $APPLAB_KEY" \
 
 ## How it works
 
-### Three ways in, one set of things they can do
+### Four ways in, one set of things they can do
 
-Everything AppLab can do is reachable three ways: the console, `applab-cli`, and
-the `applab.sh` script that is written into every app's repository.
+Everything AppLab can do is reachable four ways: the console, `applab-cli`, the
+`applab.sh` script that is written into every app's repository, and the generated
+[SDKs](sdk/README.md) for Python and TypeScript.
 
-They are deliberately the same surface. The API is the substance — the console
-and both clients are callers of it and nothing else — and every route is listed
-with the credential it needs by `GET /api/v1/describe`, so the three cannot drift
-into offering different capabilities. A test asserts it: the console's routes are
-enumerated in `internal/source/seed_test.go`, and the seeded script has to call
-each one, so a feature added to the console and not to the script fails the
-build rather than being noticed later by someone in a terminal.
+They are deliberately the same surface. The API is the substance — every one of
+them is a caller of it and nothing else — and every route is listed with the
+credential it needs by `GET /api/v1/describe`, so they cannot drift into offering
+different capabilities.
+
+That is enforced rather than intended. `internal/apicontract` holds a table with
+a row per route and a cell per surface, and a test that fails if any cell is
+neither covered nor exempted with a reason. Adding an endpoint and not deciding
+who can reach it fails the build. Each surface is checked the strongest way it
+can be:
+
+- the **CLI** by running `applab __routes`, which enumerates what the command tree
+  actually reaches — a comment cannot satisfy it;
+- the **SDK** by parsing `api/openapi.yaml`, which is generated from the route
+  table and checked for drift;
+- the **script** by searching the rendered script;
+- the **console** by searching its JavaScript, which is the weakest of the four —
+  the console builds paths by concatenation, so the check proves a route is
+  *referenced*, not that a button reaches it. The limits are written down in that
+  package rather than glossed over.
 
 Watching is part of that, not an exception: an app's live resource usage, its
 pods' logs and its events are readable from the CLI and from the seeded script,
-not only from the dashboard. The platform's own pods, usage and log are readable
-from the console and the CLI — **not** from the script, which holds one app's key
-and nothing else, and those routes are admin-only.
+not only from the dashboard. The platform's own pods, usage, log and events are
+readable from the console and the CLI — **not** from the script, which holds one
+app's key and nothing else, and those routes are admin-only. Those exemptions are
+the table's, and they say so.
 
-The three surfaces are held to the same routes rather than the same *layout*.
-Where they divide things differently — the console has an Instances card holding
-the pods, usage and replicas together, the CLI has `applab pods`, `applab
-resources` and `applab update` — that is presentation, and each surface arranges
-its own. A capability reaching only one of them is the failure; a command
-living under a different heading is not.
-
-Parity is asserted where it is checkable and stated where it is not. A test
-enumerates the console's routes and requires the seeded script to reach each one,
-so those two cannot drift. The CLI is not covered by that test — it is a caller
-of the same API, and keeping a third list in step is more likely to be forgotten
-than kept — so a capability added to the console and to the script should be
-added there by hand.
+The surfaces are held to the same routes rather than the same *layout*. Where they
+divide things differently — the console has an Instances card holding the pods,
+usage and replicas together, the CLI has `applab pods`, `applab resources` and
+`applab update` — that is presentation, and each surface arranges its own. A
+capability reaching only one of them is the failure; a command living under a
+different heading is not.
 
 **The script keeps itself current.** `applab.sh` is committed into the
 repository, so a checkout that has not been pushed in a while carries a version
@@ -521,10 +529,15 @@ one — but the answer is fuller with a key, which is what lets it name the apps
 that key reaches.
 
 The endpoint list is generated from the route table in `internal/api/router.go`,
-so the served API and the described API cannot drift: there is nothing to
-regenerate and no committed copy to go stale. Two routes deliberately stay out of
-it — they are destructive maintenance operations, and the list is read by agents
-that act on what they find.
+so the served API and the described API cannot drift: the answer a caller gets is
+produced from the running server's own table, which is the only thing that can be
+right about what it serves, and there is nothing to regenerate for it.
+
+There is now *also* a committed specification — `api/openapi.yaml` — because the
+SDKs are generated from one and a generator needs a file. It is generated from
+the same route table by `make gen-openapi`, and a test regenerates it and compares
+bytes, so the copy cannot go stale without the build failing. See
+[`sdk/README.md`](sdk/README.md).
 
 Two standing rules for the descriptions in that table:
 

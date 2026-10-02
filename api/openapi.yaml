@@ -1,0 +1,4291 @@
+openapi: 3.1.0
+info:
+  title: AppLab API
+  description: |-
+    AppLab deploys an application to Kubernetes by uploading its source.
+
+    Every JSON route answers inside a `{"data": ...}` envelope, except `/health`; failures answer `{"error": "...", "retryable": bool}`. Three routes answer `text/plain` and may stream (`x-streaming`), which a client must read incrementally rather than buffer.
+
+    This document is generated from AppLab's route table. Do not edit it by hand — run `make gen-openapi`.
+  version: v1
+servers:
+  - url: '{baseUrl}'
+    description: The deployment's address, including any base path (for example https://applab.example.com/applab).
+security:
+  - bearerAuth: []
+tags:
+  - name: meta
+    description: Liveness, configuration and self-description.
+  - name: platform
+    description: The AppLab deployment itself, rather than the apps it manages.
+  - name: apps
+    description: Create, read, update and delete apps.
+  - name: servers
+    description: Other AppLab deployments this one can manage.
+  - name: config
+    description: An app's environment, secrets and key.
+  - name: source
+    description: Uploading an app's source and managing its branches.
+  - name: builds
+    description: Building a commit into an image.
+  - name: deploy
+    description: Running an image, and stopping or rolling back what runs.
+  - name: observe
+    description: Logs, usage, events and diagnosis.
+  - name: git
+    description: Cloning and pushing source over git.
+paths:
+  /api/v1/apps:
+    get:
+      operationId: listApps
+      summary: List apps.
+      description: List apps.
+      tags:
+        - apps
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        app_key:
+                          type: string
+                        auto_deploy:
+                          type: boolean
+                        branch:
+                          type: string
+                        build_status:
+                          type: string
+                        commit_sha:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                        dockerfile:
+                          type: string
+                        domain:
+                          type: string
+                        env_count:
+                          type: integer
+                        git_url:
+                          type: string
+                        git_url_with_key:
+                          type: string
+                        id:
+                          type: string
+                        image:
+                          type: string
+                        name:
+                          type: string
+                        port:
+                          type: integer
+                          format: int32
+                        replicas:
+                          type: integer
+                          format: int32
+                        resources:
+                          $ref: '#/components/schemas/AppResources'
+                        run_status:
+                          type: string
+                        status:
+                          type: string
+                        status_reason:
+                          type: string
+                        updated_at:
+                          type: string
+                          format: date-time
+                        url:
+                          type: string
+                      required:
+                        - app_key
+                        - auto_deploy
+                        - branch
+                        - build_status
+                        - commit_sha
+                        - created_at
+                        - dockerfile
+                        - domain
+                        - env_count
+                        - git_url
+                        - git_url_with_key
+                        - id
+                        - image
+                        - name
+                        - port
+                        - replicas
+                        - resources
+                        - run_status
+                        - status
+                        - status_reason
+                        - updated_at
+                        - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+    post:
+      operationId: createApp
+      summary: Create an app.
+      description: 'Create an app. Body: `{id, name?, port?, replicas?, dockerfile?, domain?}`.'
+      tags:
+        - apps
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppRequest'
+      responses:
+        "201":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_key:
+                        type: string
+                      auto_deploy:
+                        type: boolean
+                      branch:
+                        type: string
+                      build_status:
+                        type: string
+                      commit_sha:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      dockerfile:
+                        type: string
+                      domain:
+                        type: string
+                      env_count:
+                        type: integer
+                      git_url:
+                        type: string
+                      git_url_with_key:
+                        type: string
+                      id:
+                        type: string
+                      image:
+                        type: string
+                      name:
+                        type: string
+                      port:
+                        type: integer
+                        format: int32
+                      replicas:
+                        type: integer
+                        format: int32
+                      resources:
+                        $ref: '#/components/schemas/AppResources'
+                      run_status:
+                        type: string
+                      status:
+                        type: string
+                      status_reason:
+                        type: string
+                      updated_at:
+                        type: string
+                        format: date-time
+                      url:
+                        type: string
+                    required:
+                      - app_key
+                      - auto_deploy
+                      - branch
+                      - build_status
+                      - commit_sha
+                      - created_at
+                      - dockerfile
+                      - domain
+                      - env_count
+                      - git_url
+                      - git_url_with_key
+                      - id
+                      - image
+                      - name
+                      - port
+                      - replicas
+                      - resources
+                      - run_status
+                      - status
+                      - status_reason
+                      - updated_at
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/apps/{app}:
+    get:
+      operationId: getApp
+      summary: One app.
+      description: One app.
+      tags:
+        - apps
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_key:
+                        type: string
+                      auto_deploy:
+                        type: boolean
+                      branch:
+                        type: string
+                      build_status:
+                        type: string
+                      commit_sha:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      dockerfile:
+                        type: string
+                      domain:
+                        type: string
+                      env_count:
+                        type: integer
+                      git_url:
+                        type: string
+                      git_url_with_key:
+                        type: string
+                      id:
+                        type: string
+                      image:
+                        type: string
+                      name:
+                        type: string
+                      port:
+                        type: integer
+                        format: int32
+                      replicas:
+                        type: integer
+                        format: int32
+                      resources:
+                        $ref: '#/components/schemas/AppResources'
+                      run_status:
+                        type: string
+                      status:
+                        type: string
+                      status_reason:
+                        type: string
+                      updated_at:
+                        type: string
+                        format: date-time
+                      url:
+                        type: string
+                    required:
+                      - app_key
+                      - auto_deploy
+                      - branch
+                      - build_status
+                      - commit_sha
+                      - created_at
+                      - dockerfile
+                      - domain
+                      - env_count
+                      - git_url
+                      - git_url_with_key
+                      - id
+                      - image
+                      - name
+                      - port
+                      - replicas
+                      - resources
+                      - run_status
+                      - status
+                      - status_reason
+                      - updated_at
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+    patch:
+      operationId: updateApp
+      summary: 'Change an app''s settings: `{name?, port?, replicas?, dockerfile?, domain?, auto_deploy?, branch?, resources?}`.'
+      description: 'Change an app''s settings: `{name?, port?, replicas?, dockerfile?, domain?, auto_deploy?, branch?, resources?}`. Fields omitted are left alone; a resource field set to an empty string returns it to this deployment''s default from `deploy.appResources`. Changing resources does not redeploy — the app''s next deploy applies them.'
+      tags:
+        - apps
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAppRequest'
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_key:
+                        type: string
+                      auto_deploy:
+                        type: boolean
+                      branch:
+                        type: string
+                      build_status:
+                        type: string
+                      commit_sha:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      dockerfile:
+                        type: string
+                      domain:
+                        type: string
+                      env_count:
+                        type: integer
+                      git_url:
+                        type: string
+                      git_url_with_key:
+                        type: string
+                      id:
+                        type: string
+                      image:
+                        type: string
+                      name:
+                        type: string
+                      port:
+                        type: integer
+                        format: int32
+                      replicas:
+                        type: integer
+                        format: int32
+                      resources:
+                        $ref: '#/components/schemas/AppResources'
+                      run_status:
+                        type: string
+                      status:
+                        type: string
+                      status_reason:
+                        type: string
+                      updated_at:
+                        type: string
+                        format: date-time
+                      url:
+                        type: string
+                    required:
+                      - app_key
+                      - auto_deploy
+                      - branch
+                      - build_status
+                      - commit_sha
+                      - created_at
+                      - dockerfile
+                      - domain
+                      - env_count
+                      - git_url
+                      - git_url_with_key
+                      - id
+                      - image
+                      - name
+                      - port
+                      - replicas
+                      - resources
+                      - run_status
+                      - status
+                      - status_reason
+                      - updated_at
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+    delete:
+      operationId: deleteApp
+      summary: Delete the app and everything applab recorded for it.
+      description: 'Delete the app and everything applab recorded for it. `?keep_source=true` retains the git repository. Requires an admin key: an app key may manage its app but not destroy it.'
+      tags:
+        - apps
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: keep_source
+          in: query
+          description: Retain the git repository when the app is deleted.
+          schema:
+            type: boolean
+          example: false
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      deleted:
+                        type: boolean
+                      id:
+                        type: string
+                      keep_source:
+                        type: boolean
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/agent/files:
+    get:
+      operationId: listAgentFiles
+      summary: The names of the files applab keeps in this app's source tree.
+      description: The names of the files applab keeps in this app's source tree. Each is servable from `GET /api/v1/apps/{app}/agent/files/{file}`.
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      files:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AgentFile'
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/agent/files/{file}:
+    get:
+      operationId: getAgentFile
+      summary: One of the files applab keeps in this app's source tree (`applab.sh`, `AGENT.md`), as `text/plain`.
+      description: One of the files applab keeps in this app's source tree (`applab.sh`, `AGENT.md`), as `text/plain`. This is the current version the deployment would write on the next upload — a copy in a repository can fetch it to bring itself up to date, since applab's API changes between releases. It carries this app's own key as the default `APPLAB_KEY` and this deployment's address as the default `APPLAB_URL`, so **treat the response as a credential**; see `?list` on the app's source for what else is in the tree.
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: file
+          in: path
+          required: true
+          schema:
+            type: string
+          example: applab.sh
+      responses:
+        "200":
+          description: A plain-text body.
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/branch:
+    put:
+      operationId: switchBranch
+      summary: Make a branch active and deploy it.
+      description: 'Make a branch active and deploy it. Body: `{"branch":"dev"}`. The branch must already have been pushed to. This replaces what is running: one app runs one branch.'
+      tags:
+        - source
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwitchBranchRequest'
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app:
+                        $ref: '#/components/schemas/App'
+                      build:
+                        $ref: '#/components/schemas/Build'
+                        nullable: true
+                      commit:
+                        type: string
+                      image:
+                        type: string
+                      url:
+                        type: string
+                    required:
+                      - app
+                      - build
+                      - commit
+                      - image
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/branches:
+    get:
+      operationId: listBranches
+      summary: The branches this app has source for, and which one is active.
+      description: The branches this app has source for, and which one is active. A branch is created by pushing to it, so this is what the app has been pushed to.
+      tags:
+        - source
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      active:
+                        type: string
+                      app_id:
+                        type: string
+                      branches:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - active
+                      - app_id
+                      - branches
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/builds:
+    get:
+      operationId: listBuilds
+      summary: An app's builds, newest first, read from the build Jobs.
+      description: An app's builds, newest first, read from the build Jobs. `?limit=` (default 20). How far back this reaches is build.ttlAfterFinished, because the Job is the record.
+      tags:
+        - builds
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: limit
+          in: query
+          description: Maximum number of items to return.
+          schema:
+            type: integer
+          example: 20
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        app_id:
+                          type: string
+                        branch:
+                          type: string
+                        commit_sha:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                        id:
+                          type: string
+                        image:
+                          type: string
+                        job_name:
+                          type: string
+                        pod:
+                          $ref: '#/components/schemas/Pod'
+                          nullable: true
+                        reason:
+                          type: string
+                        status:
+                          type: string
+                      required:
+                        - app_id
+                        - branch
+                        - commit_sha
+                        - created_at
+                        - id
+                        - image
+                        - job_name
+                        - pod
+                        - reason
+                        - status
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+    post:
+      operationId: startBuild
+      summary: Build an image from a commit.
+      description: Build an image from a commit. Body `{commit_sha?}` — omit it to build the current tip. Returns immediately; the build runs as a Job in the cluster. Returns 501 if this deployment cannot build.
+      tags:
+        - builds
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: branch
+          in: query
+          description: Build another branch without switching to it.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildRequest'
+      responses:
+        "202":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      branch:
+                        type: string
+                      commit_sha:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      id:
+                        type: string
+                      image:
+                        type: string
+                      job_name:
+                        type: string
+                      pod:
+                        $ref: '#/components/schemas/Pod'
+                        nullable: true
+                      reason:
+                        type: string
+                      status:
+                        type: string
+                    required:
+                      - app_id
+                      - branch
+                      - commit_sha
+                      - created_at
+                      - id
+                      - image
+                      - job_name
+                      - pod
+                      - reason
+                      - status
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/builds/{build}:
+    get:
+      operationId: getBuild
+      summary: 'One build, read from the build Job: its commit, branch, status, and the image if it succeeded.'
+      description: 'One build, read from the build Job: its commit, branch, status, and the image if it succeeded. A build whose Job has been collected by its TTL is gone — build.ttlAfterFinished sets how long that is.'
+      tags:
+        - builds
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: build
+          in: path
+          required: true
+          schema:
+            type: string
+          example: a1b2c3d4e5f6
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      branch:
+                        type: string
+                      commit_sha:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      id:
+                        type: string
+                      image:
+                        type: string
+                      job_name:
+                        type: string
+                      pod:
+                        $ref: '#/components/schemas/Pod'
+                        nullable: true
+                      reason:
+                        type: string
+                      status:
+                        type: string
+                    required:
+                      - app_id
+                      - branch
+                      - commit_sha
+                      - created_at
+                      - id
+                      - image
+                      - job_name
+                      - pod
+                      - reason
+                      - status
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+    delete:
+      operationId: cancelBuild
+      summary: Stop a build that has not finished, and mark it `cancelled`.
+      description: Stop a build that has not finished, and mark it `cancelled`. A build that already finished is refused with 409 rather than relabelled. Returns 501 if this deployment cannot build.
+      tags:
+        - builds
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: build
+          in: path
+          required: true
+          schema:
+            type: string
+          example: a1b2c3d4e5f6
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      branch:
+                        type: string
+                      commit_sha:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      id:
+                        type: string
+                      image:
+                        type: string
+                      job_name:
+                        type: string
+                      pod:
+                        $ref: '#/components/schemas/Pod'
+                        nullable: true
+                      reason:
+                        type: string
+                      status:
+                        type: string
+                    required:
+                      - app_id
+                      - branch
+                      - commit_sha
+                      - created_at
+                      - id
+                      - image
+                      - job_name
+                      - pod
+                      - reason
+                      - status
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/builds/{build}/logs:
+    get:
+      operationId: streamBuildLogs
+      summary: The build's log, as `text/plain`.
+      description: The build's log, as `text/plain`. Follows the build while it runs and ends when it finishes; works unchanged for a build that has already finished. `?follow=false` returns what exists so far and stops.
+      tags:
+        - builds
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: build
+          in: path
+          required: true
+          schema:
+            type: string
+          example: a1b2c3d4e5f6
+        - name: follow
+          in: query
+          description: Keep the connection open and stream lines as they arrive rather than returning what exists now. Read the body incrementally; the response may never end.
+          schema:
+            type: boolean
+          example: false
+      responses:
+        "200":
+          description: A plain-text body.
+          content:
+            text/plain:
+              schema:
+                type: string
+              x-streaming: true
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/commits:
+    get:
+      operationId: listCommits
+      summary: An app's commit history, newest first, with the current tip.
+      description: An app's commit history, newest first, with the current tip. `?limit=` (default 50). `?branch=` reads another branch's history.
+      tags:
+        - source
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: limit
+          in: query
+          description: Maximum number of items to return.
+          schema:
+            type: integer
+          example: 20
+        - name: branch
+          in: query
+          description: Read another branch's history.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      commits:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Commit'
+                      count:
+                        type: integer
+                      head:
+                        type: string
+                    required:
+                      - commits
+                      - count
+                      - head
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/commits/{sha}:
+    get:
+      operationId: getCommit
+      summary: One commit.
+      description: One commit. `{sha}` may be an abbreviated id.
+      tags:
+        - source
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: sha
+          in: path
+          required: true
+          schema:
+            type: string
+          example: a1b2c3d4e5f6
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      author:
+                        type: string
+                      bytes:
+                        type: integer
+                        format: int64
+                      created_at:
+                        type: string
+                        format: date-time
+                      files:
+                        type: integer
+                      message:
+                        type: string
+                      sha:
+                        type: string
+                    required:
+                      - author
+                      - bytes
+                      - created_at
+                      - files
+                      - message
+                      - sha
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/config:
+    get:
+      operationId: getAppConfig
+      summary: 'The app''s configuration: environment variables with their values, and the *names* of its secrets.'
+      description: 'The app''s configuration: environment variables with their values, and the *names* of its secrets. Secret values are never returned by any route.'
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      env:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      secrets:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - app_id
+                      - env
+                      - secrets
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/deploy:
+    post:
+      operationId: deployApp
+      summary: Deploy a commit and return the URL it is served at.
+      description: Deploy a commit and return the URL it is served at. Body `{commit_sha?, build?}` — omit `commit_sha` to deploy the current tip. If that commit has a successful build its image is reused; if it has none, the call fails with 409 and names the fix unless `build:true` was passed, in which case a build is started and the response is a 202 with the build. Returns 501 if this deployment cannot deploy.
+      tags:
+        - deploy
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: branch
+          in: query
+          description: Deploy another branch, switching the app to it.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployRequest'
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app:
+                        $ref: '#/components/schemas/App'
+                      build:
+                        $ref: '#/components/schemas/Build'
+                        nullable: true
+                      commit:
+                        type: string
+                      image:
+                        type: string
+                      url:
+                        type: string
+                    required:
+                      - app
+                      - build
+                      - commit
+                      - image
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/diagnose:
+    get:
+      operationId: diagnoseApp
+      summary: 'Why the app is not working, in one call: pods, events and the relevant log, ordered so the most likely cause comes first.'
+      description: 'Why the app is not working, in one call: pods, events and the relevant log, ordered so the most likely cause comes first. Use this before reading the other four endpoints.'
+      tags:
+        - observe
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      error:
+                        type: string
+                      events:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Event'
+                      logs:
+                        type: string
+                      message:
+                        type: string
+                      next:
+                        type: string
+                      pods:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Pod'
+                      previous_logs:
+                        type: string
+                      problem:
+                        type: string
+                      status:
+                        type: string
+                      status_reason:
+                        type: string
+                    required:
+                      - app_id
+                      - error
+                      - events
+                      - logs
+                      - message
+                      - next
+                      - pods
+                      - previous_logs
+                      - problem
+                      - status
+                      - status_reason
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/env:
+    put:
+      operationId: setAppEnv
+      summary: Set environment variables.
+      description: 'Set environment variables. Body: `{env: {"NAME": "value"}}`. Names not mentioned are left alone. `PORT` is refused — it is derived from the app''s `port`.'
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetEnvRequest'
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      env:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      secrets:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - app_id
+                      - env
+                      - secrets
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/env/{name}:
+    delete:
+      operationId: deleteAppEnv
+      summary: Remove one environment variable.
+      description: Remove one environment variable.
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          example: PORT
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      env:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      secrets:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - app_id
+                      - env
+                      - secrets
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/events:
+    get:
+      operationId: listAppEvents
+      summary: Recent Kubernetes events for the app, warnings first, with a `warnings` count.
+      description: 'Recent Kubernetes events for the app, warnings first, with a `warnings` count. This is what explains a pod that never started: a failed scheduling, an image pull that was refused, a probe that killed the container. `?limit=` (default 50).'
+      tags:
+        - observe
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: limit
+          in: query
+          description: Maximum number of items to return.
+          schema:
+            type: integer
+          example: 20
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      count:
+                        type: integer
+                      events:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Event'
+                      namespace:
+                        type: string
+                      warnings:
+                        type: integer
+                    required:
+                      - app_id
+                      - count
+                      - events
+                      - warnings
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/key:
+    get:
+      operationId: getAppKey
+      summary: The app's API key, in full.
+      description: The app's API key, in full. Works with the app's own key or an admin key. This key may be used for the API, the CLI and the console, and reaches only this app.
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      git_url_with_key:
+                        type: string
+                      key:
+                        type: string
+                    required:
+                      - app_id
+                      - git_url_with_key
+                      - key
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/key/rotate:
+    post:
+      operationId: rotateAppKey
+      summary: Replace the app's API key, invalidating the previous one immediately.
+      description: Replace the app's API key, invalidating the previous one immediately. Also creates one for an app that has none, so a lost key is recovered here. Returns the new key.
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      git_url_with_key:
+                        type: string
+                      key:
+                        type: string
+                    required:
+                      - app_id
+                      - git_url_with_key
+                      - key
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/logs:
+    get:
+      operationId: streamAppLogs
+      summary: A pod's log as `text/plain`.
+      description: 'A pod''s log as `text/plain`. Follows the pod by default; `?follow=false` returns what exists and closes. `?pod=` and `?container=` narrow it (default: the newest pod and the app container). `?previous=true` reads the previous container instance — where a crash loop''s reason is written. `?tail=` (default 500, max 10000), `?since=` a duration such as `5m`.'
+      tags:
+        - observe
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: pod
+          in: query
+          description: Read one pod's log by name.
+          schema:
+            type: string
+        - name: container
+          in: query
+          description: Read one container's log within the pod.
+          schema:
+            type: string
+        - name: tail
+          in: query
+          description: Number of lines from the end to return.
+          schema:
+            type: integer
+        - name: previous
+          in: query
+          description: Read the previous container instance, where a crash loop's reason is written.
+          schema:
+            type: boolean
+        - name: since
+          in: query
+          description: Only lines newer than this duration or timestamp.
+          schema:
+            type: string
+        - name: follow
+          in: query
+          description: Keep the connection open and stream lines as they arrive rather than returning what exists now. Read the body incrementally; the response may never end.
+          schema:
+            type: boolean
+          example: true
+      responses:
+        "200":
+          description: A plain-text body.
+          content:
+            text/plain:
+              schema:
+                type: string
+              x-streaming: true
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/pods:
+    get:
+      operationId: listAppPods
+      summary: The app's pods, newest first, with per-container state.
+      description: 'The app''s pods, newest first, with per-container state. A pod that is not Running carries the reason — `CrashLoopBackOff`, `ImagePullBackOff` — and a crash loop''s cause is reported from the *previous* container, since the current one is only restarting. A build''s pod is deliberately not here: it carries the app''s label but is not an instance of the app, and it is reported on the build instead (see the builds endpoint''s `pod`). `?limit=` (default 100, max 1000). `?label=` filters by a label selector against each pod''s own labels, e.g. `?label=applab.io/commit%3Dabc1234` for the pods of one revision during a rollout.'
+      tags:
+        - observe
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: label
+          in: query
+          description: An extra label selector to narrow the pods.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      count:
+                        type: integer
+                      pods:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Pod'
+                    required:
+                      - app_id
+                      - count
+                      - pods
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/resources:
+    get:
+      operationId: getAppUsage
+      summary: 'What the app is using and what it may use: the CPU and memory summed across its pods, read from the cluster''s metrics API, beside the requests and limits its running containers actually have.'
+      description: 'What the app is using and what it may use: the CPU and memory summed across its pods, read from the cluster''s metrics API, beside the requests and limits its running containers actually have. `available` is false on a cluster without metrics-server, which is not an error — the bounds are still reported. Change the bounds with `PATCH /api/v1/apps/{app}`.'
+      tags:
+        - observe
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      available:
+                        type: boolean
+                      cpu:
+                        type: string
+                      limited:
+                        $ref: '#/components/schemas/AppResources'
+                      memory:
+                        type: string
+                      pods:
+                        type: object
+                        additionalProperties:
+                          $ref: '#/components/schemas/PodUsage'
+                      requested:
+                        $ref: '#/components/schemas/AppResources'
+                    required:
+                      - available
+                      - cpu
+                      - limited
+                      - memory
+                      - requested
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/restart:
+    post:
+      operationId: restartApp
+      summary: Roll the running pods, keeping the same image.
+      description: Roll the running pods, keeping the same image. For picking up a changed ConfigMap or recovering pods that are wedged.
+      tags:
+        - deploy
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app:
+                        type: string
+                      restarted:
+                        type: boolean
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/rollback:
+    post:
+      operationId: rollbackApp
+      summary: Deploy an earlier commit.
+      description: Deploy an earlier commit. Body `{commit_sha}` (required). Reuses that commit's existing image and never builds, so a rollback stays fast and cannot fail for a reason the original build did not.
+      tags:
+        - deploy
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackRequest'
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app:
+                        $ref: '#/components/schemas/App'
+                      build:
+                        $ref: '#/components/schemas/Build'
+                        nullable: true
+                      commit:
+                        type: string
+                      image:
+                        type: string
+                      url:
+                        type: string
+                    required:
+                      - app
+                      - build
+                      - commit
+                      - image
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/secrets:
+    put:
+      operationId: setAppSecrets
+      summary: Set secret values.
+      description: 'Set secret values. Body: `{secrets: {"NAME": "value"}}`. Names not mentioned are left alone. The response lists names only, never values. 501 if this deployment has no cluster, where secrets are kept.'
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetSecretsRequest'
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      env:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      secrets:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - app_id
+                      - env
+                      - secrets
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/secrets/{name}:
+    delete:
+      operationId: deleteAppSecret
+      summary: Remove one secret.
+      description: Remove one secret.
+      tags:
+        - config
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          example: PORT
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      env:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      secrets:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - app_id
+                      - env
+                      - secrets
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/source:
+    post:
+      operationId: uploadSource
+      summary: Upload source as a tar or tar.gz and commit it.
+      description: 'Upload source as a tar or tar.gz and commit it. This is the main way to push code. Send the archive as the raw request body (`--data-binary @-`), or as `multipart/form-data` with a `file` field. `?message=` sets the commit message; `?parent=<sha>` commits onto a chosen commit instead of the current tip; `?branch=` commits to another branch (default: the app''s active one, and a branch that does not exist yet is created — see `GET /api/v1/apps/{app}/branches`). A single wrapping directory is stripped, so `tar czf - myproject` lands with its contents at the root.'
+      tags:
+        - source
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: message
+          in: query
+          description: Commit message for the upload.
+          schema:
+            type: string
+        - name: parent
+          in: query
+          description: 'Parent commit to upload on top of (default: the branch tip).'
+          schema:
+            type: string
+        - name: branch
+          in: query
+          description: 'Branch to commit to (default: the app''s active branch).'
+          schema:
+            type: string
+        - name: publish
+          in: query
+          description: Build and deploy after committing. Defaults to true; send false to upload without shipping.
+          schema:
+            type: boolean
+          example: true
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: 'The source archive: a tar, optionally gzipped.'
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      bytes:
+                        type: integer
+                        format: int64
+                      commit_sha:
+                        type: string
+                      files:
+                        type: integer
+                      message:
+                        type: string
+                      stripped_root:
+                        type: string
+                    required:
+                      - bytes
+                      - commit_sha
+                      - files
+                      - message
+                      - stripped_root
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/source/uploads:
+    post:
+      operationId: startChunkedUpload
+      summary: Begin a chunked upload for source too large for one request.
+      description: 'Begin a chunked upload for source too large for one request. Body: `{total, chunk_size, message?}`. Returns an `upload_id`.'
+      tags:
+        - source
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChunkedUploadStartRequest'
+      responses:
+        "201":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      chunk_size:
+                        type: integer
+                        format: int64
+                      parts_url:
+                        type: string
+                      total:
+                        type: integer
+                      upload_id:
+                        type: string
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/source/uploads/{upload}/complete:
+    post:
+      operationId: completeChunkedUpload
+      summary: Assemble every part and commit the result.
+      description: Assemble every part and commit the result. Fails if any part is missing.
+      tags:
+        - source
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: upload
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 3f2a1c9d
+        - name: message
+          in: query
+          description: Commit message, overriding the one given when the upload started.
+          schema:
+            type: string
+        - name: branch
+          in: query
+          description: Branch to commit to.
+          schema:
+            type: string
+        - name: publish
+          in: query
+          description: Build and deploy after committing. Defaults to true; send false to upload without shipping.
+          schema:
+            type: boolean
+          example: true
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      bytes:
+                        type: integer
+                        format: int64
+                      commit_sha:
+                        type: string
+                      files:
+                        type: integer
+                      message:
+                        type: string
+                      stripped_root:
+                        type: string
+                    required:
+                      - bytes
+                      - commit_sha
+                      - files
+                      - message
+                      - stripped_root
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/source/uploads/{upload}/parts/{index}:
+    put:
+      operationId: uploadSourcePart
+      summary: Send one part.
+      description: Send one part. Body is the raw bytes. `{index}` is 1-based. Parts may be sent in any order and retried.
+      tags:
+        - source
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: upload
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 3f2a1c9d
+        - name: index
+          in: path
+          required: true
+          schema:
+            type: integer
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: 'The source archive: a tar, optionally gzipped.'
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      index:
+                        type: integer
+                      size:
+                        type: integer
+                        format: int64
+                      upload_id:
+                        type: string
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/status:
+    get:
+      operationId: getAppStatus
+      summary: 'An app''s live state, read from the cluster: whether a Deployment exists, its ready replicas, the image and the commit it was built from.'
+      description: 'An app''s live state, read from the cluster: whether a Deployment exists, its ready replicas, the image and the commit it was built from. Nothing is recorded on applab''s side, so there is no second opinion to reconcile.'
+      tags:
+        - deploy
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      live:
+                        type: object
+                        nullable: true
+                      status:
+                        type: string
+                      url:
+                        type: string
+                    required:
+                      - app_id
+                      - live
+                      - status
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/apps/{app}/stop:
+    post:
+      operationId: stopApp
+      summary: Stop the app by removing its Deployment, Service and Ingress.
+      description: Stop the app by removing its Deployment, Service and Ingress. The source and history are kept, so starting again is a deploy rather than a re-upload.
+      tags:
+        - deploy
+      parameters:
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app:
+                        $ref: '#/components/schemas/App'
+                      stopped:
+                        type: boolean
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: app
+  /api/v1/config:
+    get:
+      operationId: getConfig
+      summary: This deployment's limits and capabilities.
+      description: This deployment's limits and capabilities. No key required, so it doubles as the cheapest reachability check.
+      tags:
+        - meta
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      api_base_url:
+                        type: string
+                      api_version:
+                        type: string
+                      base_domain:
+                        type: string
+                      capabilities:
+                        type: object
+                        additionalProperties:
+                          type: boolean
+                      chunk_size:
+                        type: integer
+                        format: int64
+                      domain_template:
+                        type: string
+                      max_chunk_bytes:
+                        type: integer
+                        format: int64
+                      max_simple_upload:
+                        type: integer
+                        format: int64
+                      namespace:
+                        type: string
+                      path_prefix:
+                        type: string
+                      version:
+                        type: string
+                    required:
+                      - api_base_url
+                      - api_version
+                      - base_domain
+                      - capabilities
+                      - chunk_size
+                      - domain_template
+                      - max_chunk_bytes
+                      - max_simple_upload
+                      - namespace
+                      - path_prefix
+                      - version
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: none
+  /api/v1/describe:
+    get:
+      operationId: getDescribe
+      summary: Start here.
+      description: 'Start here. Everything needed to work with this deployment in one call: a one-line summary, how to reach it, the full endpoint list with the credential each requires, what is wired to it (registry, gateway, domains), what the presented key may do, every app with its address, and the shortest call for each operation. Needs no key, but returns less without one: an app key sees its app, an admin key sees every app.'
+      tags:
+        - meta
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access:
+                        type: object
+                        properties:
+                          app:
+                            type: string
+                          reach:
+                            type: string
+                          tier:
+                            type: string
+                      api:
+                        $ref: '#/components/schemas/DescribeAPI'
+                      apps:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/App'
+                      build:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          registry:
+                            type: string
+                      deploy:
+                        type: object
+                        properties:
+                          base_domain:
+                            type: string
+                          domain_template:
+                            type: string
+                          enabled:
+                            type: boolean
+                          gateway:
+                            type: string
+                          path_prefix:
+                            type: string
+                      deployment:
+                        $ref: '#/components/schemas/Config'
+                      how_to:
+                        type: object
+                        properties:
+                          clone:
+                            type: string
+                          http:
+                            type: object
+                            additionalProperties:
+                              type: string
+                          logs:
+                            type: string
+                          push:
+                            type: string
+                      summary:
+                        type: string
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: none
+  /api/v1/overview:
+    get:
+      operationId: getOverview
+      summary: 'The platform at a glance: app counts by status, build counts and the most recent builds across every app, whether the cluster is configured and reachable, and this deployment''s self-description.'
+      description: 'The platform at a glance: app counts by status, build counts and the most recent builds across every app, whether the cluster is configured and reachable, and this deployment''s self-description. Counts exclude deleted apps.'
+      tags:
+        - platform
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      apps:
+                        $ref: '#/components/schemas/OverviewApps'
+                      builds:
+                        $ref: '#/components/schemas/OverviewBuilds'
+                      cluster:
+                        $ref: '#/components/schemas/OverviewCluster'
+                      deployment:
+                        $ref: '#/components/schemas/Config'
+                    required:
+                      - apps
+                      - builds
+                      - cluster
+                      - deployment
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/platform/events:
+    get:
+      operationId: listSelfEvents
+      summary: Kubernetes events concerning AppLab's own objects, warnings first, with `count` and `warnings`.
+      description: Kubernetes events concerning AppLab's own objects, warnings first, with `count` and `warnings`. `?limit=` (default 50, max 500). Admin key only.
+      tags:
+        - platform
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of items to return.
+          schema:
+            type: integer
+          example: 20
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      count:
+                        type: integer
+                      events:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Event'
+                      namespace:
+                        type: string
+                      warnings:
+                        type: integer
+                    required:
+                      - app_id
+                      - count
+                      - events
+                      - warnings
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/platform/logs:
+    get:
+      operationId: streamSelfLogs
+      summary: AppLab's own log as `text/plain`, following by default; `?follow=false` returns what exists and closes.
+      description: 'AppLab''s own log as `text/plain`, following by default; `?follow=false` returns what exists and closes. `?pod=` and `?container=` narrow it (default: the newest AppLab pod). `?previous=true` reads the previous container instance, which is where a crash loop''s reason is written. `?tail=` (default 500, max 10000), `?since=` a duration such as `5m`. Admin key only.'
+      tags:
+        - platform
+      parameters:
+        - name: pod
+          in: query
+          description: Read one pod's log by name.
+          schema:
+            type: string
+        - name: container
+          in: query
+          description: Read one container's log within the pod.
+          schema:
+            type: string
+        - name: tail
+          in: query
+          description: Number of lines from the end to return.
+          schema:
+            type: integer
+        - name: previous
+          in: query
+          description: Read the previous container instance, where a crash loop's reason is written.
+          schema:
+            type: boolean
+        - name: since
+          in: query
+          description: Only lines newer than this duration or timestamp.
+          schema:
+            type: string
+        - name: follow
+          in: query
+          description: Keep the connection open and stream lines as they arrive rather than returning what exists now. Read the body incrementally; the response may never end.
+          schema:
+            type: boolean
+          example: true
+      responses:
+        "200":
+          description: A plain-text body.
+          content:
+            text/plain:
+              schema:
+                type: string
+              x-streaming: true
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/platform/pods:
+    get:
+      operationId: listSelfPods
+      summary: AppLab's own pods, newest first — the deployment that serves this API, not the apps it manages.
+      description: 'AppLab''s own pods, newest first — the deployment that serves this API, not the apps it manages. `?limit=` (default 100). Admin key only: an app key reaches one app and this is not it.'
+      tags:
+        - platform
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of items to return.
+          schema:
+            type: integer
+          example: 20
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      count:
+                        type: integer
+                      pods:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Pod'
+                    required:
+                      - app_id
+                      - count
+                      - pods
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/platform/resources:
+    get:
+      operationId: getSelfUsage
+      summary: CPU and memory for each of AppLab's own pods, keyed by pod name, with `available` saying whether the cluster reports metrics at all.
+      description: CPU and memory for each of AppLab's own pods, keyed by pod name, with `available` saying whether the cluster reports metrics at all. Admin key only. On a cluster without metrics-server `available` is false and the pods map is empty — a reading that could not be taken, which is not the same as an idle deployment.
+      tags:
+        - platform
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      available:
+                        type: boolean
+                      cpu:
+                        type: string
+                      limited:
+                        $ref: '#/components/schemas/AppResources'
+                      memory:
+                        type: string
+                      pods:
+                        type: object
+                        additionalProperties:
+                          $ref: '#/components/schemas/PodUsage'
+                      requested:
+                        $ref: '#/components/schemas/AppResources'
+                    required:
+                      - available
+                      - cpu
+                      - limited
+                      - memory
+                      - requested
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/servers:
+    get:
+      operationId: listServers
+      summary: 'Every AppLab this deployment can manage: the built-in `local` entry first — this deployment itself — then each registered remote.'
+      description: 'Every AppLab this deployment can manage: the built-in `local` entry first — this deployment itself — then each registered remote. The key of a remote is never returned.'
+      tags:
+        - servers
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        builtin:
+                          type: boolean
+                        created_at:
+                          type: string
+                          format: date-time
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        url:
+                          type: string
+                      required:
+                        - created_at
+                        - id
+                        - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+    post:
+      operationId: registerServer
+      summary: Register a remote AppLab.
+      description: 'Register a remote AppLab. Body: `{id, url, key, name?}`. The address and the key are checked against the remote before anything is stored, so a wrong address or a key that is not an admin key is a 400 here rather than a failure later. `url` must include any path prefix the remote is served under. 501 when this deployment has no cluster, where registrations are kept.'
+      tags:
+        - servers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterServerRequest'
+      responses:
+        "201":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      builtin:
+                        type: boolean
+                      created_at:
+                        type: string
+                        format: date-time
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      url:
+                        type: string
+                    required:
+                      - created_at
+                      - id
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/servers/{server}:
+    get:
+      operationId: getServer
+      summary: One server, without its key.
+      description: One server, without its key. `local` reports this deployment.
+      tags:
+        - servers
+      parameters:
+        - name: server
+          in: path
+          required: true
+          schema:
+            type: string
+          example: local
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      builtin:
+                        type: boolean
+                      created_at:
+                        type: string
+                        format: date-time
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      url:
+                        type: string
+                    required:
+                      - created_at
+                      - id
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+    delete:
+      operationId: removeServer
+      summary: Forget a registration.
+      description: Forget a registration. The remote's apps are untouched, and the remote need not be reachable. `local` cannot be removed.
+      tags:
+        - servers
+      parameters:
+        - name: server
+          in: path
+          required: true
+          schema:
+            type: string
+          example: local
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      removed:
+                        type: boolean
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/servers/{server}/apps:
+    get:
+      operationId: listServerApps
+      summary: List the apps on one server.
+      description: List the apps on one server. On `local` this answers exactly what `GET /api/v1/apps` does; on a remote it relays that remote's list.
+      tags:
+        - servers
+      parameters:
+        - name: server
+          in: path
+          required: true
+          schema:
+            type: string
+          example: local
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        app_key:
+                          type: string
+                        auto_deploy:
+                          type: boolean
+                        branch:
+                          type: string
+                        build_status:
+                          type: string
+                        commit_sha:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                        dockerfile:
+                          type: string
+                        domain:
+                          type: string
+                        env_count:
+                          type: integer
+                        git_url:
+                          type: string
+                        git_url_with_key:
+                          type: string
+                        id:
+                          type: string
+                        image:
+                          type: string
+                        name:
+                          type: string
+                        port:
+                          type: integer
+                          format: int32
+                        replicas:
+                          type: integer
+                          format: int32
+                        resources:
+                          $ref: '#/components/schemas/AppResources'
+                        run_status:
+                          type: string
+                        status:
+                          type: string
+                        status_reason:
+                          type: string
+                        updated_at:
+                          type: string
+                          format: date-time
+                        url:
+                          type: string
+                      required:
+                        - app_key
+                        - auto_deploy
+                        - branch
+                        - build_status
+                        - commit_sha
+                        - created_at
+                        - dockerfile
+                        - domain
+                        - env_count
+                        - git_url
+                        - git_url_with_key
+                        - id
+                        - image
+                        - name
+                        - port
+                        - replicas
+                        - resources
+                        - run_status
+                        - status
+                        - status_reason
+                        - updated_at
+                        - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+    post:
+      operationId: createServerApp
+      summary: Create an app on one server.
+      description: Create an app on one server. Body as `POST /api/v1/apps`. On `local` this is the same call. On a remote the response is relayed whole, including the new app's key — the one moment it is handed out.
+      tags:
+        - servers
+      parameters:
+        - name: server
+          in: path
+          required: true
+          schema:
+            type: string
+          example: local
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppRequest'
+      responses:
+        "201":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_key:
+                        type: string
+                      auto_deploy:
+                        type: boolean
+                      branch:
+                        type: string
+                      build_status:
+                        type: string
+                      commit_sha:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      dockerfile:
+                        type: string
+                      domain:
+                        type: string
+                      env_count:
+                        type: integer
+                      git_url:
+                        type: string
+                      git_url_with_key:
+                        type: string
+                      id:
+                        type: string
+                      image:
+                        type: string
+                      name:
+                        type: string
+                      port:
+                        type: integer
+                        format: int32
+                      replicas:
+                        type: integer
+                        format: int32
+                      resources:
+                        $ref: '#/components/schemas/AppResources'
+                      run_status:
+                        type: string
+                      status:
+                        type: string
+                      status_reason:
+                        type: string
+                      updated_at:
+                        type: string
+                        format: date-time
+                      url:
+                        type: string
+                    required:
+                      - app_key
+                      - auto_deploy
+                      - branch
+                      - build_status
+                      - commit_sha
+                      - created_at
+                      - dockerfile
+                      - domain
+                      - env_count
+                      - git_url
+                      - git_url_with_key
+                      - id
+                      - image
+                      - name
+                      - port
+                      - replicas
+                      - resources
+                      - run_status
+                      - status
+                      - status_reason
+                      - updated_at
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/servers/{server}/apps/{app}:
+    get:
+      operationId: getServerApp
+      summary: One app on one server.
+      description: One app on one server.
+      tags:
+        - servers
+      parameters:
+        - name: server
+          in: path
+          required: true
+          schema:
+            type: string
+          example: local
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_key:
+                        type: string
+                      auto_deploy:
+                        type: boolean
+                      branch:
+                        type: string
+                      build_status:
+                        type: string
+                      commit_sha:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      dockerfile:
+                        type: string
+                      domain:
+                        type: string
+                      env_count:
+                        type: integer
+                      git_url:
+                        type: string
+                      git_url_with_key:
+                        type: string
+                      id:
+                        type: string
+                      image:
+                        type: string
+                      name:
+                        type: string
+                      port:
+                        type: integer
+                        format: int32
+                      replicas:
+                        type: integer
+                        format: int32
+                      resources:
+                        $ref: '#/components/schemas/AppResources'
+                      run_status:
+                        type: string
+                      status:
+                        type: string
+                      status_reason:
+                        type: string
+                      updated_at:
+                        type: string
+                        format: date-time
+                      url:
+                        type: string
+                    required:
+                      - app_key
+                      - auto_deploy
+                      - branch
+                      - build_status
+                      - commit_sha
+                      - created_at
+                      - dockerfile
+                      - domain
+                      - env_count
+                      - git_url
+                      - git_url_with_key
+                      - id
+                      - image
+                      - name
+                      - port
+                      - replicas
+                      - resources
+                      - run_status
+                      - status
+                      - status_reason
+                      - updated_at
+                      - url
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+    delete:
+      operationId: deleteServerApp
+      summary: Delete an app on one server.
+      description: Delete an app on one server. `?keep_source=true` is passed through.
+      tags:
+        - servers
+      parameters:
+        - name: server
+          in: path
+          required: true
+          schema:
+            type: string
+          example: local
+        - name: app
+          in: path
+          required: true
+          schema:
+            type: string
+          example: shop
+        - name: keep_source
+          in: query
+          description: Retain the git repository when the app is deleted.
+          schema:
+            type: boolean
+          example: false
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      deleted:
+                        type: boolean
+                      id:
+                        type: string
+                      keep_source:
+                        type: boolean
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: admin
+  /api/v1/version:
+    get:
+      operationId: getVersion
+      summary: Build version and commit.
+      description: Build version and commit.
+      tags:
+        - meta
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      build_time:
+                        type: string
+                      commit:
+                        type: string
+                      go_version:
+                        type: string
+                      version:
+                        type: string
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: none
+  /bootstrap:
+    get:
+      operationId: getBootstrapFiles
+      summary: What `GET /bootstrap/applab.sh` serves.
+      description: What `GET /bootstrap/applab.sh` serves. No key required.
+      tags:
+        - meta
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      files:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AgentFile'
+                required:
+                  - data
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: none
+  /bootstrap/applab.sh:
+    get:
+      operationId: getBootstrapScript
+      summary: The `applab.sh` AppLab writes into every app's repository, rendered with no app and no key in it, as `text/plain`.
+      description: 'The `applab.sh` AppLab writes into every app''s repository, rendered with no app and no key in it, as `text/plain`. This is how a caller who has neither gets the tool: fetch it, export an admin key, and run `./applab.sh create <app>`. No key required.'
+      tags:
+        - meta
+      responses:
+        "200":
+          description: A plain-text body.
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: none
+  /git/{repo}:
+    get:
+      operationId: gitSmartHTTP
+      summary: Clone or push an app's repository over git's smart HTTP protocol.
+      description: 'Not a JSON route: this path answers git''s own protocol (`/info/refs`, `/git-upload-pack`, `/git-receive-pack`) with the repository named before the protocol suffix. It is declared here so a client can see that cloning exists and that it authenticates with HTTP Basic — the password is an API key and the username is ignored. A generated client does not wrap git; it is described, not called.'
+      tags:
+        - git
+      parameters:
+        - name: repo
+          in: path
+          description: '`<app>.git` for the active branch, or `<app>@<branch>.git` for another.'
+          required: true
+          schema:
+            type: string
+          example: shop.git
+      responses:
+        "200":
+          description: A git protocol response.
+      security:
+        - basicAuth: []
+      x-applab-tier: app
+  /health:
+    get:
+      operationId: getHealth
+      summary: Liveness.
+      description: Liveness. No key required — a Kubernetes probe cannot hold one.
+      tags:
+        - meta
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  time:
+                    type: string
+                    format: date-time
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: none
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Prometheus metrics for this deployment, as text.
+      description: Prometheus metrics for this deployment, as text. No key required — a scraper holds one awkwardly and these numbers describe the platform rather than any app. Restrict this path at the network edge where that matters.
+      tags:
+        - meta
+      responses:
+        "200":
+          description: A plain-text body.
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: Failure. `retryable` says whether the same call could succeed on a retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-applab-tier: none
+components:
+  schemas:
+    AgentFile:
+      type: object
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+    AgentFilesResponse:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentFile'
+    App:
+      type: object
+      properties:
+        app_key:
+          type: string
+        auto_deploy:
+          type: boolean
+        branch:
+          type: string
+        build_status:
+          type: string
+        commit_sha:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        dockerfile:
+          type: string
+        domain:
+          type: string
+        env_count:
+          type: integer
+        git_url:
+          type: string
+        git_url_with_key:
+          type: string
+        id:
+          type: string
+        image:
+          type: string
+        name:
+          type: string
+        port:
+          type: integer
+          format: int32
+        replicas:
+          type: integer
+          format: int32
+        resources:
+          $ref: '#/components/schemas/AppResources'
+        run_status:
+          type: string
+        status:
+          type: string
+        status_reason:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        url:
+          type: string
+      required:
+        - app_key
+        - auto_deploy
+        - branch
+        - build_status
+        - commit_sha
+        - created_at
+        - dockerfile
+        - domain
+        - env_count
+        - git_url
+        - git_url_with_key
+        - id
+        - image
+        - name
+        - port
+        - replicas
+        - resources
+        - run_status
+        - status
+        - status_reason
+        - updated_at
+        - url
+    AppConfig:
+      type: object
+      properties:
+        app_id:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        secrets:
+          type: array
+          items:
+            type: string
+      required:
+        - app_id
+        - env
+        - secrets
+    AppKey:
+      type: object
+      properties:
+        app_id:
+          type: string
+        git_url_with_key:
+          type: string
+        key:
+          type: string
+      required:
+        - app_id
+        - git_url_with_key
+        - key
+    AppResources:
+      type: object
+      properties:
+        cpu_limit:
+          type: string
+        cpu_request:
+          type: string
+        memory_limit:
+          type: string
+        memory_request:
+          type: string
+      required:
+        - cpu_limit
+        - cpu_request
+        - memory_limit
+        - memory_request
+    AppUsage:
+      type: object
+      properties:
+        available:
+          type: boolean
+        cpu:
+          type: string
+        limited:
+          $ref: '#/components/schemas/AppResources'
+        memory:
+          type: string
+        pods:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/PodUsage'
+        requested:
+          $ref: '#/components/schemas/AppResources'
+      required:
+        - available
+        - cpu
+        - limited
+        - memory
+        - requested
+    BootstrapFilesResponse:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentFile'
+    Branches:
+      type: object
+      properties:
+        active:
+          type: string
+        app_id:
+          type: string
+        branches:
+          type: array
+          items:
+            type: string
+      required:
+        - active
+        - app_id
+        - branches
+    Build:
+      type: object
+      properties:
+        app_id:
+          type: string
+        branch:
+          type: string
+        commit_sha:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+        image:
+          type: string
+        job_name:
+          type: string
+        pod:
+          $ref: '#/components/schemas/Pod'
+          nullable: true
+        reason:
+          type: string
+        status:
+          type: string
+      required:
+        - app_id
+        - branch
+        - commit_sha
+        - created_at
+        - id
+        - image
+        - job_name
+        - pod
+        - reason
+        - status
+    BuildRequest:
+      type: object
+      properties:
+        branch:
+          type: string
+        commit_sha:
+          type: string
+    ChunkedUploadStartRequest:
+      type: object
+      properties:
+        chunk_size:
+          type: integer
+          format: int64
+        message:
+          type: string
+        total:
+          type: integer
+      required:
+        - total
+        - chunk_size
+    ChunkedUploadStartResponse:
+      type: object
+      properties:
+        chunk_size:
+          type: integer
+          format: int64
+        parts_url:
+          type: string
+        total:
+          type: integer
+        upload_id:
+          type: string
+    Commit:
+      type: object
+      properties:
+        author:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        files:
+          type: integer
+        message:
+          type: string
+        sha:
+          type: string
+      required:
+        - author
+        - bytes
+        - created_at
+        - files
+        - message
+        - sha
+    CommitList:
+      type: object
+      properties:
+        commits:
+          type: array
+          items:
+            $ref: '#/components/schemas/Commit'
+        count:
+          type: integer
+        head:
+          type: string
+      required:
+        - commits
+        - count
+        - head
+    Config:
+      type: object
+      properties:
+        api_base_url:
+          type: string
+        api_version:
+          type: string
+        base_domain:
+          type: string
+        capabilities:
+          type: object
+          additionalProperties:
+            type: boolean
+        chunk_size:
+          type: integer
+          format: int64
+        domain_template:
+          type: string
+        max_chunk_bytes:
+          type: integer
+          format: int64
+        max_simple_upload:
+          type: integer
+          format: int64
+        namespace:
+          type: string
+        path_prefix:
+          type: string
+        version:
+          type: string
+      required:
+        - api_base_url
+        - api_version
+        - base_domain
+        - capabilities
+        - chunk_size
+        - domain_template
+        - max_chunk_bytes
+        - max_simple_upload
+        - namespace
+        - path_prefix
+        - version
+    CreateAppRequest:
+      type: object
+      properties:
+        auto_deploy:
+          type: boolean
+          nullable: true
+        dockerfile:
+          type: string
+        domain:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        port:
+          type: integer
+          format: int32
+          nullable: true
+        replicas:
+          type: integer
+          format: int32
+          nullable: true
+      required:
+        - id
+    DeletedResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+        id:
+          type: string
+        keep_source:
+          type: boolean
+    DeployRequest:
+      type: object
+      properties:
+        build:
+          type: boolean
+        commit_sha:
+          type: string
+    DeployResult:
+      type: object
+      properties:
+        app:
+          $ref: '#/components/schemas/App'
+        build:
+          $ref: '#/components/schemas/Build'
+          nullable: true
+        commit:
+          type: string
+        image:
+          type: string
+        url:
+          type: string
+      required:
+        - app
+        - build
+        - commit
+        - image
+        - url
+    DescribeAPI:
+      type: object
+      properties:
+        api_version:
+          type: string
+        auth_header:
+          type: string
+        base_url:
+          type: string
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/Endpoint'
+        version:
+          type: string
+    DescribeResponse:
+      type: object
+      properties:
+        access:
+          type: object
+          properties:
+            app:
+              type: string
+            reach:
+              type: string
+            tier:
+              type: string
+        api:
+          $ref: '#/components/schemas/DescribeAPI'
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/App'
+        build:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            registry:
+              type: string
+        deploy:
+          type: object
+          properties:
+            base_domain:
+              type: string
+            domain_template:
+              type: string
+            enabled:
+              type: boolean
+            gateway:
+              type: string
+            path_prefix:
+              type: string
+        deployment:
+          $ref: '#/components/schemas/Config'
+        how_to:
+          type: object
+          properties:
+            clone:
+              type: string
+            http:
+              type: object
+              additionalProperties:
+                type: string
+            logs:
+              type: string
+            push:
+              type: string
+        summary:
+          type: string
+    Diagnosis:
+      type: object
+      properties:
+        app_id:
+          type: string
+        error:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        logs:
+          type: string
+        message:
+          type: string
+        next:
+          type: string
+        pods:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pod'
+        previous_logs:
+          type: string
+        problem:
+          type: string
+        status:
+          type: string
+        status_reason:
+          type: string
+      required:
+        - app_id
+        - error
+        - events
+        - logs
+        - message
+        - next
+        - pods
+        - previous_logs
+        - problem
+        - status
+        - status_reason
+    Endpoint:
+      type: object
+      properties:
+        doc:
+          type: string
+        key:
+          type: string
+        method:
+          type: string
+        path:
+          type: string
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        retryable:
+          type: boolean
+    Event:
+      type: object
+      properties:
+        count:
+          type: integer
+          format: int32
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+        message:
+          type: string
+        object:
+          type: string
+        reason:
+          type: string
+        type:
+          type: string
+      required:
+        - count
+        - first_seen
+        - last_seen
+        - message
+        - object
+        - reason
+        - type
+    EventList:
+      type: object
+      properties:
+        app_id:
+          type: string
+        count:
+          type: integer
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        namespace:
+          type: string
+        warnings:
+          type: integer
+      required:
+        - app_id
+        - count
+        - events
+        - warnings
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        time:
+          type: string
+          format: date-time
+    Overview:
+      type: object
+      properties:
+        apps:
+          $ref: '#/components/schemas/OverviewApps'
+        builds:
+          $ref: '#/components/schemas/OverviewBuilds'
+        cluster:
+          $ref: '#/components/schemas/OverviewCluster'
+        deployment:
+          $ref: '#/components/schemas/Config'
+      required:
+        - apps
+        - builds
+        - cluster
+        - deployment
+    OverviewApps:
+      type: object
+      properties:
+        build_failed:
+          type: integer
+        building:
+          type: integer
+        created:
+          type: integer
+        deploying:
+          type: integer
+        failed:
+          type: integer
+        needs_attention:
+          type: integer
+        running:
+          type: integer
+        total:
+          type: integer
+      required:
+        - build_failed
+        - building
+        - created
+        - deploying
+        - failed
+        - needs_attention
+        - running
+        - total
+    OverviewBuilds:
+      type: object
+      properties:
+        failed:
+          type: integer
+        pending:
+          type: integer
+        recent:
+          type: array
+          items:
+            $ref: '#/components/schemas/Build'
+        running:
+          type: integer
+        succeeded:
+          type: integer
+        total:
+          type: integer
+      required:
+        - failed
+        - pending
+        - recent
+        - running
+        - succeeded
+        - total
+    OverviewCluster:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        reachable:
+          type: boolean
+      required:
+        - configured
+        - reachable
+    Pod:
+      type: object
+      properties:
+        containers:
+          type: array
+          items:
+            type: object
+        image:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        message:
+          type: string
+        name:
+          type: string
+        phase:
+          type: string
+        ready:
+          type: boolean
+        reason:
+          type: string
+        restarts:
+          type: integer
+          format: int32
+      required:
+        - containers
+        - image
+        - labels
+        - message
+        - name
+        - phase
+        - ready
+        - reason
+        - restarts
+    PodList:
+      type: object
+      properties:
+        app_id:
+          type: string
+        count:
+          type: integer
+        pods:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pod'
+      required:
+        - app_id
+        - count
+        - pods
+    PodUsage:
+      type: object
+      properties:
+        cpu:
+          type: string
+        memory:
+          type: string
+        timestamp:
+          type: string
+      required:
+        - cpu
+        - memory
+        - timestamp
+    RegisterServerRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        key:
+          type: string
+        name:
+          type: string
+        url:
+          type: string
+      required:
+        - id
+        - key
+        - url
+    RemovedResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        removed:
+          type: boolean
+    ResourcesRequest:
+      type: object
+      properties:
+        cpu_limit:
+          type: string
+          nullable: true
+        cpu_request:
+          type: string
+          nullable: true
+        memory_limit:
+          type: string
+          nullable: true
+        memory_request:
+          type: string
+          nullable: true
+    RestartResponse:
+      type: object
+      properties:
+        app:
+          type: string
+        restarted:
+          type: boolean
+    RollbackRequest:
+      type: object
+      properties:
+        commit_sha:
+          type: string
+      required:
+        - commit_sha
+    Server:
+      type: object
+      properties:
+        builtin:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+        name:
+          type: string
+        url:
+          type: string
+      required:
+        - created_at
+        - id
+        - url
+    SetEnvRequest:
+      type: object
+      properties:
+        env:
+          type: object
+          additionalProperties:
+            type: string
+            nullable: true
+      required:
+        - env
+    SetSecretsRequest:
+      type: object
+      properties:
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+            nullable: true
+      required:
+        - secrets
+    Status:
+      type: object
+      properties:
+        app_id:
+          type: string
+        live:
+          type: object
+          nullable: true
+        status:
+          type: string
+        url:
+          type: string
+      required:
+        - app_id
+        - live
+        - status
+        - url
+    StopResponse:
+      type: object
+      properties:
+        app:
+          $ref: '#/components/schemas/App'
+        stopped:
+          type: boolean
+    SwitchBranchRequest:
+      type: object
+      properties:
+        branch:
+          type: string
+      required:
+        - branch
+    UpdateAppRequest:
+      type: object
+      properties:
+        auto_deploy:
+          type: boolean
+          nullable: true
+        dockerfile:
+          type: string
+          nullable: true
+        domain:
+          type: string
+          nullable: true
+        name:
+          type: string
+          nullable: true
+        port:
+          type: integer
+          format: int32
+          nullable: true
+        replicas:
+          type: integer
+          format: int32
+          nullable: true
+        resources:
+          $ref: '#/components/schemas/ResourcesRequest'
+          nullable: true
+    UploadPartResponse:
+      type: object
+      properties:
+        index:
+          type: integer
+        size:
+          type: integer
+          format: int64
+        upload_id:
+          type: string
+    UploadResult:
+      type: object
+      properties:
+        bytes:
+          type: integer
+          format: int64
+        commit_sha:
+          type: string
+        files:
+          type: integer
+        message:
+          type: string
+        stripped_root:
+          type: string
+      required:
+        - bytes
+        - commit_sha
+        - files
+        - message
+        - stripped_root
+    VersionResponse:
+      type: object
+      properties:
+        build_time:
+          type: string
+        commit:
+          type: string
+        go_version:
+          type: string
+        version:
+          type: string
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: 'The git transport''s scheme only: the password is an API key and the username is ignored.'
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: An API key as a bearer token. An admin key reaches everything; an app key reaches one app (see x-applab-tier on each operation).

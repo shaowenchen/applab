@@ -665,12 +665,18 @@ func buildsCommand(urlFlag, keyFlag *string) *cobra.Command {
 		showLogs  bool
 		watch     bool
 		stopBuild string
+		buildID   string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "builds <app>",
 		Short: "List an app's builds",
 		Long: `List an app's builds, newest first.
+
+With --logs the newest build's output is followed; --build names an earlier one,
+which is the only way to read the log of a build that has already failed — by the
+time the reason matters the newest build is usually a later one. --build implies
+--logs. A prefix of the id is enough, as it is for --stop.
 
 With --stop a build is cancelled instead: the build is recorded as cancelled
 rather than removed, because the history is a record of what was attempted. A
@@ -703,6 +709,21 @@ listing above rather than from memory.`,
 			if err != nil {
 				return err
 			}
+
+			// A named build is streamed whatever the newest twenty are: the
+			// reason to name one is that the build whose log matters is no
+			// longer the latest, so the page above must not decide this.
+			if buildID != "" {
+				// --build implies --logs: naming a build without saying what to
+				// do with it can only mean its output, and requiring both flags
+				// would be a second thing to remember for the one thing asked.
+				id, err := resolveBuildID(cmd.Context(), c, appID, buildID)
+				if err != nil {
+					return err
+				}
+				return watchBuild(cmd.Context(), c, appID, id)
+			}
+
 			if len(builds) == 0 {
 				fmt.Println("no builds yet")
 				return nil
@@ -737,6 +758,7 @@ listing above rather than from memory.`,
 	cmd.Flags().BoolVar(&showLogs, "logs", false, "follow the newest build's log instead")
 	cmd.Flags().BoolVar(&watch, "watch", false, "wait for the newest build to finish")
 	cmd.Flags().StringVar(&stopBuild, "stop", "", "cancel a build by id (a prefix of the id is enough)")
+	cmd.Flags().StringVar(&buildID, "build", "", "read this build's log instead (a prefix of the id is enough; implies --logs)")
 	return cmd
 }
 

@@ -102,7 +102,7 @@ with "applab keys <app>".`,
 	// The client is built inside a command rather than here, so that --help and
 	// a usage error work without a deployment configured.
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		if cmd.Name() == "version" || cmd.Name() == "completion" || cmd.Name() == "help" {
+		if commandNeedsNoDeployment(cmd) {
 			return nil
 		}
 		_, err := newClient(urlFlag, keyFlag)
@@ -111,6 +111,7 @@ with "applab keys <app>".`,
 
 	root.AddCommand(
 		versionCommand(),
+		routesCommand(),
 		configCommand(&urlFlag, &keyFlag),
 		overviewCommand(&urlFlag, &keyFlag),
 		keysCommand(&urlFlag, &keyFlag),
@@ -118,6 +119,7 @@ with "applab keys <app>".`,
 		envCommand(&urlFlag, &keyFlag),
 		createCommand(&urlFlag, &keyFlag, &serverFlag),
 		listCommand(&urlFlag, &keyFlag, &serverFlag),
+		showCommand(&urlFlag, &keyFlag, &serverFlag),
 		serversCommand(&urlFlag, &keyFlag),
 		statusCommand(&urlFlag, &keyFlag),
 		pushCommand(&urlFlag, &keyFlag),
@@ -139,6 +141,22 @@ with "applab keys <app>".`,
 	)
 
 	return root
+}
+
+// commandNeedsNoDeployment reports whether a command must run without one.
+//
+// Cobra names a command's own help "help", so the list has to include it rather
+// than let --help on a leaf fail on the missing address of the deployment the
+// help is about. The rest answer a question about the CLI itself rather than
+// about a deployment: what version it is, how to complete it, and what it calls.
+// `__routes` in particular is read by a parity test, which runs it on a machine
+// with no deployment and no environment at all.
+func commandNeedsNoDeployment(cmd *cobra.Command) bool {
+	switch cmd.Name() {
+	case "version", "completion", "help", "__routes":
+		return true
+	}
+	return false
 }
 
 // newClient builds a client from the flags, falling back to the environment.
@@ -174,5 +192,132 @@ func versionCommand() *cobra.Command {
 			fmt.Printf("applab %s (%s, built %s)\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildTime)
 			return nil
 		},
+	}
+}
+
+// routesCommand prints the API routes this CLI can reach, one per line.
+//
+// Hidden, and named with the double underscore that says so: it is not a
+// command anyone runs to get work done, it is the CLI's declaration of its own
+// reach, read by the four-surface parity test that compares this list, the API's
+// route table, the console's fetch calls and the seeded script's. A command
+// added without a line here is a command the test reports as missing — which is
+// the whole point, because the gap this closes was a route the console served
+// and no command reached.
+func routesCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "__routes",
+		Short:  "Print the API routes this CLI reaches (for the parity test)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			for _, route := range cliRoutes() {
+				fmt.Println(route)
+			}
+			return nil
+		},
+	}
+}
+
+// cliRoutes is every API route the CLI calls, in the API's own pattern notation.
+//
+// It is a declaration, not a derivation: nothing walks the client and collects
+// the strings it would send, because a list built by running the commands would
+// need a deployment, and this has to be answerable on a machine that has none.
+// So it is written out, and kept true by the parity test rather than by
+// construction.
+//
+// One line per route, `METHOD /api/v1/...`, with the path in the placeholder
+// form internal/api/router.go uses — `GET /api/v1/apps/{app}`, not the concrete
+// `/api/v1/apps/shop` a command would send. The placeholder is what makes the
+// comparison possible at all: the API declares patterns, and a client that
+// declared addresses could never be matched against them.
+//
+// Adding a command that reaches a route not listed here is a test failure by
+// name. Removing a command without removing its line is the same failure from
+// the other side, which is why the list is kept sorted by route rather than by
+// the command that reaches it: it is a set of routes, and two commands reaching
+// one route — `builds --build` and `builds --logs` both read a build's log —
+// appear once.
+//
+// It deliberately leaves out the routes no command reaches: the agent file
+// routes under /apps/{app}/agent, the commit and single-source routes, and
+// GET /api/v1/describe, which is a caller's orientation call rather than
+// something a person types.
+func cliRoutes() []string {
+	return []string{
+		// The deployment, and the overview the console's dashboard is built on.
+		"GET /api/v1/config",
+		"GET /api/v1/overview",
+
+		// Apps: list, create, read, change one setting, delete. `show` is the
+		// read, `create` and `delete` the ends, and `update` the only writer of
+		// the app's own fields.
+		"GET /api/v1/apps",
+		"POST /api/v1/apps",
+		"GET /api/v1/apps/{app}",
+		"PATCH /api/v1/apps/{app}",
+		"DELETE /api/v1/apps/{app}",
+
+		// An app's own key, which `keys` reads and `keys rotate` replaces.
+		"GET /api/v1/apps/{app}/key",
+		"POST /api/v1/apps/{app}/key/rotate",
+
+		// Configuration: the two readable halves, and the four writes.
+		"GET /api/v1/apps/{app}/config",
+		"PUT /api/v1/apps/{app}/env",
+		"DELETE /api/v1/apps/{app}/env/{name}",
+		"PUT /api/v1/apps/{app}/secrets",
+		"DELETE /api/v1/apps/{app}/secrets/{name}",
+
+		// Source: the single-request upload, and the three calls the chunked
+		// path falls back to when the deployment refuses one that size.
+		"POST /api/v1/apps/{app}/source",
+		"POST /api/v1/apps/{app}/source/uploads",
+		"PUT /api/v1/apps/{app}/source/uploads/{upload}/parts/{index}",
+		"POST /api/v1/apps/{app}/source/uploads/{upload}/complete",
+
+		// Branches and commits: which branch runs, which commits exist.
+		"GET /api/v1/apps/{app}/branches",
+		"PUT /api/v1/apps/{app}/branch",
+		"GET /api/v1/apps/{app}/commits",
+
+		// Builds: start, list, read, read a log, cancel.
+		"GET /api/v1/apps/{app}/builds",
+		"POST /api/v1/apps/{app}/builds",
+		"GET /api/v1/apps/{app}/builds/{build}",
+		"GET /api/v1/apps/{app}/builds/{build}/logs",
+		"DELETE /api/v1/apps/{app}/builds/{build}",
+
+		// Shipping: deploy, roll back, restart, stop.
+		"POST /api/v1/apps/{app}/deploy",
+		"POST /api/v1/apps/{app}/rollback",
+		"POST /api/v1/apps/{app}/restart",
+		"POST /api/v1/apps/{app}/stop",
+
+		// Observing one app: what is running, what it uses, its pods, its log,
+		// the namespace's events, and the diagnosis that reads all of them.
+		"GET /api/v1/apps/{app}/status",
+		"GET /api/v1/apps/{app}/resources",
+		"GET /api/v1/apps/{app}/pods",
+		"GET /api/v1/apps/{app}/logs",
+		"GET /api/v1/apps/{app}/events",
+		"GET /api/v1/apps/{app}/diagnose",
+
+		// The same reads for AppLab itself, under `platform`.
+		"GET /api/v1/platform/pods",
+		"GET /api/v1/platform/events",
+		"GET /api/v1/platform/logs",
+		"GET /api/v1/platform/resources",
+
+		// The other deployments this one can reach, and the apps on them.
+		"GET /api/v1/servers",
+		"POST /api/v1/servers",
+		"GET /api/v1/servers/{server}",
+		"DELETE /api/v1/servers/{server}",
+		"GET /api/v1/servers/{server}/apps",
+		"POST /api/v1/servers/{server}/apps",
+		"GET /api/v1/servers/{server}/apps/{app}",
+		"DELETE /api/v1/servers/{server}/apps/{app}",
 	}
 }

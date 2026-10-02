@@ -1163,25 +1163,79 @@ func (s *Server) routes() []route {
 	}
 }
 
-// RouteReference describes every documented route, for the endpoint list that
+// RouteDescriptor is one row of the route table, with everything a caller
+// outside this package needs to reason about it.
+//
+// EndpointReference carries the four fields describe publishes; this carries the
+// raw flags as well, because the OpenAPI specification has to know not just that
+// a route needs a key but *which* kind, and whether it is a route an app key can
+// reach at all. Everything here is read straight off the table — nothing is
+// derived a second time, so it cannot disagree with what the mux serves.
+type RouteDescriptor struct {
+	Method string
+	Path   string
+	Tier   string // "none" | "admin" | "app", from routeKeyTier
+	Doc    string
+
+	Auth         bool
+	AppAuth      bool
+	AppListScope bool
+	AppAdminOnly bool
+	IdentifyOnly bool
+}
+
+// RouteTable is every route this server serves, flags included.
+//
+// It is the same source EndpointReference is built from, exposed as data for the
+// generator that writes the OpenAPI specification. The server does not need
+// wiring to answer: routes() is a slice of literals, so a zero Server enumerates
+// the whole table — which is what lets a generator run without a store, a key or
+// a cluster.
+func (s *Server) RouteTable() []RouteDescriptor {
+	routes := s.routes()
+	out := make([]RouteDescriptor, 0, len(routes))
+	for _, r := range routes {
+		method, path, _ := strings.Cut(r.Pattern, " ")
+		out = append(out, RouteDescriptor{
+			Method:       method,
+			Path:         path,
+			Tier:         routeKeyTier(r),
+			Doc:          r.Doc,
+			Auth:         r.Auth,
+			AppAuth:      r.AppAuth,
+			AppListScope: r.AppListScope,
+			AppAdminOnly: r.AppAdminOnly,
+			IdentifyOnly: r.IdentifyOnly,
+		})
+	}
+	return out
+}
+
+// EndpointReference describes every documented route, for the endpoint list that
 // GET /api/v1/describe returns.
 //
 // It is generated from the same table that configures the mux, so a route cannot
 // be described without existing or exist without being described — a test
 // asserts the two are the same set.
 //
-// It is returned as data rather than rendered as a document, so there is no
-// committed copy to go stale and no generator to run: the answer a caller gets
-// is produced from the running server's own table, which is the only thing that
-// can be right about what it serves.
-func (s *Server) RouteReference() []describeEndpoint {
-	out := make([]describeEndpoint, 0, len(s.routes()))
+// It is returned as data rather than rendered as a document, so the running
+// server is the authority on what it serves and nothing has to be regenerated to
+// keep the answer true.
+//
+// It is NOT the only copy of the shape, and the claim that used to stand here —
+// "no committed copy to go stale" — stopped being true when the SDKs arrived.
+// api/openapi.yaml is a committed copy of this same table, and it is held honest
+// by a drift test that regenerates it and compares bytes (internal/openapi,
+// cmd/genopenapi), not by this comment. Anything added here is missing from
+// there until that generator is run, and the drift test is what says so.
+func (s *Server) EndpointReference() []Endpoint {
+	out := make([]Endpoint, 0, len(s.routes()))
 	for _, r := range s.routes() {
 		if r.Doc == "" {
 			continue
 		}
 		method, path, _ := strings.Cut(r.Pattern, " ")
-		out = append(out, describeEndpoint{
+		out = append(out, Endpoint{
 			Method: method,
 			Path:   path,
 			Key:    routeKeyTier(r),
