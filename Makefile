@@ -186,7 +186,7 @@ docs:
 	@mkdir -p $(PAGES)
 	go run ./cmd/gendocs -dest $(PAGES) \
 		-repo $${REPO_URL:-https://github.com/shaowenchen/applab} \
-		-branch $${REPO_BRANCH:-master}
+		-branch $${REPO_BRANCH:-main}
 
 .PHONY: help
 help:

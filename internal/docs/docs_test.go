@@ -16,7 +16,7 @@ func testRepo(t *testing.T) string {
 	files := map[string]string{
 		"README.md": `# applab
 
-See [the chart](charts/applab) and [the debugger](debugger/README.md).
+See [the chart](charts/applab) and [the action](action/README.md).
 
 Also [the license](LICENSE) and [values](charts/applab/values.yaml).
 
@@ -24,7 +24,7 @@ An [external link](https://example.com) and [a fragment](#section).
 `,
 		"charts/applab/README.md":   "# The chart\n\nBack to [the overview](../../README.md) and [the values](values.yaml).\n",
 		"charts/applab/values.yaml": "replicaCount: 1\n",
-		"debugger/README.md":        "# The debugger\n\nPlain text contract.\n",
+		"action/README.md":          "# The action\n\nPlain text contract.\n",
 		"LICENSE":                   "MIT\n",
 		"docs/internal-note.md":     "not published\n",
 	}
@@ -50,7 +50,7 @@ func testSite(t *testing.T, root string) Site {
 		Pages: []Page{
 			{Source: "README.md", Output: "index.html", Title: "Overview", Nav: "Overview"},
 			{Source: "charts/applab/README.md", Output: "chart.html", Title: "Chart", Nav: "Installing"},
-			{Source: "debugger/README.md", Output: "debugger.html", Title: "Debugger", Nav: "Debugger"},
+			{Source: "action/README.md", Output: "action.html", Title: "Action", Nav: "Action"},
 		},
 	}
 }
@@ -67,7 +67,7 @@ func TestBuildProducesEveryPage(t *testing.T) {
 		t.Errorf("wrote %v, want three pages and a manifest", result.Written)
 	}
 
-	for _, name := range []string{"index.html", "chart.html", "debugger.html"} {
+	for _, name := range []string{"index.html", "chart.html", "action.html"} {
 		body, err := os.ReadFile(filepath.Join(dest, name))
 		if err != nil {
 			t.Fatalf("%s was not written: %v", name, err)
@@ -97,7 +97,7 @@ func TestLinksResolveToSomethingReal(t *testing.T) {
 
 	for _, want := range []struct{ href, why string }{
 		{`href="chart.html"`, "a directory holding a published page links to that page"},
-		{`href="debugger.html"`, "a directory holding a published page links to that page"},
+		{`href="action.html"`, "a directory holding a published page links to that page"},
 		{`href="https://github.com/example/applab/blob/main/LICENSE"`, "a repository file links to where it is readable"},
 		{`href="https://github.com/example/applab/blob/main/charts/applab/values.yaml"`, "and so does one in a subdirectory, resolved from the page that linked it"},
 		{`href="https://example.com"`, "an external link is left alone"},
@@ -110,7 +110,7 @@ func TestLinksResolveToSomethingReal(t *testing.T) {
 
 	// The paths that only exist in the repository must not survive as links:
 	// on the site they are 404s.
-	for _, unwanted := range []string{`href="charts/applab/"`, `href="charts/applab"`, `href="debugger/"`, `href="debugger"`, `href="LICENSE"`} {
+	for _, unwanted := range []string{`href="charts/applab/"`, `href="charts/applab"`, `href="action/"`, `href="action"`, `href="LICENSE"`} {
 		if strings.Contains(html, unwanted) {
 			t.Errorf("the page still links to %s, which is not a path the site serves", unwanted)
 		}
@@ -250,7 +250,7 @@ func TestStalePagesArePrunedAndChartsSurvive(t *testing.T) {
 		t.Fatalf("second build: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dest, "debugger.html")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dest, "action.html")); !os.IsNotExist(err) {
 		t.Error("the page no longer produced was not removed")
 	}
 	for _, name := range []string{"index.yaml", "applab-0.1.0.tgz", "applab-1.0.0-dev.tgz"} {
@@ -305,7 +305,7 @@ func TestRealRepositoryBuilds(t *testing.T) {
 	}
 
 	dest := t.TempDir()
-	site := DefaultSite(root, "https://github.com/shaowenchen/applab", "master")
+	site := DefaultSite(root, "https://github.com/shaowenchen/applab", "main")
 
 	result, err := site.Build(dest)
 	if err != nil {
@@ -347,7 +347,7 @@ func TestEveryInPageLinkLandsSomewhere(t *testing.T) {
 	}
 
 	dest := t.TempDir()
-	site := DefaultSite(root, "https://github.com/shaowenchen/applab", "master")
+	site := DefaultSite(root, "https://github.com/shaowenchen/applab", "main")
 	if _, err := site.Build(dest); err != nil {
 		t.Fatalf("build: %v", err)
 	}

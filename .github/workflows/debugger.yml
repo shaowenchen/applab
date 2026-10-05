@@ -101,7 +101,7 @@ jobs:
 
       # The action is called from the working copy (`uses: ./`), so the chart
       # and the orchestration script are both this commit's.
-      - uses: ./debugger
+      - uses: ./action
         with:
           # session_hours and tunnel are the two choices worth offering at launch.
           # The rest are fixed by the action, or by the script's own defaults.

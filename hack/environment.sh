@@ -2,7 +2,7 @@
 #
 # Start a complete AppLab test environment on this machine and publish it.
 #
-# This is what the debugger/ action runs. It builds a throwaway Kubernetes
+# This is what the action/ action runs. It builds a throwaway Kubernetes
 # cluster, an object store, an Istio gateway and an AppLab installation —
 # everything a single app needs before `applab push` can build, deploy and serve
 # it. The point is that none of it has to be assembled by hand first.
@@ -29,7 +29,7 @@
 # sits in front of the gateway to tell the two apart, because the paths already
 # do: Istio sorts a virtual host's catch-all route to the end and keeps the rest
 # in order, and "/apps/<app>/" is not a prefix any of the console's own paths
-# share. See debugger/README.md.
+# share. See action/README.md.
 #
 # The order below is load-bearing and the reason it is a script rather than a
 # list of workflow steps. The hostname has to be settled first, because it

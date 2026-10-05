@@ -21,7 +21,7 @@ func main() {
 	dest := flag.String("dest", "", "directory to write the site into (required)")
 	repo := flag.String("repo", "https://github.com/shaowenchen/applab",
 		"repository web address, used for links that leave the site")
-	branch := flag.String("branch", "master",
+	branch := flag.String("branch", "main",
 		"repository branch those links should point at")
 	flag.Parse()
 

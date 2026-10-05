@@ -26,7 +26,7 @@ on:
 # newer one exists, and the checks now run on every push.
 #
 # A release is safe from that because the ref is part of the group — a tag push
-# is `refs/tags/v0.1.0` and a branch push is `refs/heads/master`, so they never
+# is `refs/tags/v0.1.0` and a branch push is `refs/heads/main`, so they never
 # share a group and a branch push cannot cancel a publish in flight.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -128,7 +128,7 @@ jobs:
           python3 - <<'PY'
           import re, sys, yaml
 
-          action = yaml.safe_load(open('debugger/action.yml'))
+          action = yaml.safe_load(open('action/action.yml'))
           declared = set(action['inputs'])
 
           steps = [s for s in action['runs']['steps']

@@ -71,7 +71,7 @@ jobs:
           changed=$(git diff --name-only "$before" HEAD -- \
             charts/applab \
             README.md \
-            debugger/README.md \
+            action/README.md \
             internal/docs \
             cmd/gendocs \
             hack/package-chart.sh)

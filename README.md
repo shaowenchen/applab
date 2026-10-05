@@ -596,7 +596,7 @@ still get wrong:
 ### A whole platform on a runner
 
 The build and deploy halves need real infrastructure, so they are exercised on
-one that is built for the purpose and thrown away: [`debugger`](debugger) is a
+one that is built for the purpose and thrown away: [`action`](action) is a
 GitHub Action that creates a `kind` cluster, a registry and an Istio gateway,
 installs AppLab from this repository's own chart, and publishes the result
 through a tunnel. It is started by hand — it holds a runner for the whole

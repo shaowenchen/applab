@@ -28,7 +28,7 @@ jobs:
     # and shuts down cleanly rather than being killed at the runner's ceiling.
     timeout-minutes: 280
     steps:
-      - uses: shaowenchen/applab/debugger@master
+      - uses: shaowenchen/applab/action@main
         with:
           session_hours: '4'
           registry_username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -176,7 +176,7 @@ are ordinary scripts, and they are documented where they are:
 
 | Path | What it does |
 |---|---|
-| [debugger/action.yml](action.yml) | The composite action: installs kind, kubectl, istioctl, helm and a tunnel agent, then runs the script. |
+| [action/action.yml](action.yml) | The composite action: installs kind, kubectl, istioctl, helm and a tunnel agent, then runs the script. |
 | [hack/environment.sh](../hack/environment.sh) | The whole environment, in order. Set `APPLAB_PUBLIC_HOST` to skip the tunnel and use a hostname you already have, or `APPLAB_DOMAIN` to name the domain a named tunnel serves apps under. |
 | [hack/summary.sh](../hack/summary.sh) | Publishes the link and the key to the job summary. |
 
