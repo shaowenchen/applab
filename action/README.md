@@ -88,7 +88,7 @@ of the console's own routes claim.
 
 | Input | Default | Description |
 |---|---|---|
-| `api_key` | the `ADMIN_KEY` secret, else generated | API key. Empty uses the repository's `ADMIN_KEY` secret if it has one, and generates a key with `openssl` if it does not; fill it in to override for one run. Printed in the summary either way, because it is the deliverable. |
+| `api_key` | the `ADMIN_KEY` secret, else generated | API key. Empty — whitespace counts as empty too — uses the repository's `ADMIN_KEY` secret if it has one, and generates a key with `openssl` if it does not; fill it in to override for one run. Printed in the summary either way, because it is the deliverable. |
 | `session_hours` | `4` | How long the environment may run. `0` means no self-imposed limit, bounded by the job's timeout. |
 | `tunnel` | `cloudflare` | `cloudflare` (no account needed) or `ngrok`. |
 | `cloudflare_token` | — | Token of a named Cloudflare tunnel; empty starts a quick tunnel. |

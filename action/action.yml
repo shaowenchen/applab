@@ -12,10 +12,10 @@ branding:
 inputs:
   api_key:
     description: >-
-      API key for this environment. Empty takes whatever the caller passes as
-      its default — the workflow passes the ADMIN_KEY secret when the
-      repository has one — and generates a key when nothing is supplied at all.
-      Printed in the summary either way.
+      API key for this environment. Empty — whitespace counts as empty too —
+      takes whatever the caller passes as its default, the workflow passing the
+      ADMIN_KEY secret when the repository has one, and generates a key when
+      nothing is supplied at all. Printed in the summary either way.
     required: false
     default: ''
   session_hours:

@@ -186,6 +186,16 @@ TUNNEL_LOG="$RUNTIME_DIR/tunnel.log"
 
 # ── 1. the API key ──────────────────────────────────────────────────────────
 
+# Trimmed, so a value that is only whitespace counts as none. The key arrives
+# from a dispatch input, a repository secret or a shell, and any of the three can
+# carry a stray space or newline — and " " is not a key, it is an empty field
+# with something invisible in it. Left alone it would be installed as the
+# installation's key and every call would be refused, with nothing in the run
+# saying why. Trimmed here, once, so the Secret, the generated fallback, the
+# summary and the printed recipe all carry the same value.
+APPLAB_API_KEY="${APPLAB_API_KEY#"${APPLAB_API_KEY%%[![:space:]]*}"}"
+APPLAB_API_KEY="${APPLAB_API_KEY%"${APPLAB_API_KEY##*[![:space:]]}"}"
+
 # Generated when not supplied, and printed at the end. It is deliberately not
 # masked: it is the deliverable, and a masked value could not be shown in the
 # summary that exists to show it.
