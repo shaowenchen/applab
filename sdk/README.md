@@ -139,12 +139,20 @@ test fails if it is out of date. That generator is pure Go, so it runs on any
 machine with a Go toolchain. Regenerating the *language SDKs* needs Java (that is
 what openapi-generator is), which is why CI does that part rather than a laptop.
 
-The workflow also **compiles** what it generated, because the drift check cannot
-see a broken tree — a specification change can produce code that matches the
-spec byte for byte and does not build. [`hack/sdk-compile.sh`](../hack/sdk-compile.sh)
-does that locally too (`make sdk-compile`), compiling whichever languages have a
-toolchain installed and reporting the ones that do not, so a missing compiler is
-never mistaken for a passing check.
+**Generate and check the language SDKs in Actions, not on a laptop.** Run the
+[`sdk` workflow](../.github/workflows/sdk.yml) — push, or `workflow_dispatch` —
+and let it do the generating, the compiling and the committing. Do not install a
+JDK locally to produce a tree by hand: the generator runs in CI against a pinned
+version and checksum, and a tree built with a different one is drift the moment
+it lands. This is the rule, not a preference — a locally generated SDK is a tree
+that has to be regenerated anyway, and the compile check that protects the commit
+only runs where the workflow runs it.
+
+The workflow **compiles** what it generated, because the drift check cannot see a
+broken tree — a specification change can produce code that matches the spec byte
+for byte and does not build. That compile step (and `hack/sdk-compile.sh` behind
+it) exists for CI, where every toolchain is present; it is there so a broken tree
+is caught before the commit, not as a local command to run in its place.
 
 A generated tree cannot be checked into a state that fails to compile *and* pass,
 because the workflow compiles before it commits. What it cannot do is run: the
