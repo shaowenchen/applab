@@ -816,9 +816,12 @@ what the cluster has, and the commit it was built from. <code>applab diagnose sh
 walks the same checks in order and reports the first that fails.</p>
 <p>If you would rather drive it by hand — to build a specific commit, or to rebuild
 something without pushing:</p>
-<pre><code class="language-bash">applab build shop          # build the newest commit into an image
-applab deploy shop         # run that image
+<pre><code class="language-bash">applab build shop          # build the newest commit, and deploy it when it succeeds
+applab deploy shop         # run the image a commit already has
 </code></pre>
+<p>A build ships what it builds, the way a push does, subject to the app's
+auto-deploy switch. <code>applab build shop --no-deploy</code> stops at the image, for a
+commit you want built but not put live.</p>
 <h3 id="the-same-thing-with-curl">The same thing with curl</h3>
 <p>No CLI required. Each numbered step above is one request:</p>
 <pre><code class="language-bash"># 1. Create — the admin key does this.
