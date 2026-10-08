@@ -52,10 +52,10 @@ on:
         # tunnel.
         default: 'applab-1.chenshaowen.com'
       api_key:
-        description: 'API key (empty = the APPLAB_API_KEY secret, then a random one)'
+        description: 'API key (empty = the ADMIN_KEY secret, then a random one)'
         type: string
         # An override, not the usual way in. Left empty — the normal case — the
-        # run takes the APPLAB_API_KEY secret if the repository has one, and
+        # run takes the ADMIN_KEY secret if the repository has one, and
         # generates a key with openssl if it does not. Fill it in to use a
         # particular key for this one run instead.
         #
@@ -118,9 +118,14 @@ jobs:
           # The domain is an input — it is not sensitive, and it is the thing a
           # person picks.
           domain: ${{ inputs.domain }}
-          # Empty falls through to the APPLAB_API_KEY secret, and from there to
-          # a generated key — see where the input is declared. The secret is
-          # what makes a run land on the same key every time without anyone
-          # retyping it; the input is the one-run override.
-          api_key: ${{ inputs.api_key || secrets.APPLAB_API_KEY }}
+          # A dispatched key wins; the ADMIN_KEY secret is the fallback before a
+          # generated one — see where the input is declared. The secret is what
+          # makes a run land on the same key every time without anyone retyping
+          # it; a dispatched value is the one-run override.
+          #
+          # No value is refused here. There used to be one: a placeholder the
+          # dispatcher sent when it had no key of its own. That placeholder is
+          # gone from the dispatcher, so a dispatched key is now taken as given
+          # — and the generator below is what covers an empty input.
+          api_key: ${{ inputs.api_key || secrets.ADMIN_KEY }}
 
