@@ -616,6 +616,35 @@ async function render(apps) {
 
     eye.onclick();
     check("clicking again masks it", key.type, "password");
+
+    // set("") is how a sign-out empties the field, and it has to do two things
+    // the eye does not: clear the value, and put the field back to masked. The
+    // masked half is the one that matters — leaving a revealed field behind
+    // would put the next reader's typing on screen in the clear.
+    key.value = "typed-key";
+    eye.onclick();
+    check("a revealed field is text, ready for the check below", key.type, "text");
+    vm.runInContext('signinReveal.set("")', context);
+    check("clearing the field empties it", key.value, "");
+    check("and masks it again", key.type, "password");
+    check("with the eye offering to reveal once more", eye.getAttribute("aria-label"), "Show");
+  }
+
+  // Clearing a concealed run of text empties what is on screen, not only the
+  // value behind it. The clone command is the case: it holds a git URL with a
+  // real key in it, and a clear that left the text behind would leave the
+  // credential visible with no control left to hide it — set("") hides the eye.
+  {
+    const clone = elements.get("app-git-hint");
+    vm.runInContext('setCloneHint("git clone https://applab.example.com/git/shop.git?key=sk-secret")', context);
+    check("the clone command is masked on screen", clone.textContent.includes("sk-secret"), false);
+    vm.runInContext("appGitReveal.reveal()", context);
+    check("and revealed it shows the key", clone.textContent.includes("sk-secret"), true);
+
+    vm.runInContext('appGitReveal.set("")', context);
+    check("clearing it empties the value", clone.dataset.value, "");
+    check("and empties what was on screen", clone.textContent, "");
+    check("with the eye taken away", elements.get("app-git-hint-reveal").classList.contains("hidden"), true);
   }
 
   // A saved key the server no longer accepts has to land on the sign-in form.
@@ -825,6 +854,21 @@ async function render(apps) {
       vm.runInContext('state.scope = "app"; state.app = "shop";', ctx);
       navTo("app");
       check("an app key can still reach its own app", elements.get("home").disabled, false);
+
+      // And it can reach the document. This is the one destination an app key
+      // has, and the nav is the only route to it: that tier's console is its app
+      // with no Back button and no list to return to, so hiding the nav left the
+      // document unreachable from the page that hands the key out. The three
+      // data entries stay hidden — they read the platform, which that tier
+      // cannot — so the nav is a single "Docs" the way it is signed out.
+      //
+      // Asserted on the nav itself and not on #nav-docs: the button is never
+      // hidden on its own, so a check of it passes whether or not the nav around
+      // it is up — which is exactly the bug being fixed.
+      check("an app key keeps the nav", elements.get("nav").classList.contains("hidden"), false);
+      check("but not the platform overview", elements.get("nav-overview").classList.contains("hidden"), true);
+      check("nor the app list", elements.get("nav-apps").classList.contains("hidden"), true);
+      check("nor the servers list", elements.get("nav-servers").classList.contains("hidden"), true);
 
       // Pressed on the landing view it does nothing at all, rather than firing a
       // request for a view nobody asked for. Back to an admin, because that is
@@ -2414,11 +2458,39 @@ async function render(apps) {
     vm.runInContext('state.key = "app-secret"; state.scope = "app"; state.app = "shop";', ctx);
     await docs();
 
-    // Signing out must not leave the discarded key sitting in the commands.
+    // Signing out must not leave the discarded key sitting in the commands, nor
+    // anywhere else it reached the screen. The commands are the one place
+    // sign-out always rebuilt; every other credential site is set here through
+    // its own code path, revealed, and then checked, so a clear that silently
+    // does nothing cannot pass.
+    vm.runInContext('$("signin-key").value = "typed-key"; signinReveal.reveal();', ctx);
+    vm.runInContext('setCloneHint("git clone https://applab.example.com/git/shop.git?key=git-key"); appGitReveal.reveal();', ctx);
+    vm.runInContext('serverAppKey.set("remote-key"); serverAppKey.reveal();', ctx);
+    vm.runInContext('$("server-add-key").value = "other-deployment-key";', ctx);
+    // Each reached the DOM before the sign-out, or the checks below would pass
+    // on a page that never held anything.
+    check("the typed key is in the sign-in field", elements.get("signin-key").value, "typed-key");
+    check("the clone command is on screen", read("app-git-hint").includes("git-key"), true);
+    check("the remote app's key is on screen", read("server-app-key"), "remote-key");
+    check("and so is the other deployment's key", elements.get("server-add-key").value, "other-deployment-key");
+
     vm.runInContext("signOut", ctx)();
     check("signing out drops the key from the commands", read("docs-push-cmd").includes("sk-secret"), false);
     check("and leaves the placeholder", read("docs-push-cmd").includes("APPLAB_KEY=<your key>"), true);
     check("while the sign-in card comes back", elements.get("signin").classList.contains("hidden"), false);
+
+    // The credential sites that used to survive it: each is emptied, and the
+    // clone command's text goes too rather than only its data — a value revealed
+    // before the clear would otherwise sit on screen in the clear.
+    check("the sign-in field is emptied", elements.get("signin-key").value, "");
+    // And masked again: the reader may have revealed it, and sign-out handing an
+    // unmasked field to the next person would put their typing on screen.
+    check("and masked again", elements.get("signin-key").type, "password");
+    check("the clone command's value is gone", elements.get("app-git-hint").dataset.value, "");
+    check("and its text with it", elements.get("app-git-hint").textContent, "");
+    check("the remote app's key is gone", elements.get("server-app-key").dataset.value, "");
+    check("and its text with it", elements.get("server-app-key").textContent, "");
+    check("the other deployment's key is cleared too", elements.get("server-add-key").value, "");
   }
 
 
