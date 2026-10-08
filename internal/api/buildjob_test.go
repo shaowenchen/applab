@@ -5,6 +5,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/shaowenchen/applab/internal/build"
+	"github.com/shaowenchen/applab/internal/model"
 )
 
 // TestABuildsJobNameIsRecorded is the check that a started build can be reached
@@ -138,4 +142,141 @@ func (f *fakeBuildEngine) startedJobs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.started...)
+}
+
+// completeBuild makes a build the fake engine holds look like one the cluster
+// finished, so a test can drive the watcher that deploys a build's commit.
+//
+// It works on the record Start wrote, so the caller names the build only by what
+// it already knows — the commit — rather than having to reach into the engine.
+// The status is set under the engine's lock because the watcher reads the same
+// map concurrently.
+func (f *fakeBuildEngine) completeBuild(appID, commitSHA string, status model.BuildStatus) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for id, b := range f.builds {
+		if b.AppID == appID && b.CommitSHA == commitSHA && !b.Status.Terminal() {
+			b.Status = status
+			f.builds[id] = b
+			return true
+		}
+	}
+	return false
+}
+
+// TestABuildDeploysWhatItBuilt asserts that a manual build ships its commit once
+// it succeeds, the same way a push does.
+//
+// This is the behaviour a build did not have: it produced an image and stopped,
+// so shipping the tip took two calls — build, then deploy — and the deploy
+// silently failed for anyone who did not make the second one. The commit reaches
+// the cluster here through the build alone.
+func TestABuildDeploysWhatItBuilt(t *testing.T) {
+	srv, engine, _, client := pushServer(t)
+	h := srv.Handler()
+
+	commit := sortAppWithCommit(t, srv, h, "shop")
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/builds",
+		map[string]any{"commit_sha": commit})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start a build: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	waitFor(t, func() bool { return len(engine.startedJobs()) == 1 })
+
+	// The build is still running, so nothing is deployed yet — the deploy waits
+	// for the build, it does not race it.
+	if got := deployedCommit(t, client, "shop"); got == commit {
+		t.Fatalf("the commit was deployed before its build finished")
+	}
+
+	// Finish the build, and the watcher deploys the commit it built.
+	if !engine.completeBuild("shop", commit, model.BuildStatusSucceeded) {
+		t.Fatal("the engine is not holding the build that was just started")
+	}
+	waitFor(t, func() bool { return deployedCommit(t, client, "shop") == commit })
+}
+
+// TestABuildCanBeToldNotToDeploy is the opt-out, and the capability it keeps:
+// building an image without putting it live.
+//
+// Without it, "build" and "ship" would be the same button with no way to get one
+// without the other — and a revision worth testing or pre-warming would be one
+// nobody could produce.
+func TestABuildCanBeToldNotToDeploy(t *testing.T) {
+	srv, engine, _, client := pushServer(t)
+	h := srv.Handler()
+
+	commit := sortAppWithCommit(t, srv, h, "shop")
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/builds",
+		map[string]any{"commit_sha": commit, "deploy": false})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start a build: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	waitFor(t, func() bool { return len(engine.startedJobs()) == 1 })
+
+	// The build succeeds — so anything watching for one would deploy — and still
+	// nothing reaches the cluster, because there was nothing watching.
+	engine.completeBuild("shop", commit, model.BuildStatusSucceeded)
+	waitFor(t, func() bool {
+		for _, b := range mustList(t, engine, "shop") {
+			if b.CommitSHA == commit && b.Status == model.BuildStatusSucceeded {
+				return true
+			}
+		}
+		return false
+	})
+
+	if got := deployedCommit(t, client, "shop"); got == commit {
+		t.Errorf("a build told not to deploy put commit %s live anyway", commit)
+	}
+}
+
+// TestABuildForAnAppWithAutoDeployOffDoesNotDeploy asserts the per-app switch on
+// the manual-build path.
+//
+// An operator with auto-deploy off has said their releases are by hand. A build
+// is how they produce the image; a rollout on its own would be the thing that
+// switch turns off, arriving by a different door.
+func TestABuildForAnAppWithAutoDeployOffDoesNotDeploy(t *testing.T) {
+	srv, engine, _, client := pushServer(t)
+	h := srv.Handler()
+
+	commit := sortAppWithCommit(t, srv, h, "shop")
+
+	// Off, which is the state this covers. The build still runs — a build is
+	// asked for explicitly, unlike a push.
+	if rec := doRequest(t, h, http.MethodPatch, "/api/v1/apps/shop", map[string]any{"auto_deploy": false}); rec.Code != http.StatusOK {
+		t.Fatalf("turn auto-deploy off: %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/apps/shop/builds",
+		map[string]any{"commit_sha": commit})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start a build: %d (%s)", rec.Code, rec.Body.String())
+	}
+	waitFor(t, func() bool { return len(engine.startedJobs()) == 1 })
+
+	engine.completeBuild("shop", commit, model.BuildStatusSucceeded)
+	time.Sleep(3 * testWatchInterval)
+
+	if got := deployedCommit(t, client, "shop"); got == commit {
+		t.Errorf("a build deployed commit %s for an app with auto-deploy off", commit)
+	}
+}
+
+// mustList reads the fake engine's builds, failing the test rather than
+// returning an error that would make a caller's assertion vacuous.
+func mustList(t *testing.T, engine *fakeBuildEngine, appID string) []build.Result {
+	t.Helper()
+
+	builds, err := engine.List(t.Context(), "ops-system", appID, 0)
+	if err != nil {
+		t.Fatalf("list builds: %v", err)
+	}
+	return builds
 }

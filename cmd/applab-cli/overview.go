@@ -294,18 +294,25 @@ func eventsCommand(urlFlag, keyFlag *string) *cobra.Command {
 // impossible from the CLI.
 func buildCommand(urlFlag, keyFlag *string) *cobra.Command {
 	var (
-		watch  bool
-		logs   bool
-		branch string
+		watch    bool
+		logs     bool
+		branch   string
+		noDeploy bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "build <app> [commit]",
-		Short: "Build an image from a commit",
-		Long: `Build an image from a commit, without deploying it.
+		Short: "Build a commit, and deploy it when the build succeeds",
+		Long: `Build a commit, and deploy it when the build succeeds.
 
 With no commit, the app's current tip is built. The build runs as a Job in the
 cluster; --watch waits for it and --logs follows its output.
+
+A build ships what it builds, the same way a push does: once it succeeds the
+commit is deployed, subject to the app's own auto-deploy switch and to being on
+the app's active branch — a build of another branch produces an image and no
+rollout. --no-deploy stops after the image, for testing or pre-warming a
+revision without putting it live.
 
 --branch builds another branch's tip without switching the app to it. The
 console's State card offers the same choice; there the branch is also the one
@@ -323,11 +330,16 @@ the app is moved to, because that is what its Deploy button means.`,
 				commit = args[1]
 			}
 
-			b, err := c.StartBuild(cmd.Context(), appID, commit, branch)
+			b, err := c.StartBuild(cmd.Context(), appID, commit, branch, !noDeploy)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("build %s started for %s\n", short(b.ID), shortSHA(b.CommitSHA))
+			if noDeploy {
+				fmt.Printf("build %s started for %s\n", short(b.ID), shortSHA(b.CommitSHA))
+			} else {
+				fmt.Printf("build %s started for %s; it deploys when it succeeds\n",
+					short(b.ID), shortSHA(b.CommitSHA))
+			}
 
 			if !watch && !logs {
 				fmt.Printf("watch it with: applab builds %s --logs\n", appID)
@@ -340,6 +352,7 @@ the app is moved to, because that is what its Deploy button means.`,
 	cmd.Flags().BoolVar(&watch, "watch", false, "wait for the build to finish")
 	cmd.Flags().BoolVar(&logs, "logs", false, "follow the build's output (implies --watch)")
 	cmd.Flags().StringVar(&branch, "branch", "", "build this branch instead of the app's active one")
+	cmd.Flags().BoolVar(&noDeploy, "no-deploy", false, "build the image only; do not deploy it when the build succeeds")
 	return cmd
 }
 

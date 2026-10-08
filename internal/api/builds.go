@@ -100,6 +100,16 @@ func (s *Server) imageForResult(appID string, b *build.Result) string {
 // "build this app": they have just uploaded, and the newest commit is what they
 // want built. Passing one explicitly is how a rollback rebuilds or a caller
 // builds a specific revision.
+//
+// A build ships what it builds, unless told not to. `{"deploy":false}` (or
+// `?deploy=false`) builds the image and stops, which is what a caller who wants
+// to test or pre-warm a revision asks for; everything else lets the build run on
+// into a deploy once it succeeds, so "build this" and "ship this" are one
+// operation the way "push this" already is. The deploy is the push path's own —
+// see awaitBuildThenDeploy — so it is held to the same conditions: only the
+// app's active branch deploys, and only when the app's auto-deploy switch is on.
+// An app released by hand therefore still gets an image from this and no
+// rollout, which is what turning that switch off asks for.
 func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 	app, apiErr := s.loadApp(r)
 	if apiErr != nil {
@@ -113,6 +123,11 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		CommitSHA string `json:"commit_sha"`
+
+		// Deploy says whether a successful build should be deployed. Absent
+		// means the platform's behaviour, which is to deploy; false is the
+		// opt-out that keeps "build without deploying" available.
+		Deploy *bool `json:"deploy"`
 	}
 	// An empty body is allowed and means "build the tip".
 	if r.ContentLength > 0 {
@@ -120,6 +135,15 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, err)
 			return
 		}
+	}
+
+	// Default true, so a caller that says nothing gets a shipped commit. Only the
+	// literal "false" turns it off — the same shape `publish` uses on an upload,
+	// so a value that is absent and a value that is misspelled mean the same
+	// thing, and the thing they mean is the one that does something.
+	deploy := r.URL.Query().Get("deploy") != "false"
+	if req.Deploy != nil {
+		deploy = *req.Deploy
 	}
 
 	branch, apiErr := s.requestedBranch(r, app)
@@ -157,7 +181,22 @@ func (s *Server) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.InfoContext(r.Context(), "build started",
-		"app", app.ID, "build", buildID, "commit", resolved, "job", jobName)
+		"app", app.ID, "build", buildID, "commit", resolved, "job", jobName, "deploy", deploy)
+
+	// Ship it once it succeeds, in the background — the deploy happens in this
+	// process after the Job finishes, not in the cluster, so something has to
+	// watch for that and a request must not be held open for a build that takes
+	// minutes.
+	//
+	// Held to the same conditions the push path applies before it starts a build:
+	// the app's own switch, and a deploy half that can run. The switch is read
+	// here rather than inside awaitBuildThenDeploy because that function is the
+	// deploy half of a build someone has already decided to run, and this is the
+	// decision — an image built for an app that has auto-deploy off is one the
+	// operator asked for and will deploy by hand, not a rollout they did not.
+	if deploy && app.AutoDeploys() && s.deployer != nil && s.deployer.Ready() {
+		s.goRun(func() { s.awaitBuildThenDeploy(s.jobsContext(r.Context()), app.ID, branch, resolved, buildID) })
+	}
 
 	// A build that was just started has no pod yet in almost every case — the Job
 	// was created a moment ago — so this reads for the answer rather than

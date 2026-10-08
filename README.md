@@ -98,7 +98,7 @@ applab pods myshop        # the pods, and why one is not ready
 applab pods myshop --label applab.io/commit=abc1234   # just one revision's pods
 applab events myshop      # Kubernetes events, warnings first
 applab diagnose myshop    # why it is not working
-applab build myshop       # build a commit without deploying it
+applab build myshop       # build a commit and deploy it when the build succeeds
 applab builds myshop      # what it has tried to build, and how each went
 applab update myshop --replicas 3
 applab rollback myshop    # go back to an earlier upload

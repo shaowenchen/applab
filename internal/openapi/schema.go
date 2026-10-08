@@ -162,6 +162,10 @@ func handWrittenSchemas() map[string]*Schema {
 			Properties: map[string]*Schema{
 				"commit_sha": str(),
 				"branch":     str(),
+				// Deploy says whether a successful build is deployed. Absent means
+				// the platform's behaviour, which is to deploy; false builds the
+				// image and stops.
+				"deploy": {Type: "boolean"},
 			},
 		},
 		"DeployRequest": {

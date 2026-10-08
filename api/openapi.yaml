@@ -751,7 +751,7 @@ paths:
     post:
       operationId: startBuild
       summary: Build an image from a commit.
-      description: Build an image from a commit. Body `{commit_sha?}` — omit it to build the current tip. Returns immediately; the build runs as a Job in the cluster. Returns 501 if this deployment cannot build.
+      description: Build an image from a commit. Body `{commit_sha?, deploy?}` — omit `commit_sha` to build the current tip. Returns immediately; the build runs as a Job in the cluster. A build deploys what it builds once it succeeds, the same way a push does, subject to the app's `auto_deploy` switch and to the branch being the app's active one; pass `"deploy":false` (or `?deploy=false`) to build the image and stop. Returns 501 if this deployment cannot build.
       tags:
         - builds
       parameters:
@@ -766,6 +766,12 @@ paths:
           description: Build another branch without switching to it.
           schema:
             type: string
+        - name: deploy
+          in: query
+          description: Deploy the commit once the build succeeds. Defaults to true; send false to build the image and stop.
+          schema:
+            type: boolean
+          example: true
       requestBody:
         required: true
         content:
@@ -3600,6 +3606,8 @@ components:
           type: string
         commit_sha:
           type: string
+        deploy:
+          type: boolean
     ChunkedUploadStartRequest:
       type: object
       properties:

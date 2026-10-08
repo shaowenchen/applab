@@ -374,7 +374,12 @@ func shipCommit(ctx context.Context, c *client.Client, opts *pushOptions) error 
 
 	// No branch: push uploads to the app's active branch and ships what it
 	// uploaded, so there is no other branch in the picture — see uploadDirectory.
-	build, err := c.StartBuild(ctx, opts.app, commitSHA, "")
+	//
+	// deploy=false because this command deploys the commit itself, by name, a few
+	// lines below. Letting the build deploy as well would be the same rollout
+	// issued twice; the build is watched here so the deploy runs on a known-good
+	// image, which is the sequencing this function exists to keep.
+	build, err := c.StartBuild(ctx, opts.app, commitSHA, "", false)
 	if err != nil {
 		return fmt.Errorf("start build: %w", err)
 	}

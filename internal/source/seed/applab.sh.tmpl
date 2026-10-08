@@ -296,8 +296,9 @@ Start here
 Source
   push [message]     upload this directory, build it and deploy it
   upload [message]   upload this directory without building
-  build [commit]     build a commit (default: the newest)
+  build [commit]     build a commit (default: the newest) and deploy it
                      --branch <name> builds another branch, without switching
+                     --no-deploy builds the image only
   cancel [build]     stop a build (default: the one in flight)
   deploy [commit]    deploy a commit (default: the newest), building it if needed
                      --branch <name> deploys another branch and switches to it
@@ -752,7 +753,10 @@ case "${1:-help}" in
     shift
     sha=$(upload "${1:-push from applab.sh}")
     echo "committed $sha" >&2
-    api POST "/api/v1/apps/$APP/builds" "{\"commit_sha\":\"$sha\"}" >/dev/null
+    # deploy:false because this command deploys the commit itself, below. A build
+    # that also deployed would be the same rollout issued twice; letting this one
+    # build and then deploying it here keeps the sequencing on a known-good image.
+    api POST "/api/v1/apps/$APP/builds" "{\"commit_sha\":\"$sha\",\"deploy\":false}" >/dev/null
     echo "building; the first build has no cache and takes a while" >&2
     # A build is a Job, so it is polled rather than waited on by the API. The
     # loop is bounded so a wedged build fails here instead of hanging forever.
@@ -777,14 +781,23 @@ case "${1:-help}" in
     # --branch is not one. The branch is what the picker on the console's State
     # card sends, and leaving it out builds the app's active branch — which is
     # what most callers mean and what this did before there was a choice.
+    #
+    # A build ships what it builds, the way a push does; --no-deploy is the
+    # opt-out that stops at the image. deploy is always sent, rather than only
+    # when it is false, so a reader sees the choice being made and the request
+    # says what it means.
     build_branch=""
     build_commit=""
+    build_deploy="true"
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --branch)
           shift
           [ -n "${1:-}" ] || { echo "--branch needs a name; see ./applab.sh branch" >&2; exit 2; }
           build_branch="$1"
+          ;;
+        --no-deploy)
+          build_deploy="false"
           ;;
         *)
           build_commit="$1"
@@ -793,7 +806,7 @@ case "${1:-help}" in
       shift
     done
     api POST "/api/v1/apps/$APP/builds$(branch_query "$build_branch")" \
-      "{\"commit_sha\":\"$(json_escape "$build_commit")\"}"
+      "{\"commit_sha\":\"$(json_escape "$build_commit")\",\"deploy\":$build_deploy}"
     ;;
   cancel)
     shift

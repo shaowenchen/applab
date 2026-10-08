@@ -698,9 +698,13 @@ If you would rather drive it by hand — to build a specific commit, or to rebui
 something without pushing:
 
 ```bash
-applab build shop          # build the newest commit into an image
-applab deploy shop         # run that image
+applab build shop          # build the newest commit, and deploy it when it succeeds
+applab deploy shop         # run the image a commit already has
 ```
+
+A build ships what it builds, the way a push does, subject to the app's
+auto-deploy switch. `applab build shop --no-deploy` stops at the image, for a
+commit you want built but not put live.
 
 ### The same thing with curl
 

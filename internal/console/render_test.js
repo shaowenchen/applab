@@ -2739,11 +2739,12 @@ async function render(apps) {
     const buildsBuild = elements.get("app-builds-build");
     check("and it is wired", !!buildsBuild.onclick, true);
 
-    // Pressing it builds the newest commit.
+    // Pressing it builds the newest commit, and deploys it — the card's own
+    // "ship the tip" action, so deploy is on.
     ctx.bodies.length = 0;
     await buildsBuild.onclick();
     const posted = ctx.bodies.find((b) => b.url.endsWith("/builds")) || {};
-    check("and it builds the newest commit", posted.body, JSON.stringify({ commit_sha: "aaaa1111" }));
+    check("and it builds the newest commit", posted.body, JSON.stringify({ commit_sha: "aaaa1111", deploy: true }));
 
     // The History card's action column, for a commit with no image.
     await vm.runInContext("loadCommits", ctx)();
@@ -2752,11 +2753,12 @@ async function render(apps) {
     check("a commit with no image offers to build it", actionButton && actionButton.textContent, "Build");
 
     // And pressing that builds *that* commit rather than the tip — the whole
-    // point of it being on a row.
+    // point of it being on a row — and stops at the image: deploy is off, so a
+    // button labelled Build does not quietly become a rollback.
     ctx.bodies.length = 0;
     await actionButton.onclick();
     const named = ctx.bodies.find((b) => b.url.endsWith("/builds")) || {};
-    check("and it builds the commit on its own row", named.body, JSON.stringify({ commit_sha: "aaaa1111" }));
+    check("and it builds the commit on its own row", named.body, JSON.stringify({ commit_sha: "aaaa1111", deploy: false }));
 
     // A commit that already has an image still offers the rollback instead. The
     // build button is for the commit that cannot be deployed yet, and offering

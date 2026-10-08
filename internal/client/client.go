@@ -878,8 +878,17 @@ type Build struct {
 
 // StartBuild starts a build of a commit on a branch. An empty commit builds the
 // branch's current tip; an empty branch means the app's active one.
-func (c *Client) StartBuild(ctx context.Context, appID, commitSHA, branch string) (*Build, error) {
-	body, _ := json.Marshal(map[string]any{"commit_sha": commitSHA})
+//
+// deploy says whether a successful build should be deployed. The server's
+// behaviour is to deploy — a build ships what it builds, the same way a push
+// does — so deploy is false only for a caller that wants the image and nothing
+// more: `applab build --no-deploy`, and `applab push`, which deploys the commit
+// itself rather than letting the build do it and be built twice.
+func (c *Client) StartBuild(ctx context.Context, appID, commitSHA, branch string, deploy bool) (*Build, error) {
+	body, _ := json.Marshal(map[string]any{
+		"commit_sha": commitSHA,
+		"deploy":     deploy,
+	})
 
 	var out Build
 	if err := c.do(ctx, http.MethodPost, "/api/v1/apps/"+appID+"/builds"+branchQuery(branch),

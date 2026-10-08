@@ -798,6 +798,23 @@ func TestTheScriptCanBuildAndDeployAnotherBranch(t *testing.T) {
 			wantBody:   "",
 		},
 		{
+			// A build ships what it builds, so the default is deploy true — the
+			// server's own default, said out loud in the request.
+			name:       "building the active branch deploys when the build succeeds",
+			argv:       []string{"build"},
+			wantMethod: "POST",
+			wantPath:   "/api/v1/apps/shop/builds",
+			wantBody:   `"deploy":true`,
+		},
+		{
+			// The opt-out, and the capability it keeps: an image without a rollout.
+			name:       "building can be told not to deploy",
+			argv:       []string{"build", "--no-deploy"},
+			wantMethod: "POST",
+			wantPath:   "/api/v1/apps/shop/builds",
+			wantBody:   `"deploy":false`,
+		},
+		{
 			name:       "deploying the active branch is a plain deploy",
 			argv:       []string{"deploy"},
 			wantMethod: "POST",

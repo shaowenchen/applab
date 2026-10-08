@@ -234,7 +234,10 @@ func Operations() map[string]OpSpec {
 		// -- Builds -------------------------------------------------------
 		"POST /api/v1/apps/{app}/builds": {
 			ID: "startBuild", Tag: "builds", Request: "BuildRequest", Status: 202, Response: "Build",
-			Query: []Parameter{query("branch", "string", "Build another branch without switching to it.")},
+			Query: []Parameter{
+				query("branch", "string", "Build another branch without switching to it."),
+				deployParam(),
+			},
 		},
 		"GET /api/v1/apps/{app}/builds": {
 			ID: "listBuilds", Tag: "builds", Status: 200, Response: "Build", Array: true,
@@ -324,6 +327,14 @@ func publishParam() Parameter {
 	return Parameter{
 		Name: "publish", In: "query", Schema: &Schema{Type: "boolean"},
 		Description: "Build and deploy after committing. Defaults to true; send false to upload without shipping.",
+		Example:     true,
+	}
+}
+
+func deployParam() Parameter {
+	return Parameter{
+		Name: "deploy", In: "query", Schema: &Schema{Type: "boolean"},
+		Description: "Deploy the commit once the build succeeds. Defaults to true; send false to build the image and stop.",
 		Example:     true,
 	}
 }

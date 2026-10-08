@@ -5435,9 +5435,15 @@ async function loadCommits() {
       // A Build button rather than a Roll back, because the two are not the same
       // operation on the same commit: rolling back needs an image to have been
       // made, and making it is what has not happened.
+      //
+      // deploy:false — this button makes the image and stops. The state it
+      // resolves is "no image", and what it produces is one; shipping that commit
+      // is the Roll back above, which this becomes once there is something to
+      // deploy. A build that deployed here would make "Build" mean "roll back to
+      // this", which is a different decision than the one this key asks for.
       const button = document.createElement("button");
       button.textContent = t("Build");
-      button.onclick = () => buildCommit(commit.sha);
+      button.onclick = () => buildCommit(commit.sha, undefined, false);
       action.appendChild(button);
     }
     tr.appendChild(action);
@@ -5623,7 +5629,11 @@ async function buildLatest() {
   const branch = currentBranch();
   const head = await headCommit(branch);
   if (!head) return;
-  await buildCommit(head, branch);
+  // deploy:true, because a build ships what it builds — the same thing a push
+  // does. "Build latest" is the card's own "ship the tip" action; a build that
+  // is being deliberately kept off the cluster is the History card's per-commit
+  // Build, which passes deploy:false. See buildCommit.
+  await buildCommit(head, branch, true);
 }
 
 // buildCommit starts a build of one named commit.
@@ -5632,16 +5642,23 @@ async function buildLatest() {
 // button needs: that button appears on a commit the tip has moved past, and
 // "build this one" is the whole of what it means.
 //
+// deploy says whether the build is deployed once it succeeds. The server
+// defaults to deploying, so a build is a way to ship a commit the way a push is;
+// deploy:false is the opt-out that builds the image and stops. The History card
+// passes false — it is a per-commit image operation, and putting a chosen commit
+// live is that card's Roll back, so a button labelled "Build" must not quietly
+// become a rollback.
+//
 // Starting a build that is already running is allowed and does the right thing:
 // the server stops the build in flight to make way for the new one, because the
 // second was asked for after the first and is therefore what someone wants. It
 // is not an error to press this twice.
-async function buildCommit(sha, branch) {
+async function buildCommit(sha, branch, deploy) {
   setError("");
   try {
     await api("/api/v1/apps/" + state.app + "/builds" + branchQuery(branch), {
       method: "POST",
-      body: JSON.stringify({ commit_sha: sha }),
+      body: JSON.stringify({ commit_sha: sha, deploy: deploy !== false }),
     });
   } catch (err) {
     setError(tf("Could not start a build: {error}", { error: err.message }));

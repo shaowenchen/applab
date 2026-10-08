@@ -1055,7 +1055,7 @@ func (s *Server) routes() []route {
 			Pattern: "POST /api/v1/apps/{app}/builds",
 			Auth:    true,
 			AppAuth: true,
-			Doc:     "Build an image from a commit. Body `{commit_sha?}` — omit it to build the current tip. Returns immediately; the build runs as a Job in the cluster. Returns 501 if this deployment cannot build.",
+			Doc:     "Build an image from a commit. Body `{commit_sha?, deploy?}` — omit `commit_sha` to build the current tip. Returns immediately; the build runs as a Job in the cluster. A build deploys what it builds once it succeeds, the same way a push does, subject to the app's `auto_deploy` switch and to the branch being the app's active one; pass `\"deploy\":false` (or `?deploy=false`) to build the image and stop. Returns 501 if this deployment cannot build.",
 			Handler: s.handleStartBuild,
 		},
 		{
